@@ -27,10 +27,10 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
-        Command::Doctor => match Context::build(&args.global) {
-            Ok(ctx) => cmd::doctor::run(&ctx).await,
-            Err(e) => Err(e),
-        },
+        // doctor tolerates a failed context build — that is exactly when an
+        // operator needs it most — so it takes GlobalArgs and builds its own
+        // context internally rather than failing fast here.
+        Command::Doctor => cmd::doctor::run(&args.global).await,
         Command::Info => match Context::build(&args.global) {
             Ok(ctx) => cmd::info::run(&ctx).await,
             Err(e) => Err(e),

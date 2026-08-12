@@ -1,7 +1,13 @@
 //! One pass over everything that has to be true before a rule operation can
 //! work. Every check runs even after one fails, so the operator sees all the
 //! problems at once.
+//!
+//! `doctor` must survive a broken configuration — that is exactly when an
+//! operator reaches for it. Every other command fails fast on
+//! `Context::build`; `doctor` builds its own context and turns a build
+//! failure into a `config: fail` check instead of a bare error envelope.
 
+use crate::cli::GlobalArgs;
 use crate::context::Context;
 use elasticctl_api::rules::{self, RuleFilter};
 use elasticctl_core::Result;
@@ -11,21 +17,28 @@ fn check(name: &str, status: &str, message: impl Into<String>) -> Value {
     json!({"check": name, "status": status, "message": message.into()})
 }
 
-pub async fn run(ctx: &Context) -> Result<Value> {
+pub async fn run(global: &GlobalArgs) -> Result<Value> {
     let mut checks = Vec::new();
 
-    match ctx.require_credential() {
-        Ok(()) => checks.push(check(
-            "config",
-            "ok",
-            format!("profile '{}'", ctx.resolved.name),
-        )),
+    let ctx = match Context::build(global) {
+        Ok(ctx) => {
+            checks.push(check(
+                "config",
+                "ok",
+                format!("profile '{}'", ctx.resolved.name),
+            ));
+            Some(ctx)
+        }
         Err(e) => {
             checks.push(check("config", "fail", e.message));
-            // Nothing downstream can succeed without a credential.
-            return Ok(json!({"checks": checks, "ok": false}));
+            None
         }
-    }
+    };
+
+    let Some(ctx) = ctx else {
+        // Nothing downstream is meaningful without a resolved target.
+        return Ok(json!({"checks": checks, "ok": false}));
+    };
 
     let caps = match ctx.capabilities().await {
         Ok(c) => {
@@ -50,7 +63,7 @@ pub async fn run(ctx: &Context) -> Result<Value> {
     if caps.is_some() {
         // Realm is the cheap, direct signal for whether rule mutation will
         // work. An organization key reads fine but cannot enable a rule.
-        match identity(ctx).await {
+        match identity(&ctx).await {
             Ok((username, realm)) => {
                 checks.push(check("auth", "ok", format!("{username} via {realm}")));
                 if realm == "_cloud_api_key" {
