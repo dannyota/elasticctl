@@ -80,8 +80,9 @@ impl Rule {
     }
 
     /// The stable identity used for all state matching. Guaranteed present by
-    /// `from_value`, but returned as a `Result` so a hand-built `Rule` cannot
-    /// silently match the wrong remote rule.
+    /// both codec deserialization paths (`from_value` ensures it on construct),
+    /// but returned as a `Result` so a hand-built `Rule` cannot silently match
+    /// the wrong remote rule.
     pub fn rule_id(&self) -> Result<&str> {
         self.0
             .get("rule_id")

@@ -73,8 +73,24 @@ pub fn encode_yaml(rules: &[Rule]) -> Result<String> {
 }
 
 pub fn decode_yaml(body: &str) -> Result<Vec<Rule>> {
-    serde_yaml_ng::from_str(body)
-        .map_err(|e| Error::new(ErrorKind::Error, format!("parsing YAML: {e}")))
+    let values: Vec<Value> = serde_yaml_ng::from_str(body)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("parsing YAML: {e}")))?;
+
+    // Route every element through Rule::from_value so YAML enforces the same
+    // rule_id invariant as NDJSON. YAML is the hand-edited format, so it is
+    // where a missing rule_id is most likely to originate.
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            Rule::from_value(v).map_err(|e| {
+                Error::new(
+                    ErrorKind::Error,
+                    format!("rule at index {i}: {}", e.message),
+                )
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -171,5 +187,32 @@ mod tests {
         assert_eq!(Format::from_path(Path::new("rules.ndjson")), Format::Ndjson);
         assert_eq!(Format::from_path(Path::new("rules.json")), Format::Ndjson);
         assert_eq!(Format::from_path(Path::new("noextension")), Format::Ndjson);
+    }
+
+    #[test]
+    fn decode_yaml_rejects_an_entry_without_rule_id() {
+        let yaml = "- {name: test}\n";
+        let err = decode_yaml(yaml).unwrap_err();
+        assert!(
+            err.message.contains("index 0"),
+            "error must name the index: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("rule_id"),
+            "error must mention rule_id: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn decode_yaml_reports_the_index_of_a_bad_entry() {
+        let yaml = "- {rule_id: a, name: test}\n- {name: test}\n";
+        let err = decode_yaml(yaml).unwrap_err();
+        assert!(
+            err.message.contains("index 1"),
+            "error must name the index: {}",
+            err.message
+        );
     }
 }
