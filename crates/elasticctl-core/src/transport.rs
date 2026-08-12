@@ -148,6 +148,10 @@ impl Transport {
         self.send_json(Method::PUT, path, Some(body)).await
     }
 
+    pub async fn patch(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_json(Method::PATCH, path, Some(body)).await
+    }
+
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.send_json(Method::DELETE, path, None).await
     }
@@ -159,5 +163,37 @@ impl Transport {
             .text()
             .await
             .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))
+    }
+
+    /// Kibana's rule import takes a multipart file upload, not a JSON body.
+    pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
+        let url = self.url(path);
+        let part = reqwest::multipart::Part::text(ndjson.to_string())
+            .file_name("rules.ndjson")
+            .mime_str("application/octet-stream")
+            .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", &self.auth_header)
+            .header("elastic-api-version", API_VERSION)
+            .header("kbn-xsrf", "true")
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connection, format!("upload failed: {e}")))?;
+
+        let status = response.status().as_u16();
+        let text = response
+            .text()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        if !(200..300).contains(&status) {
+            return Err(Error::from_response_body(status, &text));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
 }
