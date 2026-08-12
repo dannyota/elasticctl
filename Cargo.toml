@@ -13,3 +13,7 @@ authors = ["Danny"]
 [workspace.dependencies]
 elasticctl-core = { path = "crates/elasticctl-core", version = "0.1.0" }
 elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.0" }
+# Declared once so every crate gets the same map semantics regardless of which
+# package a given cargo invocation selects. Insertion order drives table and
+# CSV column order; alphabetical would scramble natural field ordering.
+serde_json = { version = "1.0.151", features = ["preserve_order"] }

@@ -220,9 +220,36 @@ mod tests {
     }
 
     #[test]
-    fn table_of_a_single_object_renders_key_value_pairs() {
+    fn table_of_a_single_object_renders_a_one_row_table() {
         let t = table(&json!({"rule_id": "a", "name": "Alpha"}), None);
         assert!(t.contains("rule_id") && t.contains("Alpha"), "{t}");
+    }
+
+    #[test]
+    fn table_widens_a_column_to_fit_a_cell_wider_than_its_header() {
+        let v = json!({"id": "1234567890", "flag": "x"});
+        let t = table(&v, None);
+        let header = t.lines().next().unwrap();
+        let flag_at = header.find("flag").unwrap();
+        assert_eq!(
+            flag_at,
+            "1234567890".len() + 2,
+            "column must widen to fit the longest cell, not just the header: {header}"
+        );
+    }
+
+    #[test]
+    fn table_renders_a_null_cell_as_empty_not_as_the_word_null() {
+        let v = json!({"id": "a", "note": null});
+        let t = table(&v, None);
+        assert!(!t.contains("null"), "{t}");
+    }
+
+    #[test]
+    fn table_renders_a_nested_object_as_inline_json_without_panicking() {
+        let v = json!({"id": "a", "meta": {"k": "v"}});
+        let t = table(&v, None);
+        assert!(t.contains(r#"{"k":"v"}"#), "{t}");
     }
 
     #[test]
@@ -277,6 +304,16 @@ mod tests {
         let lines: Vec<&str> = s.lines().collect();
         assert_eq!(lines[0], "name,n");
         assert!(lines[1].contains("\"a,b\""), "{}", lines[1]);
+    }
+
+    #[test]
+    fn csv_escape_doubles_an_embedded_quote_and_wraps_the_field() {
+        assert_eq!(csv_escape(r#"He said "hi""#), r#""He said ""hi""""#);
+    }
+
+    #[test]
+    fn csv_escape_quotes_a_value_containing_a_newline() {
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
     }
 
     #[test]
