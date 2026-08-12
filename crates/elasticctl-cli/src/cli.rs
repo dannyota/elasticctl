@@ -103,6 +103,32 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Show the CLI version and, when configured, the target stack
+    /// Manage connection profiles
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Check connectivity, authentication, key scope, and rule access
+    Doctor,
+    /// Show stack version, flavor, license tier, and spaces
     Info,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigAction {
+    /// Create or replace a profile
+    Init {
+        /// Profile name; defaults to "default"
+        #[arg(long)]
+        name: Option<String>,
+        /// Take values from ELASTICCTL_* environment variables
+        #[arg(long)]
+        from_env: bool,
+    },
+    /// List configured profiles
+    List,
+    /// Show one profile, with secrets redacted
+    Show,
+    /// Verify the profile can reach and authenticate to the stack
+    Test,
 }

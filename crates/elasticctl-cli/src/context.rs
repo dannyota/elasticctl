@@ -6,11 +6,6 @@ use elasticctl_core::{
 };
 use tokio::sync::OnceCell;
 
-// Not yet constructed by any command — wired in as commands adopt it in
-// later tasks. (Exercised directly by this module's tests in the meantime,
-// so `#[allow]` rather than `#[expect]`: the lint only fires in a plain
-// build, never in a test build.)
-#[allow(dead_code)]
 pub struct Context {
     pub resolved: Resolved,
     pub transport: Transport,
@@ -19,7 +14,6 @@ pub struct Context {
 }
 
 impl Context {
-    #[expect(dead_code)]
     pub fn build(global: &GlobalArgs) -> Result<Context> {
         let path = global.config.clone().unwrap_or_else(Config::default_path);
         let config = Config::load(&path)?;
@@ -45,7 +39,6 @@ impl Context {
 
     /// Probed once per run, on first use. A command that never needs the
     /// flavor never pays for the round trip.
-    #[expect(dead_code)]
     pub async fn capabilities(&self) -> Result<&Capabilities> {
         self.caps
             .get_or_try_init(|| async {
@@ -60,7 +53,6 @@ impl Context {
     /// test `Transport::new` already applies via `Credential::from_profile` —
     /// so there is one definition of "has a credential", not two that can
     /// drift apart.
-    #[allow(dead_code)]
     pub fn require_credential(&self) -> Result<()> {
         if !Credential::is_configured(&self.resolved.profile) {
             return Err(Error::new(

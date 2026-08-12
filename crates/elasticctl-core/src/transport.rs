@@ -18,7 +18,6 @@ pub struct Transport {
     /// Elasticsearch lives at a different host from Kibana on Cloud
     /// deployments. Falls back to the Kibana host when no separate URL is set,
     /// which is the usual self-managed single-host case.
-    #[expect(dead_code)]
     es_base: String,
     space: String,
     auth_header: String,
@@ -154,6 +153,26 @@ impl Transport {
 
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.send_json(Method::DELETE, path, None).await
+    }
+
+    /// Elasticsearch lives at a different host from Kibana on Cloud
+    /// deployments, so ES calls do not go through the space-prefixed path.
+    pub async fn get_absolute_es(&self, path: &str) -> Result<Value> {
+        let url = format!("{}{}", self.es_base, path);
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .send()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connection, format!("request failed: {e}")))?;
+        let status = response.status().as_u16();
+        let text = response.text().await.unwrap_or_default();
+        if !(200..300).contains(&status) {
+            return Err(Error::from_response_body(status, &text));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
 
     /// Raw body, for endpoints that return NDJSON rather than a JSON document.
