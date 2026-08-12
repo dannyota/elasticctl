@@ -5,6 +5,7 @@ use crate::error::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const REDACTED: &str = "***";
@@ -59,12 +60,18 @@ impl Profile {
     /// Host portion of the Kibana URL, for banners. Falls back to the whole
     /// string when it will not parse, so a banner never silently loses its target.
     pub fn host(&self) -> String {
-        self.kibana_url
-            .split("://")
-            .nth(1)
-            .unwrap_or(&self.kibana_url)
-            .trim_end_matches('/')
-            .to_string()
+        // Find the last occurrence of "://" to handle doubled schemes correctly
+        if let Some(pos) = self.kibana_url.rfind("://") {
+            let after_scheme = &self.kibana_url[pos + 3..];
+            // Strip any path/query portion after the first /
+            let host_part = after_scheme.split('/').next().unwrap_or("");
+            // If we got something, return it; otherwise fall back to original
+            if !host_part.is_empty() {
+                return host_part.to_string();
+            }
+        }
+        // Fall back to original if parsing fails or result is empty
+        self.kibana_url.clone()
     }
 }
 
@@ -148,11 +155,33 @@ impl Config {
         if !path.exists() {
             return Ok(Config::default());
         }
+        Self::warn_if_permissive(path);
         let body = fs::read_to_string(path).map_err(|e| {
             Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
         })?;
         toml::from_str(&body)
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing {}: {e}", path.display())))
+    }
+
+    #[cfg(unix)]
+    fn warn_if_permissive(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(path) {
+            let mode = metadata.permissions().mode();
+            // Check if group or other bits are set (mode & 0o077 != 0)
+            if mode & 0o077 != 0 {
+                eprintln!(
+                    "warning: config file {} is readable by group or other (mode {:o}); should be 0600",
+                    path.display(),
+                    mode & 0o777
+                );
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn warn_if_permissive(_path: &Path) {
+        // No-op on non-unix systems
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -166,10 +195,31 @@ impl Config {
         }
         let body = toml::to_string_pretty(self)
             .map_err(|e| Error::new(ErrorKind::Error, format!("serializing config: {e}")))?;
-        fs::write(path, body).map_err(|e| {
-            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
-        })?;
+        Self::write_config_file(path, &body)?;
+        // Also restrict permissions afterward in case an existing file had looser permissions
         Self::restrict_permissions(path)
+    }
+
+    #[cfg(unix)]
+    fn write_config_file(path: &Path, body: &str) -> Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| {
+                Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+            })?;
+        f.write_all(body.as_bytes())
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))
+    }
+
+    #[cfg(not(unix))]
+    fn write_config_file(path: &Path, body: &str) -> Result<()> {
+        fs::write(path, body)
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))
     }
 
     #[cfg(unix)]
@@ -234,8 +284,8 @@ mod tests {
                 kibana_url: "https://kb.example.com".into(),
                 es_url: Some("https://es.example.com".into()),
                 api_key: Some("essu_SECRET".into()),
-                username: None,
-                password: None,
+                username: Some("user".into()),
+                password: Some("pass_SECRET".into()),
                 space: "default".into(),
                 verify: true,
                 timeout_secs: 30,
@@ -335,7 +385,16 @@ mod tests {
     #[test]
     fn redacted_hides_every_secret_field() {
         let p = sample().profiles["default"].redacted();
-        assert_eq!(p.api_key.as_deref(), Some("***"));
+        assert_eq!(
+            p.api_key.as_deref(),
+            Some("***"),
+            "api_key must be redacted"
+        );
+        assert_eq!(
+            p.password.as_deref(),
+            Some("***"),
+            "password must be redacted"
+        );
         assert_eq!(
             p.kibana_url, "https://kb.example.com",
             "non-secrets stay visible"
@@ -346,7 +405,10 @@ mod tests {
     fn redacted_leaves_absent_secrets_absent() {
         let mut p = sample().profiles["default"].clone();
         p.api_key = None;
-        assert_eq!(p.redacted().api_key, None);
+        p.password = None;
+        let redacted = p.redacted();
+        assert_eq!(redacted.api_key, None, "absent api_key stays absent");
+        assert_eq!(redacted.password, None, "absent password stays absent");
     }
 
     #[test]
@@ -378,6 +440,128 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn newly_created_file_is_mode_0600_not_umask_default() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new_config.toml");
+        // Ensure file does not exist
+        assert!(!path.exists());
+        sample().save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "newly created config must be 0600 immediately, not umask default"
+        );
+    }
+
+    #[test]
+    fn host_parses_normal_https_url() {
+        let p = Profile {
+            kibana_url: "https://kb.example.com".into(),
+            ..Profile {
+                kibana_url: "".into(),
+                es_url: None,
+                api_key: None,
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            }
+        };
+        assert_eq!(p.host(), "kb.example.com");
+    }
+
+    #[test]
+    fn host_strips_path_from_url() {
+        let p = Profile {
+            kibana_url: "https://kb.example.com/api/spaces".into(),
+            ..Profile {
+                kibana_url: "".into(),
+                es_url: None,
+                api_key: None,
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            }
+        };
+        assert_eq!(p.host(), "kb.example.com");
+    }
+
+    #[test]
+    fn host_handles_doubled_scheme() {
+        let p = Profile {
+            kibana_url: "https://https://kb.example.com".into(),
+            ..Profile {
+                kibana_url: "".into(),
+                es_url: None,
+                api_key: None,
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            }
+        };
+        assert_eq!(
+            p.host(),
+            "kb.example.com",
+            "must extract host after last :// to avoid reporting wrong scheme as host"
+        );
+    }
+
+    #[test]
+    fn host_handles_bare_hostname() {
+        let p = Profile {
+            kibana_url: "kb.example.com".into(),
+            ..Profile {
+                kibana_url: "".into(),
+                es_url: None,
+                api_key: None,
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            }
+        };
+        assert_eq!(p.host(), "kb.example.com", "must fall back to original");
+    }
+
+    #[test]
+    fn host_handles_empty_string() {
+        let p = Profile {
+            kibana_url: "".into(),
+            es_url: None,
+            api_key: None,
+            username: None,
+            password: None,
+            space: "default".into(),
+            verify: true,
+            timeout_secs: 30,
+        };
+        assert_eq!(p.host(), "", "empty falls back to original");
+    }
+
+    #[test]
+    fn load_warns_on_permissive_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        sample().save(&path).unwrap();
+        // Manually make it permissive (0644)
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        // Load should succeed and warn to stderr
+        let cfg = Config::load(&path).unwrap();
+        assert!(
+            !cfg.profiles.is_empty(),
+            "load must succeed with permissive file"
         );
     }
 }
