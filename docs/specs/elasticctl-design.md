@@ -290,7 +290,71 @@ aarch64), macOS (x86_64, aarch64), and Windows x86_64, plus
 `cargo install elasticctl`. Static musl matters for locked-down Linux laptops;
 macOS aarch64 is the likely common case. A Homebrew tap when there is demand.
 
-## 11. Credentials in this repository
+## 11. Versioning
+
+Cargo SemVer, staying in `0.x` until the command surface settles. Under the
+`0.x` rule the minor position is the breaking position, which Cargo implements
+directly: `^0.1.2` resolves to `>=0.1.2, <0.2.0`, so every `0.1.x` is
+compatible and `0.2.0` is a break.
+
+Development is iterative — ship small, ship often.
+
+- **Patch** (`0.1.1`, `0.1.2`, …) carries fixes and small additive changes
+  *inside* the capability areas that already exist: a new flag on
+  `rules list`, a new output field, a bug fix.
+- **Minor** (`0.2.0`, `0.3.0`, …) marks a **new capability area** — `search`,
+  `dashboards`, `cases`, `fleet` — or an actual break.
+
+A minor bump is *required* when something breaks. It is not *restricted* to
+breaks. Using it to mark each new capability area makes the version number
+describe what the tool can do, which is what a user reads it for.
+
+The dividing line is scale, not novelty. A new flag on an existing command is
+a patch. A whole new command group is a minor.
+
+Manifests always carry three components: `version = "0.1.0"`, never `"0.1"`.
+
+Planned shape, order not yet fixed:
+
+| Version | Capability area |
+|---|---|
+| `0.1` | Detection rules as code |
+| `0.2` | Search — ES\|QL and DSL |
+| `0.3` | Alert triage and cases |
+| `0.4` | Exceptions and prebuilt rule management |
+| `0.5` | Dashboards and data views |
+| `0.6` | Fleet and agent policies |
+| `1.0` | Command surface stable; MCP server |
+
+### 11.1 What counts as breaking
+
+SemVer is written for library consumers, but nobody depends on elasticctl's
+Rust types — they depend on the CLI surface. That is the public API, and it is
+what the version number describes.
+
+Breaking, requiring a minor bump:
+
+- Renaming or removing a command, subcommand, or flag
+- Renaming or removing a field in `--json` output
+- Changing or removing an error `kind` value
+- Changing an exit code's meaning
+- Changing the on-disk rule format in a way older files cannot round-trip
+
+Additive, allowed in a patch release: new commands, new flags with defaults,
+new fields in JSON output, new error kinds for previously unclassified
+failures.
+
+### 11.2 Publishing
+
+One shared workspace version, so all three crates move together.
+
+Only the `elasticctl` binary publishes to crates.io. `elasticctl-core` and
+`elasticctl-api` are `publish = false`. Publishing them would make their Rust
+APIs a SemVer contract with real consumers, turning every internal refactor
+into a version event, and the boundaries are still moving. They can be
+published later; they cannot be un-published.
+
+## 12. Credentials in this repository
 
 Development credentials live in `.env`, which is gitignored and mode `0600`.
 `.env.example` is committed and contains placeholders only. The Elastic key in
@@ -298,7 +362,7 @@ use is a **project-scoped** serverless key: it authenticates API calls but
 cannot create, list, or resize projects. Managing projects would need an
 organization API key (`essa_` prefix) against `api.elastic-cloud.com`.
 
-## 12. Risks
+## 13. Risks
 
 **Serverless-first bias.** Serverless is the most divergent of the three
 flavors — no licence tiers (features gate on project tier instead), different
