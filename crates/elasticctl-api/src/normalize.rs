@@ -25,9 +25,15 @@ pub fn fill_defaults(rule: &mut Rule) {
     }
 }
 
-/// `serde_json::Map` preserves insertion order under the `preserve_order`
-/// feature and sorts otherwise. Rebuild explicitly so ordering does not depend
-/// on which features a downstream crate happens to enable.
+/// Recursively sort object keys for deterministic output. **This function must
+/// not be removed.**
+///
+/// `serde_json::Map` is `BTreeMap`-backed in the current dependency set and
+/// already orders keys. However, it preserves insertion order if the
+/// `preserve_order` feature is enabled. This function rebuilds the map
+/// explicitly so that ordering does not silently depend on which features a
+/// downstream crate enables transitively. Without it, a future day when some
+/// other crate adds `preserve_order` would silently break output determinism.
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(m) => {
@@ -202,5 +208,71 @@ mod tests {
         sort_rules(&mut rules);
         let ids: Vec<&str> = rules.iter().map(|r| r.rule_id().unwrap()).collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn array_order_is_preserved_not_sorted() {
+        let r = Rule::from_value(json!({
+            "rule_id": "x",
+            "tags": ["zebra", "alpha", "middle"],
+            "index": ["logs-b-*", "logs-a-*"],
+            "threat": [{"z": 1}, {"a": 2}]
+        }))
+        .unwrap();
+        let c = canonical(&r);
+        let tags = c.as_map()["tags"].as_array().unwrap();
+        let tag_strs: Vec<&str> = tags.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            tag_strs,
+            vec!["zebra", "alpha", "middle"],
+            "tag order must be preserved"
+        );
+        let index = c.as_map()["index"].as_array().unwrap();
+        let index_strs: Vec<&str> = index.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            index_strs,
+            vec!["logs-b-*", "logs-a-*"],
+            "index order must be preserved"
+        );
+        let threat = c.as_map()["threat"].as_array().unwrap();
+        let first_key = threat[0].as_object().unwrap().keys().next().unwrap();
+        assert_eq!(
+            first_key, "z",
+            "array element order preserved, keys sorted within"
+        );
+    }
+
+    #[test]
+    fn sort_rules_puts_unreadable_rule_id_last_without_panicking() {
+        let bad = Rule::from_value(json!({"rule_id": 123})).unwrap();
+        let good_c = Rule::from_value(json!({"rule_id": "c"})).unwrap();
+        let good_a = Rule::from_value(json!({"rule_id": "a"})).unwrap();
+        let mut rules = vec![good_c, bad, good_a];
+        sort_rules(&mut rules);
+        assert_eq!(rules[0].rule_id().unwrap(), "a");
+        assert_eq!(rules[1].rule_id().unwrap(), "c");
+        assert!(rules[2].rule_id().is_err(), "unreadable id sorts last");
+    }
+
+    #[test]
+    fn canonical_is_idempotent() {
+        let r = Rule::from_value(json!({
+            "rule_id": "x", "tags": ["z", "a"], "nested": {"z": 1, "a": 2}
+        }))
+        .unwrap();
+        let once = canonical(&r);
+        let twice = canonical(&once);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn comparable_is_idempotent() {
+        let r = Rule::from_value(json!({
+            "rule_id": "x", "name": "test", "type": "query", "risk_score": 10
+        }))
+        .unwrap();
+        let once = comparable(&r);
+        let twice = comparable(&once);
+        assert_eq!(once, twice);
     }
 }
