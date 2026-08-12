@@ -268,7 +268,49 @@ Export NDJSON is exactly two lines for one rule: the rule object, then a
 `missing_rules`, `missing_rules_count`, and the exception-list and
 action-connector equivalents).
 
-### 7.2 Two error body shapes
+### 7.2 Rule mutation requires a project-scoped API key
+
+`PATCH /api/detection_engine/rules` and `_bulk_action` with `action: enable`
+both fail with an organization-level API key:
+
+```
+Cannot use an organization-level API key to create or enable rule
+"Alerting: siem.queryRule/...". Organization-level API keys are not supported
+for rule operations; use a project-scoped Elasticsearch API key instead.
+```
+
+Enabling a rule makes the alerting framework mint a rule-owned API key, and it
+refuses to do that on behalf of an organization key. The `essu_` prefix does
+**not** imply project scope — the key used for the probes reports
+`roles: ["admin"]` in realm `_cloud_api_key` and is organization-level.
+
+Consequences:
+
+- Reads, creates of **disabled** rules, deletes, and `dry_run` bulk actions all
+  work with an organization key.
+- Enable, disable-with-apply, and anything that schedules a rule need a
+  project-scoped Elasticsearch API key, created inside Kibana rather than in
+  the Cloud console.
+- `doctor` must detect this and say so plainly. A user whose key cannot enable
+  rules should learn it from `doctor`, not from a 400 in the middle of a push.
+
+### 7.3 Targeting rules by rule_id in bulk actions
+
+`_bulk_action` accepts `ids`, which are the volatile server-side saved-object
+ids, or a `query`. Targeting by the stable `rule_id` works through the query
+form and needs no id resolution step:
+
+```json
+{"action": "disable", "query": "alert.attributes.params.ruleId: \"my-rule-id\""}
+```
+
+Verified: one rule matched, `summary.succeeded` was 1.
+
+`_bulk_action` also accepts `?dry_run=true`, which reports what would change
+without applying it. That pairs directly with the mutation guard — the dry-run
+preview can be server-computed rather than inferred.
+
+### 7.4 Two error body shapes
 
 The Elastic Cloud edge proxy and Kibana return different error envelopes. The
 classifier must parse both, or an edge failure gets misreported as a Kibana
