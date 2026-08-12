@@ -119,3 +119,61 @@ fn require_passes_when_the_feature_is_supported() {
     };
     assert!(caps.require("anything", true).is_ok());
 }
+
+#[tokio::test]
+async fn ech_suffix_in_subdomain_is_detected() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://abc.kb.us-east-1.aws.found.io")
+        .await
+        .unwrap();
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[tokio::test]
+async fn ech_suffix_with_port_is_detected() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://abc.kb.us-east-1.aws.found.io:9243")
+        .await
+        .unwrap();
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[tokio::test]
+async fn ech_suffix_as_bare_host_is_detected() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://found.io").await.unwrap();
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[tokio::test]
+async fn ech_suffix_in_path_is_not_misclassified() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://kibana.example.com/login?ref=found.io")
+        .await
+        .unwrap();
+    assert_eq!(caps.flavor, Flavor::SelfManaged);
+}
+
+#[tokio::test]
+async fn ech_suffix_in_internal_host_is_not_misclassified() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://kibana.found.io.internal.corp")
+        .await
+        .unwrap();
+    assert_eq!(caps.flavor, Flavor::SelfManaged);
+}
+
+#[tokio::test]
+async fn lookalike_domain_is_not_misclassified() {
+    let server = server_reporting("default", "9.5.1").await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+    let caps = Capabilities::probe(&t, "https://notfound.io")
+        .await
+        .unwrap();
+    assert_eq!(caps.flavor, Flavor::SelfManaged);
+}

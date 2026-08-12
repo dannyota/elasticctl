@@ -12,6 +12,24 @@ const ECH_SUFFIXES: [&str; 4] = [
     "elastic.cloud",
 ];
 
+/// Host portion of a URL: after the last `://`, before the first `/`, minus
+/// any `:port`. Matching the raw URL would let a suffix in a path or query
+/// string decide the deployment flavor.
+fn host_of(url: &str) -> &str {
+    let after_scheme = match url.rfind("://") {
+        Some(i) => &url[i + 3..],
+        None => url,
+    };
+    let host = after_scheme.split('/').next().unwrap_or("");
+    host.split(':').next().unwrap_or(host)
+}
+
+/// True when `host` is exactly `suffix` or a subdomain of it. A bare
+/// `ends_with` would also match `notfound.io` against `found.io`.
+fn host_matches(host: &str, suffix: &str) -> bool {
+    host == suffix || host.ends_with(&format!(".{suffix}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
     SelfManaged,
@@ -53,7 +71,10 @@ impl Capabilities {
 
         let flavor = if build_flavor == "serverless" {
             Flavor::Serverless
-        } else if ECH_SUFFIXES.iter().any(|s| kibana_url.contains(s)) {
+        } else if ECH_SUFFIXES
+            .iter()
+            .any(|s| host_matches(host_of(kibana_url), s))
+        {
             Flavor::ElasticCloudHosted
         } else {
             Flavor::SelfManaged
