@@ -16,16 +16,13 @@ pub struct Preview {
     pub details: Vec<String>,
 }
 
-/// Names the profile, host, and space. Reads only local config — never
-/// authenticates — so it is safe to call before every preview.
+/// Parenthesised form of the core banner. The field text lives in
+/// `Resolved::banner()` so there is exactly one place that decides how a
+/// target is described — a guard preview and any other reporting path must
+/// never show the operator two different descriptions of the same target.
 #[allow(dead_code)]
 pub fn banner(resolved: &Resolved) -> String {
-    format!(
-        "(profile: {} @ {}, space: {})",
-        resolved.name,
-        resolved.profile.host(),
-        resolved.profile.space
-    )
+    format!("({})", resolved.banner())
 }
 
 #[allow(dead_code)]

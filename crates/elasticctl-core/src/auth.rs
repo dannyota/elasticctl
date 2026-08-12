@@ -53,6 +53,12 @@ impl Credential {
         }
     }
 
+    /// Whether a profile carries a usable credential. Single source of truth:
+    /// two independent definitions of "has a credential" will drift.
+    pub fn is_configured(profile: &Profile) -> bool {
+        Self::from_profile(profile).is_ok()
+    }
+
     pub fn header_value(&self) -> String {
         match self {
             Credential::ApiKey(k) => format!("ApiKey {k}"),
@@ -125,6 +131,27 @@ mod tests {
             Credential::from_profile(&p).unwrap_err().kind,
             ErrorKind::Auth
         );
+    }
+
+    #[test]
+    fn is_configured_true_for_a_valid_api_key() {
+        let mut p = profile();
+        p.api_key = Some("essu_abc".into());
+        assert!(Credential::is_configured(&p));
+    }
+
+    #[test]
+    fn is_configured_false_for_an_empty_api_key_with_no_basic_auth() {
+        let mut p = profile();
+        p.api_key = Some("".into());
+        assert!(!Credential::is_configured(&p));
+    }
+
+    #[test]
+    fn is_configured_false_for_a_username_without_a_password() {
+        let mut p = profile();
+        p.username = Some("elastic".into());
+        assert!(!Credential::is_configured(&p));
     }
 
     #[test]

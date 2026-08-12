@@ -2,13 +2,15 @@
 
 use crate::cli::GlobalArgs;
 use elasticctl_core::{
-    Capabilities, Config, Error, ErrorKind, Overrides, Resolved, Result, Transport,
+    Capabilities, Config, Credential, Error, ErrorKind, Overrides, Resolved, Result, Transport,
 };
 use tokio::sync::OnceCell;
 
 // Not yet constructed by any command — wired in as commands adopt it in
-// later tasks.
-#[expect(dead_code)]
+// later tasks. (Exercised directly by this module's tests in the meantime,
+// so `#[allow]` rather than `#[expect]`: the lint only fires in a plain
+// build, never in a test build.)
+#[allow(dead_code)]
 pub struct Context {
     pub resolved: Resolved,
     pub transport: Transport,
@@ -53,9 +55,14 @@ impl Context {
     }
 
     /// Fail early with a clear message when a profile carries no credential.
-    #[expect(dead_code)]
+    ///
+    /// Delegates the actual check to `Credential::is_configured` — the same
+    /// test `Transport::new` already applies via `Credential::from_profile` —
+    /// so there is one definition of "has a credential", not two that can
+    /// drift apart.
+    #[allow(dead_code)]
     pub fn require_credential(&self) -> Result<()> {
-        if self.resolved.profile.api_key.is_none() && self.resolved.profile.username.is_none() {
+        if !Credential::is_configured(&self.resolved.profile) {
             return Err(Error::new(
                 ErrorKind::Auth,
                 format!(
@@ -65,5 +72,66 @@ impl Context {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use elasticctl_core::{Profile, Source};
+
+    fn profile_with(
+        api_key: Option<&str>,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Profile {
+        Profile {
+            kibana_url: "https://kb.example.com".into(),
+            es_url: None,
+            api_key: api_key.map(String::from),
+            username: username.map(String::from),
+            password: password.map(String::from),
+            space: "default".into(),
+            verify: true,
+            timeout_secs: 30,
+        }
+    }
+
+    /// `require_credential` only reads `resolved.profile`, so the `transport`
+    /// field can carry any validly-constructed `Transport` — its own profile
+    /// need not match the one under test.
+    fn context_with(profile: Profile) -> Context {
+        let dummy = profile_with(Some("valid-key"), None, None);
+        let transport = Transport::new(&dummy).unwrap();
+        Context {
+            resolved: Resolved {
+                profile,
+                name: "test".into(),
+                source: Source::Profile,
+            },
+            transport,
+            global: GlobalArgs::default(),
+            caps: OnceCell::new(),
+        }
+    }
+
+    #[test]
+    fn require_credential_rejects_an_empty_api_key() {
+        let ctx = context_with(profile_with(Some(""), None, None));
+        let err = ctx.require_credential().unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Auth);
+        assert!(err.message.contains("test"), "{}", err.message);
+    }
+
+    #[test]
+    fn require_credential_rejects_a_username_without_a_password() {
+        let ctx = context_with(profile_with(None, Some("elastic"), None));
+        assert_eq!(ctx.require_credential().unwrap_err().kind, ErrorKind::Auth);
+    }
+
+    #[test]
+    fn require_credential_accepts_a_configured_api_key() {
+        let ctx = context_with(profile_with(Some("essu_abc"), None, None));
+        assert!(ctx.require_credential().is_ok());
     }
 }
