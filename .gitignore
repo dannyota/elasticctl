@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Secrets & credentials — never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+credentials.json
+config.toml
+.elasticctl/
+
+# Recorded fixtures may capture live credentials until scrubbed
+tests/fixtures/**/*.unscrubbed.json
+
+# Local lab state
+lab/data/
+lab/certs/
+lab/.env
+
+# Tooling
+.mcp.json
+.playwright-profile/
+.playwright-mcp/
+
+# Local-only working notes
+PLAN.md
+scratch/
+
+# OS
+.DS_Store
+Thumbs.db
