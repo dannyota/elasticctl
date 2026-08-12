@@ -468,11 +468,19 @@ Mitigated by tagging fixtures with flavor and version, gating divergent
 behaviour behind the capability probe, and recording self-managed fixtures
 before v0.1 is called done.
 
-**`rules preview` stability.** The rule preview endpoint has moved between
-public and internal paths across Elastic versions. It is the highest-value
-command here for a detection engineer, so it is in the plan — but if it proves
-internal-only on the target versions it drops to v0.2 rather than shipping
-something version-fragile.
+**`rules preview` stability — resolved.** The concern was that the preview
+endpoint has moved between public and internal paths across Elastic versions.
+Measured on Serverless 9.6.0: `POST /api/detection_engine/rules/preview` is
+public and returns 200 with a `previewId` and a `logs` array carrying per
+execution `errors` and `warnings`. The internal path returns 404.
+
+`elastic-api-version` must be a date string — `1` and `2` are both rejected
+with "Invalid version. Received \"1\", expected a valid date string". Since
+internal Kibana routes are versioned numerically, this is a second reason they
+are unreachable here. `2023-10-31` is the only version this client needs.
+
+The command stays in 0.1.0 and off the trim line. It still needs confirmation
+against a self-managed stack in the fixture-recording session.
 
 **Empty project.** The serverless project currently holds zero rules, so
 `state pull` has nothing to read and `rules preview` has no data. The first
