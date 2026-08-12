@@ -174,6 +174,23 @@ Accepted before or after the subcommand: `--profile`, `--config`, `--space`,
 `push` **never deletes remote rules.** A rule missing locally is not a delete
 instruction. Deletion is always the explicit `rules delete`.
 
+### 5.1 Server-applied defaults
+
+Creating a rule with 13 fields returns 36. The server fills 16 defaults —
+`max_signals: 100`, `to: "now"`, `rule_source: {"type":"internal"}`,
+`actions: []`, and similar — on top of the 7 volatile fields.
+
+That means a hand-authored rule file omitting `max_signals` would diff against
+its pulled counterpart forever. Two modes resolve it:
+
+- A rule written by `pull` already carries the full field set, so the diff is
+  symmetric and exact.
+- A hand-authored rule is passed through default-filling before comparison, so
+  an omitted field reads as "accept the server default", not as drift.
+
+`rules validate` applies the same default-filling, so an engineer can see
+exactly what a sparse file will become before pushing it.
+
 ## 6. Contracts
 
 ### 6.1 Safety
@@ -226,7 +243,32 @@ Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 | Export trailer | With zero rules, `POST /api/detection_engine/rules/_export` returns *only* the summary object |
 | Prebuilt rules | The internal route `/internal/detection_engine/prebuilt_rules/status` returns 400 `"exists but is not available with the current configuration"`. Use the public API |
 
-### 7.1 Two error body shapes
+### 7.1 Rule schema, measured
+
+A `query` rule created with 13 fields comes back with 36.
+
+**Volatile — strip before diffing (7):** `id`, `created_at`, `created_by`,
+`updated_at`, `updated_by`, `revision`, `version`.
+
+**Server defaults — fill before diffing a sparse local file (16):** `actions`,
+`author`, `exceptions_list`, `false_positives`, `immutable`, `max_signals`,
+`output_index`, `references`, `related_integrations`, `required_fields`,
+`risk_score_mapping`, `rule_source`, `setup`, `severity_mapping`, `threat`,
+`to`.
+
+**Author-controlled (13):** `rule_id`, `name`, `description`, `type`,
+`language`, `query`, `index`, `severity`, `risk_score`, `enabled`, `from`,
+`interval`, `tags`.
+
+`rule_id` is caller-supplied and may be any string, not only a UUID — the probe
+used `elasticctl-schema-probe` and it was accepted.
+
+Export NDJSON is exactly two lines for one rule: the rule object, then a
+15-field summary trailer (`exported_count`, `exported_rules_count`,
+`missing_rules`, `missing_rules_count`, and the exception-list and
+action-connector equivalents).
+
+### 7.2 Two error body shapes
 
 The Elastic Cloud edge proxy and Kibana return different error envelopes. The
 classifier must parse both, or an edge failure gets misreported as a Kibana
