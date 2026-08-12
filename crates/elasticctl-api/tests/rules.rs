@@ -216,6 +216,97 @@ async fn export_separates_rules_from_the_trailer() {
 }
 
 #[tokio::test]
+async fn import_reflects_overwrite_true_in_the_query_string() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .and(query_param("overwrite", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "success_count": 1, "errors": []
+        })))
+        .mount(&server)
+        .await;
+
+    let ndjson = format!("{}\n", serde_json::to_string(&rule_json("a")).unwrap());
+    let result = rules::import(&transport(&server), &ndjson, true)
+        .await
+        .unwrap();
+    assert_eq!(result["success_count"], 1);
+}
+
+#[tokio::test]
+async fn import_reflects_overwrite_false_in_the_query_string() {
+    // Overwrite silently replaces existing detections; the two settings must
+    // never be conflated.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .and(query_param("overwrite", "false"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "success_count": 1, "errors": []
+        })))
+        .mount(&server)
+        .await;
+
+    let ndjson = format!("{}\n", serde_json::to_string(&rule_json("a")).unwrap());
+    let result = rules::import(&transport(&server), &ndjson, false)
+        .await
+        .unwrap();
+    assert_eq!(result["success_count"], 1);
+}
+
+#[tokio::test]
+async fn import_sends_the_ndjson_as_a_multipart_upload() {
+    // Kibana's import takes a multipart file upload, not a JSON body — easy
+    // to get wrong in a way no other test would catch.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "success_count": 1, "errors": []
+        })))
+        .mount(&server)
+        .await;
+
+    let ndjson = format!("{}\n", serde_json::to_string(&rule_json("abc")).unwrap());
+    rules::import(&transport(&server), &ndjson, true)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let content_type = requests[0]
+        .headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("multipart/form-data"),
+        "{content_type}"
+    );
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(body.contains("\"rule_id\":\"abc\""), "{body}");
+}
+
+#[tokio::test]
+async fn a_failing_import_is_a_classified_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "message": "invalid ndjson"
+        })))
+        .mount(&server)
+        .await;
+
+    let err = rules::import(&transport(&server), "not ndjson", true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Http);
+    assert!(err.message.contains("invalid ndjson"), "{}", err.message);
+}
+
+#[tokio::test]
 async fn a_404_from_get_is_a_not_found_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
