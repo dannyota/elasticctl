@@ -1,0 +1,17 @@
+[package]
+name = "elasticctl-cli"
+publish = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Operate Elastic Security as code with a safety-first CLI for security engineers."
+
+[[bin]]
+name = "elasticctl"
+path = "src/main.rs"
+
+[dependencies]
+elasticctl-core.workspace = true
+elasticctl-api.workspace = true

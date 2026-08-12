@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/elasticctl-core", "crates/elasticctl-api", "crates/elasticctl-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/dannyota/elasticctl"
+authors = ["Danny"]
+
+[workspace.dependencies]
+elasticctl-core = { path = "crates/elasticctl-core", version = "0.1.0" }
+elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.0" }
