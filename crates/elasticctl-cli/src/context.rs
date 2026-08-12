@@ -6,16 +6,30 @@ use elasticctl_core::{
 };
 use tokio::sync::OnceCell;
 
+/// The effective config path: `--config` if given, else the platform
+/// default. Shared so every caller that needs to reason about the config
+/// file — not just the ones that build a full `Context` — resolves it the
+/// same way.
+pub fn config_path(global: &GlobalArgs) -> std::path::PathBuf {
+    global.config.clone().unwrap_or_else(Config::default_path)
+}
+
 pub struct Context {
     pub resolved: Resolved,
-    pub transport: Transport,
     pub global: GlobalArgs,
+    transport: OnceCell<Transport>,
     caps: OnceCell<Capabilities>,
 }
 
 impl Context {
+    /// Loads and resolves configuration only — no network types, no
+    /// credential requirement. A command that only needs profile/space
+    /// resolution (e.g. a future `rules validate`, which never contacts a
+    /// server) can use a `Context` without a credential ever needing to
+    /// exist; `transport()`/`capabilities()` are where that requirement
+    /// actually bites.
     pub fn build(global: &GlobalArgs) -> Result<Context> {
-        let path = global.config.clone().unwrap_or_else(Config::default_path);
+        let path = config_path(global);
         let config = Config::load(&path)?;
 
         // Flags beat environment, environment beats the profile.
@@ -27,22 +41,34 @@ impl Context {
         let overrides = flags.merge_over(Overrides::from_env());
 
         let resolved = config.resolve(global.profile.as_deref(), &overrides)?;
-        let transport = Transport::new(&resolved.profile)?;
 
         Ok(Context {
             resolved,
-            transport,
             global: global.clone(),
+            transport: OnceCell::new(),
             caps: OnceCell::new(),
         })
+    }
+
+    /// Built once per run, on first use — the same lazy shape as
+    /// `capabilities()`. This is where a missing credential actually fails
+    /// (via `Transport::new`/`Credential::from_profile`), with a generic
+    /// message. Call `require_credential()` first in any command that needs
+    /// a live connection, so the operator sees its better message — naming
+    /// the profile and the remedy — instead.
+    pub async fn transport(&self) -> Result<&Transport> {
+        self.transport
+            .get_or_try_init(|| async { Transport::new(&self.resolved.profile) })
+            .await
     }
 
     /// Probed once per run, on first use. A command that never needs the
     /// flavor never pays for the round trip.
     pub async fn capabilities(&self) -> Result<&Capabilities> {
+        let transport = self.transport().await?;
         self.caps
             .get_or_try_init(|| async {
-                Capabilities::probe(&self.transport, &self.resolved.profile.kibana_url).await
+                Capabilities::probe(transport, &self.resolved.profile.kibana_url).await
             })
             .await
     }
@@ -50,8 +76,8 @@ impl Context {
     /// Fail early with a clear message when a profile carries no credential.
     ///
     /// Delegates the actual check to `Credential::is_configured` — the same
-    /// test `Transport::new` already applies via `Credential::from_profile` —
-    /// so there is one definition of "has a credential", not two that can
+    /// test `Transport::new` applies via `Credential::from_profile` — so
+    /// there is one definition of "has a credential", not two that can
     /// drift apart.
     pub fn require_credential(&self) -> Result<()> {
         if !Credential::is_configured(&self.resolved.profile) {
@@ -89,20 +115,15 @@ mod tests {
         }
     }
 
-    /// `require_credential` only reads `resolved.profile`, so the `transport`
-    /// field can carry any validly-constructed `Transport` — its own profile
-    /// need not match the one under test.
     fn context_with(profile: Profile) -> Context {
-        let dummy = profile_with(Some("valid-key"), None, None);
-        let transport = Transport::new(&dummy).unwrap();
         Context {
             resolved: Resolved {
                 profile,
                 name: "test".into(),
                 source: Source::Profile,
             },
-            transport,
             global: GlobalArgs::default(),
+            transport: OnceCell::new(),
             caps: OnceCell::new(),
         }
     }
@@ -125,5 +146,34 @@ mod tests {
     fn require_credential_accepts_a_configured_api_key() {
         let ctx = context_with(profile_with(Some("essu_abc"), None, None));
         assert!(ctx.require_credential().is_ok());
+    }
+
+    #[tokio::test]
+    async fn build_succeeds_for_a_profile_with_no_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+current = "nocreds"
+
+[profiles.nocreds]
+kibana_url = "https://kb.example.com"
+space = "default"
+verify = true
+timeout_secs = 30
+"#,
+        )
+        .unwrap();
+
+        let global = GlobalArgs {
+            config: Some(path),
+            ..GlobalArgs::default()
+        };
+        let ctx = Context::build(&global).expect(
+            "Context::build must succeed without a credential — that requirement belongs to \
+             transport()/require_credential(), not to loading and resolving config",
+        );
+        assert!(ctx.require_credential().is_err());
     }
 }

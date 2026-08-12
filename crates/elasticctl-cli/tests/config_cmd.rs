@@ -28,16 +28,12 @@ timeout_secs = 30
 "#,
     )
     .unwrap();
-    // Owner-only, matching what `config init`/`Config::save` produce. Without
-    // this, the file inherits the process umask (typically 0644), which
-    // makes `Config::load` print a permissive-file warning to stderr — and
-    // that stray line breaks any test that parses stderr as a single JSON
-    // error envelope.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    // Deliberately left at whatever the process umask produces (typically
+    // 0644, i.e. permissive): `Config::load` no longer prints anything, and
+    // the CLI's permission warning only fires on a successful command —
+    // these fixtures exercise failure paths, so no stray output reaches
+    // stderr either way. See `tests/permission_warning.rs` for the success
+    // path this used to paper over.
     path
 }
 

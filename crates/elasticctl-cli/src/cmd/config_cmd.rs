@@ -1,16 +1,12 @@
 //! Profile management. `show` and `list` always redact.
 
 use crate::cli::GlobalArgs;
-use crate::context::Context;
+use crate::context::{self, Context};
 use elasticctl_core::{Config, Error, ErrorKind, Overrides, Profile, Result};
 use serde_json::{Value, json};
 
-fn config_path(global: &GlobalArgs) -> std::path::PathBuf {
-    global.config.clone().unwrap_or_else(Config::default_path)
-}
-
 pub fn list(global: &GlobalArgs) -> Result<Value> {
-    let path = config_path(global);
+    let path = context::config_path(global);
     let config = Config::load(&path)?;
     let rows: Vec<Value> = config
         .profiles
@@ -28,7 +24,7 @@ pub fn list(global: &GlobalArgs) -> Result<Value> {
 }
 
 pub fn show(global: &GlobalArgs) -> Result<Value> {
-    let path = config_path(global);
+    let path = context::config_path(global);
     let config = Config::load(&path)?;
     let resolved = config.resolve(global.profile.as_deref(), &Overrides::default())?;
     // Redaction happens here, once, so no caller can forget it.
@@ -37,7 +33,7 @@ pub fn show(global: &GlobalArgs) -> Result<Value> {
 }
 
 pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<Value> {
-    let path = config_path(global);
+    let path = context::config_path(global);
     let mut config = Config::load(&path)?;
     let name = name.unwrap_or("default").to_string();
 

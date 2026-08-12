@@ -7,8 +7,10 @@ mod guard;
 mod render;
 
 use clap::Parser;
-use cli::{Cli, Command, ConfigAction};
+use cli::{Cli, Command, ConfigAction, GlobalArgs};
 use context::Context;
+use elasticctl_core::Config;
+use serde_json::json;
 
 #[tokio::main]
 async fn main() {
@@ -29,13 +31,19 @@ async fn main() {
         },
         // doctor tolerates a failed context build — that is exactly when an
         // operator needs it most — so it takes GlobalArgs and builds its own
-        // context internally rather than failing fast here.
+        // context internally rather than failing fast here. It also folds
+        // the permissive-config-file warning into its own report instead of
+        // the stderr side channel every other command uses below.
         Command::Doctor => cmd::doctor::run(&args.global).await,
         Command::Info => match Context::build(&args.global) {
             Ok(ctx) => cmd::info::run(&ctx).await,
             Err(e) => Err(e),
         },
     };
+
+    if result.is_ok() && !matches!(&args.command, Command::Doctor) {
+        emit_permission_warning(&args.global);
+    }
 
     match result {
         Ok(value) => {
@@ -48,5 +56,19 @@ async fn main() {
             eprintln!("{}", err.to_envelope());
             std::process::exit(render::exit_code_for(&err));
         }
+    }
+}
+
+/// A structured warning on stderr, matching the shape of the error envelope
+/// so stderr stays uniformly JSON-parseable. `Config` only ever returns
+/// data — this is the one place that decides how (and whether) the warning
+/// it reports gets rendered.
+fn emit_permission_warning(global: &GlobalArgs) {
+    let path = context::config_path(global);
+    if let Some(message) = Config::permission_warning(&path) {
+        eprintln!(
+            "{}",
+            json!({"warning": {"kind": "insecure_config_permissions", "message": message}})
+        );
     }
 }

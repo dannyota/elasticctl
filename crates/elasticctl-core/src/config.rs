@@ -155,7 +155,6 @@ impl Config {
         if !path.exists() {
             return Ok(Config::default());
         }
-        Self::warn_if_permissive(path);
         let body = fs::read_to_string(path).map_err(|e| {
             Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
         })?;
@@ -163,25 +162,33 @@ impl Config {
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing {}: {e}", path.display())))
     }
 
+    /// A structured description of the file's insecure permissions, or
+    /// `None` when it is absent or already owner-only.
+    ///
+    /// Returns rather than prints: a core library must not decide whether or
+    /// how a warning reaches the user — that belongs to whichever caller
+    /// controls the output channel (and, for the CLI, whether `--json` is in
+    /// play).
     #[cfg(unix)]
-    fn warn_if_permissive(path: &Path) {
+    pub fn permission_warning(path: &Path) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = fs::metadata(path) {
-            let mode = metadata.permissions().mode();
-            // Check if group or other bits are set (mode & 0o077 != 0)
-            if mode & 0o077 != 0 {
-                eprintln!(
-                    "warning: config file {} is readable by group or other (mode {:o}); should be 0600",
-                    path.display(),
-                    mode & 0o777
-                );
-            }
+        let metadata = fs::metadata(path).ok()?;
+        let mode = metadata.permissions().mode();
+        // Group or other bits set.
+        if mode & 0o077 != 0 {
+            Some(format!(
+                "config file {} is readable by group or other (mode {:o}); should be 0600",
+                path.display(),
+                mode & 0o777
+            ))
+        } else {
+            None
         }
     }
 
     #[cfg(not(unix))]
-    fn warn_if_permissive(_path: &Path) {
-        // No-op on non-unix systems
+    pub fn permission_warning(_path: &Path) -> Option<String> {
+        None
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -550,18 +557,43 @@ mod tests {
     }
 
     #[test]
-    fn load_warns_on_permissive_file() {
+    fn load_succeeds_on_a_permissive_file_and_prints_nothing() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         sample().save(&path).unwrap();
-        // Manually make it permissive (0644)
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        // Load should succeed and warn to stderr
+        // `load` never prints — that decision belongs to the caller, via
+        // `permission_warning` below.
         let cfg = Config::load(&path).unwrap();
         assert!(
             !cfg.profiles.is_empty(),
-            "load must succeed with permissive file"
+            "load must succeed regardless of file permissions"
         );
+    }
+
+    #[test]
+    fn permission_warning_flags_a_group_or_other_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        sample().save(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let warning = Config::permission_warning(&path).expect("0644 must warn");
+        assert!(warning.contains("644"), "{warning}");
+    }
+
+    #[test]
+    fn permission_warning_is_none_for_an_owner_only_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        sample().save(&path).unwrap(); // `Config::save` already enforces 0600.
+        assert!(Config::permission_warning(&path).is_none());
+    }
+
+    #[test]
+    fn permission_warning_is_none_for_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Config::permission_warning(&dir.path().join("absent.toml")).is_none());
     }
 }

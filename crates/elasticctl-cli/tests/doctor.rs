@@ -11,23 +11,14 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Owner-only, matching what `config init`/`Config::save` produce. Without
-/// this, the file inherits the process umask (typically 0644), which makes
-/// `Config::load` print a permissive-file warning to stderr — polluting any
-/// assertion that stderr carries nothing but a JSON error envelope, or
-/// nothing at all.
-fn chmod_owner_only(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
-}
-
+/// Deliberately left at whatever the process umask produces (typically
+/// 0644, i.e. permissive). `doctor` folds a permissive file into its own
+/// `config_permissions` check rather than the stderr side channel other
+/// commands use, so its fixtures need no permission workaround — that is
+/// exactly the case `tests/permission_warning.rs` exercises directly.
 fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     let path = dir.join("config.toml");
     fs::write(&path, body).unwrap();
-    chmod_owner_only(&path);
     path
 }
 
@@ -124,7 +115,20 @@ timeout_secs = 30
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON report on stdout");
     assert_eq!(v["ok"], false);
-    assert_eq!(find_check(&v, "config")["status"], "fail");
+    let config_check = find_check(&v, "config");
+    assert_eq!(config_check["status"], "fail");
+    // Must be `require_credential`'s message, not `Transport::new`'s generic
+    // one — assert on content, not just status, since status alone doesn't
+    // distinguish the two and is how this went unnoticed before.
+    let msg = config_check["message"].as_str().unwrap();
+    assert!(
+        msg.contains("nocreds"),
+        "message must name the profile: {msg}"
+    );
+    assert!(
+        msg.contains("config init"),
+        "message must point at the remedy: {msg}"
+    );
 }
 
 #[test]
