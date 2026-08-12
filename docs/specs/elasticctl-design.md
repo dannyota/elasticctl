@@ -123,7 +123,7 @@ dry-run contract.
 ## 4. Command surface (v0.1)
 
 ```
-elasticctl config init [--profile NAME]      Create or edit a profile
+elasticctl config init --from-env            Create a profile from ELASTICCTL_* vars
 elasticctl config list | show | test         Inspect profiles; secrets always redacted
 elasticctl doctor                            Connectivity, auth, identity, license, flavor
 elasticctl info                              Stack version, flavor, license tier, spaces
