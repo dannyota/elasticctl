@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod context;
+mod guard;
 mod render;
 
 use clap::Parser;

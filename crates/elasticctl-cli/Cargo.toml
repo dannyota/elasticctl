@@ -16,7 +16,7 @@ path = "src/main.rs"
 elasticctl-core.workspace = true
 elasticctl-api.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json.workspace = true
 serde_yaml_ng = "0.10.0"
