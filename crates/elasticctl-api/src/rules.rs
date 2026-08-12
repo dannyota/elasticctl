@@ -5,6 +5,7 @@
 
 use crate::codec;
 use crate::model::{ExportSummary, Rule};
+use crate::normalize;
 use elasticctl_core::{Result, Transport};
 use serde_json::{Value, json};
 
@@ -31,13 +32,19 @@ impl RuleFilter {
             parts.push(format!("alert.attributes.enabled: {v}"));
         }
         if let Some(v) = &self.rule_type {
-            parts.push(format!("alert.attributes.params.type: \"{v}\""));
+            parts.push(format!(
+                "alert.attributes.params.type: \"{}\"",
+                kql_escape(v)
+            ));
         }
         if let Some(v) = &self.severity {
-            parts.push(format!("alert.attributes.params.severity: \"{v}\""));
+            parts.push(format!(
+                "alert.attributes.params.severity: \"{}\"",
+                kql_escape(v)
+            ));
         }
         if let Some(v) = &self.tag {
-            parts.push(format!("alert.attributes.tags: \"{v}\""));
+            parts.push(format!("alert.attributes.tags: \"{}\"", kql_escape(v)));
         }
         if let Some(v) = &self.query {
             parts.push(v.clone());
@@ -46,11 +53,21 @@ impl RuleFilter {
     }
 }
 
+/// Escape a value for use inside a double-quoted KQL literal.
+///
+/// Without this, a value containing a quote closes the literal early and the
+/// rest is parsed as KQL — turning a scoped bulk action into an unscoped one.
+/// Backslash must be escaped first, or it would double-escape the quotes added
+/// after it.
+fn kql_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// KQL selecting exactly the given stable rule ids.
 fn rule_id_query(rule_ids: &[String]) -> String {
     rule_ids
         .iter()
-        .map(|id| format!("alert.attributes.params.ruleId: \"{id}\""))
+        .map(|id| format!("alert.attributes.params.ruleId: \"{}\"", kql_escape(id)))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -105,15 +122,21 @@ pub async fn get(t: &Transport, rule_id: &str) -> Result<Rule> {
 }
 
 pub async fn create(t: &Transport, rule: &Rule) -> Result<Rule> {
-    let body = t
-        .post(BASE, Some(&Value::Object(rule.as_map().clone())))
+    let mut payload = rule.clone();
+    normalize::strip_volatile(&mut payload);
+    let response = t
+        .post(BASE, Some(&Value::Object(payload.as_map().clone())))
         .await?;
-    Rule::from_value(body)
+    Rule::from_value(response)
 }
 
 pub async fn update(t: &Transport, rule: &Rule) -> Result<Rule> {
-    let body = t.put(BASE, &Value::Object(rule.as_map().clone())).await?;
-    Rule::from_value(body)
+    let mut payload = rule.clone();
+    normalize::strip_volatile(&mut payload);
+    let response = t
+        .put(BASE, &Value::Object(payload.as_map().clone()))
+        .await?;
+    Rule::from_value(response)
 }
 
 pub async fn patch(t: &Transport, rule_id: &str, patch: &Value) -> Result<Rule> {
@@ -209,4 +232,86 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kql_escape_doubles_a_lone_backslash() {
+        assert_eq!(kql_escape("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn kql_escape_escapes_a_lone_quote() {
+        let mut expected = String::from("a");
+        expected.push('\\');
+        expected.push('"');
+        expected.push('b');
+        assert_eq!(kql_escape("a\"b"), expected);
+    }
+
+    /// A literal backslash immediately followed by a quote is the case that
+    /// distinguishes escape order: escaping quotes before backslashes would
+    /// double the backslash the quote-escape just inserted, corrupting the
+    /// result.
+    #[test]
+    fn kql_escape_orders_backslash_before_quote() {
+        let mut input = String::new();
+        input.push('\\');
+        input.push('"');
+
+        let escaped = kql_escape(&input);
+
+        // Correct order: the lone backslash is doubled first, then the quote
+        // is escaped, giving three backslashes followed by a quote.
+        let mut expected = "\\".repeat(3);
+        expected.push('"');
+        assert_eq!(escaped, expected);
+    }
+
+    #[test]
+    fn rule_id_query_escapes_a_quote_in_the_id() {
+        let mut id = String::from("x");
+        id.push('"');
+        id.push('y');
+
+        let q = rule_id_query(&[id]);
+
+        let mut expected = String::from("alert.attributes.params.ruleId: \"x");
+        expected.push('\\');
+        expected.push('"');
+        expected.push_str("y\"");
+        assert_eq!(q, expected);
+        assert!(
+            !q.contains(" OR "),
+            "a single id must produce exactly one clause: {q}"
+        );
+    }
+
+    #[test]
+    fn rule_id_query_neutralizes_a_kql_injection_payload() {
+        let payload = "x\" or alert.attributes.enabled: true or \"";
+        let q = rule_id_query(&[payload.to_string()]);
+        assert!(
+            !q.contains("\" or alert.attributes.enabled: true or \""),
+            "the injected quote must not close the literal: {q}"
+        );
+    }
+
+    #[test]
+    fn to_kql_escapes_a_quote_in_the_tag() {
+        let f = RuleFilter {
+            tag: Some("a\"b".into()),
+            ..Default::default()
+        };
+        let kql = f.to_kql().unwrap();
+
+        let mut expected = String::from("alert.attributes.tags: \"a");
+        expected.push('\\');
+        expected.push('"');
+        expected.push_str("b\"");
+        assert_eq!(kql, expected);
+    }
 }

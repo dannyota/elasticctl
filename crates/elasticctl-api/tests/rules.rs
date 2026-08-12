@@ -1,3 +1,4 @@
+use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter};
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
@@ -97,6 +98,7 @@ async fn find_all_stops_on_an_empty_page_rather_than_looping() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "page": 1, "perPage": 20, "total": 999, "data": []
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -120,6 +122,90 @@ async fn get_queries_by_rule_id_not_by_server_id() {
 
     let r = rules::get(&transport(&server), "abc").await.unwrap();
     assert_eq!(r.rule_id().unwrap(), "abc");
+}
+
+/// A rule as it comes back from the API: carries the volatile fields a
+/// create/update body must never forward.
+fn rule_with_volatile_fields(id: &str) -> Rule {
+    Rule::from_value(json!({
+        "rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21,
+        "id": "server-side-id", "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "someone", "updated_at": "2026-01-01T00:00:00.000Z",
+        "updated_by": "someone", "revision": 3, "version": 4
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn create_posts_to_the_rules_endpoint_and_returns_the_parsed_rule() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("a")))
+        .mount(&server)
+        .await;
+
+    let rule = Rule::from_value(rule_json("a")).unwrap();
+    let r = rules::create(&transport(&server), &rule).await.unwrap();
+    assert_eq!(r.rule_id().unwrap(), "a");
+}
+
+#[tokio::test]
+async fn create_strips_volatile_fields_from_the_request_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("a")))
+        .mount(&server)
+        .await;
+
+    rules::create(&transport(&server), &rule_with_volatile_fields("a"))
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    assert!(body.get("id").is_none(), "volatile id must not be sent");
+    assert!(body.get("created_at").is_none());
+    assert!(body.get("updated_by").is_none());
+    assert_eq!(body["rule_id"], "a", "the stable identity must survive");
+}
+
+#[tokio::test]
+async fn update_puts_to_the_rules_endpoint_and_returns_the_parsed_rule() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("a")))
+        .mount(&server)
+        .await;
+
+    let rule = Rule::from_value(rule_json("a")).unwrap();
+    let r = rules::update(&transport(&server), &rule).await.unwrap();
+    assert_eq!(r.rule_id().unwrap(), "a");
+}
+
+#[tokio::test]
+async fn update_strips_volatile_fields_from_the_request_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("a")))
+        .mount(&server)
+        .await;
+
+    rules::update(&transport(&server), &rule_with_volatile_fields("a"))
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    assert!(body.get("id").is_none(), "volatile id must not be sent");
+    assert!(body.get("created_at").is_none());
+    assert!(body.get("updated_by").is_none());
+    assert_eq!(body["rule_id"], "a", "the stable identity must survive");
 }
 
 #[tokio::test]
@@ -161,6 +247,23 @@ async fn bulk_targets_rule_ids_through_the_query_form() {
         .unwrap();
     assert_eq!(out.succeeded, 2);
     assert_eq!(out.total, 2);
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    let query = body["query"].as_str().unwrap();
+    assert!(
+        query.contains("alert.attributes.params.ruleId"),
+        "must target the stable rule_id through the query form: {query}"
+    );
+    assert!(
+        query.contains("\"a\"") && query.contains("\"b\""),
+        "both ids must appear in the query: {query}"
+    );
+    assert!(
+        body.get("ids").is_none(),
+        "must not target the volatile server-side ids"
+    );
 }
 
 #[tokio::test]
