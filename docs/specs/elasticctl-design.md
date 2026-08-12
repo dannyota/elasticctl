@@ -11,7 +11,7 @@ structured output, and a stable error taxonomy. An MCP server is planned once
 the CLI surface is stable; the architecture below exists to make that addition
 additive rather than a rewrite.
 
-## Scope
+## 1. Scope
 
 v0.1 delivers a foundation layer plus one vertical: **detection rules as
 code**.
@@ -20,7 +20,7 @@ Out of scope for v0.1, additive later: exceptions, prebuilt rule management,
 alert triage, cases, Fleet and agent policies, ad-hoc search, and the MCP
 server.
 
-## Decisions
+## 2. Decisions
 
 | Decision | Choice | Reason |
 |---|---|---|
@@ -33,7 +33,7 @@ server.
 | Testing | Recorded fixtures plus opt-in live suite | Fixtures encode what Elastic actually sent, not what we assumed |
 | Primary dev target | Serverless project | Nothing needs to run locally; the local lab becomes an occasional recording session |
 
-### Why not the alternatives
+### 2.1 Why not the alternatives
 
 **Trait-per-flavor** (`SelfManaged` / `Ech` / `Serverless` behind a trait) was
 rejected. The flavors barely diverge on the detection-rules API, so it would
@@ -47,7 +47,7 @@ that leak is precisely what makes adding MCP expensive later.
 considered and set aside in favour of NDJSON for round-trip fidelity, with
 YAML covering human review.
 
-## Architecture
+## 3. Architecture
 
 The rule that decides the structure: **command functions return typed values;
 a separate render layer turns them into text.** splunkctl can generate MCP
@@ -73,7 +73,7 @@ elasticctl/
 Dependency direction is strictly one way: `cli` → `api` → `core`. A future
 `elasticctl-mcp` depends on `api` and `core`, never on `cli`.
 
-### elasticctl-core
+### 3.1 elasticctl-core
 
 Knows nothing about detection rules.
 
@@ -95,7 +95,7 @@ Knows nothing about detection rules.
 - **`errors`** — `thiserror` enums classified at one point into the taxonomy
   below.
 
-### elasticctl-api
+### 3.2 elasticctl-api
 
 - **`model::Rule`** — canonical representation covering query, eql, esql,
   threshold, threat_match, machine_learning, and new_terms rule types.
@@ -114,13 +114,13 @@ Knows nothing about detection rules.
   returns. Later verticals (exceptions, cases, fleet) add sibling modules
   without touching this one.
 
-### elasticctl-cli
+### 3.3 elasticctl-cli
 
 `clap` v4 derive. Command functions call `api` and return typed values;
 `render` produces table, json, yaml, csv, or jsonl. `guard` implements the
 dry-run contract.
 
-## Command surface (v0.1)
+## 4. Command surface (v0.1)
 
 ```
 elasticctl config init [--profile NAME]      Create or edit a profile
@@ -146,7 +146,7 @@ elasticctl completion bash|zsh|fish
 elasticctl commands                          Machine-readable command tree
 ```
 
-### Rule identity
+### 4.1 Rule identity
 
 Engineers think in names; the API has `rule_id` (a stable UUID) and `id` (a
 volatile saved-object id). Commands accept either a name or a `rule_id`. Names
@@ -154,13 +154,13 @@ resolve through `_find`; a non-unique name returns a typed `conflict` error
 listing the candidates rather than silently picking the first match. State
 matching is **always** by `rule_id` — never by name, never by `id`.
 
-### Global flags
+### 4.2 Global flags
 
 Accepted before or after the subcommand: `--profile`, `--config`, `--space`,
 `--json`, `--format`, `--fields`, `--out`, `--yes`/`-y`, `--timeout`,
 `--debug`.
 
-## State engine
+## 5. State engine
 
 - **`pull`** — page through `_find`, map to `Rule`, normalize, write the tree
   in the requested format.
@@ -174,9 +174,9 @@ Accepted before or after the subcommand: `--profile`, `--config`, `--space`,
 `push` **never deletes remote rules.** A rule missing locally is not a delete
 instruction. Deletion is always the explicit `rules delete`.
 
-## Contracts
+## 6. Contracts
 
-### Safety
+### 6.1 Safety
 
 Every mutation previews before it applies.
 
@@ -191,7 +191,7 @@ The banner names the profile, host, and space on both the preview and the
 apply, so neither a human nor an agent can mistake which instance is about to
 change.
 
-### Output and errors
+### 6.2 Output and errors
 
 Table output by default, `--json` explicit — matching splunkctl rather than
 detecting a TTY, so a command behaves identically in a terminal and in a
@@ -208,7 +208,7 @@ Kinds: `auth`, `permission`, `not_found`, `conflict`, `unsupported`, `http`,
 
 Exit codes: `0` success, `1` error, `2` usage.
 
-## Verified API facts
+## 7. Verified API facts
 
 Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 (aws, ap-southeast-1) on 2026-08-13. Elasticsearch and Kibana both 9.6.0,
@@ -226,7 +226,7 @@ Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 | Export trailer | With zero rules, `POST /api/detection_engine/rules/_export` returns *only* the summary object |
 | Prebuilt rules | The internal route `/internal/detection_engine/prebuilt_rules/status` returns 400 `"exists but is not available with the current configuration"`. Use the public API |
 
-### Two error body shapes
+### 7.1 Two error body shapes
 
 The Elastic Cloud edge proxy and Kibana return different error envelopes. The
 classifier must parse both, or an edge failure gets misreported as a Kibana
@@ -240,7 +240,7 @@ kibana:      {"statusCode":400,"error":"Bad Request","message":"..."}
 The edge proxy shape also appears for a hostname that no longer resolves to a
 live project, which is a realistic failure mode after a project rename.
 
-## Testing
+## 8. Testing
 
 | Tier | Runs | Covers |
 |---|---|---|
@@ -255,7 +255,7 @@ records the flavor and stack version it came from so drift is visible.
 CI runs unit and fixture tiers on every push; the live tier runs on a schedule
 and before releases.
 
-## Local lab
+## 9. Local lab
 
 Serverless is the primary development target, so nothing needs to run locally
 day to day. The `lab/` podman stack exists for one purpose: recording
@@ -283,14 +283,14 @@ Lab certificates are self-signed, so profiles carry a `verify` field. Setting
 `verify = false` prints a warning on every request, so it cannot quietly become
 the production habit.
 
-## Distribution
+## 10. Distribution
 
 `cargo-dist` producing GitHub Releases for Linux gnu and musl (x86_64,
 aarch64), macOS (x86_64, aarch64), and Windows x86_64, plus
 `cargo install elasticctl`. Static musl matters for locked-down Linux laptops;
 macOS aarch64 is the likely common case. A Homebrew tap when there is demand.
 
-## Credentials in this repository
+## 11. Credentials in this repository
 
 Development credentials live in `.env`, which is gitignored and mode `0600`.
 `.env.example` is committed and contains placeholders only. The Elastic key in
@@ -298,7 +298,7 @@ use is a **project-scoped** serverless key: it authenticates API calls but
 cannot create, list, or resize projects. Managing projects would need an
 organization API key (`essa_` prefix) against `api.elastic-cloud.com`.
 
-## Risks
+## 12. Risks
 
 **Serverless-first bias.** Serverless is the most divergent of the three
 flavors — no licence tiers (features gate on project tier instead), different
