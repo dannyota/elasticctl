@@ -5,7 +5,7 @@ use crate::error::{Error, ErrorKind, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Credential {
     /// An Elastic API key. Already base64 of `id:key`, so it is sent verbatim.
     ApiKey(String),
@@ -13,6 +13,23 @@ pub enum Credential {
         username: String,
         password: String,
     },
+}
+
+impl std::fmt::Debug for Credential {
+    /// Never prints key or password material — this type exists to carry a
+    /// live credential, and a derived Debug would leak it into any log or
+    /// panic message.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::ApiKey(_) => f.write_str("Credential::ApiKey(***)"),
+            Credential::Basic { username, .. } => {
+                write!(
+                    f,
+                    "Credential::Basic {{ username: {username:?}, password: *** }}"
+                )
+            }
+        }
+    }
 }
 
 impl Credential {
@@ -108,5 +125,25 @@ mod tests {
             Credential::from_profile(&p).unwrap_err().kind,
             ErrorKind::Auth
         );
+    }
+
+    #[test]
+    fn debug_redacts_api_key_material() {
+        let c = Credential::ApiKey("essu_secret".into());
+        let debug_str = format!("{:?}", c);
+        assert!(!debug_str.contains("essu_secret"));
+        assert!(debug_str.contains("***"));
+    }
+
+    #[test]
+    fn debug_redacts_password_but_shows_username() {
+        let c = Credential::Basic {
+            username: "elastic".into(),
+            password: "changeme".into(),
+        };
+        let debug_str = format!("{:?}", c);
+        assert!(!debug_str.contains("changeme"));
+        assert!(debug_str.contains("elastic"));
+        assert!(debug_str.contains("***"));
     }
 }
