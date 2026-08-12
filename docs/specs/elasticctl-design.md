@@ -294,6 +294,18 @@ Consequences:
 - `doctor` must detect this and say so plainly. A user whose key cannot enable
   rules should learn it from `doctor`, not from a 400 in the middle of a push.
 
+**Resolved.** A project-scoped key created inside Kibana authenticates through
+realm `_es_api_key` rather than `_cloud_api_key`, and every mutation path then
+works. Verified end to end: create a disabled rule, `PATCH` it to
+`enabled: true` keyed on `rule_id` (200, `enabled: true`), disable it through
+`_bulk_action` (`succeeded: 1`, `enabled: false`), delete it.
+
+The realm is therefore the signal `doctor` should read: `_cloud_api_key` means
+rule mutation will fail, `_es_api_key` means it will work. That is a cheaper
+and clearer check than attempting a mutation and classifying the 400.
+
+Enabling a rule does not bump `revision` — it stayed 0 across the enable.
+
 ### 7.3 Targeting rules by rule_id in bulk actions
 
 `_bulk_action` accepts `ids`, which are the volatile server-side saved-object
