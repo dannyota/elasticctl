@@ -46,9 +46,25 @@ fn write_local(state: &std::path::Path, id: &str, risk: i64) {
 /// A stack whose `_find` answers any filter with the same rules. Good enough
 /// for the cases that care about *what the CLI asked for* rather than about
 /// server-side filtering, which is Elastic's job and is covered by fixtures.
+///
+/// The single-rule `GET ...?rule_id=` endpoint is mounted too. Without it a
+/// rule_id selector 404s and silently falls through to the name lookup, which
+/// makes a test that means to exercise id resolution exercise name resolution
+/// instead — and pass or fail for the wrong reason.
 async fn server_with(rules: Vec<Value>) -> MockServer {
     let server = MockServer::start().await;
     let total = rules.len();
+
+    for rule in &rules {
+        let id = rule["rule_id"].as_str().unwrap().to_string();
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules"))
+            .and(query_param("rule_id", id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rule.clone()))
+            .mount(&server)
+            .await;
+    }
+
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -237,14 +253,44 @@ async fn a_selector_matching_nothing_is_refused() {
     );
 }
 
-/// Scoping `pull` writes only the selected rules and leaves the rest of the
-/// directory alone.
+/// `pull` reads from the stack and has no local side, so both halves of remote
+/// resolution have to be covered here — the `diff` and `push` tests select
+/// rule_ids that match locally and short-circuit before any request is sent.
 ///
-/// Selected by display name on purpose: `pull` has no local side, so its
-/// selectors resolve against the stack, and the name path is the half of that
-/// resolution a rule_id selector never reaches.
+/// A rule_id selector must resolve through the single-rule endpoint.
 #[tokio::test]
-async fn a_scoped_pull_writes_only_the_selected_rule() {
+async fn a_scoped_pull_resolves_a_rule_id_against_the_stack() {
+    let server = server_with(vec![remote_rule("a", 21)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    let out = run(&[
+        "state".as_ref(),
+        "pull".as_ref(),
+        "--config".as_ref(),
+        cfg.as_os_str(),
+        "--dir".as_ref(),
+        state.as_os_str(),
+        "--json".as_ref(),
+        "a".as_ref(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(state.join("rules").join("a.ndjson").exists());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["pulled"], 1);
+    assert_eq!(v["selected"], 1);
+}
+
+/// And a display name must resolve through the name lookup, which is the half
+/// a rule_id selector never reaches.
+#[tokio::test]
+async fn a_scoped_pull_resolves_a_display_name_against_the_stack() {
     let server = server_with(vec![remote_rule("a", 21)]).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
