@@ -1,3 +1,10 @@
+<!--
+Maintainer notes: keep under 200 lines — this file loads every session. Only
+rules that are easy to violate; nothing derivable from code or spec. When a
+rule's owner changes (spec section, README runbook), re-sync its copy here in
+the same change.
+-->
+
 # elasticctl
 
 Rust CLI for operating Elastic Security detection rules as code, across
@@ -6,22 +13,43 @@ self-managed, Elastic Cloud Hosted, and Serverless deployments. Sibling to
 operating contracts.
 
 **Read `docs/specs/elasticctl-design.md` before changing anything.** It is the
-source of truth for scope, architecture, and verified API behaviour. This file
-holds only the rules that are easy to violate.
+source of truth for scope, architecture, and verified API behaviour. When code
+and spec disagree, the spec wins, and the fix lands in the spec first — never
+silently improve. Docs are the contract: a change that alters behaviour
+updates the spec in the same commit, and a change that closes a backlog item
+removes it from `docs/plans/v0.1.1-backlog.md`. Precedence when guidance
+conflicts: the user's current instruction, then the spec, then this file.
+
+| Task | Read first |
+| --- | --- |
+| Any behaviour change | `docs/specs/elasticctl-design.md` |
+| What to work on next | `docs/plans/v0.1.1-backlog.md` |
+| Releasing | `README.md` "Releasing" |
+| Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
 
 ## Development workflow
 
-Design and review run on the strongest model tier (Fable or Opus); the design
-must be strong enough to hand off — exact files, interfaces, and test cases
-per task. Implementation runs on Sonnet; pure transcription and single-file
-mechanical fixes on Haiku. Set the model explicitly on every agent dispatch —
-an omitted model silently inherits the session's tier.
+Design first: the brief is the product of the design. Design and review run
+on the strongest model tier (Fable or Opus); implementation runs on Sonnet;
+pure transcription and single-file mechanical fixes on Haiku. A well-split
+task never needs a stronger model — if a task seems to, the split is wrong,
+not the tier. When unsure, dispatch Sonnet and escalate on its report. Set
+the model explicitly on every agent dispatch — an omitted model silently
+inherits the session's tier.
+
+Fable and Opus agents decide, split, and review; they never implement. Every
+dispatch to one states this restriction in the brief itself — never left to
+inference.
 
 Parallelism is earned by the design, not the deadline: when the plan pins
 each task's files and interfaces, tasks that share no files can run as
-parallel implementers. Tasks touching the same file run sequentially, and
-every task is reviewed before the next builds on it. `docs/plans/` holds the
-plans; `docs/plans/v0.1.1-backlog.md` is the current improvement queue.
+parallel implementers. Agents own named files, never directories — a slice
+needing a test alongside another's creates a new file rather than editing a
+shared one. One directive, one agent: never fold new work into a running
+agent just because it owns the files. Every task is reviewed before the next
+builds on it, and proof scales with the cost of being wrong: mutation paths
+and credential handling get adversarial review; ordinary code gets its tests
+and the gates.
 
 ## Architecture rules
 
@@ -164,3 +192,9 @@ publish crate-by-crate — a sequence that fails partway strands crates on
 crates.io, where versions cannot be deleted, only yanked. cargo-dist installs
 as `dist`; `cargo dist` does not resolve. `dist build --artifacts=host` builds
 the host target only.
+
+## Git
+
+`CLAUDE.md` is tracked by the owner's decision, carried by the one existing
+`.gitignore` negation. Never force-add, track, or add negations for any other
+globally ignored file, and never extend that one.
