@@ -99,9 +99,11 @@ mod tests {
     #[test]
     fn a_conflict_still_names_every_candidate_when_one_rule_id_is_unreadable() {
         let readable = rule("a", "Same");
-        // Constructible because `Rule::from_value` only checks that rule_id
-        // is present, not that it is a string.
-        let unreadable = Rule::from_value(json!({"rule_id": 123, "name": "Same"})).unwrap();
+        // `Rule::from_value` refuses a non-string rule_id; the derived
+        // transparent `Deserialize` does not, which is why `pick_by_name`
+        // still has to cope with one.
+        let unreadable: Rule =
+            serde_json::from_value(json!({"rule_id": 123, "name": "Same"})).unwrap();
         let found = vec![readable, unreadable];
 
         let err = pick_by_name(&found, "Same").unwrap_err();

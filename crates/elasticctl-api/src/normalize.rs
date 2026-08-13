@@ -245,7 +245,9 @@ mod tests {
 
     #[test]
     fn sort_rules_puts_unreadable_rule_id_last_without_panicking() {
-        let bad = Rule::from_value(json!({"rule_id": 123})).unwrap();
+        // Constructible only through the transparent `Deserialize`;
+        // `from_value` refuses a non-string rule_id.
+        let bad: Rule = serde_json::from_value(json!({"rule_id": 123})).unwrap();
         let good_c = Rule::from_value(json!({"rule_id": "c"})).unwrap();
         let good_a = Rule::from_value(json!({"rule_id": "a"})).unwrap();
         let mut rules = vec![good_c, bad, good_a];

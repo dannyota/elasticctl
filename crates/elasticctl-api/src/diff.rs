@@ -281,7 +281,10 @@ mod tests {
     #[test]
     fn a_local_rule_with_non_string_rule_id_produces_an_error() {
         let err = Drift::compute(
-            &[Rule::from_value(json!({
+            // `from_value` refuses this; the transparent `Deserialize` does
+            // not. That is exactly the gap `Drift::compute` still defends,
+            // so it is how the gap is reproduced.
+            &[serde_json::from_value::<Rule>(json!({
                 "rule_id": 123, "name": "X", "type": "query", "risk_score": 21,
                 "severity": "low"
             }))
@@ -300,7 +303,10 @@ mod tests {
     fn a_remote_rule_with_non_string_rule_id_produces_an_error() {
         let err = Drift::compute(
             &[],
-            &[Rule::from_value(json!({
+            // `from_value` refuses this; the transparent `Deserialize` does
+            // not. That is exactly the gap `Drift::compute` still defends,
+            // so it is how the gap is reproduced.
+            &[serde_json::from_value::<Rule>(json!({
                 "rule_id": 123, "name": "X", "type": "query", "risk_score": 21,
                 "severity": "low"
             }))
