@@ -88,7 +88,8 @@ elasticctl rules list
 elasticctl rules get <rule_id-or-name>
 elasticctl rules validate --path rule.yaml
 elasticctl rules enable <rule_id> --yes
-elasticctl rules export --format-file ndjson --out rules.ndjson
+elasticctl rules export --tag my-corpus --out rules.ndjson
+elasticctl rules preview my-rule-id --sample 3
 ```
 
 ## Command surface
@@ -99,7 +100,7 @@ elasticctl doctor
 elasticctl info
 
 elasticctl rules list | get | validate | enable | disable | delete
-elasticctl rules export | import | preview
+elasticctl rules export [<selector>...] [--tag TAG] | import [--skip-existing] | preview [--sample N]
 
 elasticctl state pull | diff | push
 

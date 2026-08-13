@@ -19,7 +19,7 @@ fn version_flag_prints_the_workspace_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("0.1.0"));
+        .stdout(predicates::str::contains("0.1.1"));
 }
 
 #[test]
