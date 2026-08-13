@@ -2,11 +2,11 @@ use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter};
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, method, path, query_param};
+use wiremock::matchers::{body_partial_json, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn transport(server: &MockServer) -> Transport {
-    Transport::new(&Profile {
+fn profile_for(server: &MockServer) -> Profile {
+    Profile {
         kibana_url: server.uri(),
         es_url: None,
         api_key: Some("essu_test".into()),
@@ -15,8 +15,11 @@ fn transport(server: &MockServer) -> Transport {
         space: "default".into(),
         verify: true,
         timeout_secs: 5,
-    })
-    .unwrap()
+    }
+}
+
+fn transport(server: &MockServer) -> Transport {
+    Transport::new(&profile_for(server)).unwrap()
 }
 
 fn rule_json(id: &str) -> serde_json::Value {
@@ -422,4 +425,85 @@ async fn a_404_from_get_is_a_not_found_error() {
         .await
         .unwrap_err();
     assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+}
+
+/// The recorded exchange, replayed. A hand-written mock would encode what we
+/// assumed the preview alerts index returns; this encodes what it sent.
+#[tokio::test]
+async fn preview_hits_parses_the_recorded_response() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/serverless-9.6.0/rules_preview_hits.json"
+        ))
+        .expect("rules_preview_hits fixture"),
+    )
+    .expect("fixture is JSON");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/\.preview\.alerts-security\.alerts-default/_search$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture["response"].clone()))
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    let hits = rules::preview_hits(&t, "default", "pv-1", 3).await.unwrap();
+    assert!(hits.total >= 1, "the recorded response carries hits");
+    assert!(!hits.sample.is_empty(), "a sample must carry the documents");
+    assert!(
+        hits.sample[0].get("_source").is_some(),
+        "a sample entry is the alert document, not a summary of it: {:?}",
+        hits.sample[0]
+    );
+}
+
+#[tokio::test]
+async fn preview_hits_queries_the_space_scoped_preview_index_by_preview_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.preview.alerts-security.alerts-soc/_search"))
+        .and(body_partial_json(json!({
+            "size": 0,
+            "track_total_hits": true,
+            "query": {"term": {"kibana.alert.rule.uuid": "pv-9"}}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 302, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    let hits = rules::preview_hits(&t, "soc", "pv-9", 0).await.unwrap();
+    assert_eq!(hits.total, 302);
+    assert!(hits.sample.is_empty(), "size 0 asks for no documents");
+}
+
+#[tokio::test]
+async fn preview_hits_treats_an_empty_space_as_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.preview.alerts-security.alerts-default/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 0}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    assert_eq!(
+        rules::preview_hits(&t, "", "pv-1", 0).await.unwrap().total,
+        0
+    );
 }

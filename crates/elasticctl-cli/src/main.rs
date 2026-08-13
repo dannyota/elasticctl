@@ -122,8 +122,9 @@ async fn main() {
             RulesAction::Preview {
                 source,
                 invocations,
+                sample,
             } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::rules::preview(&ctx, source, *invocations).await,
+                Ok(ctx) => cmd::rules::preview(&ctx, source, *invocations, *sample).await,
                 Err(e) => Err(e),
             },
         },

@@ -186,6 +186,9 @@ pub enum RulesAction {
         /// Number of simulated rule executions
         #[arg(long, default_value = "1")]
         invocations: u32,
+        /// Return up to N matched documents alongside the count
+        #[arg(long, default_value = "0")]
+        sample: u32,
     },
 }
 

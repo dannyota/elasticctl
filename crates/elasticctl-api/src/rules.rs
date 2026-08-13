@@ -283,6 +283,67 @@ pub async fn preview(
     })
 }
 
+/// Where a preview's alerts land. Kibana names the alias per space.
+///
+/// Recorded in `tests/fixtures/*/rules_preview_hits.json`, which also records
+/// the field the search filters on — a response alone cannot distinguish an
+/// empty result from a wrong field name.
+pub const PREVIEW_ALERTS_INDEX_PREFIX: &str = ".preview.alerts-security.alerts-";
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PreviewHits {
+    pub total: u64,
+    /// One entry per returned document: `{"_id": ..., "_source": {...}}`.
+    /// The alert document verbatim, because what the engineer wants to see is
+    /// the event that matched, not a projection someone guessed at.
+    pub sample: Vec<Value>,
+}
+
+/// Read back what a preview matched.
+///
+/// `rules/preview` returns a `previewId` and no hit count — four hits and zero
+/// hits are byte-identical responses — so the alerts it wrote are searched
+/// directly. `ignore_unavailable=true` turns "no preview has ever run in this
+/// space" into an empty result rather than a 404, which is a correct answer to
+/// "how many hits", not an error.
+pub async fn preview_hits(
+    t: &Transport,
+    space: &str,
+    preview_id: &str,
+    sample: usize,
+) -> Result<PreviewHits> {
+    let space = if space.is_empty() { "default" } else { space };
+    let index = urlencode(&format!("{PREVIEW_ALERTS_INDEX_PREFIX}{space}"));
+    let body = json!({
+        "size": sample,
+        // Exact, not the 10,000 default cap: the count is the whole point.
+        "track_total_hits": true,
+        "query": {"term": {"kibana.alert.rule.uuid": preview_id}},
+        "sort": [{"@timestamp": {"order": "desc"}}]
+    });
+
+    let response = t
+        .post_absolute_es(&format!("/{index}/_search?ignore_unavailable=true"), &body)
+        .await?;
+
+    let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
+    let sample = response["hits"]["hits"]
+        .as_array()
+        .map(|hits| {
+            hits.iter()
+                .map(|h| {
+                    json!({
+                        "_id": h.get("_id").cloned().unwrap_or(Value::Null),
+                        "_source": h.get("_source").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(PreviewHits { total, sample })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

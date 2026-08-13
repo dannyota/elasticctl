@@ -303,15 +303,48 @@ pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value
     }))
 }
 
+/// A sample larger than this is refused. The command exists to answer "did it
+/// match"; dumping a thousand alert documents answers something else, slowly.
+const MAX_SAMPLE: u32 = 100;
+
+/// One extra attempt, and only when the first sees nothing.
+///
+/// Every simulated invocation has completed by the time the preview responds —
+/// each has its own `logs` entry — so there is nothing to poll. What remains
+/// is Elasticsearch's one-second default refresh interval: alerts written
+/// microseconds ago can legitimately be invisible to the first search.
+/// Retrying only on a zero means a rule that matched pays nothing, and a rule
+/// that really matched nothing pays one second rather than reporting a false
+/// zero.
+async fn fetch_hits(
+    transport: &elasticctl_core::Transport,
+    space: &str,
+    preview_id: &str,
+    sample: usize,
+) -> Result<api::PreviewHits> {
+    let first = api::preview_hits(transport, space, preview_id, sample).await?;
+    if first.total > 0 {
+        return Ok(first);
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    api::preview_hits(transport, space, preview_id, sample).await
+}
+
 /// Preview a rule. The selector is a file path when one exists on disk,
 /// otherwise a rule_id or name on the stack — previewing an unpushed local
 /// rule is the main reason this command exists.
-pub async fn preview(ctx: &Context, source: &str, invocations: u32) -> Result<Value> {
+pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32) -> Result<Value> {
     // Previewing always ends in a POST to the server, whether the rule body
     // comes from disk or from the stack, so check the credential up front —
     // the same shape `get`/`list`/`export` use to fail with a message naming
     // the profile, instead of the generic one `transport()` would give.
     ctx.require_credential()?;
+    if sample > MAX_SAMPLE {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!("--sample must be {MAX_SAMPLE} or fewer, got {sample}"),
+        ));
+    }
     let path = Path::new(source);
 
     let rule = if path.exists() {
@@ -339,12 +372,33 @@ pub async fn preview(ctx: &Context, source: &str, invocations: u32) -> Result<Va
     let timeframe_end = now_rfc3339();
     let result = api::preview(transport, &rule, invocations, &timeframe_end).await?;
 
+    // A failed read degrades: `hits` becomes null and `hits_error` says why,
+    // while the preview's own id, errors, and warnings are reported as before.
+    // Preview is a diagnostic — losing the count must not lose the run.
+    let (hits, hits_error, sample_hits) = match &result.preview_id {
+        None => (
+            Value::Null,
+            json!("the server returned no preview_id"),
+            Vec::new(),
+        ),
+        Some(preview_id) => {
+            let space = ctx.resolved.profile.space.clone();
+            match fetch_hits(transport, &space, preview_id, sample as usize).await {
+                Ok(h) => (json!(h.total), Value::Null, h.sample),
+                Err(e) => (Value::Null, json!(e.message), Vec::new()),
+            }
+        }
+    };
+
     Ok(json!({
         "rule": rule.name(),
         "preview_id": result.preview_id,
         "invocations": invocations,
+        "hits": hits,
         "errors": result.errors,
         "warnings": result.warnings,
+        "hits_error": hits_error,
+        "sample": sample_hits,
     }))
 }
 
