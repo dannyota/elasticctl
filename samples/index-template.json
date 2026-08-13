@@ -1,0 +1,56 @@
+{
+  "index_patterns": ["logs-elasticctl.sample-*"],
+  "data_stream": {},
+  "priority": 500,
+  "template": {
+    "settings": {
+      "analysis": {
+        "normalizer": {
+          "lowercase_normalizer": {
+            "type": "custom",
+            "filter": ["lowercase"]
+          }
+        }
+      }
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event": {
+          "properties": {
+            "code": { "type": "keyword" },
+            "category": { "type": "keyword" },
+            "type": { "type": "keyword" },
+            "provider": { "type": "keyword" }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": { "type": "keyword" }
+          }
+        },
+        "process": {
+          "properties": {
+            "command_line": { "type": "keyword" },
+            "executable": {
+              "type": "keyword",
+              "fields": {
+                "caseless": { "type": "keyword", "normalizer": "lowercase_normalizer" }
+              }
+            },
+            "parent": {
+              "properties": {
+                "executable": {
+                  "type": "keyword",
+                  "fields": {
+                    "caseless": { "type": "keyword", "normalizer": "lowercase_normalizer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
