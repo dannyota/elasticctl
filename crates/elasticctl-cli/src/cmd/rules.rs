@@ -138,7 +138,7 @@ pub async fn set_enabled(ctx: &Context, selectors: &[String], enabled: bool) -> 
     };
 
     if !guard::check(ctx, &preview) {
-        return Ok(json!({"applied": false, "rules": targets.len()}));
+        return Ok(json!({"applied": false, "total": targets.len()}));
     }
 
     let ids: Vec<String> = targets.iter().map(|(id, _)| id.clone()).collect();
@@ -171,17 +171,28 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
     };
 
     if !guard::check(ctx, &preview) {
-        return Ok(json!({"applied": false, "rules": targets.len()}));
+        return Ok(json!({"applied": false, "total": targets.len()}));
     }
 
-    // Delete one at a time so a partial failure reports exactly which rules
-    // survived, rather than a bulk summary that hides it.
+    // Delete one at a time, continuing past a per-rule failure, so a partial
+    // failure reports exactly which rules survived and which did not — an
+    // early `?` return here would drop everything already deleted on the
+    // floor, leaving the operator unable to tell what state the rules are
+    // actually in.
     let transport = ctx.transport().await?;
     let mut deleted = Vec::new();
+    let mut failed = Vec::new();
     for (id, _) in &targets {
-        api::delete(transport, id).await?;
-        deleted.push(id.clone());
+        match api::delete(transport, id).await {
+            Ok(_) => deleted.push(json!({"rule_id": id})),
+            Err(e) => failed.push(json!({"rule_id": id, "error": e.message})),
+        }
     }
 
-    Ok(json!({"applied": true, "deleted": deleted, "total": deleted.len()}))
+    Ok(json!({
+        "applied": true,
+        "deleted": deleted,
+        "failed": failed,
+        "total": targets.len(),
+    }))
 }

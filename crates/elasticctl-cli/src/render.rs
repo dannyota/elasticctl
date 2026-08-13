@@ -12,6 +12,27 @@ pub fn exit_code_for(_err: &Error) -> i32 {
     1
 }
 
+/// A command can succeed at the process level — it built a context, resolved
+/// every selector, sent every request — while still reporting a partial
+/// failure inside its own payload (e.g. `rules delete` continuing past a
+/// per-rule error to report every rule's fate). That must not exit 0, or a
+/// script checking only the exit code would miss it.
+///
+/// The convention: an object payload with a non-empty `failed` *array* means
+/// exit 1. A `failed` field that is a count rather than a list (e.g. a bulk
+/// action's summary) does not trigger this — that shape already reports its
+/// own outcome in `succeeded`/`failed`/`skipped` counts, not in a per-item
+/// list this convention is meant to guard.
+///
+/// One helper, so every later mutating command that adopts this per-item
+/// `deleted`/`failed` shape inherits the same exit-code rule for free.
+pub fn exit_code_for_value(value: &Value) -> i32 {
+    match value.get("failed").and_then(Value::as_array) {
+        Some(failed) if !failed.is_empty() => 1,
+        _ => 0,
+    }
+}
+
 /// Keep only the named keys, in the order named. An absent key is skipped
 /// rather than rendered as null, so a typo does not produce a column of blanks.
 pub fn select_fields(value: &Value, fields: &str) -> Value {
@@ -322,5 +343,31 @@ mod tests {
         for kind in [ErrorKind::Auth, ErrorKind::NotFound, ErrorKind::Timeout] {
             assert_eq!(exit_code_for(&Error::new(kind, "x")), 1);
         }
+    }
+
+    #[test]
+    fn exit_code_for_value_is_one_when_failed_is_a_non_empty_array() {
+        let v = json!({"applied": true, "deleted": ["a"], "failed": [{"rule_id": "b"}]});
+        assert_eq!(exit_code_for_value(&v), 1);
+    }
+
+    #[test]
+    fn exit_code_for_value_is_zero_when_failed_is_an_empty_array() {
+        let v = json!({"applied": true, "deleted": ["a", "b"], "failed": []});
+        assert_eq!(exit_code_for_value(&v), 0);
+    }
+
+    #[test]
+    fn exit_code_for_value_ignores_a_failed_count_that_is_not_a_list() {
+        // A bulk action's summary reports `failed` as a count, not a
+        // per-item list — that shape already carries its own outcome and
+        // must not trip this convention.
+        let v = json!({"applied": true, "succeeded": 0, "failed": 1, "total": 1});
+        assert_eq!(exit_code_for_value(&v), 0);
+    }
+
+    #[test]
+    fn exit_code_for_value_is_zero_when_there_is_no_failed_field_at_all() {
+        assert_eq!(exit_code_for_value(&json!({"applied": false})), 0);
     }
 }

@@ -55,6 +55,10 @@ async fn a_dry_run_previews_on_stderr_and_changes_nothing() {
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["applied"], false);
+    assert_eq!(
+        v["total"], 1,
+        "dry run and apply must share one count field"
+    );
 
     // The decisive assertion: no bulk action reached the server.
     let hits = server.received_requests().await.unwrap();
@@ -150,4 +154,145 @@ async fn an_unresolvable_selector_fails_before_any_mutation() {
             .any(|r| r.url.path().contains("_bulk_action")),
         "resolution must fail before anything mutates"
     );
+}
+
+async fn server_with_three_rules() -> MockServer {
+    let server = MockServer::start().await;
+    for (id, name) in [("r1", "One"), ("r2", "Two"), ("r3", "Three")] {
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules"))
+            .and(query_param("rule_id", id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rule_id": id, "name": name, "type": "query", "enabled": true
+            })))
+            .mount(&server)
+            .await;
+    }
+    server
+}
+
+/// `delete` removes rules one at a time. If rule 2 of 3 fails, the loop must
+/// not stop there: rule 3 must still be attempted, and the payload must name
+/// exactly which rules survived and which did not — rather than an early `?`
+/// return silently dropping everything already deleted.
+#[tokio::test]
+async fn delete_continues_past_a_per_rule_failure_and_reports_every_outcome() {
+    let server = server_with_three_rules().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "r1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "rule_id": "r1", "name": "One", "type": "query", "enabled": true
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "r2"))
+        .respond_with(
+            ResponseTemplate::new(409).set_body_json(serde_json::json!({"message": "locked"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "r3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "rule_id": "r3", "name": "Three", "type": "query", "enabled": true
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules", "delete", "r1", "r2", "r3", "--yes", "--json", "--config",
+        ])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a partial failure must not exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["total"], 3);
+
+    let deleted: Vec<&str> = v["deleted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["rule_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        deleted,
+        vec!["r1", "r3"],
+        "rules 1 and 3 must be reported as deleted"
+    );
+
+    let failed = v["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["rule_id"], "r2");
+    assert!(
+        failed[0]["error"].as_str().unwrap().contains("locked"),
+        "{v}"
+    );
+
+    // Prove the loop did not stop at the first failure: all three DELETEs
+    // reached the server, not just the one before the failure.
+    let hits = server.received_requests().await.unwrap();
+    let delete_count = hits
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE")
+        .count();
+    assert_eq!(
+        delete_count, 3,
+        "rule 3 must still be attempted after rule 2 fails"
+    );
+}
+
+#[tokio::test]
+async fn delete_of_every_rule_succeeding_has_an_empty_failed_list_and_exits_zero() {
+    let server = server_with_three_rules().await;
+    for id in ["r1", "r2", "r3"] {
+        Mock::given(method("DELETE"))
+            .and(path("/api/detection_engine/rules"))
+            .and(query_param("rule_id", id))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rule_id": id, "name": "x", "type": "query", "enabled": true
+            })))
+            .mount(&server)
+            .await;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules", "delete", "r1", "r2", "r3", "--yes", "--json", "--config",
+        ])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], true);
+    assert!(v["failed"].as_array().unwrap().is_empty());
+    assert_eq!(v["deleted"].as_array().unwrap().len(), 3);
+    assert_eq!(v["total"], 3);
 }

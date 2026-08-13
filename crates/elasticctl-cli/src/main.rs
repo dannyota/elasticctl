@@ -116,12 +116,22 @@ async fn main() {
     }
 
     match result {
-        Ok(value) => {
-            if let Err(e) = render::emit(&value, &args.global) {
+        Ok(value) => match render::emit(&value, &args.global) {
+            // The operator needs the report more than the code: render the
+            // payload first, and only then act on a partial failure it
+            // reports internally (e.g. `rules delete` naming which rules
+            // survived a per-rule error).
+            Ok(()) => {
+                let code = render::exit_code_for_value(&value);
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(e) => {
                 eprintln!("{}", e.to_envelope());
                 std::process::exit(render::exit_code_for(&e));
             }
-        }
+        },
         Err(err) => {
             eprintln!("{}", err.to_envelope());
             std::process::exit(render::exit_code_for(&err));
