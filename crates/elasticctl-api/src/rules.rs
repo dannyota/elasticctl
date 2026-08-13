@@ -6,7 +6,7 @@
 use crate::codec;
 use crate::model::{ExportSummary, Rule};
 use crate::normalize;
-use elasticctl_core::{Result, Transport};
+use elasticctl_core::{Result, Transport, urlencode};
 use serde_json::{Value, json};
 
 const BASE: &str = "/api/detection_engine/rules";
@@ -281,21 +281,6 @@ pub async fn preview(
         errors: collect("errors"),
         warnings: collect("warnings"),
     })
-}
-
-/// Percent-encode a query-string value. Only the characters that actually
-/// break a URL are escaped, so recorded fixtures stay readable.
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

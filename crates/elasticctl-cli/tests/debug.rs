@@ -71,6 +71,67 @@ async fn debug_logs_the_request_line_and_redacts_the_api_key() {
 }
 
 #[tokio::test]
+async fn debug_logs_a_line_before_the_request_is_sent() {
+    // The pre-send line is what an operator needs when a request never
+    // returns: without it, a hung call logs nothing at all.
+    let server = exporting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out_file = dir.path().join("rules.ndjson");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "--debug", "--config"])
+        .arg(&cfg)
+        .arg("--out")
+        .arg(&out_file)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[debug] -> POST"),
+        "stderr must carry a pre-send line: {stderr}"
+    );
+    let sent = stderr.find("[debug] -> POST").unwrap();
+    let answered = stderr.find("[debug] POST").unwrap();
+    assert!(
+        sent < answered,
+        "the pre-send line must precede the response line: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn debug_logs_the_connection_error_branch() {
+    // Port 1 refuses immediately: the branch that returns before any status
+    // exists is exactly the one --debug was silent on.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), "http://127.0.0.1:1");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "--debug", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[debug] -> POST"),
+        "the attempt must be logged: {stderr}"
+    );
+    assert!(
+        stderr.contains("-> connection error"),
+        "the failure branch must be logged: {stderr}"
+    );
+    assert!(
+        !stderr.contains(API_KEY),
+        "the API key must never appear in debug output: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn without_debug_stderr_has_no_debug_lines() {
     let server = exporting_server().await;
     let dir = tempfile::tempdir().unwrap();
