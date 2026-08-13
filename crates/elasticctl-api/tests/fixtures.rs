@@ -97,3 +97,99 @@ fn rules_find_decodes_to_the_probe_rule() {
         assert_eq!(probe.name(), "elasticctl fixture probe");
     }
 }
+
+/// A fixture set recorded before an exchange existed simply lacks its file:
+/// the self-managed set is re-recorded on demand from the local lab, not on
+/// every change. So each new exchange is asserted wherever it was recorded,
+/// and separately asserted to exist somewhere — a missing recording must not
+/// pass silently in every set at once.
+fn sets_with(file: &str) -> Vec<PathBuf> {
+    fixture_sets()
+        .into_iter()
+        .filter(|s| s.join(file).exists())
+        .collect()
+}
+
+fn fixture_body(path: &Path) -> Value {
+    let body = fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
+}
+
+#[test]
+fn preview_hits_are_recorded_with_the_index_and_field_that_found_them() {
+    let sets = sets_with("rules_preview_hits.json");
+    assert!(
+        !sets.is_empty(),
+        "no set records rules_preview_hits; the preview hit count rests on it"
+    );
+
+    for set in sets {
+        let v = fixture_body(&set.join("rules_preview_hits.json"));
+        let index = v["request"]["index"].as_str().expect("request.index");
+        assert!(
+            index.starts_with(".preview.alerts-security.alerts-"),
+            "{} recorded an unexpected preview index: {index}",
+            set.display()
+        );
+        assert!(
+            v["request"]["matched_by"].as_str().is_some(),
+            "{} must record which field matched",
+            set.display()
+        );
+        let total = v["response"]["hits"]["total"]["value"]
+            .as_u64()
+            .expect("hits.total.value");
+        assert!(
+            total >= 1,
+            "{}: a recording with zero hits proves nothing — a wrong field name \
+             looks exactly the same. Re-record.",
+            set.display()
+        );
+    }
+}
+
+#[test]
+fn the_name_filter_find_returns_the_probe_rule() {
+    let sets = sets_with("rules_find_by_name.json");
+    assert!(!sets.is_empty(), "no set records rules_find_by_name");
+
+    for set in sets {
+        let v = fixture_body(&set.join("rules_find_by_name.json"));
+        assert!(
+            v["request"]["filter"]
+                .as_str()
+                .expect("request.filter")
+                .starts_with("alert.attributes.name:"),
+            "{} must record the KQL path the name lookup uses",
+            set.display()
+        );
+        let (rules, total) = rules::decode_find(&v["response"]).expect("decode find response");
+        assert!(
+            total >= 1,
+            "{}: a name filter matching nothing proves nothing about the path",
+            set.display()
+        );
+        assert_eq!(probe_rule(&rules).name(), "elasticctl fixture probe");
+    }
+}
+
+#[test]
+fn the_spaces_probe_returns_ids() {
+    let sets = sets_with("spaces.json");
+    assert!(!sets.is_empty(), "no set records spaces");
+
+    for set in sets {
+        let v = fixture_body(&set.join("spaces.json"));
+        let spaces = v["response"].as_array().expect("spaces response is an array");
+        assert!(!spaces.is_empty(), "{}", set.display());
+        for space in spaces {
+            assert!(
+                space["id"].as_str().is_some(),
+                "{} every space must carry a string id: {space}",
+                set.display()
+            );
+        }
+    }
+}

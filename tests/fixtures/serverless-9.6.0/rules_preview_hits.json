@@ -1,0 +1,178 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "rules_preview_hits",
+  "request": {
+    "index": ".preview.alerts-security.alerts-default",
+    "body": {
+      "size": 3,
+      "track_total_hits": true,
+      "query": {
+        "term": {
+          "kibana.alert.rule.uuid": "8dacb81b-c31e-4bc4-90f6-847fb05048c6"
+        }
+      },
+      "sort": [
+        {
+          "@timestamp": {
+            "order": "desc"
+          }
+        }
+      ]
+    },
+    "matched_by": "kibana.alert.rule.uuid",
+    "attempts_until_hits": 1
+  },
+  "response": {
+    "took": 1,
+    "timed_out": false,
+    "_shards": {
+      "total": 1,
+      "successful": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "hits": {
+      "total": {
+        "value": 1,
+        "relation": "eq"
+      },
+      "max_score": null,
+      "hits": [
+        {
+          "_index": ".ds-.preview.alerts-security.alerts-default-2026.08.12-000001",
+          "_id": "7afec1eb83f0014d3fb9df4b571fa8d73ef4e6abcc2fc49089d8dc7d3d3d9448",
+          "_score": null,
+          "_source": {
+            "kibana.alert.rule.execution.timestamp": "2026-08-13T09:18:06.850Z",
+            "kibana.alert.start": "2026-08-13T09:18:06.850Z",
+            "kibana.alert.last_detected": "2026-08-13T09:18:06.850Z",
+            "kibana.version": "9.6.0",
+            "kibana.alert.rule.parameters": {
+              "description": "Recorded by cargo xtask record. Safe to delete.",
+              "risk_score": 21,
+              "severity": "low",
+              "author": [],
+              "false_positives": [],
+              "from": "now-6m",
+              "rule_id": "bc17485a-89e7-4b72-a469-f44475f1f3c2",
+              "max_signals": 100,
+              "risk_score_mapping": [],
+              "severity_mapping": [],
+              "threat": [],
+              "to": "now",
+              "references": [],
+              "version": 1,
+              "exceptions_list": [],
+              "immutable": false,
+              "rule_source": {
+                "type": "internal"
+              },
+              "related_integrations": [],
+              "required_fields": [],
+              "setup": "",
+              "type": "query",
+              "language": "kuery",
+              "index": [
+                "elasticctl-sample-fixture"
+              ],
+              "query": "*:*"
+            },
+            "kibana.alert.rule.category": "Custom Query Rule",
+            "kibana.alert.rule.consumer": "siem",
+            "kibana.alert.rule.execution.uuid": "93b47b66-d423-48a9-b866-ad01a75d0b60",
+            "kibana.alert.rule.name": "elasticctl fixture preview probe",
+            "kibana.alert.rule.producer": "preview-producer",
+            "kibana.alert.rule.revision": 0,
+            "kibana.alert.rule.rule_type_id": "siem.queryRule",
+            "kibana.alert.rule.uuid": "8dacb81b-c31e-4bc4-90f6-847fb05048c6",
+            "kibana.space_ids": [
+              "default"
+            ],
+            "kibana.alert.rule.tags": [
+              "elasticctl",
+              "fixture"
+            ],
+            "@timestamp": "2026-08-12T18:00:00.000Z",
+            "event": {
+              "category": [
+                "process"
+              ],
+              "type": [
+                "start"
+              ],
+              "code": "1"
+            },
+            "process": {
+              "name": "elasticctl-sample.exe",
+              "executable": "C:\\elasticctl-sample\\elasticctl-sample.exe",
+              "command_line": "elasticctl-sample.exe --fixture"
+            },
+            "host": {
+              "name": "elasticctl-sample-host"
+            },
+            "kibana.alert.original_event.category": [
+              "process"
+            ],
+            "kibana.alert.original_event.type": [
+              "start"
+            ],
+            "kibana.alert.original_event.code": "1",
+            "event.kind": "signal",
+            "kibana.alert.original_time": "2026-08-12T17:57:00.000Z",
+            "kibana.alert.ancestors": [
+              {
+                "id": "LWhq-p8BirkF3M0DDU9S",
+                "type": "event",
+                "index": "elasticctl-sample-fixture",
+                "depth": 0
+              }
+            ],
+            "kibana.alert.status": "active",
+            "kibana.alert.workflow_status": "open",
+            "kibana.alert.depth": 1,
+            "kibana.alert.reason": "process event with process elasticctl-sample.exe, on elasticctl-sample-host created low alert elasticctl fixture preview probe.",
+            "kibana.alert.severity": "low",
+            "kibana.alert.risk_score": 21,
+            "kibana.alert.rule.actions": [],
+            "kibana.alert.rule.author": [],
+            "kibana.alert.rule.created_at": "2026-08-13T09:18:06.813Z",
+            "kibana.alert.rule.created_by": "REDACTED",
+            "kibana.alert.rule.description": "Recorded by cargo xtask record. Safe to delete.",
+            "kibana.alert.rule.enabled": true,
+            "kibana.alert.rule.exceptions_list": [],
+            "kibana.alert.rule.false_positives": [],
+            "kibana.alert.rule.from": "now-6m",
+            "kibana.alert.rule.immutable": false,
+            "kibana.alert.rule.interval": "5m",
+            "kibana.alert.rule.indices": [
+              "elasticctl-sample-fixture"
+            ],
+            "kibana.alert.rule.max_signals": 100,
+            "kibana.alert.rule.references": [],
+            "kibana.alert.rule.risk_score_mapping": [],
+            "kibana.alert.rule.rule_id": "bc17485a-89e7-4b72-a469-f44475f1f3c2",
+            "kibana.alert.rule.severity_mapping": [],
+            "kibana.alert.rule.threat": [],
+            "kibana.alert.rule.to": "now",
+            "kibana.alert.rule.type": "query",
+            "kibana.alert.rule.updated_at": "2026-08-13T09:18:06.813Z",
+            "kibana.alert.rule.updated_by": "REDACTED",
+            "kibana.alert.rule.version": 1,
+            "kibana.alert.url": "https://REDACTED.example.invalid/app/security/alerts/redirect/7afec1eb83f0014d3fb9df4b571fa8d73ef4e6abcc2fc49089d8dc7d3d3d9448?index=.alerts-security.alerts-default&timestamp=2026-08-12T18:00:00.000Z",
+            "kibana.alert.uuid": "7afec1eb83f0014d3fb9df4b571fa8d73ef4e6abcc2fc49089d8dc7d3d3d9448",
+            "kibana.alert.workflow_tags": [],
+            "kibana.alert.workflow_assignee_ids": [],
+            "kibana.alert.rule.risk_score": 21,
+            "kibana.alert.rule.severity": "low",
+            "kibana.alert.intended_timestamp": "2026-08-12T18:00:00.000Z",
+            "kibana.alert.rule.execution.type": "manual"
+          },
+          "sort": [
+            1786557600000
+          ]
+        }
+      ]
+    }
+  }
+}

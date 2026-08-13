@@ -1,7 +1,10 @@
 {
   "flavor": "serverless",
   "version": "9.6.0",
-  "operation": "rules_find",
+  "operation": "rules_find_by_name",
+  "request": {
+    "filter": "alert.attributes.name: \"elasticctl fixture probe\""
+  },
   "response": {
     "page": 1,
     "perPage": 2,

@@ -31,18 +31,26 @@ fn scrub(v: &mut Value) {
     }
 }
 
+/// An alert document stores rule metadata under dotted keys
+/// (`kibana.alert.rule.created_by`), and a whole-key comparison misses every
+/// one of them. Match the last dot-separated segment as well, so a nested
+/// identity field is scrubbed wherever the server chose to flatten it.
 fn is_sensitive(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
+    let leaf = lower.rsplit('.').next().unwrap_or(&lower);
     lower.contains("api_key")
         || lower.contains("apikey")
-        || lower == "authorization"
-        || lower == "password"
-        || lower == "encoded"
-        || lower == "username"
-        || lower == "full_name"
-        || lower == "email"
-        || lower == "created_by"
-        || lower == "updated_by"
+        || matches!(
+            leaf,
+            "authorization"
+                | "password"
+                | "encoded"
+                | "username"
+                | "full_name"
+                | "email"
+                | "created_by"
+                | "updated_by"
+        )
 }
 
 /// Redact a sensitive value without changing its type: a string becomes
@@ -130,6 +138,181 @@ fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, mut bod
     println!("wrote {}", path.display());
 }
 
+/// Like `write_fixture`, but records the request as well.
+///
+/// For an exchange whose whole point is *which* index and *which* field were
+/// asked for, a response on its own proves nothing — an empty result and a
+/// wrong field name look identical.
+fn write_exchange(
+    dir: &PathBuf,
+    name: &str,
+    flavor: &str,
+    version: &str,
+    request: Value,
+    mut body: Value,
+) {
+    scrub(&mut body);
+    let doc = json!({
+        "flavor": flavor,
+        "version": version,
+        "operation": name,
+        "request": request,
+        "response": body,
+    });
+    std::fs::create_dir_all(dir).expect("create fixture dir");
+    let path = dir.join(format!("{name}.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("encode"))
+        .expect("write fixture");
+    println!("wrote {}", path.display());
+}
+
+/// Scratch index the preview probe queries. Carries the `elasticctl-sample`
+/// marker so a failed run is identifiable, and deliberately avoids a `logs-`
+/// prefix: `logs-*-*` matches Elastic's own template, which would turn this
+/// into a data stream and reject a plain document write.
+const PREVIEW_PROBE_INDEX: &str = "elasticctl-sample-fixture";
+/// A name no other rule on the stack has, so the diagnostic fallback below
+/// stays scoped to this recorder's own object.
+const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
+/// Fixed rather than "now": the probe document is written at a fixed instant
+/// inside the window this end implies, so the recording is reproducible and
+/// needs no date arithmetic.
+const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
+const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
+
+/// Record what a preview actually wrote.
+///
+/// `rules/preview` returns a `previewId` and no hit count, so the count has to
+/// come from the preview alerts index. Three things are unproven and this is
+/// what proves them: the index name, the field carrying the preview id, and
+/// whether a project-scoped key may read it. A fourth — whether the alerts are
+/// visible to search the moment the preview returns — is measured by recording
+/// which attempt first saw them.
+///
+/// Returns `Err` rather than panicking so the caller can delete the scratch
+/// index on every path.
+async fn record_preview_hits(
+    t: &elasticctl_core::Transport,
+    dir: &PathBuf,
+    flavor: &str,
+    version: &str,
+    space: &str,
+) -> elasticctl_core::Result<()> {
+    // One document the probe rule is certain to match.
+    let doc = json!({
+        "@timestamp": PREVIEW_DOC_TIMESTAMP,
+        "event": {"category": ["process"], "type": ["start"], "code": "1"},
+        "process": {
+            "name": "elasticctl-sample.exe",
+            "executable": "C:\\elasticctl-sample\\elasticctl-sample.exe",
+            "command_line": "elasticctl-sample.exe --fixture"
+        },
+        "host": {"name": "elasticctl-sample-host"}
+    });
+    t.post_absolute_es(
+        &format!("/{PREVIEW_PROBE_INDEX}/_doc?refresh=wait_for"),
+        &doc,
+    )
+    .await?;
+
+    let preview_body = json!({
+        "name": PREVIEW_PROBE_NAME,
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "type": "query",
+        "language": "kuery",
+        "query": "*:*",
+        "index": [PREVIEW_PROBE_INDEX],
+        "severity": "low",
+        "risk_score": 21,
+        "from": "now-6m",
+        "interval": "5m",
+        "tags": ["elasticctl", "fixture"],
+        "invocationCount": 1,
+        "timeframeEnd": PREVIEW_TIMEFRAME_END
+    });
+    let preview = t
+        .post("/api/detection_engine/rules/preview", Some(&preview_body))
+        .await?;
+    let preview_id = preview["previewId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    println!("preview id: {preview_id}");
+
+    let index = format!(
+        ".preview.alerts-security.alerts-{}",
+        urlencode(if space.is_empty() { "default" } else { space })
+    );
+    let by_uuid = json!({
+        "size": 3,
+        "track_total_hits": true,
+        "query": {"term": {"kibana.alert.rule.uuid": preview_id}},
+        "sort": [{"@timestamp": {"order": "desc"}}]
+    });
+
+    let search = |body: Value| {
+        let index = index.clone();
+        async move {
+            t.post_absolute_es(&format!("/{index}/_search?ignore_unavailable=true"), &body)
+                .await
+        }
+    };
+
+    // Attempt 1 immediately, attempt 2 after Elasticsearch's default
+    // one-second refresh interval. Which one first sees the alerts is the
+    // measurement.
+    let mut response = search(by_uuid.clone()).await?;
+    let mut attempts = 1;
+    if response["hits"]["total"]["value"].as_u64().unwrap_or(0) == 0 {
+        // Blocking sleep: the recorder does one thing at a time.
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        response = search(by_uuid.clone()).await?;
+        attempts = 2;
+    }
+
+    let mut request = json!({
+        "index": index,
+        "body": by_uuid,
+        "matched_by": "kibana.alert.rule.uuid",
+        "attempts_until_hits": attempts,
+    });
+
+    if response["hits"]["total"]["value"].as_u64().unwrap_or(0) == 0 {
+        // The uuid field is a guess. Fall back to a query scoped by this
+        // probe's own unique rule name, which is still scoped to an object
+        // this recorder created, and record what came back so the real field
+        // is discoverable instead of merely absent.
+        println!("no hits by kibana.alert.rule.uuid; retrying by rule name");
+        let by_name = json!({
+            "size": 3,
+            "track_total_hits": true,
+            "query": {"match_phrase": {"kibana.alert.rule.name": PREVIEW_PROBE_NAME}}
+        });
+        let fallback = search(by_name.clone()).await?;
+        if fallback["hits"]["total"]["value"].as_u64().unwrap_or(0) > 0 {
+            response = fallback;
+            request = json!({
+                "index": index,
+                "body": by_name,
+                "matched_by": "kibana.alert.rule.name",
+                "attempts_until_hits": attempts,
+            });
+        }
+    }
+
+    let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
+    if total == 0 {
+        println!(
+            "WARNING: no preview alerts found in {index}. \
+             The index name or the query field is wrong; inspect the index by hand \
+             before Task 11 relies on either."
+        );
+    }
+
+    write_exchange(dir, "rules_preview_hits", flavor, version, request, response);
+    Ok(())
+}
+
 async fn record() {
     let t = transport_from_env(60);
 
@@ -156,6 +339,19 @@ async fn record() {
         .await
         .expect("authenticate");
     write_fixture(&dir, "authenticate", &flavor, &version, auth);
+
+    // `info` reported a hardcoded null licence tier and no space list. Both
+    // have to come from somewhere; these record where.
+    let spaces = t.get("/api/spaces/space").await.expect("spaces");
+    write_fixture(&dir, "spaces", &flavor, &version, spaces);
+
+    // Serverless has no licence tiers — features gate on project tier — so
+    // this call is expected to fail there. Record it only where it succeeds,
+    // and print what happened either way.
+    match t.get_absolute_es("/_license").await {
+        Ok(license) => write_fixture(&dir, "license", &flavor, &version, license),
+        Err(e) => println!("no license endpoint on this stack ({}): {}", flavor, e.message),
+    }
 
     // Use a distinctive id so a failed cleanup is obvious in the UI.
     let rule_id = "elasticctl-fixture-probe";
@@ -184,6 +380,26 @@ async fn record() {
         .await
         .expect("find");
     write_fixture(&dir, "rules_find", &flavor, &version, find);
+
+    // Scoped by the probe rule's own name. This is the filter path
+    // `resolve::to_rule_id` will use instead of walking every page of the
+    // corpus, so it has to be a recorded fact, not an assumption.
+    let name_filter = "alert.attributes.name: \"elasticctl fixture probe\"";
+    let find_by_name = t
+        .get(&format!(
+            "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
+            urlencode(name_filter)
+        ))
+        .await
+        .expect("find by name");
+    write_exchange(
+        &dir,
+        "rules_find_by_name",
+        &flavor,
+        &version,
+        json!({"filter": name_filter}),
+        find_by_name,
+    );
 
     let got = t
         .get(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
@@ -224,6 +440,18 @@ async fn record() {
         .await
         .expect("preview");
     write_fixture(&dir, "rules_preview", &flavor, &version, preview);
+
+    let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
+    let hits = record_preview_hits(&t, &dir, &flavor, &version, &space).await;
+    // Always drop the scratch index, on every path: a recording session must
+    // leave the stack exactly as it found it.
+    let cleanup = t
+        .delete_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}"))
+        .await;
+    if let Err(e) = &cleanup {
+        println!("WARNING: could not delete {PREVIEW_PROBE_INDEX}: {}", e.message);
+    }
+    hits.expect("record preview hits");
 
     // Export before delete, so the fixture contains a real rule line. The
     // export is scoped to the probe rule: a fixture is a representative sample
@@ -268,4 +496,22 @@ async fn seed() {
         "{}",
         serde_json::to_string_pretty(&installed).unwrap_or_default()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotted_identity_keys_are_scrubbed() {
+        let mut v = json!({
+            "kibana.alert.rule.created_by": "someone",
+            "kibana.alert.rule.name": "keep me",
+            "nested": {"updated_by": "someone else"}
+        });
+        scrub(&mut v);
+        assert_eq!(v["kibana.alert.rule.created_by"], "REDACTED");
+        assert_eq!(v["nested"]["updated_by"], "REDACTED");
+        assert_eq!(v["kibana.alert.rule.name"], "keep me");
+    }
 }
