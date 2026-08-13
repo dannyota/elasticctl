@@ -33,14 +33,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # `./lab/up.sh` uses `podman compose`, which delegates to a docker-compose
-      # provider. The lab is self-contained: its credentials are throwaway
-      # local values and its API key is generated here at runtime, so no
-      # GitHub secret is needed.
-      - name: Install podman and a compose provider
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman docker-compose-v2
+      # `./lab/up.sh` probes for a working compose provider. The runner ships
+      # Docker with the compose plugin, so nothing needs installing here —
+      # installing podman instead gives a binary whose socket is not running,
+      # and compose then fails with "Cannot connect to the Docker daemon".
+      # The lab is self-contained: its credentials are throwaway local values
+      # and its API key is generated at runtime, so no GitHub secret is needed.
+      - name: Show the compose provider
+        run: docker compose version
       - name: Start the local lab
         run: ./lab/up.sh
       - name: Point the live suite at the lab

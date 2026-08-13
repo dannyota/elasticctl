@@ -6,7 +6,23 @@ ES=http://localhost:9200
 KB=http://localhost:5601
 AUTH='elastic:elasticctl-lab'
 
-podman compose up -d
+# Whichever compose provider actually works here. Locally that is podman,
+# which delegates to a docker-compose binary. On a GitHub runner podman is
+# installed but its socket is not running, so `podman compose` fails with
+# "Cannot connect to the Docker daemon" — the runner's own Docker is the
+# working provider there. Probe rather than assume.
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE="docker compose"
+elif podman compose version >/dev/null 2>&1; then
+  COMPOSE="podman compose"
+else
+  echo "no working compose provider: tried 'docker compose' and 'podman compose'" >&2
+  exit 1
+fi
+echo "compose provider: $COMPOSE"
+export COMPOSE
+
+$COMPOSE up -d
 
 echo "Waiting for Elasticsearch..."
 es_ready=0
@@ -19,7 +35,7 @@ for _ in $(seq 1 100); do
 done
 if [ "$es_ready" -ne 1 ]; then
   echo "Elasticsearch did not become healthy after 100 attempts" >&2
-  podman compose logs >&2 || true
+  $COMPOSE logs >&2 || true
   exit 1
 fi
 
@@ -39,7 +55,7 @@ for _ in $(seq 1 60); do
 done
 if [ "$kb_ready" -ne 1 ]; then
   echo "Kibana did not become available after 60 attempts" >&2
-  podman compose logs >&2 || true
+  $COMPOSE logs >&2 || true
   exit 1
 fi
 
