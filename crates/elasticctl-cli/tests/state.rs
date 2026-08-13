@@ -61,6 +61,61 @@ async fn pull_writes_one_file_per_rule_without_volatile_fields() {
     assert!(!body.contains("created_at"), "{body}");
 }
 
+// `safe_filename` maps every character outside [A-Za-z0-9_-] to '_', which
+// correctly closes path traversal but means distinct rule ids can collide on
+// one filename. An unnoticed collision would silently drop a rule from the
+// local mirror while `pulled` kept counting both — the same class of
+// authoring conflict `Drift::compute` already refuses to paper over for a
+// duplicate rule_id.
+#[tokio::test]
+async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename() {
+    let server = server_with(vec![remote_rule("a/b", 21), remote_rule("a_b", 73)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["kind"], "conflict");
+    let msg = err["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("a/b"), "{msg}");
+    assert!(msg.contains("a_b"), "{msg}");
+}
+
+#[tokio::test]
+async fn pull_writes_distinct_files_when_sanitised_names_do_not_collide() {
+    let server = server_with(vec![remote_rule("a.one", 21), remote_rule("b.two", 73)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .assert()
+        .success();
+
+    assert!(state.join("rules").join("a_one.ndjson").exists());
+    assert!(state.join("rules").join("b_two.ndjson").exists());
+}
+
 #[tokio::test]
 async fn pull_twice_produces_identical_files() {
     let server = server_with(vec![remote_rule("a", 21)]).await;
@@ -227,6 +282,81 @@ async fn push_dry_run_previews_and_sends_no_mutation() {
             .iter()
             .any(|r| r.method.as_str() == "POST"),
         "a dry run must not create anything"
+    );
+}
+
+// `report.rs`'s own doc comment says the report exists to record what was
+// *proposed*, not only what was applied. Before this fix, entries for
+// Added/Modified changes were only pushed inside `if applying`, so a dry-run
+// `--report` recorded nothing but `skipped_remote_only`, and a script running
+// `state push --json` had no field-level way to learn how many changes were
+// pending short of scraping the stderr preview.
+#[tokio::test]
+async fn push_dry_run_report_includes_pending_creates_and_updates() {
+    let server = server_with(vec![remote_rule("existing", 10)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    fs::create_dir_all(state.join("rules")).unwrap();
+    // Differs from the remote only in risk_score: a pending update.
+    fs::write(
+        state.join("rules").join("existing.ndjson"),
+        "{\"rule_id\":\"existing\",\"name\":\"Rule existing\",\"type\":\"query\",\"query\":\"*:*\",\"severity\":\"low\",\"risk_score\":55}\n",
+    )
+    .unwrap();
+    // Absent remotely: a pending create.
+    fs::write(
+        state.join("rules").join("newone.ndjson"),
+        "{\"rule_id\":\"newone\",\"name\":\"New\",\"type\":\"query\",\"query\":\"*:*\"}\n",
+    )
+    .unwrap();
+    let report = dir.path().join("report.json");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "push", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], false);
+    assert_eq!(v["pending"], 2);
+    assert_eq!(v["created"], 0);
+    assert_eq!(v["updated"], 0);
+
+    let r: serde_json::Value = serde_json::from_str(&fs::read_to_string(&report).unwrap()).unwrap();
+    let entries = r["entries"].as_array().unwrap();
+    assert_eq!(
+        entries.len(),
+        2,
+        "both pending changes must be recorded, not just applied ones"
+    );
+    assert!(entries.iter().all(|e| e["applied"] == false));
+    let actions: std::collections::BTreeSet<&str> = entries
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actions,
+        std::collections::BTreeSet::from(["create", "update"])
+    );
+
+    assert!(
+        !server.received_requests().await.unwrap().iter().any(|r| {
+            let m = r.method.as_str();
+            m == "POST" || m == "PUT"
+        }),
+        "a dry run must not mutate anything"
     );
 }
 

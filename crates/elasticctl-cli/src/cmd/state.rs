@@ -10,6 +10,7 @@ use elasticctl_api::report::{ChangeReport, ReportEntry};
 use elasticctl_api::rules as api;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn rules_dir(dir: &Path) -> PathBuf {
@@ -32,6 +33,20 @@ fn safe_filename(rule_id: &str, ext: &str) -> String {
     format!("{safe}.{ext}")
 }
 
+/// Whether a directory entry is one this scan should attempt to parse as a
+/// rule file. Deliberately narrower than `FileFormat::from_path`, which
+/// defaults an unrecognised extension to NDJSON — correct for `--out`/
+/// `--path`, where the user named the file deliberately, but wrong here: the
+/// whole reason `pull` writes one file per rule is per-rule git history,
+/// which makes a `README.md` or a stray `.DS_Store` living next to the rule
+/// files an expected occurrence, not an authoring mistake to fail on.
+fn is_rule_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ndjson") | Some("json") | Some("yaml") | Some("yml")
+    )
+}
+
 fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     let rules_path = rules_dir(dir);
     if !rules_path.exists() {
@@ -48,7 +63,7 @@ fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     let mut rules = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if !path.is_file() || !is_rule_file(&path) {
             continue;
         }
         let body = std::fs::read_to_string(&path).map_err(|e| {
@@ -83,6 +98,14 @@ pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value
     };
 
     let mut written = 0;
+    // `safe_filename` correctly closes path traversal by replacing every
+    // character outside `[A-Za-z0-9_-]` with `_`, but that same replacement
+    // can make two distinct rule ids collide on one filename (e.g. "a/b" and
+    // "a_b" both sanitise to "a_b"). An unnoticed collision would silently
+    // drop a rule from the local mirror while `written` kept counting both —
+    // the same class of authoring conflict `Drift::compute` already refuses
+    // to paper over for a duplicate `rule_id`, so it is refused here too.
+    let mut claimed: HashMap<String, String> = HashMap::new();
     for rule in &remote {
         // Canonicalise before encoding: `serde_json` runs with
         // `preserve_order`, so encoding a rule straight from the API would
@@ -90,11 +113,23 @@ pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value
         // pulls from an unchanged stack would not be byte-identical.
         let canonical = normalize::canonical(rule);
         let rule_id = canonical.rule_id()?.to_string();
+        let filename = safe_filename(&rule_id, ext);
+
+        if let Some(other_id) = claimed.get(&filename) {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "rule ids \"{other_id}\" and \"{rule_id}\" both sanitise to the filename \"{filename}\"; rename one of them"
+                ),
+            ));
+        }
+        claimed.insert(filename.clone(), rule_id.clone());
+
         let body = match format {
             FileFormat::Yaml => codec::encode_yaml(std::slice::from_ref(&canonical))?,
             FileFormat::Ndjson => codec::encode_ndjson(std::slice::from_ref(&canonical))?,
         };
-        let path = target.join(safe_filename(&rule_id, ext));
+        let path = target.join(&filename);
         std::fs::write(&path, body).map_err(|e| {
             Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
         })?;
@@ -190,49 +225,66 @@ pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Resu
 
     let applying = guard::check(ctx, &preview);
 
-    if applying {
-        for c in &actionable {
-            let (rule_id, name, action) = match c {
-                Change::Added { rule_id, name } => (rule_id.clone(), name.clone(), "create"),
-                Change::Modified { rule_id, name, .. } => (rule_id.clone(), name.clone(), "update"),
-                // `actionable()` only yields Added/Modified.
-                _ => continue,
-            };
+    // Every actionable change gets an entry regardless of `applying`: the
+    // report exists to record what was *proposed*, not only what was
+    // applied, so a dry run must not silently omit pending creates and
+    // updates from `--report` (nor from the JSON summary's `pending` count
+    // below) — a script piping `state push --json` has no other way to
+    // learn what would change.
+    for c in &actionable {
+        let (rule_id, name, action) = match c {
+            Change::Added { rule_id, name } => (rule_id.clone(), name.clone(), "create"),
+            Change::Modified { rule_id, name, .. } => (rule_id.clone(), name.clone(), "update"),
+            // `actionable()` only yields Added/Modified.
+            _ => continue,
+        };
 
-            let Some(desired) = by_id(&rule_id) else {
-                continue;
-            };
-            let before = remote_by_id(&rule_id).map(|r| normalize::canonical(&r).into_value());
+        let Some(desired) = by_id(&rule_id) else {
+            continue;
+        };
+        let before = remote_by_id(&rule_id).map(|r| normalize::canonical(&r).into_value());
 
-            // A failure on one rule must not abort the rest: a partial push
-            // still has to be fully auditable, so every outcome is recorded
-            // rather than propagated with `?`.
-            let outcome = if action == "create" {
-                api::create(transport, &desired).await
-            } else {
-                api::update(transport, &desired).await
-            };
+        if !applying {
+            entries.push(ReportEntry {
+                rule_id,
+                name,
+                action: action.into(),
+                before,
+                after: Some(normalize::canonical(&desired).into_value()),
+                applied: false,
+                error: None,
+            });
+            continue;
+        }
 
-            match outcome {
-                Ok(applied) => entries.push(ReportEntry {
-                    rule_id,
-                    name,
-                    action: action.into(),
-                    before,
-                    after: Some(normalize::canonical(&applied).into_value()),
-                    applied: true,
-                    error: None,
-                }),
-                Err(e) => entries.push(ReportEntry {
-                    rule_id,
-                    name,
-                    action: action.into(),
-                    before,
-                    after: None,
-                    applied: false,
-                    error: Some(e.message),
-                }),
-            }
+        // A failure on one rule must not abort the rest: a partial push
+        // still has to be fully auditable, so every outcome is recorded
+        // rather than propagated with `?`.
+        let outcome = if action == "create" {
+            api::create(transport, &desired).await
+        } else {
+            api::update(transport, &desired).await
+        };
+
+        match outcome {
+            Ok(applied) => entries.push(ReportEntry {
+                rule_id,
+                name,
+                action: action.into(),
+                before,
+                after: Some(normalize::canonical(&applied).into_value()),
+                applied: true,
+                error: None,
+            }),
+            Err(e) => entries.push(ReportEntry {
+                rule_id,
+                name,
+                action: action.into(),
+                before,
+                after: None,
+                applied: false,
+                error: Some(e.message),
+            }),
         }
     }
 
@@ -253,11 +305,68 @@ pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Resu
     }
 
     let (created, updated, skipped, failed) = report.counts();
+    let pending = report.pending();
     Ok(json!({
         "applied": applying,
         "created": created,
         "updated": updated,
         "skipped_remote_only": skipped,
         "failed": failed,
+        "pending": pending,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_rule(dir: &Path, filename: &str, rule_id: &str) {
+        std::fs::write(
+            dir.join(filename),
+            format!("{{\"rule_id\":\"{rule_id}\",\"name\":\"{rule_id}\",\"type\":\"query\"}}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn is_rule_file_accepts_the_four_recognised_extensions_and_rejects_others() {
+        for ext in ["ndjson", "json", "yaml", "yml"] {
+            assert!(is_rule_file(Path::new(&format!("a.{ext}"))), "{ext}");
+        }
+        for ext in ["md", "txt", "DS_Store", "ndjson.bak"] {
+            assert!(!is_rule_file(Path::new(&format!("a.{ext}"))), "{ext}");
+        }
+        assert!(!is_rule_file(Path::new("noextension")));
+    }
+
+    // A README lives next to per-rule files as a matter of course — the
+    // whole reason `pull` writes one file per rule is per-rule git history,
+    // and a directory kept in git tends to grow a README. It must not turn
+    // `diff`/`push` into an "invalid JSON on line 1" failure.
+    #[test]
+    fn read_local_skips_non_rule_files_and_reads_the_valid_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        write_rule(&rules, "a.ndjson", "a");
+        std::fs::write(rules.join("README.md"), "not a rule\n").unwrap();
+        std::fs::write(rules.join("notes.txt"), "also not a rule\n").unwrap();
+        std::fs::create_dir_all(rules.join(".hidden")).unwrap();
+
+        let found = read_local(dir.path()).unwrap();
+        assert_eq!(found.len(), 1, "only the .ndjson file should be read");
+        assert_eq!(found[0].rule_id().unwrap(), "a");
+    }
+
+    #[test]
+    fn read_local_returns_empty_for_a_directory_of_only_unrecognised_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(rules.join("README.md"), "not a rule\n").unwrap();
+        std::fs::write(rules.join("notes.txt"), "also not a rule\n").unwrap();
+
+        let found = read_local(dir.path()).unwrap();
+        assert!(found.is_empty());
+    }
 }
