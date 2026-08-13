@@ -396,10 +396,16 @@ async fn record() {
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-    let flavor = status["version"]["build_flavor"]
-        .as_str()
-        .unwrap_or("default")
-        .to_string();
+    // Elastic Cloud Hosted reports `build_flavor: "traditional"`, the same
+    // value a self-managed stack reports, so recording ECH would overwrite the
+    // self-managed fixture set. The deployment flavor is not derivable from the
+    // status body and the recorder must be told it.
+    let flavor = std::env::var("ELASTICCTL_FIXTURE_FLAVOR").unwrap_or_else(|_| {
+        status["version"]["build_flavor"]
+            .as_str()
+            .unwrap_or("default")
+            .to_string()
+    });
     // Anchor on the manifest directory, not the process CWD: `cargo xtask
     // record` run from `lab/` must not write to `lab/tests/fixtures`.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,0 +1,17 @@
+{
+  "flavor": "ech",
+  "version": "9.5.1",
+  "operation": "rules_preview",
+  "response": {
+    "previewId": "11a9f6ae-5544-47b8-b2a5-82e237f93c05",
+    "logs": [
+      {
+        "errors": [],
+        "warnings": [],
+        "startedAt": "2026-08-12T18:00:00.000Z",
+        "duration": 61
+      }
+    ],
+    "isAborted": false
+  }
+}

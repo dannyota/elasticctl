@@ -97,10 +97,29 @@ Knows nothing about detection rules.
   outcome, including the timeout and connection-error branches — the cases an
   operator reaches for `--debug` to see. Method, URL, and status only: never a
   header, never a body.
+  Response headers are captured and returned alongside the body, because the
+  deployment flavor is not derivable from any response body — see
+  `capabilities` below. They are carried, never logged: `--debug` still prints
+  no header, since headers are where credentials travel.
 - **`capabilities`** — one probe at connect time reading `GET /api/status`.
   Yields `Capabilities { flavor, version }`. Commands consult it and return a
   typed `Unsupported` error naming the flavor rather than surfacing a confusing
-  404. Spaces and licence tier are *not* part of that probe: they cost a request
+  404.
+  Flavor is decided in this order, and the order is load-bearing:
+
+  1. `version.build_flavor == "serverless"` → Serverless.
+  2. The response carries `x-found-handling-cluster` → Elastic Cloud Hosted.
+  3. Otherwise → self-managed.
+
+  Elastic Cloud Hosted reports `build_flavor: "traditional"`, the same value a
+  self-managed stack reports, so no field of the status body separates them.
+  The distinguishing signal is a header injected by the Cloud edge proxy, which
+  a self-managed Kibana has nothing to add. Serverless sits behind that same
+  proxy and carries the same header, which is why the `build_flavor` test comes
+  first: reversing the two would classify every Serverless project as Hosted.
+  Hostname matching against known Cloud suffixes remains as a last resort for a
+  deployment reached through a proxy that strips the header, but it is no
+  longer how the answer is normally obtained. Spaces and licence tier are *not* part of that probe: they cost a request
   each, and `doctor` and `config test` need neither. `info` probes them
   directly — the space list from `GET /api/spaces/space`, the licence tier from
   `GET /_license`, which does not exist on Serverless — and reports `null` for
@@ -227,8 +246,8 @@ The default is unchanged: without either flag, a conflict is a reported failure.
 
 ## 5. State engine
 
-- **`pull`** — page through `_find`, map to `Rule`, normalize, write the tree
-  in the requested format. Filenames are planned for every rule before the
+- **`pull`** — read the corpus through `_find`, map to `Rule`, normalize, write
+  the tree in the requested format. Filenames are planned for every rule before the
   first file is written, so a `rule_id` pair that sanitises to one filename is
   refused with `conflict` naming **every** colliding pair at once, and refused
   before the directory is created. Reporting one collision per run hides the
@@ -260,6 +279,54 @@ its pulled counterpart forever. Two modes resolve it:
 
 `rules validate` applies the same default-filling, so an engineer can see
 exactly what a sparse file will become before pushing it.
+
+### 5.2 Reading the corpus
+
+`_find` is read in one request, not paged. `per_page` is bounded by
+Elasticsearch's result window — `from + size` must not exceed 10,000 — so a
+page size at the window returns any corpus that `_find` can serve at all.
+Measured against 2,066 rules: 21 sequential pages of 100 cost 8.4-11 s; one
+request costs 2.4 s.
+
+That bound is also a ceiling on the command. A corpus larger than 10,000 rules
+cannot be read through `_find` by any combination of `page` and `per_page`,
+because the limit applies to their sum rather than to either one. Paging
+smaller does not evade it and neither does concurrency. When `total` exceeds
+the window, the read is refused with an error naming the limit and pointing at
+`rules export`, which streams rather than paging. Returning the first 10,000
+rules as though they were the corpus would make `state diff` report every
+unread rule as remote-only and `state pull` write a mirror missing them —
+silent truncation is the one outcome worse than failing.
+
+### 5.3 Scoped state operations
+
+`pull`, `diff`, and `push` take the same positional selectors and `--tag`
+filter as `rules export`, described in 4.3. Given neither, they act on the
+whole space, which is the existing behaviour and stays the default.
+
+Selection narrows both sides before drift is computed, so the remote read
+becomes one `rule_id`-filtered `_find` instead of a corpus read. Resolution
+differs by command because the commands face opposite directions:
+
+- `pull` reads from the stack, so its selectors name stack rules and resolve
+  remotely.
+- `diff` and `push` act on the local directory, so a selector matching a local
+  `rule_id` or `name` wins and only an unmatched one falls through to a remote
+  lookup. Without local-first resolution a locally-added rule — one that exists
+  in no remote index yet — could never be selected, which would make scoped
+  `push` unable to do the thing it is most wanted for.
+
+A selector resolving to nothing is refused naming the selector, as in 4.3. A
+name matching two local rules is refused naming both `rule_id`s: identity is
+`rule_id`, and a display name that has stopped being unique is not something to
+resolve by guessing.
+
+`RemoteOnly` keeps its meaning inside a selection — `--tag prod` can select a
+remote rule with no local file — and `push` still never deletes it.
+
+Scoped runs report `selected` and `local_total`, and the guard banner names the
+selection. A scoped apply that looked identical to a full one would defeat the
+purpose of the banner.
 
 ## 6. Contracts
 
@@ -325,6 +392,7 @@ Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 | Identity probe | `GET /_security/_authenticate` returns username, roles, and realm — the `doctor` primitive |
 | Export trailer | With zero rules, `POST /api/detection_engine/rules/_export` returns *only* the summary object |
 | Prebuilt rules | The internal route `/internal/detection_engine/prebuilt_rules/status` returns 400 `"exists but is not available with the current configuration"`. Use the public API |
+| `_find` result window | `per_page` is bounded by `from + size <= 10000`; 10001 is a 400 naming the window. One request returns all 2,066 rules in 2.4 s against 8.4-11 s for 21 pages of 100 |
 
 ### 7.1 Rule schema, measured
 
@@ -458,6 +526,27 @@ carries the classified message, and the preview's own id, errors, and warnings
 are reported as before. Preview is a diagnostic; losing the count must not lose
 the run.
 
+### 7.6 Elastic Cloud Hosted, measured
+
+Probed against a Hosted deployment in `gcp-asia-southeast1`, Elasticsearch and
+Kibana both 9.5.1, on 2026-08-13. The full fixture set is recorded under
+`tests/fixtures/ech-9.5.1`.
+
+| Fact | Detail |
+|---|---|
+| Kibana `build_flavor` | `"traditional"` — the same value a self-managed stack reports. The status body cannot distinguish the two |
+| Elasticsearch `build_flavor` | `"default"`, `build_type: "docker"` |
+| Edge headers | `x-found-handling-cluster`, `x-found-handling-instance`, and `x-cloud-request-id` on both the Kibana and Elasticsearch endpoints |
+| Same headers on Serverless | Present, so the header means "behind the Cloud edge proxy", not "Hosted". `build_flavor` must be tested first |
+| Error envelope | A 404 on a live deployment is Kibana's `{"statusCode","error","message"}`. The Cloud edge `{"ok":false,"message":...}` shape belongs to hostnames that do not resolve, not to live deployments |
+| Licence | `GET /_license` returns `type: "enterprise"`, unlike Serverless where the endpoint does not exist |
+
+The one half not yet measured is the negative: that a self-managed stack emits
+no `x-found-handling-cluster`. It follows from there being no Cloud proxy in
+front of one, and the fixture format now carries headers so the `lab/` stack
+can prove it, but until that recording exists it is an inference rather than a
+measurement.
+
 ## 8. Testing
 
 | Tier | Runs | Covers |
@@ -469,6 +558,14 @@ the run.
 Fixtures are **recorded, not hand-written** — `cargo xtask record` drives a
 live stack and dumps the real exchanges, scrubbing credentials. Each fixture
 records the flavor and stack version it came from so drift is visible.
+
+The directory is `tests/fixtures/<flavor>-<version>`, and the flavor is the
+*deployment* flavor, not the value the stack reports. Hosted and self-managed
+both report `build_flavor: "traditional"`, so a Hosted recording would
+overwrite the self-managed set. `ELASTICCTL_FIXTURE_FLAVOR` overrides the
+derived name and tags the fixtures at record time; it exists because tagging
+them correctly afterwards would mean editing recorded fixtures, which is never
+allowed.
 
 CI runs unit and fixture tiers on every push; the live tier runs on a schedule
 and before releases.
@@ -602,18 +699,38 @@ and those boundaries are still moving.
 Development credentials live in `.env`, which is gitignored and mode `0600`.
 `.env.example` is committed and contains placeholders only. The Elastic key in
 use is a **project-scoped** serverless key: it authenticates API calls but
-cannot create, list, or resize projects. Managing projects would need an
-organization API key (`essa_` prefix) against `api.elastic-cloud.com`.
+cannot create, list, or resize projects. Managing projects and deployments
+needs an organization key with Cloud API access, created in the Cloud console
+under Organization > API keys, against `api.elastic-cloud.com`.
+
+All three key types carry the `essu_` prefix — the console offers no other —
+so the prefix identifies nothing. Only `GET /_security/_authenticate` reports
+the realm, which is the discriminator.
+
+Provisioning a Hosted deployment through the Cloud API does not currently work
+on this organization: `GET /deployments/templates` serves a catalogue whose
+every entry `POST /deployments` then rejects as `legacy_dt`, with the same
+result for two distinct organization keys and for the documented `template_id`
+query parameter that has the server expand the template itself. No AWS region
+resolves for Hosted templates at all. The console creates the same deployment
+without complaint, so Hosted deployments are created there and driven by API
+afterwards, which works normally.
 
 ## 13. Risks
 
-**Serverless-first bias.** Serverless is the most divergent of the three
-flavors — no licence tiers (features gate on project tier instead), different
-auth, some endpoints versioned differently. Developing only against it risks
-baking serverless assumptions into code that claims to support self-managed.
-Mitigated by tagging fixtures with flavor and version, gating divergent
-behaviour behind the capability probe, and recording self-managed fixtures
-before v0.1 is called done.
+**Serverless-first bias — partly resolved.** Serverless is the most divergent
+of the three flavors — no licence tiers (features gate on project tier
+instead), different auth, some endpoints versioned differently. Developing only
+against it risks baking serverless assumptions into code that claims to support
+self-managed. Mitigated by tagging fixtures with flavor and version, gating
+divergent behaviour behind the capability probe, and recording each flavor.
+
+All three flavors now have recorded fixtures: `serverless-9.6.0`,
+`traditional-9.5.1`, and `ech-9.5.1`. The remaining gap is that the
+self-managed set holds 10 fixtures against 14 for the other two — it predates
+the operations added in 0.1.1 and needs a `lab/` session to catch up. Until it
+does, self-managed is the least-covered of the three, which is the opposite of
+the bias this risk was written about but the same underlying hazard.
 
 **`rules preview` stability — resolved.** The concern was that the preview
 endpoint has moved between public and internal paths across Elastic versions.

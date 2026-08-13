@@ -86,15 +86,18 @@ gitignored and mode `0600`; `.env.example` is the template to copy.
 - Never commit it, never copy its contents into tracked files, never echo the
   key into terminal output or commit messages.
 - `.env.example` is the committed template and must contain placeholders only.
-- An **organization-level** Cloud API key is not enough. The `essu_` prefix
-  does not imply project scope. Such a key reads fine and can create *disabled*
-  rules, but **it cannot enable a rule** — the alerting framework refuses to
-  mint a rule API key on behalf of an organization key. Enable, disable-apply,
-  and `state push` need a **project-scoped Elasticsearch API key** created
-  inside Kibana.
-- `.env` defines `ELASTICCTL_API_KEY` (project-scoped — use this) and
-  `ELASTICCTL_ORG_API_KEY`. A git worktree has no `.env`; source it from the
-  main checkout rather than copying it.
+- An **organization-level** Cloud API key is not enough. Every key type carries
+  the `essu_` prefix, so it implies nothing about scope — only
+  `GET /_security/_authenticate` reports the realm. An organization key reads
+  fine and can create *disabled* rules, but **it cannot enable a rule** — the
+  alerting framework refuses to mint a rule API key on its behalf. Enable,
+  disable-apply, and `state push` need a **project-scoped Elasticsearch API
+  key** created inside Kibana.
+- `.env` defines `ELASTICCTL_API_KEY` (project-scoped — use this),
+  `ELASTICCTL_ORG_API_KEY`, `ELASTICCTL_CLOUD_API_KEY` (control plane, not read
+  by the CLI or xtask), and a temporary `ELASTICCTL_ECH_*` block for the Hosted
+  probe deployment. A git worktree has no `.env`; source it from the main
+  checkout rather than copying it.
 
 ## Elastic API gotchas
 
@@ -140,6 +143,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 Fixtures are recorded from real traffic, never hand-written, and are tagged
 with flavor and stack version. Do not hand-edit a fixture to make a test pass —
 re-record it.
+
+The directory is named for the *deployment* flavor, not the reported one.
+Hosted and self-managed both report `build_flavor: "traditional"`, so recording
+a Hosted stack without setting `ELASTICCTL_FIXTURE_FLAVOR=ech` overwrites
+`traditional-9.5.1`.
 
 Recording rules, because fixtures are public: scope every request to the probe
 rule — an unscoped `_find` or `_export` writes real rule content into the repo —
