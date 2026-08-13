@@ -1,53 +1,44 @@
 <!--
-Maintainer notes: keep under 200 lines — this file loads every session. Only
-rules that are easy to violate; nothing derivable from code or spec. When a
-rule's owner changes (spec section, README runbook), re-sync its copy here in
-the same change.
+Maintainer notes: keep under 200 lines because this file loads every session. Include only rules
+that are easy to violate, not rules derivable from code or the spec. Sync changes with their owner.
 -->
 
 # elasticctl
 
-Rust CLI for operating Elastic Security detection rules as code, across
-self-managed, Elastic Cloud Hosted, and Serverless deployments. Sibling to
-[splunkctl](https://github.com/dannyota/splunkctl), which is the reference for
-operating contracts.
+Rust CLI for operating Elastic Security detection rules as code across self-managed, Elastic
+Cloud Hosted, and Serverless deployments. Its sibling, [splunkctl](https://github.com/dannyota/splunkctl), is the reference for operating contracts.
 
-**Read `docs/specs/elasticctl-design.md` before changing anything.** It is the
-source of truth for scope, architecture, and verified API behaviour. When code
-and spec disagree, the spec wins, and the fix lands in the spec first — never
-silently improve. Docs are the contract: a change that alters behaviour
-updates the spec in the same commit, and a change that closes a backlog item
-removes it from the current backlog. Precedence when guidance
-conflicts: the user's current instruction, then the spec, then this file.
+**Read `docs/specs/elasticctl-design.md` before changing anything.** It is the source of truth for
+scope, architecture, and verified API behavior. When code and spec disagree, the spec wins.
+Update the spec first; never silently improve. Documentation is the contract. A behavioral
+change updates the spec in the same commit. A change that closes a backlog item removes it from
+the current backlog. Guidance precedence is: the user's current instruction, the spec, then this
+file.
 
 | Task | Read first |
 | --- | --- |
-| Any behaviour change | `docs/specs/elasticctl-design.md` |
+| Any behavior change | `docs/specs/elasticctl-design.md` |
 | What to work on next | the newest `docs/plans/*-backlog.md`, else the newest plan |
 | Releasing | `README.md` "Releasing" |
 | Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
 
 ## Development workflow
 
-Design first: the brief is the product of the design. Design runs on Opus;
-implementation runs on Sonnet; pure transcription and single-file mechanical
-fixes on Haiku. Review tier scales with the cost of being wrong:
-invariant-bearing work — mutation paths, credential handling, release
-workflows — gets adversarial review on Opus; ordinary code gets its tests,
-the gates, and a Sonnet review. A well-split task never needs a stronger
-model — if a task seems to, the split is wrong, not the tier. When unsure,
-dispatch Sonnet and escalate on its report. Set the model explicitly on
-every dispatch — omitted, it silently inherits the session's tier. Opus
-agents decide, split, and review; they never implement — every dispatch to
-one states this restriction in the brief itself, never left to inference.
+Design first: the brief is its product. Use Opus for design, Sonnet for implementation, and Haiku
+for transcription or single-file mechanical fixes. Review tier scales with the cost of being
+wrong. Invariant-bearing work — mutation paths, credential handling, and release workflows — gets
+adversarial Opus review. Ordinary code gets its tests, the gates, and Sonnet review. A well-split
+task never needs a stronger model. If it seems to, the split is wrong, not the tier. When unsure,
+dispatch Sonnet and escalate based on its report. Set the model explicitly on every dispatch;
+otherwise it silently inherits the session's tier. Opus agents decide, split, and review; they
+never implement. State that restriction in each Opus brief.
 
-Parallelism is earned by the design, not the deadline: when the plan pins
-each task's files and interfaces, tasks that share no files can run as
-parallel implementers, each in its own git worktree so their commits cannot
-tangle. Agents own named files, never directories — a slice needing a test
-alongside another's creates a new file rather than editing a shared one. One
-directive, one agent: never fold new work into a running agent just because
-it owns the files. Every task is reviewed before the next builds on it.
+Parallelism follows the design, not the deadline. When the plan pins each task's files and
+interfaces, tasks with no shared files can run in parallel. Each runs in its own git worktree so
+commits cannot tangle. Agents own named files, never directories. A slice needing a test alongside
+another's creates a new file instead of editing a shared one. Assign one directive to one agent.
+Do not fold new work into a running agent because it owns the files. Review each task before the
+next builds on it.
 
 ## Architecture rules
 
@@ -61,6 +52,13 @@ elasticctl-cli  →  elasticctl-api  →  elasticctl-core
   belongs to `elasticctl-cli::render`. This is what keeps a future MCP server
   additive — it will call the same functions and serialize the same structs. A
   command that prints gives MCP nothing but a string to re-parse.
+- **Orchestration belongs in `-api`, returning typed structs.** `cli/cmd/`
+  parses arguments, calls one API function, hands the result to render. MCP
+  cannot depend on `-cli`, so anything left in `cmd/` is unreachable from it.
+  v0.1 does not meet this — 1,528 lines sit in `cmd/` and most functions return
+  `serde_json::Value` — and the rules vertical is retrofitted in the MCP phase.
+  The rule binds new work from 0.2, so each capability area pays for itself
+  once instead of six at the end.
 - **`clap` types never appear in `-api` or `-core`.** If a command needs a
   value, pass the value, not the parsed arg struct.
 - Flavor differences are handled at runtime through the capability probe, not
@@ -80,16 +78,16 @@ elasticctl-cli  →  elasticctl-api  →  elasticctl-core
 
 ## Credentials
 
-`.env` holds live credentials for whatever stack you develop against. It is
-gitignored and mode `0600`; `.env.example` is the template to copy.
+`.env` holds live credentials for the stack you develop against. It is
+gitignored and mode `0600`. `.env.example` is the template to copy.
 
 - Never commit it, never copy its contents into tracked files, never echo the
   key into terminal output or commit messages.
 - `.env.example` is the committed template and must contain placeholders only.
 - An **organization-level** Cloud API key is not enough. Every key type carries
-  the `essu_` prefix, so it implies nothing about scope — only
-  `GET /_security/_authenticate` reports the realm. An organization key reads
-  fine and can create *disabled* rules, but **it cannot enable a rule** — the
+  the `essu_` prefix, so it does not indicate scope. Only
+  `GET /_security/_authenticate` reports the realm. An organization key can
+  read and create *disabled* rules, but **it cannot enable a rule**. The
   alerting framework refuses to mint a rule API key on its behalf. Enable,
   disable-apply, and `state push` need a **project-scoped Elasticsearch API
   key** created inside Kibana.
@@ -116,9 +114,9 @@ These cost real time if forgotten:
 - `_bulk_action` targets rules by the stable `rule_id` through the query form,
   `alert.attributes.params.ruleId: "<rule_id>"`, so no server-id lookup is
   needed. It also accepts `?dry_run=true` for a server-computed preview.
-- Rule export includes volatile fields (`id`, `created_at`, `updated_at`,
-  `updated_by`, `version`, `revision`, `execution_summary`). Normalize them
-  away on `pull` or every diff reports fake drift.
+- Rule export includes volatile fields (`id`, `created_at`, `created_by`,
+  `updated_at`, `updated_by`, `version`, `revision`, `execution_summary`).
+  Normalize them away on `pull` or every diff reports fake drift.
 - A real self-managed stack reports `version.build_flavor: "traditional"`, not
   `"default"`. Only `"serverless"` is matched exactly; everything else falls
   through to hostname detection.
@@ -140,38 +138,38 @@ cargo fmt --all --check                       # the CI gate, alongside:
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Fixtures are recorded from real traffic, never hand-written, and are tagged
-with flavor and stack version. Do not hand-edit a fixture to make a test pass —
+Fixtures are recorded from real traffic, never hand-written. They are tagged
+with flavor and stack version. Do not hand-edit a fixture to make a test pass;
 re-record it.
 
-The directory is named for the *deployment* flavor, not the reported one.
-Hosted and self-managed both report `build_flavor: "traditional"`, so recording
-a Hosted stack without setting `ELASTICCTL_FIXTURE_FLAVOR=ech` overwrites
+The directory is named for the *deployment* flavor, not the reported flavor.
+Hosted and self-managed both report `build_flavor: "traditional"`. Recording a
+Hosted stack without `ELASTICCTL_FIXTURE_FLAVOR=ech` overwrites
 `traditional-9.5.1`.
 
-Recording rules, because fixtures are public: scope every request to the probe
-rule — an unscoped `_find` or `_export` writes real rule content into the repo —
-and scrub identity (`username`, `full_name`, `email`, `created_by`,
-`updated_by`) as well as credentials. The export fixture holds NDJSON as an
-opaque string, so it needs its own scrub pass.
+Fixtures are public, so scope every recording request to the probe rule. An
+unscoped `_find` or `_export` writes real rule content into the repo. Scrub
+identity (`username`, `full_name`, `email`, `created_by`, `updated_by`) and
+credentials. The export fixture holds NDJSON as an opaque string, so it needs
+its own scrub pass.
 
 ## Development target and live testing
 
 Serverless is the primary target; nothing needs to run locally day to day. The
 `lab/` podman stack is an on-demand session (~3 GB, ~20 minutes) used only to
 record self-managed fixtures. Do not assume it is running. `podman compose`
-works by delegating to `docker-compose`; `podman-compose` is not installed.
-Kibana's entrypoint only maps `UPPER_SNAKE` env names — the dotted
-`xpack.encryptedSavedObjects.encryptionKey` form is silently ignored, and
-every rule creation then fails.
+delegates to `docker-compose`; `podman-compose` is not installed. Kibana's
+entrypoint only maps `UPPER_SNAKE` environment variable names. The dotted
+`xpack.encryptedSavedObjects.encryptionKey` form is silently ignored, so every
+rule creation fails.
 
-The Serverless dev project holds ~2,066 Elastic prebuilt rules, seeded for
-scale testing. They are read-only ground truth: never mutate an untagged
-rule. Every object a live test creates carries the `elasticctl-sample`
-marker — a `rule_id` prefix and tag for rules, `*elasticctl-sample*` in the
-name for indices — every mutation targets explicit ids, and a run ends by
-verifying the project is back to baseline: prebuilt rule count unchanged, no
-sample rules, no sample indices.
+The Serverless dev project holds ~2,066 Elastic prebuilt rules for scale
+testing. They are read-only ground truth: never mutate an untagged rule. Every
+object a live test creates carries the `elasticctl-sample` marker: a `rule_id`
+prefix and tag for rules, and `*elasticctl-sample*` in index names. Every
+mutation targets explicit ids. A run ends by verifying the project is back to
+baseline: unchanged prebuilt-rule count, no sample rules, and no sample
+indices.
 
 ## Sample data
 
@@ -182,25 +180,24 @@ OTRF/Security-Datasets is MIT (its README's GPL-3.0 line is stale);
 elastic/detection-rules is Elastic License v2 — never commit its content;
 sbousseaden/EVTX-ATTACK-SAMPLES has no license — do not use it at all.
 
-`sigma-cli` with `-t lucene -p ecs_windows -f siem_rule_ndjson` converts
-Sigma rules straight to importable NDJSON. Mordor events use pre-ECS
-winlogbeat field names (`EventID`, `CommandLine`, `Image`): remap to ECS and
-rewrite `@timestamp` to now before ingest, or no rule will ever match.
+`sigma-cli` with `-t lucene -p ecs_windows -f siem_rule_ndjson` converts Sigma
+rules to importable NDJSON. Mordor events use pre-ECS Winlogbeat field names
+(`EventID`, `CommandLine`, `Image`). Remap them to ECS and rewrite `@timestamp`
+to now before ingest, or no rule can match.
 
 ## Release
 
-The binary crate's package is named `elasticctl` (directory
-`crates/elasticctl-cli`), so `--package elasticctl-cli` no longer resolves.
-Publish with `cargo publish --workspace` (dry-run first): it verifies all
-three crates against a temp registry before uploading any. Never publish
-crate-by-crate — a partial failure strands crates on crates.io, where versions
-cannot be deleted, only yanked. cargo-dist installs as `dist`; `cargo dist`
-does not resolve. `dist build --artifacts=host` builds the host target only.
+The binary crate package is `elasticctl` (directory `crates/elasticctl-cli`),
+so `--package elasticctl-cli` does not resolve. Publish with
+`cargo publish --workspace` after a dry run. It verifies all three crates
+against a temporary registry before uploading any. Never publish
+crate-by-crate. A partial failure strands crates on crates.io, where versions
+can be yanked but not deleted. cargo-dist installs as `dist`; `cargo dist` does
+not resolve. `dist build --artifacts=host` builds only the host target.
 
-An `-rc.N` tag is conditional, not ceremony: cut one only when the build
-matrix is unproven — never run, or its target list changed. Check the last
-release's assets first; a complete list means a candidate proves nothing.
-README "Releasing" has the reasoning.
+Cut an `-rc.N` tag only when the build matrix is unproven: it has never run, or
+its target list changed. Check the last release's assets first. A complete list
+means a candidate proves nothing. README "Releasing" explains why.
 
 ## Git
 
