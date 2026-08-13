@@ -162,3 +162,28 @@ fn config_init_writes_an_owner_only_file() {
             .contains("kb.example.com")
     );
 }
+
+#[test]
+fn init_never_writes_userinfo_into_the_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.toml");
+
+    Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["config", "init", "--from-env", "--json", "--config"])
+        .arg(&cfg)
+        .env(
+            "ELASTICCTL_KIBANA_URL",
+            "https://user:hunter2@kb.example.com",
+        )
+        .env("ELASTICCTL_API_KEY", "essu_t")
+        .assert()
+        .success();
+
+    let body = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        !body.contains("hunter2") && !body.contains("user:"),
+        "a credential in the URL must never reach disk: {body}"
+    );
+    assert!(body.contains("https://kb.example.com"), "{body}");
+}
