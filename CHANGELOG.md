@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.3 — 2026-08-13
+
+Closes the last v0.1.x gaps. No breaking changes: a corpus under 10,000 rules —
+every real corpus today — is read exactly as it was in 0.1.2, output included.
+
+### Fixed
+
+- `state pull` and `state diff` no longer stop at 10,000 rules. Above the
+  result window the corpus is read as one query per rule type, sub-split by
+  enabled state when a single type is itself oversized, which puts the ceiling
+  near 140,000. Every rule has exactly one type, so the slices are disjoint and
+  together exhaustive, and their counts must sum to the corpus total or the
+  read is refused — a rule type added by a future stack version would otherwise
+  vanish silently from every pull.
+- The refusal above the window no longer points at `rules export` as a way
+  around it. Export carries its own 10,000 cap and answers `Can't export more
+  than 10000 rules`, so the advice sent operators to a second wall. Saved-object
+  export is not an alternative either: detection rules register as not
+  exportable through that interface at any size.
+
+### Documented
+
+- All three deployment flavors now hold 14 recorded fixtures. The self-managed
+  set gained the four it lacked, so no flavor is the least-tested one.
+- `rules preview` is confirmed against a self-managed stack. It had only ever
+  been exercised on Serverless.
+- A self-managed stack is now *measured* to emit no `x-found-handling-cluster`,
+  rather than assumed to from there being no Cloud proxy in front of it. Every
+  fixture set records response headers, and the classification test requires
+  them, so an unrecorded set can no longer read as a measured absence.
+
 ## 0.1.2 — 2026-08-13
 
 Finishes the detection-rules vertical. No breaking changes: every command

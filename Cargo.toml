@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/elasticctl-core", "crates/elasticctl-api", "crates/elasticctl-cli", "xtask"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.97.1"
 license = "Apache-2.0"
@@ -11,8 +11,8 @@ repository = "https://github.com/dannyota/elasticctl"
 authors = ["Danny"]
 
 [workspace.dependencies]
-elasticctl-core = { path = "crates/elasticctl-core", version = "0.1.2" }
-elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.2" }
+elasticctl-core = { path = "crates/elasticctl-core", version = "0.1.3" }
+elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.3" }
 # Declared once so every crate gets the same map semantics regardless of which
 # package a given cargo invocation selects. Insertion order drives table and
 # CSV column order; alphabetical would scramble natural field ordering.

@@ -2,7 +2,9 @@ use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter};
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, method, path, path_regex, query_param};
+use wiremock::matchers::{
+    body_partial_json, method, path, path_regex, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn profile_for(server: &MockServer) -> Profile {
@@ -24,6 +26,21 @@ fn transport(server: &MockServer) -> Transport {
 
 fn rule_json(id: &str) -> serde_json::Value {
     json!({"rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21})
+}
+
+/// A `_find` response body carrying `total` and exactly the given rules. The
+/// per-slice short-read check compares the returned rule count against
+/// `total`, so a passing partition test serves one entry per counted rule.
+fn find_body(total: u64, data: Vec<serde_json::Value>) -> serde_json::Value {
+    json!({"page": 1, "perPage": 10000, "total": total, "data": data})
+}
+
+/// `count` rules with ids `{prefix}-0..{prefix}-{count-1}`, so a slice's data
+/// matches its own total exactly.
+fn rules_of(prefix: &str, count: u64) -> Vec<serde_json::Value> {
+    (0..count)
+        .map(|i| rule_json(&format!("{prefix}-{i}")))
+        .collect()
 }
 
 #[test]
@@ -128,17 +145,186 @@ async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     assert_eq!(all.len(), 3);
 }
 
-/// A corpus past the window cannot be read by any page size, because the limit
-/// is on `from + size`. Returning the first 10,000 as if they were the corpus
-/// would make `state diff` call every unread rule locally added.
+/// Above the window the corpus is read as one `_find` per rule type rather
+/// than refused. Six types hold one rule each and `new_terms` holds the
+/// remaining 9,995, so the seven slice totals sum back to the corpus's
+/// 10,001 and every rule from every slice comes back.
 #[tokio::test]
-async fn find_all_refuses_a_corpus_larger_than_the_result_window() {
+async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     let server = MockServer::start().await;
+
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 10000, "total": 10001, "data": [rule_json("a")]
-        })))
+        .and(query_param_is_missing("filter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    for (rule_type, count) in [
+        ("query", 1u64),
+        ("eql", 1),
+        ("esql", 1),
+        ("threshold", 1),
+        ("threat_match", 1),
+        ("machine_learning", 1),
+        ("new_terms", 9995),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/_find"))
+            .and(query_param(
+                "filter",
+                format!("alert.attributes.params.type: \"{rule_type}\""),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(find_body(count, rules_of(rule_type, count))),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let all = rules::find_all(&transport(&server), &RuleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 10001);
+    assert!(
+        all.iter().any(|r| r.rule_id().unwrap() == "query-0"),
+        "the first type's rules must come back"
+    );
+    assert!(
+        all.iter().any(|r| r.rule_id().unwrap() == "new_terms-9994"),
+        "the last type's rules must come back too"
+    );
+}
+
+/// A single type still over the window is split again on `enabled`, which is
+/// likewise disjoint and exhaustive. A caller's `rule_type` narrows the
+/// partition to one slice before the enabled split.
+#[tokio::test]
+async fn find_all_splits_an_oversized_type_by_enabled() {
+    let server = MockServer::start().await;
+    let filter = RuleFilter {
+        rule_type: Some("query".into()),
+        ..Default::default()
+    };
+
+    // The initial read and the type slice carry the same filter and are both
+    // over the window.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.type: \"query\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.enabled: true AND alert.attributes.params.type: \"query\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(2, rules_of("on", 2))))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.enabled: false AND alert.attributes.params.type: \"query\"",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(find_body(9999, rules_of("off", 9999))),
+        )
+        .mount(&server)
+        .await;
+
+    let all = rules::find_all(&transport(&server), &filter).await.unwrap();
+    assert_eq!(all.len(), 10001);
+}
+
+/// The slice totals must sum back to the corpus total. Here the server counts
+/// 10,001 rules but serves one per type, so the seven slices sum to 7 — a
+/// short read, refused rather than silently dropped.
+#[tokio::test]
+async fn find_all_refuses_slice_totals_that_do_not_sum_to_the_corpus() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param_is_missing("filter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    for rule_type in [
+        "query",
+        "eql",
+        "esql",
+        "threshold",
+        "threat_match",
+        "machine_learning",
+        "new_terms",
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/_find"))
+            .and(query_param(
+                "filter",
+                format!("alert.attributes.params.type: \"{rule_type}\""),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(find_body(1, rules_of(rule_type, 1))),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let err = rules::find_all(&transport(&server), &RuleFilter::default())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
+    assert!(
+        err.message.contains("10001") && err.message.contains("sum to 7"),
+        "the error must name both the corpus count and the slice sum: {}",
+        err.message
+    );
+}
+
+/// A slice still over the window after both the type and enabled partitions
+/// cannot be served. The refusal names the count and the window limit and
+/// never points at `rules export`, which carries its own 10,000 cap (spec
+/// 5.2) and is not an escape hatch.
+#[tokio::test]
+async fn find_all_refuses_a_slice_still_over_the_window() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param_is_missing("filter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.type: \"query\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.enabled: true AND alert.attributes.params.type: \"query\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
         .mount(&server)
         .await;
 
@@ -148,12 +334,12 @@ async fn find_all_refuses_a_corpus_larger_than_the_result_window() {
     assert_eq!(err.kind, ErrorKind::Unsupported);
     assert!(
         err.message.contains("10001") && err.message.contains("10000"),
-        "the error must name both the corpus size and the limit: {}",
+        "the error must name both the slice size and the window limit: {}",
         err.message
     );
     assert!(
-        err.message.contains("rules export"),
-        "the error must point at the command that can read it: {}",
+        !err.message.contains("rules export"),
+        "the error must not point at a command with its own 10,000 cap: {}",
         err.message
     );
 }

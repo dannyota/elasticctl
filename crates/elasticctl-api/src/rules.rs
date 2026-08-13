@@ -115,42 +115,145 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     Ok((rules, total))
 }
 
-/// Every rule matching the filter, in one request.
+/// The seven detection-rule types. Every rule has exactly one `params.type`,
+/// so partitioning the corpus on it yields slices that are disjoint and
+/// together exhaustive — measured against 2,066 rules the seven sum to exactly
+/// the corpus (spec 5.2). Tags cannot make that claim: a rule may carry many
+/// or none, so tag slices both double-count and drop rules and no sum check
+/// could detect it.
+const RULE_TYPES: [&str; 7] = [
+    "query",
+    "eql",
+    "esql",
+    "threshold",
+    "threat_match",
+    "machine_learning",
+    "new_terms",
+];
+
+/// Every rule matching the filter.
 ///
-/// Two ways this can come up short, and both are refused rather than
-/// returned. A corpus larger than the result window cannot be read through
-/// `_find` at all, and a server that serves fewer rules than it counted has
-/// contradicted itself. Returning a partial corpus as though it were the whole
-/// one is the worst available outcome: `state diff` would report every unread
-/// rule as locally added, and `state pull` would write a mirror missing them,
-/// both silently.
+/// A corpus at or under the result window is read in one request, which is
+/// the fast path and covers every real corpus today. Above the window `_find`
+/// cannot serve the corpus by any page size — the limit is on `from + size` —
+/// so the read is partitioned: one request per rule type, with any type still
+/// over the window split again on `enabled`, which is likewise disjoint and
+/// exhaustive. Exhaustiveness is enforced by summing the slice totals back to
+/// the corpus total, not assumed.
+///
+/// A partial corpus is never returned as though it were whole. `state diff`
+/// would report every unread rule as locally added, and `state pull` would
+/// write a mirror missing them, both silently.
 pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     let (rules, total) = find_page(t, filter, 1, RESULT_WINDOW).await?;
 
-    if total > u64::from(RESULT_WINDOW) {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            format!(
-                "{total} rules match, more than the {RESULT_WINDOW} a single search can \
-                 return. Narrow the selection with a filter or a tag, or use \
-                 `rules export`, which streams rather than searching."
-            ),
-        ));
+    if total <= u64::from(RESULT_WINDOW) {
+        if (rules.len() as u64) < total {
+            return Err(short_read(total, rules.len()));
+        }
+        return Ok(rules);
     }
 
-    if (rules.len() as u64) < total {
+    // A caller already narrowed to one type cannot be partitioned further by
+    // type; the single slice is what it asked for, and only the enabled split
+    // below can subdivide it.
+    let types: Vec<&str> = match &filter.rule_type {
+        Some(t) => vec![t.as_str()],
+        None => RULE_TYPES.to_vec(),
+    };
+
+    let mut collected: Vec<Rule> = Vec::new();
+    let mut summed: u64 = 0;
+
+    for rule_type in types {
+        let mut type_filter = filter.clone();
+        type_filter.rule_type = Some(rule_type.to_string());
+
+        // A caller that already named this type made the opening request this
+        // very slice, and it came back over the window. Re-issuing it would
+        // fetch the same oversized count a second time only to arrive at the
+        // same split below.
+        let slice_total = if filter.rule_type.is_some() {
+            total
+        } else {
+            let (slice_rules, slice_total) = find_page(t, &type_filter, 1, RESULT_WINDOW).await?;
+
+            if slice_total <= u64::from(RESULT_WINDOW) {
+                if (slice_rules.len() as u64) < slice_total {
+                    return Err(short_read(slice_total, slice_rules.len()));
+                }
+                summed += slice_total;
+                collected.extend(slice_rules);
+                continue;
+            }
+            slice_total
+        };
+
+        // A caller that already fixed `enabled` leaves no room to split; the
+        // slice is refused rather than truncated to the first 10,000.
+        if filter.enabled.is_some() {
+            return Err(oversized(slice_total));
+        }
+
+        for enabled in [true, false] {
+            let mut enabled_filter = type_filter.clone();
+            enabled_filter.enabled = Some(enabled);
+            let (enabled_rules, enabled_total) =
+                find_page(t, &enabled_filter, 1, RESULT_WINDOW).await?;
+            if enabled_total > u64::from(RESULT_WINDOW) {
+                return Err(oversized(enabled_total));
+            }
+            if (enabled_rules.len() as u64) < enabled_total {
+                return Err(short_read(enabled_total, enabled_rules.len()));
+            }
+            summed += enabled_total;
+            collected.extend(enabled_rules);
+        }
+    }
+
+    // The sum is the exhaustiveness guarantee. A rule type added by a newer
+    // stack version would read as zero and silently vanish from every pull
+    // and read as remote-only in every diff unless the slices sum back to the
+    // count the server gave for the whole corpus.
+    if summed != total {
         return Err(Error::new(
             ErrorKind::Http,
             format!(
-                "the server counted {total} rules and returned {}. Refusing a partial \
-                 corpus: a short read is indistinguishable from rules having been \
-                 deleted.",
-                rules.len()
+                "the server counted {total} rules across the corpus but the type slices \
+                 sum to {summed}. Refusing a partial corpus: a rule type added by a newer \
+                 stack version would otherwise read as zero in every pull and diff."
             ),
         ));
     }
 
-    Ok(rules)
+    Ok(collected)
+}
+
+/// A server that counts more rules than it serves has contradicted itself.
+/// Returning the short list would be indistinguishable from rules having been
+/// deleted between the count and the read.
+fn short_read(counted: u64, returned: usize) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!(
+            "the server counted {counted} rules and returned {returned}. Refusing a partial \
+             corpus: a short read is indistinguishable from rules having been deleted."
+        ),
+    )
+}
+
+/// A slice still over the window after both partitions cannot be served at
+/// all; returning its first 10,000 as though they were the slice would make
+/// every unread rule look remote-only in a diff.
+fn oversized(count: u64) -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
+        format!(
+            "{count} rules match, more than the {RESULT_WINDOW} a single search can return \
+             even after partitioning by type and enabled. Narrow the selection with a \
+             filter or a tag."
+        ),
+    )
 }
 
 /// How many `rule_id`s go into one filtered `_find`.
