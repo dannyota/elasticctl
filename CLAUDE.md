@@ -9,6 +9,20 @@ operating contracts.
 source of truth for scope, architecture, and verified API behaviour. This file
 holds only the rules that are easy to violate.
 
+## Development workflow
+
+Design and review run on the strongest model tier (Fable or Opus); the design
+must be strong enough to hand off — exact files, interfaces, and test cases
+per task. Implementation runs on Sonnet; pure transcription and single-file
+mechanical fixes on Haiku. Set the model explicitly on every agent dispatch —
+an omitted model silently inherits the session's tier.
+
+Parallelism is earned by the design, not the deadline: when the plan pins
+each task's files and interfaces, tasks that share no files can run as
+parallel implementers. Tasks touching the same file run sequentially, and
+every task is reviewed before the next builds on it. `docs/plans/` holds the
+plans; `docs/plans/v0.1.1-backlog.md` is the current improvement queue.
+
 ## Architecture rules
 
 Dependency direction is strictly one way and must not be broken:
@@ -77,6 +91,13 @@ These cost real time if forgotten:
 - A real self-managed stack reports `version.build_flavor: "traditional"`, not
   `"default"`. Only `"serverless"` is matched exactly; everything else falls
   through to hostname detection.
+- `rules/preview` returns `{preview_id, invocations, errors, warnings}` and
+  **no hit count** — four hits and zero hits are byte-identical responses.
+  Hits land in the preview alerts index and must be queried separately with
+  the `preview_id`. The only in-band hit signal is the `max_signals` warning
+  at 100+.
+- Re-importing existing rules without overwrite is a per-rule 409 storm, not
+  a skip: N "already exists" errors and exit 1.
 
 ## Testing
 
@@ -108,6 +129,30 @@ record self-managed fixtures. Do not assume it is running.
 not installed. Kibana's entrypoint only maps `UPPER_SNAKE` env names — the
 dotted `xpack.encryptedSavedObjects.encryptionKey` form is silently ignored,
 and every rule creation then fails.
+
+## Live testing against the dev project
+
+The Serverless dev project holds ~2,066 Elastic prebuilt rules, seeded for
+scale testing. They are read-only ground truth: never mutate an untagged
+rule. Every object a live test creates carries the `elasticctl-sample`
+marker — a `rule_id` prefix and tag for rules, `*elasticctl-sample*` in the
+name for indices — every mutation targets explicit ids, and a run ends by
+verifying the project is back to baseline: prebuilt rule count unchanged, no
+sample rules, no sample indices.
+
+## Sample data
+
+Fetch, never vendor: third-party rule and event content stays out of this
+public repo; scripts download it on demand. Verified licenses (2026-08-13):
+SigmaHQ/sigma is DRL 1.1 — attribution and license notice required;
+OTRF/Security-Datasets is MIT (its README's GPL-3.0 line is stale);
+elastic/detection-rules is Elastic License v2 — never commit its content;
+sbousseaden/EVTX-ATTACK-SAMPLES has no license — do not use it at all.
+
+`sigma-cli` with `-t lucene -p ecs_windows -f siem_rule_ndjson` converts
+Sigma rules straight to importable NDJSON. Mordor events use pre-ECS
+winlogbeat field names (`EventID`, `CommandLine`, `Image`): remap to ECS and
+rewrite `@timestamp` to now before ingest, or no rule will ever match.
 
 ## Release
 
