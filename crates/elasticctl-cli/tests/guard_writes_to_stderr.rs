@@ -1,10 +1,7 @@
-//! Tripwire for the guard's highest-stakes contract: a dry-run preview must
-//! land on stderr, never stdout, or it corrupts piped JSON output on every
-//! dry run. This reads the module's own source and fails if the preview
-//! ever reaches for `print!`/`println!` outside its test module — a fast,
-//! static check that complements the real end-to-end assertion in
-//! `rules_mutate.rs`, which runs `rules disable` as a dry run through
-//! `assert_cmd` and checks stdout/stderr directly.
+//! Keep dry-run previews on stderr so piped JSON on stdout remains valid. This
+//! source check rejects `print!`/`println!` outside the test module. The
+//! end-to-end assertion in `rules_mutate.rs` also runs `rules disable` as a
+//! dry run and checks both output streams.
 
 use std::fs;
 use std::path::Path;
@@ -28,9 +25,8 @@ fn guard_module_writes_the_preview_to_stderr_only() {
             path.display()
         ),
     };
-    // `eprintln!(`/`eprint!(` textually contain `println!(`/`print!(` as a
-    // substring (the leading `e` aside), so the legitimate stderr calls must
-    // be scrubbed out before scanning for a stray stdout write.
+    // Remove stderr macros before scanning: their names contain the stdout
+    // macro names as substrings.
     let scrubbed = production.replace("eprintln!(", "").replace("eprint!(", "");
     for needle in ["print!(", "println!("] {
         assert!(

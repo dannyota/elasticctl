@@ -2,23 +2,22 @@
 
 ## 0.1.3 — 2026-08-13
 
-Closes the last v0.1.x gaps. No breaking changes: a corpus under 10,000 rules —
-every real corpus today — is read exactly as it was in 0.1.2, output included.
+Closes the remaining v0.1.x gaps. No breaking changes: every real corpus today
+has fewer than 10,000 rules and is read exactly as in 0.1.2, including output.
 
 ### Fixed
 
 - `state pull` and `state diff` no longer stop at 10,000 rules. Above the
-  result window the corpus is read as one query per rule type, sub-split by
-  enabled state when a single type is itself oversized, which puts the ceiling
-  near 140,000. Every rule has exactly one type, so the slices are disjoint and
-  together exhaustive, and their counts must sum to the corpus total or the
-  read is refused — a rule type added by a future stack version would otherwise
-  vanish silently from every pull.
+  result window, the corpus is read as one query per rule type. An oversized
+  type is further split by enabled state, raising the ceiling to about 140,000.
+  Every rule has one type, so the slices are disjoint and exhaustive. Their
+  counts must sum to the corpus total or the read is refused. Otherwise, a rule
+  type added by a future stack version could silently vanish from every pull.
 - The refusal above the window no longer points at `rules export` as a way
-  around it. Export carries its own 10,000 cap and answers `Can't export more
-  than 10000 rules`, so the advice sent operators to a second wall. Saved-object
-  export is not an alternative either: detection rules register as not
-  exportable through that interface at any size.
+  around it. Export has its own 10,000 cap and answers `Can't export more than
+  10000 rules`, so the advice sent operators to a second limit. Saved-object
+  export is not an alternative: detection rules register as not exportable
+  through that interface at any size.
 
 ### Documented
 
@@ -26,15 +25,16 @@ every real corpus today — is read exactly as it was in 0.1.2, output included.
   set gained the four it lacked, so no flavor is the least-tested one.
 - `rules preview` is confirmed against a self-managed stack. It had only ever
   been exercised on Serverless.
-- A self-managed stack is now *measured* to emit no `x-found-handling-cluster`,
-  rather than assumed to from there being no Cloud proxy in front of it. Every
-  fixture set records response headers, and the classification test requires
-  them, so an unrecorded set can no longer read as a measured absence.
+- A self-managed stack is now *measured* not to emit
+  `x-found-handling-cluster`; this was previously inferred from the absence of
+  a Cloud proxy. Every fixture set records response headers, and the
+  classification test requires them. An unrecorded set can no longer read as a
+  measured absence.
 
 ## 0.1.2 — 2026-08-13
 
 Finishes the detection-rules vertical. No breaking changes: every command
-without selectors behaves exactly as it did in 0.1.1, output fields included.
+without selectors behaves exactly as in 0.1.1, including output fields.
 
 ### Added
 
@@ -88,7 +88,7 @@ without selectors behaves exactly as it did in 0.1.1, output fields included.
 ## 0.1.1 — 2026-08-13
 
 Improvements and fixes inside the existing command surface. No breaking
-changes: every new flag has a default that preserves the previous behaviour.
+changes: every new flag has a default that preserves the previous behavior.
 
 ### Added
 
@@ -103,7 +103,7 @@ changes: every new flag has a default that preserves the previous behaviour.
 - `rules import --skip-existing` leaves rules that already exist alone instead
   of failing on each of them. The dry run names what would be created and what
   would be skipped. Mutually exclusive with `--overwrite`.
-- `info` reports the space list and a real licence tier, both probed, instead
+- `info` reports the space list and a real license tier, both probed, instead
   of no spaces and a hardcoded null.
 - `--debug` logs a line before each request is sent and on the timeout and
   connection-error branches.

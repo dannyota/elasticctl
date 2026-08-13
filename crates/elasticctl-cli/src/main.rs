@@ -20,7 +20,8 @@ async fn main() {
 
     let result = match &args.command {
         Command::Config { action } => match action {
-            // These three read only local files — no context, no network.
+            // These commands use local configuration only; they do not build a
+            // context or use the network.
             ConfigAction::List => cmd::config_cmd::list(&args.global),
             ConfigAction::Show => cmd::config_cmd::show(&args.global),
             ConfigAction::Init { name, from_env } => {
@@ -31,11 +32,8 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
-        // doctor tolerates a failed context build — that is exactly when an
-        // operator needs it most — so it takes GlobalArgs and builds its own
-        // context internally rather than failing fast here. It also folds
-        // the permissive-config-file warning into its own report instead of
-        // the stderr side channel every other command uses below.
+        // `doctor` builds its own context so it can report broken
+        // configuration. It includes permission warnings in its report.
         Command::Doctor => cmd::doctor::run(&args.global).await,
         Command::Info => match Context::build(&args.global) {
             Ok(ctx) => cmd::info::run(&ctx).await,
@@ -80,11 +78,11 @@ async fn main() {
                 Ok(ctx) => cmd::rules::get(&ctx, selector).await,
                 Err(e) => Err(e),
             },
-            // Local only: no Context is built, so this path cannot reach a
-            // credential check, transport, or capability probe.
+            // Local only: no context, credential check, transport, or
+            // capability probe.
             RulesAction::Validate { path } => cmd::rules::validate(path),
-            // An empty selector list is refused before a context is even
-            // built, so an unscoped mutation can never be expressed.
+            // Reject empty selectors before building a context so this cannot
+            // express an unscoped mutation.
             RulesAction::Enable { selectors } if selectors.is_empty() => Err(Error::new(
                 ErrorKind::Error,
                 "Name at least one rule to enable",
@@ -179,17 +177,14 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
-        // completion writes its script straight to stdout — a shell script is
-        // text, not a typed value, so it is the one command that streams
-        // rather than returning a renderable payload. The Null placeholder is
-        // never rendered; the match on `result` below exits before rendering.
+        // Completion streams a shell script to stdout. Its null placeholder is
+        // never rendered because the result match exits first.
         Command::Completion { shell } => cmd::meta::completion(*shell).map(|_| Value::Null),
         Command::Commands => cmd::meta::command_tree(),
     };
 
-    // The meta commands describe the CLI itself and never read a profile or
-    // config file, so a config permission warning is noise for them. Doctor is
-    // excluded because it folds the warning into its own report instead.
+    // Meta commands do not read profiles or config, so permission warnings are
+    // noise. `doctor` includes its warning in its own report.
     if result.is_ok()
         && !matches!(
             &args.command,
@@ -201,26 +196,17 @@ async fn main() {
 
     match result {
         Ok(value) => {
-            // completion already streamed its script to stdout; the Null
-            // placeholder is never rendered, or it would land on top of the
-            // script and corrupt it. Flush explicitly before exiting: the
-            // generated script only happens to end in a newline, and
-            // `std::process::exit` never runs `stdout`'s destructor.
+            // Completion already wrote its script. Do not render the null
+            // placeholder. Flush before exit because `process::exit` skips
+            // stdout's destructor.
             if matches!(&args.command, Command::Completion { .. }) {
                 use std::io::Write;
                 std::io::stdout().flush().ok();
                 std::process::exit(0);
             }
-            // `rules export` without `--out` already produced the raw rule
-            // file text (see cmd::rules::export) and returned it as the
-            // `text` field of its payload, alongside a `failed` report. The
-            // text is the content, not a report, so it must reach stdout
-            // untouched — `--format`/`--json` govern report rendering and must
-            // never re-encode exported rule content (CSV and table column
-            // derivation key off object fields, so re-encoding a plain string
-            // silently empties it). The `failed` half has nowhere to print
-            // without corrupting the file, so it decides the exit code and
-            // nothing more.
+            // Export content is raw file text, not a report. Write it unchanged
+            // so `--format` and `--json` cannot re-encode it. `failed` sets
+            // the exit code but is not printed with the file.
             let export_to_stdout = matches!(
                 &args.command,
                 Command::Rules {
@@ -233,12 +219,8 @@ async fn main() {
                 std::io::stdout().flush().ok();
                 std::process::exit(render::exit_code_for_value(&value));
             }
-            // `rules export --out <path>` already wrote the canonical file
-            // itself (see cmd::rules::export) and returned a small
-            // confirmation in its place. Rendering that confirmation through
-            // the normal --out path a second time would re-encode it under
-            // --format and clobber the file just written, so it always goes
-            // to stdout instead.
+            // Export already wrote the file. Render its confirmation to stdout
+            // so the normal `--out` path cannot overwrite it.
             let out_already_written = matches!(
                 &args.command,
                 Command::Rules {
@@ -255,10 +237,8 @@ async fn main() {
             };
 
             match render::emit(&value, &render_global) {
-                // The operator needs the report more than the code: render
-                // the payload first, and only then act on a partial failure
-                // it reports internally (e.g. `rules delete` naming which
-                // rules survived a per-rule error).
+                // Render partial-failure details before returning their exit
+                // code.
                 Ok(()) => {
                     let code = render::exit_code_for_value(&value);
                     if code != 0 {
@@ -278,9 +258,8 @@ async fn main() {
     }
 }
 
-/// `--format-file` selects the on-disk shape of an exported/imported rule
-/// file. Kept distinct from the global `--format`, which renders a
-/// command's *report* — the two must never be confused.
+/// Parse the rule-file format. `--format-file` controls file content;
+/// `--format` controls the command report.
 fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
     use elasticctl_api::codec::Format;
     match s.to_ascii_lowercase().as_str() {
@@ -293,10 +272,7 @@ fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
     }
 }
 
-/// A structured warning on stderr, matching the shape of the error envelope
-/// so stderr stays uniformly JSON-parseable. `Config` only ever returns
-/// data — this is the one place that decides how (and whether) the warning
-/// it reports gets rendered.
+/// Render permission warnings as JSON on stderr, matching error envelopes.
 fn emit_permission_warning(global: &GlobalArgs) {
     let path = context::config_path(global);
     if let Some(message) = Config::permission_warning(&path) {

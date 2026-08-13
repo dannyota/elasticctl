@@ -28,12 +28,9 @@ timeout_secs = 30
 "#,
     )
     .unwrap();
-    // Deliberately left at whatever the process umask produces (typically
-    // 0644, i.e. permissive): `Config::load` no longer prints anything, and
-    // the CLI's permission warning only fires on a successful command —
-    // these fixtures exercise failure paths, so no stray output reaches
-    // stderr either way. See `tests/permission_warning.rs` for the success
-    // path this used to paper over.
+    // Leave the mode to the process umask (usually 0644). These tests assert
+    // stdout only; `tests/permission_warning.rs` covers the warning emitted
+    // after successful commands.
     path
 }
 

@@ -1,35 +1,25 @@
-//! Turning typed values into text. The only module in the workspace that
-//! decides what a human sees.
+//! Renders typed values as text. This module defines human-readable output.
 
 use crate::cli::{Format, GlobalArgs};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Map, Value};
 use std::io::Write;
 
-/// Every failure exits 1. Usage errors exit 2, but `clap` handles those before
-/// a command ever runs.
+/// Command failures exit 1. `clap` handles usage errors with exit 2.
 pub fn exit_code_for(_err: &Error) -> i32 {
     1
 }
 
-/// A command can succeed at the process level — it built a context, resolved
-/// every selector, sent every request — while still reporting a partial
-/// failure inside its own payload. That must not exit 0, or a script
-/// checking only the exit code would miss it. Two payload shapes carry that
-/// signal:
+/// A successful command can report partial failure in its payload. Return a
+/// nonzero exit code so scripts do not miss it. Two shapes carry the signal:
 ///
-/// - a per-item report (e.g. `rules delete` continuing past a per-rule error
-///   to name every rule's fate): `failed` is a non-empty *array*.
-/// - a bulk action's summary (e.g. `rules enable`/`disable`'s
-///   `bulk_by_rule_ids` outcome): `failed` is a *count* greater than zero.
+/// - Per-item report: `failed` is a non-empty array.
+/// - Bulk-action summary: `failed` is a positive count.
 ///
-/// An absent `failed` field, an empty array, or a zero count all mean exit
-/// 0. `skipped` never factors in here: a skipped rule is one the server left
-/// alone because it was already in the target state, which is not a
-/// failure to report as one.
+/// An absent `failed`, empty array, or zero count means exit 0. `skipped` is
+/// not a failure because the server left a rule in its target state.
 ///
-/// One helper, so every later mutating command that adopts either shape
-/// inherits the same exit-code rule for free.
+/// Keep this rule in one helper for all mutating commands.
 pub fn exit_code_for_value(value: &Value) -> i32 {
     let is_failure = match value.get("failed") {
         Some(Value::Array(items)) => !items.is_empty(),
@@ -39,8 +29,7 @@ pub fn exit_code_for_value(value: &Value) -> i32 {
     if is_failure { 1 } else { 0 }
 }
 
-/// Keep only the named keys, in the order named. An absent key is skipped
-/// rather than rendered as null, so a typo does not produce a column of blanks.
+/// Keep named keys in order. Skip missing keys instead of rendering null.
 pub fn select_fields(value: &Value, fields: &str) -> Value {
     let names: Vec<&str> = fields
         .split(',')
@@ -78,7 +67,7 @@ fn cell(v: &Value) -> String {
     }
 }
 
-/// Column order comes from the first row, so it is stable and predictable.
+/// Use the first row's key order for stable columns.
 fn columns(rows: &[Value], fields: Option<&str>) -> Vec<String> {
     if let Some(f) = fields {
         return f

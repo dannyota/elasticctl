@@ -1,4 +1,4 @@
-//! The configuration-as-code loop: pull, diff, push.
+//! Configuration-as-code commands: pull, diff, and push.
 
 use crate::context::Context;
 use crate::guard::{self, Preview};
@@ -18,8 +18,8 @@ fn rules_dir(dir: &Path) -> PathBuf {
     dir.join("rules")
 }
 
-/// Rule ids are caller-supplied strings, not guaranteed to be UUIDs. Replace
-/// anything that would escape the directory or break on a filesystem.
+/// Rule IDs are caller-supplied strings. Replace characters that could escape
+/// the directory or are unsafe in filenames.
 fn safe_filename(rule_id: &str, ext: &str) -> String {
     let safe: String = rule_id
         .chars()
@@ -34,13 +34,9 @@ fn safe_filename(rule_id: &str, ext: &str) -> String {
     format!("{safe}.{ext}")
 }
 
-/// Whether a directory entry is one this scan should attempt to parse as a
-/// rule file. Deliberately narrower than `FileFormat::from_path`, which
-/// defaults an unrecognised extension to NDJSON — correct for `--out`/
-/// `--path`, where the user named the file deliberately, but wrong here: the
-/// whole reason `pull` writes one file per rule is per-rule git history,
-/// which makes a `README.md` or a stray `.DS_Store` living next to the rule
-/// files an expected occurrence, not an authoring mistake to fail on.
+/// Whether this scan should parse a directory entry as a rule file. Unlike
+/// `FileFormat::from_path`, ignore unknown extensions because rule directories
+/// commonly contain files such as `README.md` and `.DS_Store`.
 fn is_rule_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -80,10 +76,10 @@ fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
-/// The rules a scoped run acts on, and what it took to narrow them.
+/// Rules selected for a scoped run.
 ///
 /// `None` in `rule_ids` means no selector was given and the command acts on
-/// the whole space, which is the default and the pre-0.1.2 behaviour.
+/// all rules.
 struct Scope {
     rule_ids: Option<Vec<String>>,
     local_total: usize,
@@ -98,7 +94,7 @@ impl Scope {
         self.rule_ids.as_ref().map(Vec::len).unwrap_or(0)
     }
 
-    /// Keep only the rules the scope names. Unscoped, everything survives.
+    /// Keep only scoped rules. An unscoped run keeps all rules.
     fn narrow(&self, rules: Vec<Rule>) -> Vec<Rule> {
         match &self.rule_ids {
             None => rules,
@@ -109,9 +105,8 @@ impl Scope {
         }
     }
 
-    /// The remote side, read as narrowly as the scope allows. A scoped run is
-    /// one filtered `_find` per chunk of ids rather than a corpus read, which
-    /// is the point of scoping.
+    /// Read only the scoped remote rules. A scoped run uses filtered `_find`
+    /// requests rather than reading the full corpus.
     async fn remote(&self, ctx: &Context) -> Result<Vec<Rule>> {
         let transport = ctx.transport().await?;
         match &self.rule_ids {
@@ -120,8 +115,7 @@ impl Scope {
         }
     }
 
-    /// A phrase for the guard banner and nothing when unscoped, so an
-    /// unscoped apply reads exactly as it did before.
+    /// Describe the scope for the guard banner. Return nothing when unscoped.
     fn describe(&self) -> String {
         match &self.rule_ids {
             None => String::new(),
@@ -134,7 +128,7 @@ impl Scope {
     }
 }
 
-/// Resolve selectors against the local rules first, then the stack.
+/// Resolve selectors against local rules, then the stack.
 ///
 /// `local` is empty for `pull`, which reads from the stack and whose selectors
 /// therefore name stack rules.
@@ -161,12 +155,11 @@ pub async fn pull(
     tag: Option<&str>,
 ) -> Result<Value> {
     ctx.require_credential()?;
-    // Pull reads from the stack, so a selector names a stack rule. There is no
-    // local side to prefer, and the directory may not exist yet.
+    // Pull reads from the stack, so selectors name stack rules. The directory
+    // may not exist yet.
     let scope = scope_of(ctx, selectors, tag, &[], "pull").await?;
     let mut remote = scope.remote(ctx).await?;
-    // Server order is not stable across calls; a collision report and the
-    // write order both have to be.
+    // Sort unstable server output so collision reports and writes are stable.
     normalize::sort_rules(&mut remote);
 
     let ext = match format {
@@ -174,24 +167,19 @@ pub async fn pull(
         FileFormat::Ndjson => "ndjson",
     };
 
-    // `safe_filename` closes path traversal by replacing every character
-    // outside [A-Za-z0-9_-] with `_`, and that replacement can map two
-    // distinct rule ids onto one filename ("a/b" and "a_b" both become
-    // "a_b"). An unnoticed collision silently drops a rule from the mirror
-    // while the pulled count keeps counting both.
+    // `safe_filename` prevents path traversal but can map distinct rule IDs to
+    // one filename (for example, `a/b` and `a_b`). A collision would silently
+    // omit a rule from the mirror.
     //
-    // Plan every filename first. Refusing after the first write leaves a
-    // directory that is neither the old state nor the new one, and reporting
-    // one pair per run hides the second until a re-run.
+    // Plan all filenames before writing. Failing after a write would leave a
+    // partial directory and hide later collisions.
     let mut claimed: BTreeMap<String, String> = BTreeMap::new();
     let mut collisions: Vec<String> = Vec::new();
     let mut planned: Vec<(String, Rule)> = Vec::with_capacity(remote.len());
 
     for rule in &remote {
-        // Canonicalise before encoding: `serde_json` runs with
-        // `preserve_order`, so encoding a rule straight from the API would
-        // emit keys in response order and two pulls from an unchanged stack
-        // would not be byte-identical.
+        // Canonicalize before encoding. `serde_json` preserves response key
+        // order, which would otherwise make unchanged pulls differ.
         let canonical = normalize::canonical(rule);
         let rule_id = canonical.rule_id()?.to_string();
         let filename = safe_filename(&rule_id, ext);
@@ -257,7 +245,7 @@ pub async fn diff(
     let remote = scope.remote(ctx).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    // Unchanged rules are omitted: a diff should show what differs.
+    // Omit unchanged rules so the diff shows only differences.
     let changes: Vec<&Change> = drift
         .changes
         .iter()
@@ -286,8 +274,8 @@ pub async fn push(
 ) -> Result<Value> {
     ctx.require_credential()?;
     let local_all = read_local(dir)?;
-    // Local-first resolution: a rule that exists only on disk has no remote id
-    // to be found by, and creating it is the thing a scoped push is for.
+    // Resolve locally first because disk-only rules have no remote ID and may
+    // be created by a scoped push.
     let scope = scope_of(ctx, selectors, tag, &local_all, "apply").await?;
     let local = scope.narrow(local_all);
     let transport = ctx.transport().await?;
@@ -321,11 +309,8 @@ pub async fn push(
 
     let mut entries: Vec<ReportEntry> = Vec::new();
 
-    // Remote-only rules are recorded before anything is applied, so they
-    // appear in the report even on a dry run — and, since `actionable()`
-    // deliberately excludes `RemoteOnly`, they can never reach the loop
-    // below that actually mutates the stack. Local absence is not a delete
-    // instruction: push never deletes a remote rule.
+    // Record remote-only rules before applying changes, including in dry runs.
+    // `actionable()` excludes them because push never deletes remote rules.
     for c in &drift.changes {
         if let Change::RemoteOnly { rule_id, name } = c {
             entries.push(ReportEntry {
@@ -340,8 +325,7 @@ pub async fn push(
         }
     }
 
-    // The selection is named in the banner because a scoped apply that reads
-    // identically to a full one defeats the point of showing a banner at all.
+    // Name the selection so a scoped preview differs from a full preview.
     let preview = Preview {
         action: format!(
             "Push {} rule change(s) from {}{}",
@@ -354,17 +338,13 @@ pub async fn push(
 
     let applying = guard::check(ctx, "state push", &preview);
 
-    // Every actionable change gets an entry regardless of `applying`: the
-    // report exists to record what was *proposed*, not only what was
-    // applied, so a dry run must not silently omit pending creates and
-    // updates from `--report` (nor from the JSON summary's `pending` count
-    // below) — a script piping `state push --json` has no other way to
-    // learn what would change.
+    // Record every actionable change even in dry runs. The report and JSON
+    // `pending` count describe proposed creates and updates.
     for c in &actionable {
         let (rule_id, name, action) = match c {
             Change::Added { rule_id, name } => (rule_id.clone(), name.clone(), "create"),
             Change::Modified { rule_id, name, .. } => (rule_id.clone(), name.clone(), "update"),
-            // `actionable()` only yields Added/Modified.
+            // `actionable()` yields only Added and Modified changes.
             _ => continue,
         };
 
@@ -386,9 +366,8 @@ pub async fn push(
             continue;
         }
 
-        // A failure on one rule must not abort the rest: a partial push
-        // still has to be fully auditable, so every outcome is recorded
-        // rather than propagated with `?`.
+        // Continue after a per-rule failure so the report records every
+        // outcome.
         let outcome = if action == "create" {
             api::create(transport, &desired).await
         } else {
@@ -473,10 +452,8 @@ mod tests {
         assert!(!is_rule_file(Path::new("noextension")));
     }
 
-    // A README lives next to per-rule files as a matter of course — the
-    // whole reason `pull` writes one file per rule is per-rule git history,
-    // and a directory kept in git tends to grow a README. It must not turn
-    // `diff`/`push` into an "invalid JSON on line 1" failure.
+    // Rule directories commonly contain a README. Do not parse it as a rule
+    // or fail `diff` and `push`.
     #[test]
     fn read_local_skips_non_rule_files_and_reads_the_valid_ones() {
         let dir = tempfile::tempdir().unwrap();

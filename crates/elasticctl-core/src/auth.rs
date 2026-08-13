@@ -1,4 +1,4 @@
-//! Credential selection and the Authorization header.
+//! Credential selection and `Authorization` header construction.
 
 use crate::config::Profile;
 use crate::error::{Error, ErrorKind, Result};
@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Credential {
-    /// An Elastic API key. Already base64 of `id:key`, so it is sent verbatim.
+    /// An Elastic API key, already Base64-encoded as `id:key`.
     ApiKey(String),
     Basic {
         username: String,
@@ -16,9 +16,8 @@ pub enum Credential {
 }
 
 impl std::fmt::Debug for Credential {
-    /// Never prints key or password material — this type exists to carry a
-    /// live credential, and a derived Debug would leak it into any log or
-    /// panic message.
+    /// Redacts keys and passwords. Derived `Debug` could expose them in logs
+    /// or panic messages.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Credential::ApiKey(_) => f.write_str("Credential::ApiKey(***)"),
@@ -33,8 +32,8 @@ impl std::fmt::Debug for Credential {
 }
 
 impl Credential {
-    /// API key wins when both are present: it is the documented default and
-    /// the one that works across all three deployment flavors.
+    /// Prefer an API key when both credential types are configured. It is the
+    /// documented default and works on all deployment flavors.
     pub fn from_profile(p: &Profile) -> Result<Credential> {
         if let Some(key) = &p.api_key
             && !key.trim().is_empty()
@@ -53,8 +52,8 @@ impl Credential {
         }
     }
 
-    /// Whether a profile carries a usable credential. Single source of truth:
-    /// two independent definitions of "has a credential" will drift.
+    /// Whether the profile has a usable credential. Reuse credential selection
+    /// so this rule does not diverge from `from_profile`.
     pub fn is_configured(profile: &Profile) -> bool {
         Self::from_profile(profile).is_ok()
     }
@@ -101,7 +100,7 @@ mod tests {
             username: "elastic".into(),
             password: "changeme".into(),
         };
-        // base64("elastic:changeme")
+        // Base64 of "elastic:changeme".
         assert_eq!(c.header_value(), "Basic ZWxhc3RpYzpjaGFuZ2VtZQ==");
     }
 

@@ -21,11 +21,10 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - ELASTICSEARCH_USERNAME=kibana_system
       - ELASTICSEARCH_PASSWORD=elasticctl-lab-kibana
-      # Without this, the alerting framework cannot persist rule API keys and
-      # EVERY rule creation fails with an error that never mentions encryption.
-      # The docker entrypoint only maps the UPPER_SNAKE form of a setting to a
-      # --longopt; the dotted form is silently ignored, so Kibana 9.5.1 starts
-      # with a random key and the lab cannot install or enable rules.
+      # The alerting framework needs this key to persist rule API keys. Without
+      # it, every rule creation fails with an error that does not mention
+      # encryption. The Docker entrypoint maps only the `UPPER_SNAKE` form to a
+      # long option; it silently ignores the dotted form.
       - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=elasticctl_lab_encryption_key_32ch
       - XPACK_SECURITY_ENCRYPTIONKEY=elasticctl_lab_security_key_32chars
       - XPACK_REPORTING_ENCRYPTIONKEY=elasticctl_lab_reporting_key_32chr

@@ -1,9 +1,9 @@
 # elasticctl
 
-**Operate Elastic Security as code with a safety-first CLI for security engineers.**
+**A safety-first CLI to operate Elastic Security as code.**
 
 `elasticctl` is a Rust CLI for managing Elastic Security detection rules as
-code, across self-managed stacks, Elastic Cloud Hosted deployments, and Elastic
+code across self-managed stacks, Elastic Cloud Hosted deployments, and Elastic
 Cloud Serverless projects. It is a sibling to
 [splunkctl](https://github.com/dannyota/splunkctl) and shares its operating
 contracts:
@@ -21,11 +21,11 @@ An MCP server is planned once the CLI surface is stable.
 
 ## Install
 
-Two options: build from crates.io, or download a prebuilt binary.
+Install from crates.io or download a prebuilt binary.
 
 ### From crates.io
 
-Requires a Rust toolchain (stable).
+Requires the stable Rust toolchain.
 
 ```bash
 cargo install elasticctl
@@ -52,11 +52,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/dannyota/elasticct
 
 ## Quickstart
 
-Point `elasticctl` at your stack and write a profile. Credentials come from
-`ELASTICCTL_*` environment variables; `.env.example` documents them. The key
-must be a project-scoped Elasticsearch API key created inside Kibana — an
-organization-level Cloud key can read and create disabled rules but cannot
-enable one.
+Create a profile from `ELASTICCTL_*` environment variables; `.env.example`
+documents them. The key must be a project-scoped Elasticsearch API key created
+inside Kibana. An organization-level Cloud key can read and create disabled
+rules but cannot enable one.
 
 ```bash
 export ELASTICCTL_KIBANA_URL=https://YOUR-PROJECT.kb.YOUR-REGION.aws.elastic.cloud
@@ -70,7 +69,7 @@ Confirm the stack is reachable, the key scope is right, and rules are readable:
 elasticctl doctor
 ```
 
-The rules-as-code loop:
+Manage rules as code:
 
 ```bash
 elasticctl state pull --dir state   # writes state/rules/*.ndjson
@@ -81,9 +80,9 @@ elasticctl state push --dir state   # preview; add --yes to apply
 
 `push` and every other mutation preview by default and apply only with `--yes`.
 
-All three take the same positional selectors and `--tag` as `rules export`, and
-a selection narrows both sides before drift is computed — so a scoped run reads
-one filtered query rather than the whole corpus:
+All three take the same positional selectors and `--tag` as `rules export`.
+A selection narrows both sides before drift is computed. A scoped run reads one
+filtered query instead of the whole corpus:
 
 ```bash
 elasticctl state diff --dir state my-rule-id      # one rule
@@ -126,18 +125,17 @@ details.
 
 ## Releasing
 
-Releases go out two ways: the three crates on crates.io, and cross-platform
-binaries on GitHub Releases. `cargo publish --workspace` packages and verifies
-all three crates before uploading any of them, so a verification failure cannot
-strand a published crate with an unpublished dependency. (`elasticctl-api`
-depends on `elasticctl-core`, and `elasticctl` depends on both; `xtask` is not
-published.)
+Releases publish the three crates to crates.io and cross-platform binaries to
+GitHub Releases. `cargo publish --workspace` packages and verifies all three
+crates before uploading any. A verification failure therefore cannot strand a
+published crate with an unpublished dependency. (`elasticctl-api` depends on
+`elasticctl-core`, and `elasticctl` depends on both; `xtask` is not published.)
 
-Releases through 0.1.2 tagged without publishing. From 0.1.3 both happen: the
-tag builds the GitHub Release binaries and the workspace publishes to
-crates.io. Publish all three crates together or none — the binary depends on
-both libraries by version, so publishing it alone leaves `cargo install
-elasticctl` unable to resolve.
+Releases through 0.1.2 were tagged without publishing. From 0.1.3, the tag
+builds GitHub Release binaries and the workspace publishes to crates.io.
+Publish all three crates together or none. The binary depends on both libraries
+by version, so publishing it alone leaves `cargo install elasticctl` unable to
+resolve.
 
 1. Bump the version in `Cargo.toml` in two places: `[workspace.package] version`
    and the `version` fields of `elasticctl-core` and `elasticctl-api` in
@@ -155,39 +153,38 @@ Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
 To build only the host target locally: `dist build --artifacts=host`.
 
-### Never write a credential-shaped URL in the changelog
+### Do not write a credential-shaped URL in the changelog
 
-cargo-dist embeds the changelog entry in the plan manifest, and the workflow
-passes that manifest between jobs as a job output. The GitHub runner masks
-anything resembling a credential in a URL — the literal `user:password@host`
-form — and once an output contains masked text the runner **drops the whole
-output** with `Skip output 'val' since it may contain secret`. The build matrix
-is computed from that output, so every build job silently skips and the release
-publishes a manifest and nothing else, while reporting success.
+cargo-dist embeds the changelog entry in the plan manifest. The workflow passes
+that manifest between jobs as a job output. The GitHub runner masks anything
+resembling a URL credential — the literal `user:password@host` form. If an
+output contains masked text, the runner **drops the whole output** with `Skip
+output 'val' since it may contain secret`. The build matrix comes from that
+output, so every build job silently skips. The release then publishes only a
+manifest while reporting success.
 
 Describe such a URL in prose instead. If a release ever produces only
 `dist-manifest.json`, look for that warning in the `plan` job first.
 
 ### When a release candidate is worth it
 
-Tag an `-rc.N` first only when the build matrix is genuinely unproven — it has
-never run, or `dist-workspace.toml` changed its target list. Check the last
-release's assets before deciding:
+Tag an `-rc.N` only when the build matrix is unproven: it has never run, or
+`dist-workspace.toml` changed its target list. Check the last release's assets
+first:
 
 ```bash
 gh release view vX.Y.Z --json assets --jq '.assets[].name'
 ```
 
-A complete asset list means the matrix works and a candidate proves nothing;
-tag the real version. Otherwise tag `-rc.1`, confirm the assets, install from
-it, then delete the release and the tag before tagging for real.
+A complete asset list means the matrix works, so tag the real version.
+Otherwise, tag `-rc.1`, confirm its assets, install from it, then delete the
+release and tag before tagging for real.
 
-The reason to keep this conditional: a release candidate costs a second full
-matrix build and four cleanup commands, and it insures against a cost that is
-currently low — no crates.io publish, a deletable GitHub Release, a deletable
-tag, and no downstream consumer to pull a broken build. That calculation
-changes once the crates are published or anyone installs from a tag; until
-then, prove the matrix once and stop repeating the ceremony.
+A release candidate costs a second full matrix build and four cleanup commands.
+Its value is testing an unproven matrix before the irreversible crates.io
+publish and final tag. Once a release has proved the unchanged matrix, repeating
+that test adds little protection. Test it again only after the target list
+changes.
 
 ## Development
 

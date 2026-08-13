@@ -1,7 +1,6 @@
-//! Typed wrappers over the detection-engine API.
+//! Typed wrappers for the detection-engine API.
 //!
-//! Every function keys on the stable `rule_id`, never on the volatile
-//! server-side `id`.
+//! Functions use stable `rule_id` values, not volatile server-side `id` values.
 
 use crate::codec;
 use crate::model::{ExportSummary, Rule};
@@ -11,16 +10,12 @@ use serde_json::{Value, json};
 
 const BASE: &str = "/api/detection_engine/rules";
 
-/// Elasticsearch's result window. `_find` is a search underneath, so
-/// `from + size` must not exceed this: 10001 comes back as a 400 naming the
-/// window.
+/// Elasticsearch's `_find` result window. `from + size` cannot exceed this;
+/// 10,001 returns a 400 error.
 ///
-/// It bounds `per_page` and, through the sum, the largest corpus `_find` can
-/// return at all — paging smaller does not evade a limit on `from + size`.
-/// Reading at the window is therefore both the fastest way to read a corpus
-/// and the only page size that reads as much of one as exists: measured
-/// against 2,066 rules, one request costs 2.4 s where 21 pages of 100 cost
-/// 8.4-11 s.
+/// It bounds `per_page` and the largest `_find` result. Smaller pages cannot
+/// evade the `from + size` limit. A window-sized request read 2,066 rules in
+/// 2.4 seconds; 21 pages of 100 took 8.4–11 seconds.
 const RESULT_WINDOW: u32 = 10_000;
 
 #[derive(Debug, Clone, Default)]
@@ -29,8 +24,8 @@ pub struct RuleFilter {
     pub rule_type: Option<String>,
     pub severity: Option<String>,
     pub tag: Option<String>,
-    /// Exact display name, filtered server-side. Resolving a name by walking
-    /// every page cost 8.8 seconds against 2,066 rules; this is one request.
+    /// Exact display name, filtered server-side. This takes one request;
+    /// walking 2,066 rules took 8.8 seconds.
     pub name: Option<String>,
     /// A raw KQL fragment, combined with the structured filters above.
     pub query: Option<String>,
@@ -70,10 +65,9 @@ impl RuleFilter {
 
 /// Escape a value for use inside a double-quoted KQL literal.
 ///
-/// Without this, a value containing a quote closes the literal early and the
-/// rest is parsed as KQL — turning a scoped bulk action into an unscoped one.
-/// Backslash must be escaped first, or it would double-escape the quotes added
-/// after it.
+/// A quote could otherwise close the literal and make the remaining value KQL,
+/// turning a scoped bulk action into an unscoped action. Escape backslashes
+/// first to avoid double-escaping inserted quote escapes.
 fn kql_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -102,9 +96,8 @@ pub async fn find_page(
     decode_find(&body)
 }
 
-/// Decode a `_find` response envelope into its rules and total. Extracted so
-/// the recorded `rules_find` fixture can be decoded offline by the same path
-/// the live client uses.
+/// Decode a `_find` response into rules and a total. Fixtures use this same
+/// path offline.
 pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     let total = body["total"].as_u64().unwrap_or(0);
     let data = body["data"].as_array().cloned().unwrap_or_default();
@@ -115,12 +108,10 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     Ok((rules, total))
 }
 
-/// The seven detection-rule types. Every rule has exactly one `params.type`,
-/// so partitioning the corpus on it yields slices that are disjoint and
-/// together exhaustive — measured against 2,066 rules the seven sum to exactly
-/// the corpus (spec 5.2). Tags cannot make that claim: a rule may carry many
-/// or none, so tag slices both double-count and drop rules and no sum check
-/// could detect it.
+/// Detection-rule types used to partition a corpus. Each rule has one
+/// `params.type`, so type slices are disjoint and exhaustive. Tags are not:
+/// a rule can have many tags or none. Measured against 2,066 rules, these seven
+/// type slices sum exactly to the corpus.
 const RULE_TYPES: [&str; 7] = [
     "query",
     "eql",
@@ -133,17 +124,12 @@ const RULE_TYPES: [&str; 7] = [
 
 /// Every rule matching the filter.
 ///
-/// A corpus at or under the result window is read in one request, which is
-/// the fast path and covers every real corpus today. Above the window `_find`
-/// cannot serve the corpus by any page size — the limit is on `from + size` —
-/// so the read is partitioned: one request per rule type, with any type still
-/// over the window split again on `enabled`, which is likewise disjoint and
-/// exhaustive. Exhaustiveness is enforced by summing the slice totals back to
-/// the corpus total, not assumed.
+/// Read corpora within the result window in one request. For larger corpora,
+/// partition by rule type, then by `enabled` when needed. Verify the partition
+/// by summing slice totals to the corpus total.
 ///
-/// A partial corpus is never returned as though it were whole. `state diff`
-/// would report every unread rule as locally added, and `state pull` would
-/// write a mirror missing them, both silently.
+/// Never return a partial corpus. `state diff` would report unread rules as
+/// locally added, and `state pull` would silently omit them.
 pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     let (rules, total) = find_page(t, filter, 1, RESULT_WINDOW).await?;
 
@@ -154,9 +140,8 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         return Ok(rules);
     }
 
-    // A caller already narrowed to one type cannot be partitioned further by
-    // type; the single slice is what it asked for, and only the enabled split
-    // below can subdivide it.
+    // A caller that filtered by type has one requested slice. Only `enabled`
+    // can subdivide it further.
     let types: Vec<&str> = match &filter.rule_type {
         Some(t) => vec![t.as_str()],
         None => RULE_TYPES.to_vec(),
@@ -169,10 +154,8 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         let mut type_filter = filter.clone();
         type_filter.rule_type = Some(rule_type.to_string());
 
-        // A caller that already named this type made the opening request this
-        // very slice, and it came back over the window. Re-issuing it would
-        // fetch the same oversized count a second time only to arrive at the
-        // same split below.
+        // The opening request already fetched this selected type. Repeating it
+        // would return the same oversized result before the `enabled` split.
         let slice_total = if filter.rule_type.is_some() {
             total
         } else {
@@ -189,8 +172,8 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
             slice_total
         };
 
-        // A caller that already fixed `enabled` leaves no room to split; the
-        // slice is refused rather than truncated to the first 10,000.
+        // A caller that filtered by `enabled` leaves no further partition.
+        // Refuse the slice rather than truncating it to 10,000 rules.
         if filter.enabled.is_some() {
             return Err(oversized(slice_total));
         }
@@ -211,10 +194,8 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         }
     }
 
-    // The sum is the exhaustiveness guarantee. A rule type added by a newer
-    // stack version would read as zero and silently vanish from every pull
-    // and read as remote-only in every diff unless the slices sum back to the
-    // count the server gave for the whole corpus.
+    // The sum verifies exhaustiveness. A newer rule type would otherwise read
+    // as zero, disappear from pulls, and appear remote-only in diffs.
     if summed != total {
         return Err(Error::new(
             ErrorKind::Http,
@@ -229,9 +210,8 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     Ok(collected)
 }
 
-/// A server that counts more rules than it serves has contradicted itself.
-/// Returning the short list would be indistinguishable from rules having been
-/// deleted between the count and the read.
+/// A server that counts more rules than it serves contradicts itself. A short
+/// list is indistinguishable from rules deleted between count and read.
 fn short_read(counted: u64, returned: usize) -> Error {
     Error::new(
         ErrorKind::Http,
@@ -242,9 +222,8 @@ fn short_read(counted: u64, returned: usize) -> Error {
     )
 }
 
-/// A slice still over the window after both partitions cannot be served at
-/// all; returning its first 10,000 as though they were the slice would make
-/// every unread rule look remote-only in a diff.
+/// A slice that exceeds the window after both partitions cannot be served.
+/// Returning its first 10,000 rules would make unread rules look remote-only.
 fn oversized(count: u64) -> Error {
     Error::new(
         ErrorKind::Unsupported,
@@ -258,17 +237,14 @@ fn oversized(count: u64) -> Error {
 
 /// How many `rule_id`s go into one filtered `_find`.
 ///
-/// A KQL disjunction of every selected id would build a URL that grows with
-/// the selection, and a `--tag` can select thousands. Chunking keeps each URL
-/// well inside any practical limit; the chunks are cheap because each is a
-/// server-side filter rather than a corpus read.
+/// A KQL disjunction grows with the selection, and `--tag` can select
+/// thousands of rules. Chunking keeps each URL below practical limits.
 const ID_CHUNK: usize = 50;
 
 /// The rules carrying exactly these `rule_id`s.
 ///
-/// A selected id the stack does not have simply does not come back. That is
-/// not an error here — for `state push` it is precisely the locally-added rule
-/// the run exists to create.
+/// IDs absent from the stack do not return. That is expected for locally added
+/// rules that `state push` creates.
 pub async fn find_by_rule_ids(t: &Transport, rule_ids: &[String]) -> Result<Vec<Rule>> {
     let mut found = Vec::with_capacity(rule_ids.len());
     for chunk in rule_ids.chunks(ID_CHUNK) {
@@ -310,8 +286,7 @@ pub async fn update(t: &Transport, rule: &Rule) -> Result<Rule> {
 pub async fn patch(t: &Transport, rule_id: &str, patch: &Value) -> Result<Rule> {
     let mut body = patch.as_object().cloned().unwrap_or_default();
     body.insert("rule_id".into(), json!(rule_id));
-    // PATCH is the documented partial update and accepts rule_id directly,
-    // which avoids resolving the volatile server id.
+    // PATCH accepts `rule_id` directly, avoiding the volatile server `id`.
     let response = t.patch(BASE, &Value::Object(body)).await?;
     Rule::from_value(response)
 }
@@ -354,8 +329,7 @@ pub async fn bulk_by_rule_ids(
     rule_ids: &[String],
     dry_run: bool,
 ) -> Result<BulkOutcome> {
-    // An empty selection must never become an unscoped query — that would
-    // target every rule in the space.
+    // An empty selection must not become an unscoped query for every rule.
     if rule_ids.is_empty() {
         return Ok(BulkOutcome::default());
     }
@@ -379,10 +353,8 @@ pub async fn bulk_by_rule_ids(
 
 /// Export every rule, or exactly the named ones.
 ///
-/// `None` posts no body at all, which is the whole-space export and is
-/// byte-identical to what it has always sent. `Some(ids)` posts the scoped
-/// `objects` form, so a subset export transfers the subset rather than
-/// everything followed by a local filter.
+/// `None` posts no body for a whole-space export. `Some(ids)` posts `objects`
+/// so a subset export transfers only the selected rules.
 pub async fn export(
     t: &Transport,
     rule_ids: Option<&[String]>,
@@ -401,23 +373,19 @@ pub async fn export(
     codec::decode_ndjson(&text)
 }
 
-/// How many ids to ask about in one `_find`. Large enough that a
-/// forty-rule corpus is a single request; small enough that a thousand-rule
-/// one cannot build a URL a proxy will reject.
+/// IDs to check in one `_find`. This keeps large requests below proxy URL
+/// limits while a 40-rule corpus still uses one request.
 const EXISTENCE_CHUNK: usize = 50;
 
 /// Which of these rule ids already exist on the stack.
 ///
-/// This is what makes an idempotent import possible: the file's ids are
-/// checked before anything is uploaded, so an existing rule can be skipped
-/// rather than becoming one of N conflict errors, and the dry run can say
-/// which is which instead of listing every rule as if it would import.
+/// Check file IDs before upload so existing rules can be skipped. This makes
+/// imports idempotent and lets dry runs distinguish skipped rules.
 pub async fn existing_rule_ids(
     t: &Transport,
     rule_ids: &[String],
 ) -> Result<std::collections::BTreeSet<String>> {
-    // An empty list must never become an unscoped find — that would report
-    // every rule in the space as "existing".
+    // An empty list must not become an unscoped find for every rule.
     let mut found = std::collections::BTreeSet::new();
     if rule_ids.is_empty() {
         return Ok(found);
@@ -454,9 +422,8 @@ pub struct PreviewResult {
 
 /// Run a rule against historical data without writing alerts.
 ///
-/// `invocationCount` and `timeframeEnd` are required by the API. The response
-/// carries a `logs` array with one entry per simulated invocation, each with
-/// its own errors and warnings.
+/// The API requires `invocationCount` and `timeframeEnd`. The `logs` array has
+/// errors and warnings for each simulated invocation.
 pub async fn preview(
     t: &Transport,
     rule: &Rule,
@@ -464,7 +431,7 @@ pub async fn preview(
     timeframe_end: &str,
 ) -> Result<PreviewResult> {
     let mut body = rule.as_map().clone();
-    // The preview API rejects identity fields that belong to a saved rule.
+    // The preview API rejects fields that identify a saved rule.
     for k in [
         "rule_id",
         "id",
@@ -504,27 +471,23 @@ pub async fn preview(
 
 /// Where a preview's alerts land. Kibana names the alias per space.
 ///
-/// Recorded in `tests/fixtures/*/rules_preview_hits.json`, which also records
-/// the field the search filters on — a response alone cannot distinguish an
-/// empty result from a wrong field name.
+/// The `rules_preview_hits` fixtures record this alias and its filter field.
+/// A response alone cannot distinguish an empty result from a wrong field.
 pub const PREVIEW_ALERTS_INDEX_PREFIX: &str = ".preview.alerts-security.alerts-";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PreviewHits {
     pub total: u64,
-    /// One entry per returned document: `{"_id": ..., "_source": {...}}`.
-    /// The alert document verbatim, because what the engineer wants to see is
-    /// the event that matched, not a projection someone guessed at.
+    /// One entry for each returned document: `{"_id": ..., "_source": {...}}`.
+    /// Contains the matching alert document, not a projected subset.
     pub sample: Vec<Value>,
 }
 
 /// Read back what a preview matched.
 ///
-/// `rules/preview` returns a `previewId` and no hit count — four hits and zero
-/// hits are byte-identical responses — so the alerts it wrote are searched
-/// directly. `ignore_unavailable=true` turns "no preview has ever run in this
-/// space" into an empty result rather than a 404, which is a correct answer to
-/// "how many hits", not an error.
+/// `rules/preview` returns a `previewId` but no hit count, so search the alerts
+/// it wrote. `ignore_unavailable=true` reports no preview index as zero hits,
+/// not a 404 error.
 pub async fn preview_hits(
     t: &Transport,
     space: &str,
@@ -535,7 +498,7 @@ pub async fn preview_hits(
     let index = urlencode(&format!("{PREVIEW_ALERTS_INDEX_PREFIX}{space}"));
     let body = json!({
         "size": sample,
-        // Exact, not the 10,000 default cap: the count is the whole point.
+        // Count all matches, not only the default 10,000.
         "track_total_hits": true,
         "query": {"term": {"kibana.alert.rule.uuid": preview_id}},
         "sort": [{"@timestamp": {"order": "desc"}}]
@@ -548,9 +511,7 @@ pub async fn preview_hits(
     Ok(decode_preview_hits(&response))
 }
 
-/// Decode a preview-hits search response. Extracted so the recorded
-/// `rules_preview_hits` fixture can be decoded offline by the same path the
-/// live client uses.
+/// Decode a preview-hits response. Fixtures use this same path offline.
 pub fn decode_preview_hits(response: &Value) -> PreviewHits {
     let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
     let sample = response["hits"]["hits"]
@@ -588,10 +549,8 @@ mod tests {
         assert_eq!(kql_escape("a\"b"), expected);
     }
 
-    /// A literal backslash immediately followed by a quote is the case that
-    /// distinguishes escape order: escaping quotes before backslashes would
-    /// double the backslash the quote-escape just inserted, corrupting the
-    /// result.
+    /// A backslash before a quote tests escape order. Escaping quotes first
+    /// would double the backslash inserted for the quote and corrupt the value.
     #[test]
     fn kql_escape_orders_backslash_before_quote() {
         let mut input = String::new();
@@ -600,8 +559,8 @@ mod tests {
 
         let escaped = kql_escape(&input);
 
-        // Correct order: the lone backslash is doubled first, then the quote
-        // is escaped, giving three backslashes followed by a quote.
+        // Double the backslash, then escape the quote: three backslashes and a
+        // quote.
         let mut expected = "\\".repeat(3);
         expected.push('"');
         assert_eq!(escaped, expected);

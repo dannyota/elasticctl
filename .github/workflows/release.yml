@@ -14,13 +14,12 @@
 # title/body based on your changelogs.
 
 name: Release
-# Hand-edited from the `dist init` output. `contents` is `read` at workflow
-# scope and only the `host` job (which runs `gh release create`) is elevated to
-# `write`. The `pull_request` trigger was removed: `ci.yml` already covers PRs,
-# and the release workflow's PR run needs no write access. These edits survive
-# regeneration because `allow-dirty = ["ci"]` in dist-workspace.toml skips the
-# CI mode. To regenerate the workflow, remove `allow-dirty` from
-# dist-workspace.toml first, then re-apply these permissions edits.
+# Hand-edited from `dist init` output. Workflow contents are read-only; only
+# `host`, which runs `gh release create`, gets write access. The
+# `pull_request` trigger was removed because `ci.yml` covers pull requests and
+# this workflow needs no write access for them. These edits survive
+# regeneration because `allow-dirty = ["ci"]` in dist-workspace.toml skips CI
+# mode. Remove `allow-dirty` before regenerating, then reapply these edits.
 permissions:
   "contents": "read"
 

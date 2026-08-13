@@ -1,5 +1,6 @@
-//! One probe at connect time, so commands can fail with a clear
-//! "not available on this deployment" instead of a confusing 404.
+//! Probe deployment capabilities at connection time.
+//!
+//! Commands can then report unsupported features before a 404 response.
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::transport::Transport;
@@ -7,9 +8,8 @@ use serde_json::Value;
 
 /// Hostname suffixes used by Elastic Cloud Hosted deployments.
 ///
-/// A fallback, not the primary signal — see `probe`. Kept for a deployment
-/// reached through a proxy that strips the Cloud edge headers, where the
-/// hostname is the only thing left to go on.
+/// This is a fallback, not the primary signal; see `probe`. It identifies
+/// deployments reached through proxies that strip Cloud edge headers.
 const ECH_SUFFIXES: [&str; 4] = [
     "elastic-cloud.com",
     "found.io",
@@ -17,13 +17,14 @@ const ECH_SUFFIXES: [&str; 4] = [
     "elastic.cloud",
 ];
 
-/// Injected by the Elastic Cloud edge proxy. Present on Hosted and on
-/// Serverless, absent from a stack nothing proxies.
+/// Sent by the Elastic Cloud edge proxy. Present on Hosted and Serverless;
+/// absent from unproxied stacks.
 const CLOUD_EDGE_HEADER: &str = "x-found-handling-cluster";
 
-/// Host portion of a URL: after the last `://`, before the first `/`, minus
-/// any `:port`. Matching the raw URL would let a suffix in a path or query
-/// string decide the deployment flavor.
+/// Return the URL host without its port.
+///
+/// Matching the full URL would treat a suffix in its path or query as a
+/// deployment signal.
 fn host_of(url: &str) -> &str {
     let after_scheme = match url.rfind("://") {
         Some(i) => &url[i + 3..],
@@ -33,8 +34,9 @@ fn host_of(url: &str) -> &str {
     host.split(':').next().unwrap_or(host)
 }
 
-/// True when `host` is exactly `suffix` or a subdomain of it. A bare
-/// `ends_with` would also match `notfound.io` against `found.io`.
+/// Whether `host` equals `suffix` or is its subdomain.
+///
+/// A bare `ends_with` would match `notfound.io` as `found.io`.
 fn host_matches(host: &str, suffix: &str) -> bool {
     host == suffix || host.ends_with(&format!(".{suffix}"))
 }
@@ -72,18 +74,14 @@ impl Capabilities {
         ))
     }
 
-    /// Flavor and version from one status response.
+    /// Classify the flavor and version from one status response.
     ///
-    /// Split out from `probe` so the decision can be tested against a recorded
-    /// fixture rather than only against a mock server — the fixtures are the
-    /// evidence that each flavor reports what this claims it does.
+    /// This is separate from `probe` so recorded fixtures, not only mocks,
+    /// test the response shapes for each flavor.
     ///
-    /// The order of the tests is load-bearing. Elastic Cloud Hosted reports
-    /// `build_flavor: "traditional"`, exactly what a self-managed stack
-    /// reports, so the body alone cannot separate them and the edge header
-    /// must decide. Serverless sits behind that same edge proxy and carries
-    /// the same header, so testing the header first would classify every
-    /// Serverless project as Hosted.
+    /// Test Serverless before the Cloud edge signal. Hosted and self-managed
+    /// stacks can both report `build_flavor: "traditional"`, while Serverless
+    /// sends the same edge header as Hosted.
     pub fn classify(status: &Value, cloud_edge: bool, kibana_url: &str) -> Capabilities {
         let version = status["version"]["number"]
             .as_str()
@@ -93,9 +91,7 @@ impl Capabilities {
             .as_str()
             .unwrap_or("default");
 
-        // `||` short-circuits, so the header still decides before the hostname
-        // is ever examined — the fallback only runs for a deployment whose
-        // edge headers never arrived.
+        // `||` checks the hostname only when the edge header is absent.
         let cloud = cloud_edge
             || ECH_SUFFIXES
                 .iter()
@@ -112,9 +108,8 @@ impl Capabilities {
         Capabilities { flavor, version }
     }
 
-    /// Gate a feature on this deployment. The error names both the feature and
-    /// the flavor, so the user knows why it is unavailable rather than
-    /// guessing at a 404.
+    /// Return an unsupported error that names the feature and deployment
+    /// flavor.
     pub fn require(&self, feature: &str, supported: bool) -> Result<()> {
         if supported {
             return Ok(());
@@ -129,14 +124,11 @@ impl Capabilities {
     }
 }
 
-/// The ids of the spaces this credential can see, or `None` when the stack
-/// will not say.
+/// Return space IDs visible to this credential, or `None` when unavailable.
 ///
-/// Deliberately not part of `Capabilities::probe`: `doctor` and `config test`
-/// read capabilities and report neither a space list nor a licence tier, and
-/// neither should pay a round trip for a field it does not print. `None` means
-/// "could not determine" — never a fabricated list, which would read exactly
-/// like a probe result and is not one.
+/// This is separate from `Capabilities::probe` because `doctor` and `config
+/// test` do not report spaces or license tiers. `None` means the spaces could
+/// not be determined; it never substitutes a configured space.
 pub async fn probe_spaces(t: &Transport) -> Option<Vec<String>> {
     let body = t.get("/api/spaces/space").await.ok()?;
     let spaces = body.as_array()?;
@@ -148,12 +140,10 @@ pub async fn probe_spaces(t: &Transport) -> Option<Vec<String>> {
     )
 }
 
-/// The licence tier, or `None` where there is not one to read.
+/// Return the license tier, or `None` when it is unavailable.
 ///
-/// Serverless has no licence tiers — features gate on project tier instead —
-/// so the endpoint is not called there at all. Anywhere else a failure is
-/// reported as unknown rather than as an error: a missing licence tier must
-/// not fail `info`.
+/// Serverless uses project tiers, so it never calls the license endpoint.
+/// Elsewhere, a failure leaves the tier unknown so `info` can continue.
 pub async fn probe_license_tier(t: &Transport, flavor: Flavor) -> Option<String> {
     if flavor == Flavor::Serverless {
         return None;

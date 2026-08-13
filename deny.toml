@@ -1,22 +1,19 @@
-# cargo-deny: what the dependency tree carries.
+# cargo-deny checks what the dependency tree carries.
 #
-# `cargo test` proves our code; this proves everything under it. The tree is
-# ~240 crates deep behind reqwest, tokio, and serde, and an advisory lands
-# against a tree that has not changed — which is why CI runs this on a clock
-# as well as on every push.
+# `cargo test` checks our code; this checks its dependencies. The tree reaches
+# about 240 crates through reqwest, tokio, and serde. Advisories can affect an
+# unchanged tree, so CI runs this on a schedule and on every push.
 
 [advisories]
-# RustSec. Vulnerabilities always fail — cargo-deny 0.20 removed the knob that
-# let them warn, which is the right default. `unmaintained` is scoped to crates
-# this workspace depends on directly: a transitive crate someone stopped
-# tagging is a real signal but not a reason to block a release.
+# RustSec vulnerabilities always fail. cargo-deny 0.20 removed the option to
+# warn instead. Apply `unmaintained` only to direct dependencies: an unmaintained
+# transitive crate is a signal, but not a reason to block a release.
 yanked = "deny"
 unmaintained = "workspace"
 
 [licenses]
-# The binary is Apache-2.0. These are the permissive licences the Rust
-# ecosystem actually uses; anything outside the list is a deliberate decision,
-# not a default.
+# The binary is Apache-2.0. Allow the permissive licenses used by this Rust
+# dependency tree; anything else requires an explicit decision.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -26,26 +23,24 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
-    # option-ext, reached through directories -> dirs-sys, and the one crate in
-    # the tree offered under no other licence. MPL-2.0 is file-level copyleft:
-    # its terms attach to its own files, so linking it into an Apache-2.0
-    # binary is fine and only modifications to those files would have to be
-    # published. We vendor nothing and modify nothing. Allowed deliberately
-    # rather than by widening the list until the check passes.
+    # option-ext is reached through directories -> dirs-sys and is available
+    # under no other license in the tree. MPL-2.0 is file-level copyleft, so
+    # linking it into this Apache-2.0 binary is allowed; only changes to those
+    # files must be published. We vendor and modify nothing, so allow it here
+    # instead of widening the list.
     "MPL-2.0",
 ]
 confidence-threshold = 0.9
 
 [bans]
-# Two versions of the same crate is usually a transitive lag rather than a
-# fault, so it warns. A wildcard dependency is a supply-chain hole: it accepts
-# whatever the registry serves next.
+# Two versions of a crate usually indicate transitive lag, so warn. A wildcard
+# dependency is a supply-chain risk because it accepts the next registry value.
 multiple-versions = "warn"
 wildcards = "deny"
 
 [sources]
-# Only crates.io. A git or a private registry dependency is a decision that
-# should have to be argued for, not one that slips in.
+# Allow only crates.io. A git or private-registry dependency requires an
+# explicit decision.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

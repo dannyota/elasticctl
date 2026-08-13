@@ -4,9 +4,8 @@ on:
     branches: [master]
   pull_request:
   schedule:
-    # Weekly, Sunday 03:00 UTC. Advisories land against a dependency tree that
-    # has not changed, so the audit job needs a clock of its own — a repo with
-    # no commits this week is exactly the one nobody has checked.
+    # Run weekly on Sunday at 03:00 UTC. Advisories can affect an unchanged
+    # dependency tree, so the audit job needs its own schedule.
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
@@ -26,8 +25,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # Software composition: what the 240-odd transitive crates carry with them.
-  # Advisories, licences, and duplicate/unvetted sources, all from deny.toml.
+  # Check advisories, licences, duplicate versions, and unvetted sources from
+  # deny.toml.
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -36,10 +35,9 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
-  # Fixtures are recorded from a live stack and committed to a public repo.
-  # A generic secret scanner does not catch what actually leaked here: a
-  # project hostname under `kibana.alert.url`, which is identity in a value
-  # rather than a credential in a key. This checks the shapes that matter.
+  # Check recorded fixtures for credentials and project identity. A generic
+  # secret scanner misses a project hostname in `kibana.alert.url` because it is
+  # identity in a value, not a credential in a key.
   fixture-leak:
     runs-on: ubuntu-latest
     steps:

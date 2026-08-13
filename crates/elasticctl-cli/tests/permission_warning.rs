@@ -1,9 +1,7 @@
-//! `Config::load` never prints. A permissive config file is reported by
-//! whichever layer controls the output channel: the CLI emits a structured
-//! `{"warning": {...}}` envelope on stderr for ordinary commands, matching
-//! the shape of the error envelope so stderr stays uniformly JSON-parseable;
-//! `doctor` instead folds the same signal into its own report (covered in
-//! `tests/doctor.rs`) rather than also using the stderr side channel.
+//! `Config::load` never prints. The layer that owns output reports a
+//! permissive config mode: ordinary commands emit a structured warning
+//! envelope on stderr, matching errors so stderr remains parseable JSON;
+//! `doctor` includes the warning in its report instead.
 
 use assert_cmd::Command;
 use std::fs;

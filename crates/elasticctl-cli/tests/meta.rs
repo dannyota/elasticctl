@@ -4,10 +4,8 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// A smoke test that only checks "non-empty and mentions elasticctl" passes
-/// just as well when the wrong shell's script is emitted. Each shell is
-/// therefore pinned to a token only its own script carries, plus a token it
-/// must never carry.
+/// Checking only nonempty output and an `elasticctl` token would accept the
+/// wrong shell. Pin each shell to one unique token and one forbidden token.
 #[test]
 fn completion_emits_the_right_script_for_each_shell() {
     let cases = [

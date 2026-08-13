@@ -1,22 +1,18 @@
 version: 2
 updates:
-  # The dependency tree the audit job checks. Weekly rather than daily: a
-  # security advisory is handled by that job on its own schedule, and this one
-  # exists to stop the tree drifting far enough that an upgrade becomes a
-  # project of its own.
+  # Keep the dependency tree close enough to upgrade without a separate project.
+  # The audit job handles security advisories on its own weekly schedule.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      # One PR for the routine drift. Patch and minor bumps across ~240 crates
-      # produce noise no one reads if each gets its own pull request.
+      # Group routine patch and minor bumps into one PR to avoid noise.
       minor-and-patch:
         update-types: ["minor", "patch"]
 
-  # Pinned action versions go stale silently, and a stale action is the part of
-  # the release path nobody reads until it breaks.
+  # Check pinned action versions before they become release-path failures.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

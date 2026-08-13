@@ -1,6 +1,6 @@
-//! The change-evidence report. Written so a push can be attached to a change
-//! ticket: what was proposed, what was applied, and what the values were on
-//! each side.
+//! Change evidence for a `push` attached to a change ticket.
+//!
+//! Records the proposed and applied changes, with values on both sides.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -22,7 +22,7 @@ pub struct ChangeReport {
     pub profile: String,
     pub host: String,
     pub space: String,
-    /// False for a dry run.
+    /// `false` for a dry run.
     pub applied: bool,
     pub entries: Vec<ReportEntry>,
 }
@@ -48,12 +48,10 @@ impl ChangeReport {
         (created, updated, skipped, failed)
     }
 
-    /// Actionable changes proposed but not (yet, or ever) applied: every
-    /// `create`/`update` entry that carries neither a success nor an error.
-    /// On a dry run this is every actionable entry, since none of them were
-    /// attempted. Once a push actually runs, every actionable entry has
-    /// either succeeded (`applied`) or failed (`error`), so this is always
-    /// zero then — "pending" means "still awaiting `--yes`", not "failed".
+    /// Proposed `create` and `update` entries with neither success nor error.
+    /// A dry run leaves all actionable entries pending. After `push` runs,
+    /// pending is zero: each actionable entry succeeds or fails. Pending means
+    /// it awaits `--yes`, not that it failed.
     pub fn pending(&self) -> usize {
         self.entries
             .iter()

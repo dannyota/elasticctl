@@ -18,7 +18,7 @@ fn profile_for(server: &MockServer) -> Profile {
 
 #[test]
 fn space_path_prefixes_only_non_default_spaces() {
-    // The default space has no prefix; Kibana serves it at the bare path.
+    // Kibana serves the default space at the bare path.
     assert_eq!(Transport::space_path("default", "/api/x"), "/api/x");
     assert_eq!(Transport::space_path("soc", "/api/x"), "/s/soc/api/x");
 }
@@ -93,7 +93,7 @@ async fn the_cloud_edge_proxy_envelope_is_classified_too() {
 #[tokio::test]
 async fn a_429_is_retried_and_then_succeeds() {
     let server = MockServer::start().await;
-    // wiremock serves mounted mocks in order when `up_to_n_times` is set.
+    // wiremock serves mounted mocks in order with `up_to_n_times`.
     Mock::given(method("GET"))
         .and(path("/api/flaky"))
         .respond_with(ResponseTemplate::new(429))
@@ -122,13 +122,12 @@ async fn a_400_is_never_retried() {
 
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert!(t.get("/api/bad").await.is_err());
-    // MockServer verifies the `expect(1)` on drop.
+    // MockServer verifies `expect(1)` on drop.
 }
 
 #[test]
 fn urlencode_escapes_what_breaks_a_url_and_leaves_the_rest() {
-    // Only the characters that actually break a query string are escaped, so
-    // a recorded fixture stays readable.
+    // Escape only query-breaking characters to keep recorded fixtures readable.
     assert_eq!(elasticctl_core::urlencode("a-b_c.d~e"), "a-b_c.d~e");
     assert_eq!(elasticctl_core::urlencode("a b"), "a%20b");
     assert_eq!(elasticctl_core::urlencode("x\"y"), "x%22y");
@@ -152,8 +151,7 @@ async fn post_absolute_es_sends_the_body_to_the_es_host() {
         .await;
 
     let mut profile = profile_for(&server);
-    // A Cloud deployment serves Elasticsearch from a different host; the ES
-    // methods must use that one, not the Kibana base.
+    // Cloud deployments use a different Elasticsearch host from Kibana.
     profile.es_url = Some(server.uri());
     profile.kibana_url = "https://kibana.invalid".into();
     let t = Transport::new(&profile).unwrap();

@@ -3,7 +3,7 @@ use std::fs;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// A distinctive key so the test can prove it never appears in stderr.
+/// A known key lets the test verify that stderr never exposes it.
 const API_KEY: &str = "essu_debug_secret_key_12345";
 
 fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
@@ -72,8 +72,7 @@ async fn debug_logs_the_request_line_and_redacts_the_api_key() {
 
 #[tokio::test]
 async fn debug_logs_a_line_before_the_request_is_sent() {
-    // The pre-send line is what an operator needs when a request never
-    // returns: without it, a hung call logs nothing at all.
+    // Log before sending so a hung request still leaves a useful trace.
     let server = exporting_server().await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -103,8 +102,8 @@ async fn debug_logs_a_line_before_the_request_is_sent() {
 
 #[tokio::test]
 async fn debug_logs_the_connection_error_branch() {
-    // Port 1 refuses immediately: the branch that returns before any status
-    // exists is exactly the one --debug was silent on.
+    // Port 1 should refuse immediately, exercising the error path with no HTTP
+    // status—the path that previously produced no --debug output.
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), "http://127.0.0.1:1");
 

@@ -4,19 +4,15 @@ use elasticctl_core::capabilities::{probe_license_tier, probe_spaces};
 use serde_json::{Value, json};
 
 pub async fn run(ctx: &Context) -> Result<Value> {
-    // A live connection is required below; check the credential first so a
-    // missing one produces its profile-naming message, not the generic one
-    // `Transport::new` would give.
+    // Check the credential first so a missing one names the profile instead
+    // of returning Transport's generic error.
     ctx.require_credential()?;
     let caps = ctx.capabilities().await?;
     let transport = ctx.transport().await?;
 
-    // Probed here rather than in `Capabilities`, because `info` is the only
-    // command that reports them and every other caller of the capability probe
-    // would otherwise pay two round trips for fields it never prints. Either
-    // may come back `None`, which reports as null: unknown is the honest
-    // answer, and a hardcoded value that happens to be right on one flavor is
-    // what this replaces.
+    // Only `info` reports these values, so probing them here avoids two
+    // requests for every other capability caller. `None` renders as null
+    // because the value is unknown.
     let spaces = probe_spaces(transport).await;
     let license_tier = probe_license_tier(transport, caps.flavor).await;
 

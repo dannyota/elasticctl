@@ -61,12 +61,9 @@ async fn pull_writes_one_file_per_rule_without_volatile_fields() {
     assert!(!body.contains("created_at"), "{body}");
 }
 
-// `safe_filename` maps every character outside [A-Za-z0-9_-] to '_', which
-// correctly closes path traversal but means distinct rule ids can collide on
-// one filename. An unnoticed collision would silently drop a rule from the
-// local mirror while `pulled` kept counting both — the same class of
-// authoring conflict `Drift::compute` already refuses to paper over for a
-// duplicate rule_id.
+// `safe_filename` replaces characters outside [A-Za-z0-9_-] with '_'. Distinct
+// rule ids can therefore map to one file, which must be reported as a conflict
+// instead of dropping a rule from the local mirror.
 #[tokio::test]
 async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename() {
     let server = server_with(vec![remote_rule("a/b", 21), remote_rule("a_b", 73)]).await;
@@ -96,8 +93,7 @@ async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename
     assert!(msg.contains("a_b"), "{msg}");
 }
 
-// Two colliding pairs, reported one per run, means two failed runs to learn
-// what one run could have said.
+// Report all filename collisions in one run.
 #[tokio::test]
 async fn pull_reports_every_filename_collision_at_once() {
     let server = server_with(vec![
@@ -130,9 +126,8 @@ async fn pull_reports_every_filename_collision_at_once() {
     }
 }
 
-// A refused pull must leave nothing behind. A directory holding half a mirror
-// is neither the old state nor the new one, and `diff` would then report the
-// missing rules as drift.
+// A refused pull must leave no partial mirror behind. Otherwise `diff` would
+// report the missing rules as drift.
 #[tokio::test]
 async fn a_refused_pull_writes_no_files_at_all() {
     let server = server_with(vec![
@@ -161,8 +156,7 @@ async fn a_refused_pull_writes_no_files_at_all() {
     );
 }
 
-// The report has to be the same on every run, or a reviewer cannot tell a
-// changed corpus from a reshuffled one.
+// Order the report so repeated runs are stable.
 #[tokio::test]
 async fn the_collision_report_is_ordered_by_rule_id() {
     let server = server_with(vec![
@@ -236,7 +230,7 @@ async fn pull_twice_produces_identical_files() {
 
 #[tokio::test]
 async fn diff_is_clean_immediately_after_a_pull() {
-    // The property the whole state engine rests on.
+    // A fresh pull must produce a clean diff.
     let server = server_with(vec![remote_rule("a", 21)]).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -306,7 +300,7 @@ async fn diff_reports_an_edited_field_with_before_and_after() {
 
 #[tokio::test]
 async fn a_rule_only_on_the_server_is_reported_but_never_deleted() {
-    // The no-delete guarantee, asserted end to end.
+    // A server-only rule must be reported without being deleted.
     let server = server_with(vec![remote_rule("a", 21)]).await;
     Mock::given(method("DELETE"))
         .and(path("/api/detection_engine/rules"))
@@ -381,12 +375,9 @@ async fn push_dry_run_previews_and_sends_no_mutation() {
     );
 }
 
-// `report.rs`'s own doc comment says the report exists to record what was
-// *proposed*, not only what was applied. Before this fix, entries for
-// Added/Modified changes were only pushed inside `if applying`, so a dry-run
-// `--report` recorded nothing but `skipped_remote_only`, and a script running
-// `state push --json` had no field-level way to learn how many changes were
-// pending short of scraping the stderr preview.
+// A dry-run report must record proposed creates and updates, not only changes
+// that were applied. This gives scripts the pending count without parsing the
+// preview text.
 #[tokio::test]
 async fn push_dry_run_report_includes_pending_creates_and_updates() {
     let server = server_with(vec![remote_rule("existing", 10)]).await;
@@ -394,13 +385,13 @@ async fn push_dry_run_report_includes_pending_creates_and_updates() {
     let cfg = config_for(dir.path(), &server.uri());
     let state = dir.path().join("state");
     fs::create_dir_all(state.join("rules")).unwrap();
-    // Differs from the remote only in risk_score: a pending update.
+    // Differs from the remote only in risk_score, so this is a pending update.
     fs::write(
         state.join("rules").join("existing.ndjson"),
         "{\"rule_id\":\"existing\",\"name\":\"Rule existing\",\"type\":\"query\",\"query\":\"*:*\",\"severity\":\"low\",\"risk_score\":55}\n",
     )
     .unwrap();
-    // Absent remotely: a pending create.
+    // Absent remotely, so this is a pending create.
     fs::write(
         state.join("rules").join("newone.ndjson"),
         "{\"rule_id\":\"newone\",\"name\":\"New\",\"type\":\"query\",\"query\":\"*:*\"}\n",
@@ -503,22 +494,12 @@ async fn push_writes_a_change_report_with_before_and_after() {
     assert!(!entry["after"].is_null());
 }
 
-// NOTE: the brief's draft of this test asserted `.assert().success()` here,
-// i.e. exit code 0, even though both rules fail to apply. That contradicts
-// the partial-failure convention `render::exit_code_for_value` exists to
-// enforce (see rules::delete and rules::set_enabled, and the commits titled
-// "Fix rules delete discarding progress on a per-rule failure" and "Fix
-// bulk-action partial failures exiting 0"): a mutating command whose payload
-// carries a positive `failed` count must exit 1, or a script checking only
-// the exit code misses a fully-failed push. `push`'s summary reports
-// `"failed": <count>` for exactly this reason, and this test now asserts the
-// exit code that convention implies, matching the sibling test
-// `delete_continues_past_a_per_rule_failure_and_reports_every_outcome` in
-// rules_mutate.rs. The report file assertions are unchanged from the brief.
+// A mutating command with a positive `failed` count must exit 1. It must also
+// continue attempting the remaining rules and record every result.
 #[tokio::test]
 async fn one_failing_rule_does_not_abort_the_rest() {
     let server = server_with(vec![]).await;
-    // Every create fails; both rules must still be attempted and reported.
+    // Every create fails, but both rules must still be attempted and reported.
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules"))
         .respond_with(

@@ -1,5 +1,6 @@
-//! Profiles, their on-disk form, and the resolution order
-//! flags -> environment -> profile -> defaults.
+//! Profiles, their on-disk form, and resolution order.
+//!
+//! Flags override environment variables, which override profiles and defaults.
 
 use crate::error::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
@@ -10,9 +11,10 @@ use std::path::{Path, PathBuf};
 
 const REDACTED: &str = "***";
 
-/// Fields that decide *which instance, as whom*. Overriding one of these
-/// changes the provenance reported in the guard banner; overriding a
-/// non-identity field (timeout, space) does not.
+/// Whether overrides change the target deployment or credential.
+///
+/// Only these overrides change the guard banner's reported source. Timeout and
+/// space overrides do not.
 fn is_identity_override(ov: &Overrides) -> bool {
     ov.kibana_url.is_some() || ov.es_url.is_some() || ov.api_key.is_some()
 }
@@ -47,8 +49,9 @@ fn default_timeout() -> u64 {
 }
 
 impl Profile {
-    /// A copy safe to print. Every secret becomes `***`; absent stays absent,
-    /// so redacted output never implies a credential that is not configured.
+    /// Return a copy safe to print.
+    ///
+    /// Secrets become `***`; absent values remain absent.
     pub fn redacted(&self) -> Profile {
         Profile {
             api_key: self.api_key.as_ref().map(|_| REDACTED.to_string()),
@@ -57,39 +60,38 @@ impl Profile {
         }
     }
 
-    /// Host portion of the Kibana URL, for banners. Falls back to the whole
-    /// string when it will not parse, so a banner never silently loses its target.
+    /// Return the Kibana URL host for banners.
+    ///
+    /// Return the original URL when no host can be parsed.
     pub fn host(&self) -> String {
-        // Find the last occurrence of "://" to handle doubled schemes correctly
+        // Use the last scheme separator to handle doubled schemes.
         if let Some(pos) = self.kibana_url.rfind("://") {
             let after_scheme = &self.kibana_url[pos + 3..];
-            // Strip any path/query portion after the first /
+            // Drop the path and query after the first slash.
             let host_part = after_scheme.split('/').next().unwrap_or("");
-            // If we got something, return it; otherwise fall back to original
+            // Use the parsed host when present.
             if !host_part.is_empty() {
                 return host_part.to_string();
             }
         }
-        // Fall back to original if parsing fails or result is empty
+        // Preserve the original URL when parsing finds no host.
         self.kibana_url.clone()
     }
 
-    /// Drop any `user:password@` prefix from `kibana_url` and `es_url`.
+    /// Remove userinfo from `kibana_url` and `es_url`.
     ///
-    /// Credentials belong in `api_key` or `username`/`password`. The transport
-    /// has never read them from a URL, so nothing that authenticated stops
-    /// authenticating — but a URL carrying userinfo would print in the guard
-    /// banner, in `config show`, and in every `--debug` line, which is exactly
-    /// the class this closes.
+    /// Credentials use `api_key` or `username` and `password`; the transport
+    /// never reads URL userinfo. Removing it prevents credentials appearing in
+    /// the guard banner, `config show`, or `--debug` output.
     pub fn strip_userinfo(&mut self) {
         self.kibana_url = strip_userinfo(&self.kibana_url);
         self.es_url = self.es_url.as_deref().map(strip_userinfo);
     }
 }
 
-/// Remove userinfo from a URL's authority, leaving everything else byte for
-/// byte. Only the authority is examined: a path or query may legitimately
-/// contain `@`.
+/// Remove userinfo from a URL authority without changing other bytes.
+///
+/// Paths and queries may legitimately contain `@`.
 fn strip_userinfo(url: &str) -> String {
     let (scheme, rest) = match url.find("://") {
         Some(i) => url.split_at(i + 3),
@@ -146,13 +148,11 @@ pub struct Overrides {
 }
 
 impl Overrides {
-    /// Read `ELASTICCTL_*` environment variables into an override set.
+    /// Read `ELASTICCTL_*` environment variables as overrides.
     ///
-    /// `es_url` belongs here with `kibana_url`, not with the settings. On a
-    /// Cloud deployment the two hosts are different stacks' endpoints, so
-    /// overriding one and inheriting the other from the saved profile aims the
-    /// client at two deployments at once — and sends the overridden
-    /// credential to whichever host the profile happened to name.
+    /// `es_url` and `kibana_url` are identity overrides. Cloud deployments use
+    /// distinct endpoints; inheriting one from a saved profile could target two
+    /// deployments and send the overridden credential to the wrong host.
     pub fn from_env() -> Overrides {
         Overrides {
             kibana_url: std::env::var("ELASTICCTL_KIBANA_URL").ok(),
@@ -165,7 +165,7 @@ impl Overrides {
         }
     }
 
-    /// `self` wins over `lower`. Used to layer flags on top of environment.
+    /// Merge overrides, preferring `self` over `lower`.
     pub fn merge_over(self, lower: Overrides) -> Overrides {
         Overrides {
             kibana_url: self.kibana_url.or(lower.kibana_url),
@@ -186,8 +186,8 @@ impl Config {
             .join("config.toml")
     }
 
-    /// A missing file is an empty config, not an error — `config init` has to
-    /// work on a machine that has never run elasticctl.
+    /// Treat a missing file as an empty config so `config init` works on a new
+    /// machine.
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
             return Ok(Config::default());
@@ -199,19 +199,17 @@ impl Config {
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing {}: {e}", path.display())))
     }
 
-    /// A structured description of the file's insecure permissions, or
-    /// `None` when it is absent or already owner-only.
+    /// Describe insecure file permissions, or return `None` for absent or
+    /// owner-only files.
     ///
-    /// Returns rather than prints: a core library must not decide whether or
-    /// how a warning reaches the user — that belongs to whichever caller
-    /// controls the output channel (and, for the CLI, whether `--json` is in
-    /// play).
+    /// The caller decides whether and how to display this warning, including
+    /// for CLI `--json` output.
     #[cfg(unix)]
     pub fn permission_warning(path: &Path) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(path).ok()?;
         let mode = metadata.permissions().mode();
-        // Group or other bits set.
+        // Group or other permission bits are set.
         if mode & 0o077 != 0 {
             Some(format!(
                 "config file {} is readable by group or other (mode {:o}); should be 0600",
@@ -240,7 +238,7 @@ impl Config {
         let body = toml::to_string_pretty(self)
             .map_err(|e| Error::new(ErrorKind::Error, format!("serializing config: {e}")))?;
         Self::write_config_file(path, &body)?;
-        // Also restrict permissions afterward in case an existing file had looser permissions
+        // Restrict an existing file that had looser permissions.
         Self::restrict_permissions(path)
     }
 
@@ -278,7 +276,7 @@ impl Config {
         Ok(())
     }
 
-    /// Resolve the effective profile and report where it came from.
+    /// Resolve the effective profile and its source.
     pub fn resolve(&self, name: Option<&str>, ov: &Overrides) -> Result<Resolved> {
         let wanted = name.unwrap_or(if self.current.is_empty() {
             "default"
@@ -292,12 +290,10 @@ impl Config {
         if let Some(v) = &ov.kibana_url {
             profile.kibana_url = v.clone();
         }
-        // An overridden Kibana host with an inherited Elasticsearch host is
-        // two different deployments, so a kibana_url override with no es_url
-        // clears the profile's rather than keeping it. The transport then
-        // falls back to the Kibana host, which is the single-host
-        // self-managed case and is at worst a 404 — never a request to the
-        // wrong stack carrying this stack's key.
+        // Do not combine an overridden Kibana URL with a profile Elasticsearch
+        // URL: they can target separate deployments. Without an `es_url`
+        // override, fall back to the Kibana host instead of sending credentials
+        // to the profile's Elasticsearch host.
         if let Some(v) = &ov.es_url {
             profile.es_url = Some(v.clone());
         } else if ov.kibana_url.is_some() {
@@ -319,9 +315,7 @@ impl Config {
             Source::Profile
         };
 
-        // After the overrides, not before: a userinfo URL can arrive from the
-        // file, the environment, or a flag, and this is the one point all
-        // three have already passed through.
+        // Strip userinfo after applying file, environment, and flag values.
         profile.strip_userinfo();
 
         Ok(Resolved {
@@ -405,10 +399,8 @@ mod tests {
         assert!(err.message.contains("nope"));
     }
 
-    /// `ELASTICCTL_ES_URL` is documented in `.env.example` and read by the
-    /// fixture recorder, but the CLI ignored it: an environment override of
-    /// the Kibana host left `es_url` pointing at whatever the saved profile
-    /// named, aiming one client at two deployments.
+    /// Verify that `ELASTICCTL_ES_URL` overrides the profile. This prevents a
+    /// Kibana override and inherited `es_url` from targeting two deployments.
     #[test]
     fn an_es_url_override_is_applied() {
         let r = sample()
@@ -426,10 +418,8 @@ mod tests {
         );
     }
 
-    /// The safety half. Overriding only the Kibana host must not leave the
-    /// profile's Elasticsearch host in place: those are two different
-    /// deployments, and the request would carry the overridden credential to
-    /// the one the operator did not name.
+    /// A Kibana-only override must clear the profile's Elasticsearch host.
+    /// Otherwise credentials could be sent to an unselected deployment.
     #[test]
     fn overriding_only_the_kibana_url_clears_the_profiles_es_url() {
         let r = sample()
@@ -548,7 +538,7 @@ mod tests {
 
     #[test]
     fn a_saved_config_never_contains_a_plaintext_key_in_a_world_readable_file() {
-        // Guards the pairing of the two properties, not either alone.
+        // Check key storage and file permissions together.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -569,7 +559,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new_config.toml");
-        // Ensure file does not exist
+        // Verify the file is newly created.
         assert!(!path.exists());
         sample().save(&path).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -677,8 +667,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         sample().save(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        // `load` never prints — that decision belongs to the caller, via
-        // `permission_warning` below.
+        // `load` does not print; callers use `permission_warning` instead.
         let cfg = Config::load(&path).unwrap();
         assert!(
             !cfg.profiles.is_empty(),
@@ -749,8 +738,7 @@ mod tests {
 
     #[test]
     fn resolve_strips_userinfo_supplied_by_an_override() {
-        // Flags and environment reach the profile after it is loaded, so the
-        // strip has to sit downstream of them, not at load.
+        // Strip userinfo after flags and environment overrides are applied.
         let ov = Overrides {
             kibana_url: Some("https://user:pass@override.example.com".into()),
             ..Default::default()
@@ -763,15 +751,13 @@ mod tests {
 
     #[test]
     fn the_banner_never_shows_userinfo() {
-        // The banner is the one thing an operator reads before approving a
-        // mutation. It must not be where a password first appears.
+        // The approval banner must not expose a password.
         let r = with_urls("https://user:hunter2@prod.example.com", None)
             .resolve(None, &Overrides::default())
             .unwrap();
         let b = r.banner();
         assert!(!b.contains("hunter2"), "{b}");
-        // The banner's only `@` is the documented separator between profile
-        // name and host; a leaked `user:pass@` would add a second.
+        // The banner uses one `@` between profile name and host.
         assert_eq!(b.matches('@').count(), 1, "{b}");
         assert!(b.contains("prod.example.com"), "{b}");
     }
@@ -796,8 +782,7 @@ mod tests {
 
     #[test]
     fn an_at_sign_outside_the_authority_is_not_treated_as_userinfo() {
-        // A path or query may legitimately contain '@'; only the authority
-        // carries userinfo.
+        // Only the authority carries userinfo; paths and queries may contain `@`.
         let mut p =
             with_urls("https://kb.example.com/a@b?user=x@y", None).profiles["default"].clone();
         p.strip_userinfo();

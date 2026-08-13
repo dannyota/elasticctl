@@ -16,7 +16,7 @@ fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
     p
 }
 
-/// Serves an export whose rule carries volatile fields and unsorted keys.
+/// Serves an export with volatile fields and unsorted keys.
 async fn exporting_server() -> MockServer {
     let server = MockServer::start().await;
     let body = concat!(
@@ -138,10 +138,8 @@ async fn export_yaml_carries_the_same_rules() {
     assert_eq!(rules[0].rule_id().unwrap(), "a");
 }
 
-/// A confirmation report, not the rule content, is what belongs on stdout
-/// once `--out` has already taken the real file: the report is JSON, not
-/// ndjson, and must never point back at some other command's `_export`-only
-/// path.
+/// With `--out` and `--json`, stdout carries a JSON confirmation report, not
+/// the rule file. The report must identify the requested output path.
 #[tokio::test]
 async fn export_with_out_reports_the_count_and_path_without_reprinting_the_file() {
     let server = exporting_server().await;
@@ -163,8 +161,7 @@ async fn export_with_out_reports_the_count_and_path_without_reprinting_the_file(
     assert_eq!(v["exported"], 2);
     assert_eq!(v["path"], out_file.display().to_string());
 
-    // The decisive assertion: the report on stdout must not have clobbered
-    // the file --out was actually pointed at.
+    // Stdout must not overwrite the file passed to --out.
     let body = fs::read_to_string(&out_file).unwrap();
     assert_eq!(
         body.lines().count(),
@@ -192,9 +189,8 @@ async fn export_without_out_prints_the_file_body_to_stdout() {
     assert!(!text.contains("updated_at"), "{text}");
 }
 
-/// The exported rule content is the payload, not a report. `--format csv`
-/// (and every other report format) must not re-encode it — CSV/table column
-/// derivation keys off object fields, so a plain string would silently empty.
+/// Exported rule content is the payload, not a report. Report formats such as
+/// `--format csv` must not re-encode it, or object fields would be lost.
 #[tokio::test]
 async fn export_without_out_bypasses_the_report_format_pipeline() {
     let server = exporting_server().await;
@@ -222,10 +218,8 @@ async fn export_without_out_bypasses_the_report_format_pipeline() {
     assert!(text.contains("rule_id"), "{text}");
 }
 
-/// `--json` governs how a command's *report* is rendered. `rules export`
-/// without `--out` has no report — its stdout is the file — so `--json` must
-/// not wrap it. Wrapping would make `rules export --json > rules.ndjson`
-/// produce a file Kibana cannot import.
+/// `--json` controls report rendering. Without `--out`, stdout is the export
+/// file, so `--json` must not wrap the NDJSON in a report envelope.
 #[tokio::test]
 async fn export_without_out_emits_raw_ndjson_even_under_json() {
     let server = exporting_server().await;
@@ -257,7 +251,7 @@ async fn export_without_out_emits_raw_ndjson_even_under_json() {
     );
 }
 
-/// The bytes must not depend on the report format at all.
+/// Stdout bytes must not depend on the report format.
 #[tokio::test]
 async fn export_to_stdout_is_identical_under_every_report_format() {
     let server = exporting_server().await;
@@ -279,8 +273,8 @@ async fn export_to_stdout_is_identical_under_every_report_format() {
     assert_eq!(plain, run(&["--format", "csv"]));
 }
 
-/// `--format-file` is the flag that does own the on-disk shape, and it still
-/// does when the file goes to stdout.
+/// `--format-file` selects the file encoding, including when stdout is the
+/// destination.
 #[tokio::test]
 async fn export_to_stdout_honours_format_file_not_format() {
     let server = exporting_server().await;
@@ -425,10 +419,9 @@ async fn yes_uploads_the_ndjson_and_reports_the_outcome() {
     );
 }
 
-/// Kibana's import response reports per-rule errors, not a `failed` array or
-/// count directly. A partial failure must still trip the shared exit-code
-/// convention (`render::exit_code_for_value`) rather than reporting success
-/// while silently dropping which rules failed.
+/// Kibana reports import errors per rule instead of returning a `failed` count.
+/// A partial failure must still set the shared non-zero exit code and report
+/// which rules failed.
 #[tokio::test]
 async fn a_partial_import_failure_exits_non_zero_and_names_the_failed_rule() {
     let server = MockServer::start().await;
@@ -479,8 +472,8 @@ async fn a_partial_import_failure_exits_non_zero_and_names_the_failed_rule() {
     assert_eq!(failed[0]["rule_id"], "b");
 }
 
-/// Exporting "my forty rules" meant exporting two thousand and filtering the
-/// NDJSON by hand.
+/// A selector must export only the named rules, not the whole corpus for the
+/// operator to filter by hand.
 #[tokio::test]
 async fn export_scopes_the_request_to_the_named_selectors() {
     let server = MockServer::start().await;
@@ -570,8 +563,7 @@ async fn export_by_tag_resolves_the_tag_to_ids_first() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
 }
 
-/// A tag matching nothing must never widen into "export everything". That is
-/// the same failure mode an unscoped bulk action would be.
+/// A tag that matches nothing must fail instead of widening to every rule.
 #[tokio::test]
 async fn a_selection_matching_nothing_is_refused_not_widened() {
     let server = MockServer::start().await;
@@ -620,9 +612,8 @@ async fn a_selection_matching_nothing_is_refused_not_widened() {
     );
 }
 
-/// A `--tag` that matched nothing must not disappear into a union that a
-/// selector rescued: it is refused with `not_found` naming the tag, so a
-/// one-rule export of the selector alone cannot pass as success.
+/// A tag that matches nothing must remain a `not_found` error even when a
+/// separate selector resolves successfully.
 #[tokio::test]
 async fn a_tag_that_matched_nothing_is_refused_even_when_a_selector_resolved() {
     let server = MockServer::start().await;
@@ -672,8 +663,8 @@ async fn a_tag_that_matched_nothing_is_refused_even_when_a_selector_resolved() {
     );
 }
 
-/// A rule deleted between selection and export comes back as missing. A short
-/// export reported as a success is a silent partial failure.
+/// A rule deleted between selection and export is reported as missing, not as
+/// a successful short export.
 #[tokio::test]
 async fn a_missing_rule_is_reported_as_a_failure() {
     let server = MockServer::start().await;
@@ -715,9 +706,8 @@ async fn a_missing_rule_is_reported_as_a_failure() {
     assert_eq!(v["failed"][0]["rule_id"], "gone");
 }
 
-/// The `--out` arm reports `failed` on stdout; the stdout arm has no report
-/// to print (its stdout is the file), so a short export there must carry the
-/// failure in the exit code alone rather than exit 0.
+/// With `--out`, a short export reports `failed` on stdout. When stdout is the
+/// file, the same failure must be conveyed by the exit code.
 #[tokio::test]
 async fn a_short_export_to_stdout_exits_non_zero() {
     let server = MockServer::start().await;
@@ -758,8 +748,8 @@ async fn a_short_export_to_stdout_exits_non_zero() {
     );
 }
 
-/// Re-importing forty rules produced forty 409s and exit 1. A script could not
-/// tell "already applied" from "actually broken".
+/// Existing rules should be skipped before import, so scripts can distinguish
+/// them from failed uploads.
 #[tokio::test]
 async fn skip_existing_uploads_only_the_new_rules() {
     let server = MockServer::start().await;
@@ -830,8 +820,8 @@ async fn skip_existing_uploads_only_the_new_rules() {
     );
 }
 
-/// The dry run was client-side and listed every rule as if it would import,
-/// which is exactly the warning an operator needed and did not get.
+/// A dry run must identify rules that would be skipped instead of listing all
+/// rules as pending imports.
 #[tokio::test]
 async fn the_skip_existing_dry_run_names_what_would_be_skipped() {
     let server = MockServer::start().await;
@@ -885,7 +875,7 @@ async fn the_skip_existing_dry_run_names_what_would_be_skipped() {
 
 #[tokio::test]
 async fn skip_existing_and_overwrite_cannot_be_combined() {
-    // Opposite answers to the same question.
+    // These flags give opposite answers to the same conflict.
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), "http://127.0.0.1:1");
     let src = dir.path().join("in.ndjson");
@@ -911,8 +901,8 @@ async fn skip_existing_and_overwrite_cannot_be_combined() {
         .code(2);
 }
 
-/// Without the flag, nothing changes: a conflict is still a reported failure
-/// and still exits 1.
+/// Without either flag, an import conflict remains a reported failure and
+/// exits 1.
 #[tokio::test]
 async fn the_default_import_still_reports_a_conflict_as_a_failure() {
     let server = MockServer::start().await;

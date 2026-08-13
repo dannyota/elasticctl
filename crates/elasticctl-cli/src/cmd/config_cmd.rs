@@ -1,4 +1,4 @@
-//! Profile management. `show` and `list` always redact.
+//! Profile management. `show` and `list` redact secrets.
 
 use crate::cli::GlobalArgs;
 use crate::context::{self, Context};
@@ -27,7 +27,7 @@ pub fn show(global: &GlobalArgs) -> Result<Value> {
     let path = context::config_path(global);
     let config = Config::load(&path)?;
     let resolved = config.resolve(global.profile.as_deref(), &Overrides::default())?;
-    // Redaction happens here, once, so no caller can forget it.
+    // Redact here so no caller can omit it.
     serde_json::to_value(resolved.profile.redacted())
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding profile: {e}")))
 }
@@ -61,8 +61,8 @@ pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<V
         timeout_secs: env.timeout_secs.unwrap_or(30),
     };
 
-    // `resolve` strips on read; stripping here as well means a credential in
-    // ELASTICCTL_KIBANA_URL never reaches disk in the first place.
+    // `resolve` strips user info on read. Strip it here so a credential in
+    // ELASTICCTL_KIBANA_URL is never written to disk.
     let mut profile = profile;
     profile.strip_userinfo();
     config.profiles.insert(name.clone(), profile);

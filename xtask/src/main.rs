@@ -1,21 +1,19 @@
-//! Fixture recorder. Drives a live stack and writes scrubbed exchanges.
+//! Fixture recorder: drive a live stack and write scrubbed exchanges.
 //!
-//! Fixtures encode what Elastic actually sent. Hand-written mocks encode what
-//! we assumed, which is exactly where API bugs hide.
+//! Fixtures capture what Elastic sent. Hand-written mocks capture assumptions,
+//! which is where API bugs hide.
 
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Anything that could carry a credential or the operator's identity is
-/// replaced before a fixture is written. A recorded fixture is committed to a
-/// public repository.
+/// Replace credentials and operator identity before writing a fixture. Recorded
+/// fixtures are committed to a public repository.
 ///
-/// The identity fields (`username`, `full_name`, `email`, `created_by`,
-/// `updated_by`) are scrubbed because a fixture exists to pin the response
-/// *shape*, not to archive who recorded it. They are not dead code — leave
-/// them in the list.
+/// Scrub identity fields (`username`, `full_name`, `email`, `created_by`, and
+/// `updated_by`) to preserve response *shape* without archiving the recorder.
+/// Keep these fields in the list even when they appear unused.
 fn scrub(v: &mut Value) {
     match v {
         Value::Object(m) => {
@@ -32,10 +30,8 @@ fn scrub(v: &mut Value) {
     }
 }
 
-/// An alert document stores rule metadata under dotted keys
-/// (`kibana.alert.rule.created_by`), and a whole-key comparison misses every
-/// one of them. Match the last dot-separated segment as well, so a nested
-/// identity field is scrubbed wherever the server chose to flatten it.
+/// Match both full keys and their final dot-separated segment. Alert documents
+/// can flatten identity fields such as `kibana.alert.rule.created_by`.
 fn is_sensitive(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     let leaf = lower.rsplit('.').next().unwrap_or(&lower);
@@ -54,10 +50,10 @@ fn is_sensitive(key: &str) -> bool {
         )
 }
 
-/// The stack this recording came from, as bare hostnames.
+/// Return the recording stack's bare hostnames.
 ///
-/// Read from the environment rather than threaded through, because every write
-/// path needs them and the recorder only ever talks to one stack per run.
+/// Read them from the environment because every write path needs them and each
+/// run talks to one stack.
 fn recording_hosts() -> Vec<String> {
     [
         "ELASTICCTL_KIBANA_URL",
@@ -74,14 +70,11 @@ fn recording_hosts() -> Vec<String> {
     .collect()
 }
 
-/// Replace the recording stack's hostname anywhere it appears in a value.
+/// Replace the recording stack's hostname wherever it appears in a value.
 ///
-/// `is_sensitive` is a key allowlist, and an alert document puts the project's
-/// URL under `kibana.alert.url` — a key no allowlist would think to name,
-/// carrying identity in the *value*. Any recorded string can carry the host, so
-/// the sweep is over values and runs on every fixture. The path is kept so the
-/// document's shape still reads true; only the host that names the owner's
-/// project goes.
+/// `is_sensitive` checks keys, but an alert document stores the project URL in
+/// `kibana.alert.url`, where identity is in the *value*. Sweep every recorded
+/// string and keep the path so the document shape remains intact.
 fn scrub_hosts(v: &mut Value, hosts: &[String]) {
     match v {
         Value::String(s) => {
@@ -97,11 +90,9 @@ fn scrub_hosts(v: &mut Value, hosts: &[String]) {
     }
 }
 
-/// Redact a sensitive value without changing its type: a string becomes
-/// "REDACTED", a container keeps its shape with every leaf redacted, and null
-/// stays null — a null `full_name`/`email` is an absence, not a secret. An
-/// `api_key` can be an object in a real response, and collapsing it to a string
-/// would destroy the shape the fixture exists to pin.
+/// Redact a sensitive value without changing its type. Strings become
+/// "REDACTED", containers keep their shape with redacted leaves, and null
+/// stays null because a null `full_name` or `email` is absent, not secret.
 fn redact(val: &mut Value) {
     match val {
         Value::String(_) => *val = json!("REDACTED"),
@@ -121,9 +112,8 @@ fn redact(val: &mut Value) {
 }
 
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
-/// response as an opaque string, so `scrub`'s object walk never reaches the
-/// identity fields inside it; parse each line, scrub it, and re-serialize so
-/// the exported text is redacted the same way a parsed body is.
+/// response as an opaque string, so parse and reserialize each line before
+/// applying the same redaction used for parsed bodies.
 fn scrub_ndjson(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {
@@ -152,8 +142,8 @@ async fn main() {
     }
 }
 
-/// Build a transport from the environment, the same way the CLI would. The
-/// caller supplies the default timeout; `ELASTICCTL_TIMEOUT` overrides it.
+/// Build a transport from the environment as the CLI does. The caller supplies
+/// the default timeout; `ELASTICCTL_TIMEOUT` overrides it.
 fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
     let timeout_secs = std::env::var("ELASTICCTL_TIMEOUT")
         .ok()
@@ -176,17 +166,14 @@ fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, body: V
     write_fixture_inner(dir, name, flavor, version, body, None)
 }
 
-/// Like `write_fixture`, but also records which response headers were present.
+/// Like `write_fixture`, but also record which response headers were present.
 ///
-/// Only the status fixture needs this: deployment flavor is not derivable from
-/// any response body, and the header that separates Hosted from self-managed is
-/// evidence a fixture has to carry or the detection path has nothing offline to
-/// test against.
+/// Only the status fixture needs headers. Deployment flavor is not derivable
+/// from the response body, and the Hosted/self-managed header is required to
+/// test detection offline.
 ///
-/// Header *values* are redacted, not recorded. `x-found-handling-cluster`
-/// carries the deployment's cluster id, and these fixtures are public. The
-/// detection reads presence, never the value, so a redacted value proves
-/// exactly as much as the real one.
+/// Redact header *values* instead of recording them. `x-found-handling-cluster`
+/// carries the deployment's cluster ID, while detection reads only presence.
 fn write_fixture_with_headers(
     dir: &PathBuf,
     name: &str,
@@ -221,11 +208,10 @@ fn write_fixture_inner(
     println!("wrote {}", path.display());
 }
 
-/// Like `write_fixture`, but records the request as well.
+/// Like `write_fixture`, but also records the request.
 ///
-/// For an exchange whose whole point is *which* index and *which* field were
-/// asked for, a response on its own proves nothing — an empty result and a
-/// wrong field name look identical.
+/// A response alone cannot prove which index and field were queried: an empty
+/// result and a wrong field name look identical.
 fn write_exchange(
     dir: &PathBuf,
     name: &str,
@@ -236,8 +222,8 @@ fn write_exchange(
 ) {
     scrub(&mut body);
     let hosts = recording_hosts();
-    // The request is swept too: it embeds the index and query the recorder
-    // built, and an absolute ES URL would carry the host.
+    // Sweep the request too: it contains the index, query, and possibly an
+    // absolute ES URL with the recording host.
     scrub_hosts(&mut request, &hosts);
     scrub_hosts(&mut body, &hosts);
     let doc = json!({
@@ -254,24 +240,19 @@ fn write_exchange(
     println!("wrote {}", path.display());
 }
 
-/// Scratch index the preview probe queries. Carries the `elasticctl-sample`
-/// marker so a failed run is identifiable, and deliberately avoids a `logs-`
-/// prefix: `logs-*-*` matches Elastic's own template, which would turn this
-/// into a data stream and reject a plain document write.
+/// Scratch index queried by the preview probe. It carries the
+/// `elasticctl-sample` marker and avoids the `logs-` prefix: `logs-*-*` matches
+/// Elastic's template and would reject a plain document write.
 const PREVIEW_PROBE_INDEX: &str = "elasticctl-sample-fixture";
-/// Base of the preview probe's name. A per-run suffix is appended because
-/// preview alerts are never deleted, so a constant name could be satisfied by
-/// a stale alert from an earlier recording — the suffix keeps the fallback
-/// scoped to this run's own alerts.
+/// Base name for the preview probe. Append a per-run suffix because preview
+/// alerts are never deleted; the fallback must not match a stale alert.
 const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
-/// Fixed rather than "now": the probe document is written at a fixed instant
-/// inside the window this end implies, so the recording is reproducible and
-/// needs no date arithmetic.
+/// Fixed instead of "now": the probe document falls inside this window, so the
+/// recording is reproducible and needs no date arithmetic.
 const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
 const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
 
-/// A per-run suffix so a re-record's fallback cannot match a previous run's
-/// leftover preview alerts.
+/// Return a per-run suffix so a re-record cannot match leftover preview alerts.
 fn run_token() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -279,9 +260,8 @@ fn run_token() -> String {
         .unwrap_or_else(|_| std::process::id().to_string())
 }
 
-/// The request that found the hits, alongside the search response. Kept apart
-/// from the fixture write so the caller runs its cleanups before anything is
-/// written to disk.
+/// Request and response that found preview hits. Keep them separate from the
+/// fixture write so the caller can clean up first.
 struct PreviewHitsExchange {
     request: Value,
     response: Value,
@@ -289,22 +269,18 @@ struct PreviewHitsExchange {
 
 /// Record what a preview actually wrote.
 ///
-/// `rules/preview` returns a `previewId` and no hit count, so the count has to
-/// come from the preview alerts index. Three things are unproven and this is
-/// what proves them: the index name, the field carrying the preview id, and
-/// whether a project-scoped key may read it. A fourth — whether the alerts are
-/// visible to search the moment the preview returns — is measured by recording
-/// which attempt first saw them.
+/// `rules/preview` returns a `previewId` but no hit count, so read the count from
+/// the preview alerts index. This records the index name, preview-ID field,
+/// project-key access, and the first attempt that can see the alerts.
 ///
-/// Returns `Err` rather than panicking, and returns the exchange rather than
-/// writing it, so the caller deletes the scratch index and the probe rule on
-/// every path. A recording that finds no hits is an error, never a fixture
-/// that claims a field matched when nothing did.
+/// Return `Err` rather than panicking and return the exchange for the caller to
+/// write after deleting the scratch index and probe rule. No hits are an error,
+/// not a fixture claiming a field matched.
 async fn record_preview_hits(
     t: &elasticctl_core::Transport,
     space: &str,
 ) -> elasticctl_core::Result<PreviewHitsExchange> {
-    // One document the probe rule is certain to match.
+    // The probe rule must match this document.
     let doc = json!({
         "@timestamp": PREVIEW_DOC_TIMESTAMP,
         "event": {"category": ["process"], "type": ["start"], "code": "1"},
@@ -367,13 +343,12 @@ async fn record_preview_hits(
 
     let hits_of = |v: &Value| v["hits"]["total"]["value"].as_u64().unwrap_or(0);
 
-    // Attempt 1 immediately, attempt 2 after Elasticsearch's default
-    // one-second refresh interval. Which one first sees the alerts is the
-    // measurement.
+    // Try immediately, then after Elasticsearch's default one-second refresh
+    // interval. Record which attempt first sees the alerts.
     let mut response = search(by_uuid.clone()).await?;
     let mut uuid_attempts = 1;
     if hits_of(&response) == 0 {
-        // Blocking sleep: the recorder does one thing at a time.
+        // The recorder performs one operation at a time.
         std::thread::sleep(std::time::Duration::from_millis(1000));
         response = search(by_uuid.clone()).await?;
         uuid_attempts = 2;
@@ -391,10 +366,8 @@ async fn record_preview_hits(
         });
     }
 
-    // The uuid field is a guess. Fall back to a query scoped by this probe's
-    // own, run-unique rule name, which still names an object this recorder
-    // created, and record what came back so the real field is discoverable
-    // instead of merely absent.
+    // The UUID field is a guess. Fall back to this run's unique probe name and
+    // record the response so the actual field is discoverable.
     println!("no hits by kibana.alert.rule.uuid; retrying by rule name");
     let by_name = json!({
         "size": 3,
@@ -408,9 +381,8 @@ async fn record_preview_hits(
                 "index": index,
                 "body": by_name,
                 "matched_by": "kibana.alert.rule.name",
-                // The fallback runs only after the uuid retries, so this is
-                // the first search of *this* query — its own attempt count,
-                // not the uuid query's.
+                // This fallback follows the UUID retries, so its attempt count
+                // starts at one for this query.
                 "attempts_until_hits": 1,
             }),
             response: fallback,
@@ -436,18 +408,18 @@ async fn record() {
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-    // Elastic Cloud Hosted reports `build_flavor: "traditional"`, the same
-    // value a self-managed stack reports, so recording ECH would overwrite the
-    // self-managed fixture set. The deployment flavor is not derivable from the
-    // status body and the recorder must be told it.
+    // Elastic Cloud Hosted reports `build_flavor: "traditional"`, like a
+    // self-managed stack. Recording ECH without `ELASTICCTL_FIXTURE_FLAVOR`
+    // would overwrite the self-managed fixture set, so pass the deployment
+    // flavor explicitly.
     let flavor = std::env::var("ELASTICCTL_FIXTURE_FLAVOR").unwrap_or_else(|_| {
         status["version"]["build_flavor"]
             .as_str()
             .unwrap_or("default")
             .to_string()
     });
-    // Anchor on the manifest directory, not the process CWD: `cargo xtask
-    // record` run from `lab/` must not write to `lab/tests/fixtures`.
+    // Anchor on the manifest directory, not the process CWD. Running `cargo
+    // xtask record` from `lab/` must not write to `lab/tests/fixtures`.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("tests/fixtures")
@@ -468,14 +440,14 @@ async fn record() {
         .expect("authenticate");
     write_fixture(&dir, "authenticate", &flavor, &version, auth);
 
-    // `info` reported a hardcoded null licence tier and no space list. Both
-    // have to come from somewhere; these record where.
+    // `info` returned a hardcoded null license tier and no space list. Record
+    // both values from their source endpoints.
     let spaces = t.get("/api/spaces/space").await.expect("spaces");
     write_fixture(&dir, "spaces", &flavor, &version, spaces);
 
-    // Serverless has no licence tiers — features gate on project tier — so
-    // this call is expected to fail there. Record it only where it succeeds,
-    // and print what happened either way.
+    // The license endpoint does not exist on Serverless, so this call is
+    // expected to fail there. Record it only on success and report either
+    // result.
     match t.get_absolute_es("/_license").await {
         Ok(license) => write_fixture(&dir, "license", &flavor, &version, license),
         Err(e) => println!(
@@ -484,7 +456,7 @@ async fn record() {
         ),
     }
 
-    // Use a distinctive id so a failed cleanup is obvious in the UI.
+    // Use a distinctive ID so failed cleanup is visible in the UI.
     let rule_id = "elasticctl-fixture-probe";
     let body = json!({
         "rule_id": rule_id, "name": "elasticctl fixture probe",
@@ -500,9 +472,9 @@ async fn record() {
         .expect("create");
     write_fixture(&dir, "rules_create", &flavor, &version, created);
 
-    // Find after create, and scoped to the probe rule. An unscoped find would
-    // write every custom rule's query, index, and actions into a public repo,
-    // and `scrub` cannot help: that content lives in values, not keys.
+    // Find after create and scope the query to the probe rule. An unscoped find
+    // would write every custom rule's query, index, and actions to the public
+    // repository; `scrub` cannot remove content stored in values.
     let find = t
         .get(&format!(
             "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
@@ -512,9 +484,9 @@ async fn record() {
         .expect("find");
     write_fixture(&dir, "rules_find", &flavor, &version, find);
 
-    // Scoped by the probe rule's own name. This is the filter path
-    // `resolve::to_rule_id` will use instead of walking every page of the
-    // corpus, so it has to be a recorded fact, not an assumption.
+    // Scope by the probe rule's name. This is the filter path
+    // `resolve::to_rule_id` uses instead of walking the corpus, so record it as
+    // a fact rather than an assumption.
     let name_filter = "alert.attributes.name: \"elasticctl fixture probe\"";
     let find_by_name = t
         .get(&format!(
@@ -575,8 +547,8 @@ async fn record() {
     let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
     let hits = record_preview_hits(&t, &space).await;
 
-    // Always drop the scratch index, on every path: a recording session must
-    // leave the stack exactly as it found it.
+    // Drop the scratch index on every path so recording leaves the stack
+    // unchanged.
     let cleanup = t
         .delete_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}"))
         .await;
@@ -587,10 +559,9 @@ async fn record() {
         );
     }
 
-    // Export before delete, so the fixture contains a real rule line. The
-    // export is scoped to the probe rule: a fixture is a representative sample
-    // of real traffic, not an archive, and a full export would commit every
-    // rule (including Elastic's prebuilt content) into a public repo.
+    // Export before deleting the rule so the fixture contains a real rule line.
+    // Scope the export to the probe rule: a fixture samples traffic; it is not
+    // an archive of every rule, including Elastic's prebuilt content.
     let export = t
         .post_text(
             "/api/detection_engine/rules/_export",
@@ -598,9 +569,9 @@ async fn record() {
         )
         .await;
 
-    // Always delete the probe rule, on every path, before surfacing the export
-    // or preview-hits error: a failed recording must not strand the rule on a
-    // live project.
+    // Delete the probe rule on every path before returning an export or
+    // preview-hit error. A failed recording must not strand it on a live
+    // project.
     let deleted = t
         .delete(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
         .await;
@@ -611,7 +582,7 @@ async fn record() {
         );
     }
 
-    // Both cleanups have run; only now is it safe to surface failures.
+    // Both cleanups have run; now surface any failure.
     let exchange = hits.expect("record preview hits");
 
     let export = export.expect("export");
@@ -640,11 +611,11 @@ async fn record() {
 }
 
 async fn seed() {
-    // The prepackaged install exceeds the recorder's normal 60s timeout on a
-    // fresh stack; give it a default well above the install time, still
-    // overridable via `ELASTICCTL_TIMEOUT`.
+    // A prepackaged install can exceed the normal 60-second timeout on a fresh
+    // stack. Use a higher default while keeping `ELASTICCTL_TIMEOUT` as an
+    // override.
     let t = transport_from_env(600);
-    // Installing prebuilt Elastic rules gives pull, diff, and preview real data.
+    // Prebuilt Elastic rules give pull, diff, and preview real data.
     let installed = t
         .put("/api/detection_engine/rules/prepackaged", &json!({}))
         .await

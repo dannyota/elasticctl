@@ -61,7 +61,7 @@ fn validate_reports_a_rule_missing_its_rule_id() {
 
 #[test]
 fn validate_shows_which_server_defaults_would_be_applied() {
-    // A sparse file is valid; the operator should still see what it becomes.
+    // A sparse file is valid, and the output must show its server defaults.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sparse.yaml");
     fs::write(&path, "- rule_id: abc\n  name: A rule\n  type: query\n").unwrap();
@@ -135,10 +135,8 @@ fn validate_of_a_missing_file_is_a_clean_error_not_a_panic() {
     assert!(serde_json::from_slice::<serde_json::Value>(&out.stderr).is_ok());
 }
 
-/// `Rule::from_value` only checks that `rule_id` is present, not that it is
-/// a string, so an unquoted numeric id — a plausible hand-editing slip —
-/// decodes without error. `validate` must still catch it: a blank identity
-/// behind "valid": true would be a false clean bill of health.
+/// `Rule::from_value` accepts a numeric `rule_id`, but `validate` must reject
+/// it instead of reporting a rule with an invalid identity as valid.
 #[test]
 fn validate_reports_a_rule_whose_rule_id_is_not_a_string() {
     let dir = tempfile::tempdir().unwrap();
@@ -180,8 +178,7 @@ fn validate_of_a_mixed_file_names_the_index_of_the_bad_rule() {
     assert!(msg.contains("rule_id"), "{msg}");
 }
 
-/// `validate` must work with a profile that carries no credential at all —
-/// it is a local, offline check and must never require one.
+/// `validate` is local and offline, so it must work without a credential.
 #[test]
 fn validate_succeeds_against_a_credential_less_profile() {
     let dir = tempfile::tempdir().unwrap();
@@ -222,8 +219,7 @@ fn validate_succeeds_against_a_credential_less_profile() {
     assert_eq!(v["valid"], true);
 }
 
-/// A name lookup walked all 21 pages of a 2,066-rule corpus — 8.8 seconds to
-/// report a miss. One filtered request answers the same question.
+/// A name lookup must use one filtered request instead of walking the corpus.
 #[tokio::test]
 async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
     let server = MockServer::start().await;
@@ -242,8 +238,7 @@ async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
         .expect(1)
         .mount(&server)
         .await;
-    // The resolved rule_id is fetched once more to display the rule. It is
-    // unrelated to the name lookup; the assertion is on the _find count.
+    // This fetch displays the rule and is separate from the name lookup.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "abc"))
@@ -288,8 +283,7 @@ async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
     );
 }
 
-/// The selector was a rule_id. Reporting the miss as a missed *name* points
-/// the operator at the wrong thing.
+/// A failed rule_id lookup must report both selector forms, not only a name.
 #[tokio::test]
 async fn a_miss_names_both_what_was_tried() {
     let server = MockServer::start().await;
@@ -323,8 +317,8 @@ async fn a_miss_names_both_what_was_tried() {
     assert!(msg.contains("does-not-exist-0000"), "{msg}");
 }
 
-/// A server-side filter on an analyzed field can return near matches. The
-/// exact-match contract must survive that.
+/// A server-side filter can return near matches, but resolution still requires
+/// an exact name.
 #[tokio::test]
 async fn a_near_match_returned_by_the_filter_is_still_not_a_match() {
     let server = MockServer::start().await;

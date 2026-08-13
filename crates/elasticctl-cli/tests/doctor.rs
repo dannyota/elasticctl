@@ -1,8 +1,7 @@
-//! `doctor` must keep working when the configuration itself is broken —
-//! that is exactly when an operator reaches for it. Unlike every other
-//! command, it does not fail fast on `Context::build`; a build failure
-//! becomes a failed `config` check in its JSON report instead of a bare
-//! error envelope on stderr.
+//! Keep `doctor` usable when the configuration is broken—the time operators
+//! need it most. Unlike other commands, it turns `Context::build` failures
+//! into a failed `config` check in its JSON report instead of a bare stderr
+//! error envelope.
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -14,11 +13,10 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Deliberately left at whatever the process umask produces (typically
-/// 0644, i.e. permissive). `doctor` folds a permissive file into its own
-/// `config_permissions` check rather than the stderr side channel other
-/// commands use, so its fixtures need no permission workaround — that is
-/// exactly the case `tests/permission_warning.rs` exercises directly.
+/// Leave the mode to the process umask (usually 0644). `doctor` reports a
+/// permissive mode in its `config_permissions` check, not on stderr, so these
+/// fixtures need no workaround. Other commands are covered in
+/// `tests/permission_warning.rs`.
 fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     let path = dir.join("config.toml");
     fs::write(&path, body).unwrap();
@@ -48,7 +46,7 @@ timeout_secs = 30
     )
 }
 
-/// A config pointing the default profile at a mock stack.
+/// Point the default profile at a mock stack.
 fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
     write_config(
         dir,
@@ -67,8 +65,8 @@ timeout_secs = 5
     )
 }
 
-/// A mock stack serving just enough for `doctor` to reach the `auth` check:
-/// the status probe, the identity call, and an empty rules page.
+/// Serve the endpoints `doctor` needs for its `auth` check: a status probe,
+/// identity response, and empty rules page.
 async fn doctor_server(username: &str, realm: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -168,9 +166,8 @@ timeout_secs = 30
     assert_eq!(v["ok"], false);
     let config_check = find_check(&v, "config");
     assert_eq!(config_check["status"], "fail");
-    // Must be `require_credential`'s message, not `Transport::new`'s generic
-    // one — assert on content, not just status, since status alone doesn't
-    // distinguish the two and is how this went unnoticed before.
+    // Check `require_credential`'s message, not `Transport::new`'s generic
+    // message. Status alone cannot distinguish them.
     let msg = config_check["message"].as_str().unwrap();
     assert!(
         msg.contains("nocreds"),
@@ -205,8 +202,8 @@ fn doctor_reports_a_failed_config_check_for_a_missing_config_file() {
 
 #[test]
 fn an_unrelated_command_still_fails_fast_on_a_bad_profile() {
-    // Proves the leniency added to doctor is scoped to doctor alone: every
-    // other command still fails fast on `Context::build`.
+    // Doctor's leniency must stay scoped to doctor; other commands still fail
+    // fast on `Context::build`.
     let dir = tempfile::tempdir().unwrap();
     let path = two_profile_config(dir.path());
     let out = bin()

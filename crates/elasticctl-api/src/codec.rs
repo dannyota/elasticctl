@@ -1,7 +1,7 @@
-//! NDJSON and YAML, two skins over the same `Rule` model.
+//! NDJSON and YAML representations of the same `Rule` model.
 //!
-//! NDJSON is what Kibana's export emits and its import consumes, so it is the
-//! fidelity format. YAML is the reviewable one.
+//! Kibana exports and imports NDJSON, so it preserves rule fidelity. YAML is
+//! easier to review.
 
 use crate::model::{ExportSummary, Rule};
 use elasticctl_core::{Error, ErrorKind, Result};
@@ -15,7 +15,7 @@ pub enum Format {
 }
 
 impl Format {
-    /// NDJSON is the default: it is the canonical, import-ready form.
+    /// NDJSON is the default, canonical import format.
     pub fn from_path(p: &Path) -> Format {
         match p.extension().and_then(|e| e.to_str()) {
             Some("yaml") | Some("yml") => Format::Yaml,
@@ -24,8 +24,7 @@ impl Format {
     }
 }
 
-/// A line is the export trailer, not a rule, when it has no `rule_id` and
-/// carries an export counter.
+/// An export trailer has no `rule_id` and has an export counter.
 fn is_summary(v: &Value) -> bool {
     v.get("rule_id").is_none() && v.get("exported_count").is_some()
 }
@@ -61,8 +60,7 @@ pub fn decode_ndjson(body: &str) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
             summary = serde_json::from_value(value).ok();
             continue;
         }
-        // Locate the fault the same way a malformed line already is: a
-        // 2,000-line export needs the line number, not just the reason.
+        // Include the line number so large exports identify the rejected rule.
         rules.push(
             Rule::from_value(value).map_err(|e| {
                 Error::new(ErrorKind::Error, format!("line {}: {}", i + 1, e.message))
@@ -82,9 +80,8 @@ pub fn decode_yaml(body: &str) -> Result<Vec<Rule>> {
     let values: Vec<Value> = serde_yaml_ng::from_str(body)
         .map_err(|e| Error::new(ErrorKind::Error, format!("parsing YAML: {e}")))?;
 
-    // Route every element through Rule::from_value so YAML enforces the same
-    // rule_id invariant as NDJSON. YAML is the hand-edited format, so it is
-    // where a missing rule_id is most likely to originate.
+    // Apply the same `rule_id` validation as NDJSON. YAML is hand-edited, so
+    // it is more likely to omit `rule_id`.
     values
         .into_iter()
         .enumerate()
@@ -113,8 +110,7 @@ mod tests {
         .unwrap()
     }
 
-    // Measured: exporting one rule yields two lines, the rule then a
-    // 15-field summary object.
+    // A one-rule export contains the rule and a 15-field summary.
     const REAL_EXPORT: &str = concat!(
         r#"{"rule_id":"a","name":"rule a","type":"query"}"#,
         "\n",
@@ -130,7 +126,7 @@ mod tests {
         assert_eq!(summary.unwrap().exported_count, 1);
     }
 
-    // Measured: with zero rules the trailer is the entire body.
+    // A zero-rule export contains only the trailer.
     #[test]
     fn decode_ndjson_handles_a_body_that_is_only_a_trailer() {
         let body = r#"{"exported_count":0,"exported_rules_count":0,"missing_rules_count":0}"#;

@@ -1,9 +1,8 @@
 //! Deterministic rule forms.
 //!
-//! `canonical` is what `pull` writes: volatile fields removed, keys ordered,
-//! nothing invented. `comparable` is what `diff` compares: `canonical` plus
-//! server defaults filled in. They stay separate because writing filled
-//! defaults to disk would bloat every file with values the author never chose.
+//! `canonical` is what `pull` writes: volatile fields removed and keys sorted.
+//! `comparable` is what `diff` compares: `canonical` plus server defaults.
+//! They remain separate so `pull` does not write defaults the author omitted.
 
 use crate::model::{Rule, VOLATILE_FIELDS, server_defaults};
 use serde_json::{Map, Value};
@@ -16,8 +15,7 @@ pub fn strip_volatile(rule: &mut Rule) {
     }
 }
 
-/// Add the fields the server would fill on create, without touching anything
-/// the author set explicitly.
+/// Add fields the server fills on create without overwriting explicit values.
 pub fn fill_defaults(rule: &mut Rule) {
     let map = rule.as_map_mut();
     for (k, v) in server_defaults() {
@@ -25,15 +23,11 @@ pub fn fill_defaults(rule: &mut Rule) {
     }
 }
 
-/// Recursively sort object keys for deterministic output. **This function must
-/// not be removed.**
+/// Recursively sort object keys for deterministic output.
 ///
-/// `serde_json::Map` is `BTreeMap`-backed in the current dependency set and
-/// already orders keys. However, it preserves insertion order if the
-/// `preserve_order` feature is enabled. This function rebuilds the map
-/// explicitly so that ordering does not silently depend on which features a
-/// downstream crate enables transitively. Without it, a future day when some
-/// other crate adds `preserve_order` would silently break output determinism.
+/// `serde_json::Map` currently uses `BTreeMap`, but `preserve_order` makes it
+/// retain insertion order. Rebuild the map so output order does not depend on
+/// a transitive feature.
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(m) => {
@@ -45,8 +39,8 @@ fn sort_value(value: &Value) -> Value {
             }
             Value::Object(out)
         }
-        // Array order is meaningful in a rule (tags, index patterns, threat
-        // mappings), so it is preserved rather than sorted.
+        // Array order is meaningful for tags, index patterns, and threat
+        // mappings, so preserve it.
         Value::Array(a) => Value::Array(a.iter().map(sort_value).collect()),
         other => other.clone(),
     }
@@ -69,8 +63,8 @@ pub fn comparable(rule: &Rule) -> Rule {
     Rule::from_value(sorted).expect("rule_id survives normalization")
 }
 
-/// Stable ordering for file output and diff reporting. Rules without a
-/// readable `rule_id` sort last rather than panicking.
+/// Sort rules for stable file output and diff reports. Rules with unreadable
+/// `rule_id` values sort last.
 pub fn sort_rules(rules: &mut [Rule]) {
     rules.sort_by(|a, b| {
         let (x, y) = (
@@ -87,7 +81,7 @@ mod tests {
     use serde_json::json;
 
     fn pulled() -> Rule {
-        // Shape of a rule as it comes back from the API.
+        // A rule returned by the API.
         Rule::from_value(json!({
             "rule_id": "abc", "name": "a rule", "type": "query", "risk_score": 21,
             "id": "6b796e42-99fa-4296-8dc1-a693dd455dd0",
@@ -101,7 +95,7 @@ mod tests {
     }
 
     fn hand_authored() -> Rule {
-        // What an engineer actually writes: no volatile fields, no defaults.
+        // A hand-authored rule has no volatile fields or defaults.
         Rule::from_value(json!({
             "rule_id": "abc", "name": "a rule", "type": "query", "risk_score": 21
         }))
@@ -185,7 +179,7 @@ mod tests {
         );
     }
 
-    // The property the whole state engine rests on.
+    // The state engine relies on this property.
     #[test]
     fn a_pulled_rule_and_its_hand_authored_equivalent_compare_equal() {
         assert_eq!(
@@ -245,8 +239,7 @@ mod tests {
 
     #[test]
     fn sort_rules_puts_unreadable_rule_id_last_without_panicking() {
-        // Constructible only through the transparent `Deserialize`;
-        // `from_value` refuses a non-string rule_id.
+        // Transparent `Deserialize` can create this; `from_value` rejects it.
         let bad: Rule = serde_json::from_value(json!({"rule_id": 123})).unwrap();
         let good_c = Rule::from_value(json!({"rule_id": "c"})).unwrap();
         let good_a = Rule::from_value(json!({"rule_id": "a"})).unwrap();

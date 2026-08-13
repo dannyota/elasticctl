@@ -60,7 +60,7 @@ async fn a_dry_run_previews_on_stderr_and_changes_nothing() {
         "dry run and apply must share one count field"
     );
 
-    // The decisive assertion: no bulk action reached the server.
+    // A dry run must not send a bulk action.
     let hits = server.received_requests().await.unwrap();
     assert!(
         !hits.iter().any(|r| r.url.path().contains("_bulk_action")),
@@ -114,11 +114,9 @@ async fn yes_applies_the_bulk_action_and_reports_the_outcome() {
     assert_eq!(v["succeeded"], 1);
 }
 
-/// `set_enabled` serves both `enable` and `disable` from one `enabled` flag,
-/// but the guard path string differs between them — and the assert is live,
-/// not `cfg(test)`, so a wrong path on the enable arm would panic a real user
-/// running `rules enable`. The disable apply test cannot catch that typo, so
-/// enable is driven through the same apply path here.
+/// `set_enabled` uses one apply path for `enable` and `disable`, with a
+/// different guard path for each command. Exercise `enable` here so both
+/// paths are checked.
 #[tokio::test]
 async fn yes_enables_a_rule_through_the_same_apply_path_as_disable() {
     let server = server_with_one_rule().await;
@@ -152,11 +150,8 @@ async fn yes_enables_a_rule_through_the_same_apply_path_as_disable() {
     assert_eq!(v["succeeded"], 1);
 }
 
-/// A bulk action's summary reports `failed` as a count, not a per-item list,
-/// but a positive count is exactly as much a partial failure as a non-empty
-/// `deleted`'s `failed` list — the exit code must reflect it. The operator
-/// still needs the full summary, so stdout must carry it even though the
-/// process exits non-zero.
+/// A positive `failed` count is a partial failure even without a per-item
+/// list. The command must exit non-zero while still printing its full summary.
 #[tokio::test]
 async fn a_bulk_action_partial_failure_exits_non_zero_but_still_reports_the_summary() {
     let server = server_with_one_rule().await;
@@ -249,10 +244,8 @@ async fn server_with_three_rules() -> MockServer {
     server
 }
 
-/// `delete` removes rules one at a time. If rule 2 of 3 fails, the loop must
-/// not stop there: rule 3 must still be attempted, and the payload must name
-/// exactly which rules survived and which did not — rather than an early `?`
-/// return silently dropping everything already deleted.
+/// `delete` removes rules one at a time. If one deletion fails, later rules
+/// must still be attempted and the result must list every outcome.
 #[tokio::test]
 async fn delete_continues_past_a_per_rule_failure_and_reports_every_outcome() {
     let server = server_with_three_rules().await;
@@ -324,8 +317,7 @@ async fn delete_continues_past_a_per_rule_failure_and_reports_every_outcome() {
         "{v}"
     );
 
-    // Prove the loop did not stop at the first failure: all three DELETEs
-    // reached the server, not just the one before the failure.
+    // All three DELETEs must reach the server, including the one after failure.
     let hits = server.received_requests().await.unwrap();
     let delete_count = hits
         .iter()

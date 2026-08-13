@@ -1,8 +1,8 @@
 # Sample corpora
 
-Rules and events for exercising `elasticctl` against real content. Nothing here
-is committed: the scripts fetch on demand into `samples/out/`, which is
-gitignored.
+Rules and events for exercising `elasticctl` against real content. The scripts
+fetch them on demand into gitignored `samples/out/`; the repository commits
+none of it.
 
 Requires `curl`, `unzip`, `git`, `python3`, and — for the rule slice —
 `sigma-cli` with the Elasticsearch backend:
@@ -28,22 +28,21 @@ ECS, and `-f siem_rule_ndjson` emits one detection-engine object per line. All
 40 Windows `process_creation` rules in the verified slice converted with zero
 failures.
 
-`prepare_rules.py` gives every rule the `elasticctl-sample` marker — an id
-prefix, a tag, `enabled: false`, and the sample data stream as its index — so a
-run can find and remove everything it created and can never touch an untagged
+`prepare_rules.py` gives every rule the `elasticctl-sample` marker: a `rule_id`
+prefix, a tag, `enabled: false`, and the sample data stream as its index. A run
+can then find and remove everything it created and cannot touch an untagged
 rule.
 
-**Licence — Detection Rule License 1.1.** Redistributing a Sigma rule, modified
+**License — Detection Rule License 1.1.** Redistributing a Sigma rule, modified
 or not, must retain the rule's `author` field, a link to the rule set, and the
-licence text or a link to it; displaying matches must show the `author`. The
+license text or a link to it; displaying matches must show the `author`. The
 converter carries `author`, `references`, and `license: DRL` into each
 generated rule, and `prepare_rules.py` leaves all three alone. Rule set:
-<https://github.com/SigmaHQ/sigma>. Licence:
+<https://github.com/SigmaHQ/sigma>. License:
 <https://github.com/SigmaHQ/Detection-Rule-License>.
 
-**If `github.com` is blocked** — some corporate egress proxies MITM it while
-letting `raw.githubusercontent.com` through — clone from the GitLab mirror
-instead:
+**If `github.com` is blocked** — some corporate egress proxies intercept it
+while allowing `raw.githubusercontent.com` — clone from the GitLab mirror:
 
 ```bash
 git clone --depth 1 https://gitlab.com/SigmaHQ/sigma.git samples/out/sigma
@@ -87,22 +86,22 @@ Three datasets are fetched: `empire_mimikatz_extract_keys` (credential access,
 44 MB unzipped), `empire_psremoting_stager` (lateral movement, 6.8 MB), and
 `empire_launcher_vbs` (execution, 5.6 MB) — 18,010 events in total.
 
-`remap_to_ecs.py` does two things without which **no rule can ever match**:
+For any rule to match, `remap_to_ecs.py` must:
 
-- Renames the legacy Winlogbeat fields to ECS: `EventID` to `event.code`,
+- Rename the legacy Winlogbeat fields to ECS: `EventID` to `event.code`,
   `CommandLine` to `process.command_line`, `Image` to `process.executable`,
   `ParentImage` to `process.parent.executable`, `SourceName` to
   `event.provider`, `Hostname` to `host.name`. Sysmon 1 and Security 4688 also
   get `event.category: ["process"]` and `event.type: ["start"]`.
-- Rewrites `@timestamp` into the last ~150 seconds. The source events are years
-  old and a rule looks back minutes.
+- Rewrite `@timestamp` into the last ~150 seconds. The source events are years
+  old, but rules look back only minutes.
 
-It also **drops** the source `host` field, which is a scalar string where ECS
-maps `host` as an object. Leaving it in fails every document with
-`object mapping for [host] ... found a concrete value` — 18,010 of 18,010 in
-the measured run.
+It also **drops** the source `host` field. That field is a scalar string, but
+ECS maps `host` as an object. Leaving it in fails every document with `object
+mapping for [host] ... found a concrete value` — all 18,010 in the measured
+run.
 
-**Licence — MIT, © 2021 Open Threat Research Forge**, per the repository's
+**License — MIT, © 2021 Open Threat Research Forge**, per the repository's
 `LICENSE` file. Its README also carries a `GPL-3.0` line and badge; that line
 is stale and points at the predecessor repository
 `Cyb3rWard0g/Security-Datasets`. The `LICENSE` file is the operative one.
@@ -118,11 +117,11 @@ Measured against this corpus: a WinRM remote-PowerShell rule matched 302
 events, an Empire launcher rule matched 4, and two rules correctly matched
 nothing.
 
-A converted `process_creation` rule cannot match a PowerShell-channel dataset:
+A converted `process_creation` rule cannot match a PowerShell-channel dataset.
 `empire_mimikatz_extract_keys` carries its mimikatz strings in EventID 800 and
-4103 script-block text, not in `CommandLine`, so a rule querying
-`process.command_line` matches zero. That is a field/source mismatch, not a
-broken pipeline.
+4103 script-block text, not in `CommandLine`. A rule querying
+`process.command_line` therefore matches zero. This is a field/source mismatch,
+not a broken pipeline.
 
 ## Cleaning up
 
@@ -139,7 +138,7 @@ curl -fSL -X DELETE "$ELASTICCTL_ES_URL/_index_template/elasticctl-sample" \
 
 ## Sources not used
 
-- `sbousseaden/EVTX-ATTACK-SAMPLES` — **no licence file in the repository**
+- `sbousseaden/EVTX-ATTACK-SAMPLES` — **no license file in the repository**
   (checked `LICENSE`, `LICENSE.md`, `LICENSE.txt`, `LICENCE`, `LICENCE.md`,
   `COPYING`, `COPYING.txt`; the README is silent). Third-party mirrors label it
   GPL-3.0, which the repository does not. Not fetched and not used.

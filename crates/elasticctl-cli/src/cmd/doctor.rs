@@ -1,11 +1,10 @@
-//! One pass over everything that has to be true before a rule operation can
-//! work. Every check runs even after one fails, so the operator sees all the
-//! problems at once.
+//! Checks the conditions required for rule operations. Independent checks run
+//! after failures where prerequisites permit. A config or connectivity failure
+//! skips dependent checks.
 //!
-//! `doctor` must survive a broken configuration — that is exactly when an
-//! operator reaches for it. Every other command fails fast on
-//! `Context::build`; `doctor` builds its own context and turns a build
-//! failure into a `config: fail` check instead of a bare error envelope.
+//! `doctor` handles broken configuration, when it is most useful. Other
+//! commands fail on `Context::build`; `doctor` reports the failure as
+//! `config: fail`.
 
 use crate::cli::GlobalArgs;
 use crate::context::{self, Context};
@@ -17,11 +16,9 @@ fn check(name: &str, status: &str, message: impl Into<String>) -> Value {
     json!({"check": name, "status": status, "message": message.into()})
 }
 
-/// `_es_api_key` is the realm that can mint a rule API key on the caller's
-/// behalf; `_cloud_api_key` cannot. Every other realm (basic auth, PKI,
-/// SAML, ...) is unrelated to that specific failure mode, so it is reported
-/// as fine — but by naming the realm, not by claiming it is an API key it
-/// is not.
+/// `_es_api_key` can mint a rule API key for the caller; `_cloud_api_key`
+/// cannot. Other realms are not API keys, so the result names the realm
+/// without claiming otherwise.
 fn key_scope_check(realm: &str) -> Value {
     match realm {
         "_es_api_key" => check("key_scope", "ok", "project-scoped Elasticsearch API key"),
@@ -42,11 +39,8 @@ fn key_scope_check(realm: &str) -> Value {
 
 /// Identities longer than this are truncated in output.
 ///
-/// An API key authenticates as its own key id, so `auth` would otherwise print
-/// in full an identifier `config show` redacts. It is not the secret half, but
-/// it names the credential. A generated key id is twenty characters and always
-/// truncates; a human username is short and stays readable, which is what
-/// keeps the check worth reading.
+/// API keys authenticate as their key IDs. Truncate those IDs because
+/// `config show` redacts them, while short usernames remain readable.
 const MAX_IDENTITY_CHARS: usize = 12;
 
 fn short_identity(value: &str) -> String {
@@ -62,9 +56,8 @@ fn short_identity(value: &str) -> String {
 pub async fn run(global: &GlobalArgs) -> Result<Value> {
     let mut checks = Vec::new();
 
-    // A side-channel stderr warning would compete with doctor's own report;
-    // fold the same signal into a check instead of calling the emitter every
-    // other command uses.
+    // Report the warning as a check so it does not compete with the report on
+    // stderr.
     let path = context::config_path(global);
     if let Some(message) = Config::permission_warning(&path) {
         checks.push(check("config_permissions", "warn", message));
@@ -81,9 +74,8 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
                 Some(ctx)
             }
             Err(e) => {
-                // The profile resolved but carries no credential — report
-                // require_credential's message (names the profile and the
-                // remedy), not a generic one.
+                // Use the credential error because it names the profile and
+                // remedy.
                 checks.push(check("config", "fail", e.message));
                 None
             }
@@ -95,7 +87,7 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
     };
 
     let Some(ctx) = ctx else {
-        // Nothing downstream is meaningful without a resolved, credentialed target.
+        // No later check is meaningful without a resolved, credentialed target.
         return Ok(json!({"checks": checks, "ok": false}));
     };
 
@@ -120,8 +112,8 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
     };
 
     if caps.is_some() {
-        // Realm is the cheap, direct signal for whether rule mutation will
-        // work. An organization key reads fine but cannot enable a rule.
+        // The realm determines whether rule mutations work. An organization
+        // key can read rules but cannot enable them.
         match identity(&ctx).await {
             Ok((username, realm)) => {
                 checks.push(check(
@@ -145,9 +137,8 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
                     Err(e) => checks.push(check("rules_access", "fail", e.message)),
                 }
             }
-            // Unreachable in practice — `capabilities()` above already built
-            // and cached the transport successfully — but handled rather
-            // than unwrapped so this can never abort the report.
+            // `capabilities()` should already have cached the transport. Keep
+            // this error path so a failed assumption does not abort the report.
             Err(e) => checks.push(check("rules_access", "fail", e.message)),
         }
     }
@@ -156,8 +147,8 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
     Ok(json!({"checks": checks, "ok": ok}))
 }
 
-/// Username and authentication realm, read from Elasticsearch. Falls back to
-/// the Kibana host when no separate ES URL is configured.
+/// Reads the username and authentication realm from Elasticsearch. Uses the
+/// Kibana host when no ES URL is configured.
 async fn identity(ctx: &Context) -> Result<(String, String)> {
     let transport = ctx.transport().await?;
     let body = transport
@@ -208,9 +199,8 @@ mod tests {
 
     #[test]
     fn key_scope_check_names_the_unknown_realm_from_a_parse_failure() {
-        // `identity()` falls back to "unknown" when the server response
-        // doesn't have the expected shape; that must not be misreported as
-        // an API key either.
+        // `identity()` returns "unknown" for an unexpected response. Do not
+        // report that as an API key.
         let c = key_scope_check("unknown");
         assert_eq!(c["status"], "ok");
         assert!(c["message"].as_str().unwrap().contains("unknown"));
@@ -218,9 +208,8 @@ mod tests {
 
     #[test]
     fn a_key_id_is_truncated_in_the_auth_check() {
-        // The username an API key authenticates as *is* the key id. Not the
-        // secret half, but an identifier config show redacts, so it must not
-        // reach stdout in full.
+        // An API key authenticates as its key ID. `config show` redacts that
+        // identifier, so do not write it in full to stdout.
         let full = "2XTe9p8BLjNicQlhfc9W";
         let short = short_identity(full);
         assert_eq!(short, "2XTe9p...");
@@ -232,8 +221,7 @@ mod tests {
 
     #[test]
     fn a_human_username_is_left_readable() {
-        // Truncating "elastic" to "elasti..." would make the check useless
-        // for the case it is most often read for.
+        // Keep common usernames readable.
         assert_eq!(short_identity("elastic"), "elastic");
         assert_eq!(short_identity("admin"), "admin");
         assert_eq!(short_identity("unknown"), "unknown");

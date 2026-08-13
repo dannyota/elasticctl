@@ -65,8 +65,8 @@ async fn info_reports_the_probed_spaces_and_license_tier() {
 
 #[tokio::test]
 async fn info_reports_a_null_license_tier_on_serverless() {
-    // Serverless has no licence tiers. Null is the honest answer; the mock
-    // would happily serve one, and info must not ask for it.
+    // Serverless has no license tier. Return null even though this mock
+    // provides one; info must not request it.
     let server = stack("serverless").await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -83,8 +83,8 @@ async fn info_reports_a_null_license_tier_on_serverless() {
     assert_eq!(v["spaces"], json!(["default", "soc"]));
 }
 
-/// `doctor` and `config test` read capabilities too, and neither reports a
-/// space list or a licence tier. Neither may pay for one.
+/// `doctor` and `config test` read capabilities but do not report spaces or a
+/// license tier. They must not request those endpoints.
 #[tokio::test]
 async fn doctor_does_not_probe_spaces_or_the_license() {
     let server = MockServer::start().await;
@@ -110,5 +110,5 @@ async fn doctor_does_not_probe_spaces_or_the_license() {
         .arg(&cfg)
         .output()
         .unwrap();
-    // wiremock asserts the `expect(0)` on drop.
+    // Wiremock checks the `expect(0)` when the mock is dropped.
 }

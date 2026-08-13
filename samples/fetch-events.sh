@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Fetch three OTRF Security-Datasets Windows event sets (MIT).
+# Fetch three OTRF Security-Datasets Windows event sets (MIT licensed).
 #
-# Fetch, never vendor: nothing this downloads is committed. Output lands in
-# samples/out/events/, which is gitignored.
+# Fetch without vendoring. The downloaded files go to the gitignored
+# samples/out/events/ directory.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -11,8 +11,8 @@ base="https://raw.githubusercontent.com/OTRF/Security-Datasets/master/datasets/a
 
 mkdir -p "$out"
 
-# name<TAB>path-under-base. A plain list, not an associative array: macOS
-# still ships bash 3.2, which has none.
+# Each line is name<TAB>path-under-base. Use a plain list because macOS still
+# ships Bash 3.2, which has no associative arrays.
 datasets="
 empire_mimikatz_extract_keys	credential_access/host
 empire_psremoting_stager	lateral_movement/host

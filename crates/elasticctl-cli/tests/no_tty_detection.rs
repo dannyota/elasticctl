@@ -1,10 +1,8 @@
-//! Tripwire for the contract that output must not vary by where it runs: a
-//! script piping the CLI's output must see the same bytes a human sees when
-//! running it in a terminal. `assert_cmd` always pipes stdout, so an
-//! end-to-end test can never exercise an interactive-only branch — a
-//! regression that added TTY detection would keep every other test green.
-//! This reads the crate's own source instead and fails if anything reaches
-//! for a terminal check.
+//! Output must not depend on whether stdout is a terminal. A pipe must receive
+//! the same bytes as a terminal. `assert_cmd` always pipes stdout, so an
+//! end-to-end test cannot exercise interactive-only code; a TTY regression
+//! could leave the other tests green. Scan the crate source and fail on
+//! terminal checks.
 
 use std::fs;
 use std::path::{Path, PathBuf};

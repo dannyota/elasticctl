@@ -1,4 +1,4 @@
-//! Resolves configuration once and holds the transport for a command run.
+//! Resolves configuration once and holds a command's transport.
 
 use crate::cli::GlobalArgs;
 use elasticctl_core::{
@@ -6,10 +6,8 @@ use elasticctl_core::{
 };
 use tokio::sync::OnceCell;
 
-/// The effective config path: `--config` if given, else the platform
-/// default. Shared so every caller that needs to reason about the config
-/// file — not just the ones that build a full `Context` — resolves it the
-/// same way.
+/// Effective config path: `--config` or the platform default. Share this so
+/// every caller resolves the path the same way.
 pub fn config_path(global: &GlobalArgs) -> std::path::PathBuf {
     global.config.clone().unwrap_or_else(Config::default_path)
 }
@@ -22,17 +20,13 @@ pub struct Context {
 }
 
 impl Context {
-    /// Loads and resolves configuration only — no network types, no
-    /// credential requirement. A command that only needs profile/space
-    /// resolution (e.g. a future `rules validate`, which never contacts a
-    /// server) can use a `Context` without a credential ever needing to
-    /// exist; `transport()`/`capabilities()` are where that requirement
-    /// actually bites.
+    /// Load and resolve configuration without network access or a credential.
+    /// `transport()` and `capabilities()` require a credential.
     pub fn build(global: &GlobalArgs) -> Result<Context> {
         let path = config_path(global);
         let config = Config::load(&path)?;
 
-        // Flags beat environment, environment beats the profile.
+        // Flags override the environment, which overrides the profile.
         let flags = Overrides {
             space: global.space.clone(),
             timeout_secs: global.timeout,
@@ -50,12 +44,9 @@ impl Context {
         })
     }
 
-    /// Built once per run, on first use — the same lazy shape as
-    /// `capabilities()`. This is where a missing credential actually fails
-    /// (via `Transport::new`/`Credential::from_profile`), with a generic
-    /// message. Call `require_credential()` first in any command that needs
-    /// a live connection, so the operator sees its better message — naming
-    /// the profile and the remedy — instead.
+    /// Build the transport once, on first use. A missing credential fails here
+    /// with a generic message, so live commands should call
+    /// `require_credential()` first.
     pub async fn transport(&self) -> Result<&Transport> {
         self.transport
             .get_or_try_init(|| async {
@@ -64,8 +55,8 @@ impl Context {
             .await
     }
 
-    /// Probed once per run, on first use. A command that never needs the
-    /// flavor never pays for the round trip.
+    /// Probe capabilities once, on first use. Commands that do not need them
+    /// avoid the request.
     pub async fn capabilities(&self) -> Result<&Capabilities> {
         let transport = self.transport().await?;
         self.caps
@@ -75,12 +66,10 @@ impl Context {
             .await
     }
 
-    /// Fail early with a clear message when a profile carries no credential.
+    /// Fail early when the selected profile has no credential.
     ///
-    /// Delegates the actual check to `Credential::is_configured` — the same
-    /// test `Transport::new` applies via `Credential::from_profile` — so
-    /// there is one definition of "has a credential", not two that can
-    /// drift apart.
+    /// Use the same credential check as `Transport::new` so the definitions
+    /// cannot drift.
     pub fn require_credential(&self) -> Result<()> {
         if !Credential::is_configured(&self.resolved.profile) {
             return Err(Error::new(

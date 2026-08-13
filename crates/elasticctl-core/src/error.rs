@@ -1,9 +1,11 @@
-//! The error taxonomy. Every failure that reaches the user is classified here.
+//! Classify errors returned to the user.
 
 use serde_json::{Value, json};
 
-/// A stable error classification. These strings are part of the CLI's public
-/// API — changing one is a breaking change requiring a minor version bump.
+/// A stable error classification.
+///
+/// Its string values are part of the CLI's public API. Changing one requires a
+/// minor version bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     Auth,
@@ -70,11 +72,9 @@ impl Error {
 
     /// Classify an HTTP error response.
     ///
-    /// Two envelope shapes exist in the wild and both must be handled:
-    /// Kibana returns `{"statusCode":..,"error":..,"message":..}`, while the
-    /// Elastic Cloud edge proxy returns `{"ok":false,"message":".."}`. The
-    /// edge shape also appears for a hostname that no longer resolves to a
-    /// live project, which happens after a project rename.
+    /// Kibana returns `{"statusCode":..,"error":..,"message":..}`. The Elastic
+    /// Cloud edge proxy returns `{"ok":false,"message":".."}`. The latter also
+    /// appears when a project rename leaves a hostname unresolved.
     pub fn from_response_body(status: u16, body: &str) -> Self {
         let kind = ErrorKind::from_status(status);
         let message = serde_json::from_str::<Value>(body)
@@ -95,7 +95,7 @@ impl Error {
         }
     }
 
-    /// The single JSON object written to stderr when a command fails.
+    /// Return the JSON object written to stderr when a command fails.
     pub fn to_envelope(&self) -> Value {
         let mut inner = json!({ "kind": self.kind.as_str(), "message": self.message });
         if let Some(status) = self.http_status {
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(ErrorKind::Error.as_str(), "error");
     }
 
-    // Kibana's envelope: {"statusCode":400,"error":"Bad Request","message":"..."}
+    // Kibana error envelope.
     #[test]
     fn parses_the_kibana_error_envelope() {
         let body = r#"{"statusCode":400,"error":"Bad Request","message":"rule_id already exists"}"#;
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(err.message, "rule_id already exists");
     }
 
-    // The Elastic Cloud edge proxy's envelope: {"ok":false,"message":"Unknown resource."}
+    // Elastic Cloud edge-proxy error envelope.
     #[test]
     fn parses_the_cloud_edge_proxy_envelope() {
         let body = r#"{"ok":false,"message":"Unknown resource."}"#;

@@ -1,23 +1,22 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist'
+# Configuration for `dist`.
 #
-# NOTE: .github/workflows/release.yml is hand-edited on top of the generator
-# output (workflow `contents: read`, `write` on the `host` job only, and no
-# `pull_request` trigger). With `allow-dirty = ["ci"]` below, dist skips the
-# CI mode entirely, so the permissions edits survive `dist init` /
-# `dist generate`, and an explicit `dist generate --mode=ci` hard-errors
-# instead of overwriting. To regenerate the workflow, remove `allow-dirty` from
-# this file first, then re-apply the permissions edits.
+# NOTE: .github/workflows/release.yml adds manual edits to generator output:
+# workflow `contents: read`, `write` only for `host`, and no `pull_request`
+# trigger. `allow-dirty = ["ci"]` makes dist skip CI mode, preserving those
+# edits. An explicit `dist generate --mode=ci` fails instead of overwriting
+# them. To regenerate the workflow, remove `allow-dirty` first, then reapply
+# the permission edits.
 [dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+# Preferred dist version for CI (Cargo.toml SemVer syntax).
 cargo-dist-version = "0.32.0"
-# CI backends to support
+# CI backend to generate.
 ci = "github"
-# Allow the hand-edited release.yml to differ from the generator output.
+# Allow the hand-edited release.yml to differ from generator output.
 allow-dirty = ["ci"]
-# The installers to generate for each app
+# Installers to generate for each app.
 installers = ["shell", "powershell"]
-# Target platforms to build apps for (Rust target-triple syntax)
+# Target platforms to build (Rust target-triple syntax).
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]

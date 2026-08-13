@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Install the prebuilt Elastic rules so pull, diff, and preview have real data.
-# Requires the lab from ./up.sh to be running.
+# Install prebuilt Elastic rules so pull, diff, and preview have real data.
+# Requires a running lab from ./up.sh.
 ES=http://localhost:9200
 KB=http://localhost:5601
 AUTH='elastic:elasticctl-lab'

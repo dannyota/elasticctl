@@ -1,8 +1,6 @@
-//! End-to-end coverage for `rules list` and `rules get` against a mock
-//! Kibana. The detection-engine calls themselves are already covered in
-//! `elasticctl-api`'s wiremock suite; these tests exercise the CLI wiring on
-//! top: argument parsing, selector resolution, and the conflict/not-found
-//! surface an operator actually sees.
+//! End-to-end tests for `rules list` and `rules get` against mock Kibana.
+//! API calls are covered in `elasticctl-api`; these tests cover CLI parsing,
+//! selector resolution, and conflict or not-found errors.
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -71,8 +69,7 @@ async fn rules_list_prints_the_summarized_rules() {
 #[tokio::test]
 async fn rules_list_rejects_enabled_and_disabled_together() {
     let dir = tempfile::tempdir().unwrap();
-    // A config that would fail if ever loaded, proving the check happens
-    // before any config resolution or network call.
+    // This missing config proves validation runs before config loading or I/O.
     let config = dir.path().join("absent.toml");
     let out = bin()
         .args([
@@ -128,14 +125,14 @@ async fn rules_get_resolves_a_rule_id_directly() {
 #[tokio::test]
 async fn rules_get_falls_back_to_an_exact_name_match() {
     let server = MockServer::start().await;
-    // The selector is not a rule_id: a direct lookup misses...
+    // The direct rule_id lookup misses.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "A rule"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "not found"})))
         .mount(&server)
         .await;
-    // ...so the CLI searches by name...
+    // The CLI then searches by name.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -143,7 +140,7 @@ async fn rules_get_falls_back_to_an_exact_name_match() {
         })))
         .mount(&server)
         .await;
-    // ...then fetches the resolved rule_id.
+    // Finally, it fetches the resolved rule_id.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "abc"))
@@ -202,10 +199,8 @@ async fn rules_get_of_an_ambiguous_name_is_a_conflict_naming_every_candidate() {
     assert!(msg.contains('a') && msg.contains('b'), "{msg}");
 }
 
-/// The rule_id lookup can fail for reasons other than "no such rule" (an
-/// expired credential, a revoked key). Only a 404 should trigger the
-/// fall-back to a name search; any other failure must propagate as-is, not
-/// be swallowed into a misleading "no rule named X".
+/// Only a 404 from the rule_id lookup should trigger a name search. Other
+/// failures, such as an unauthorized response, must propagate unchanged.
 #[tokio::test]
 async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
     let server = MockServer::start().await;
@@ -215,10 +210,7 @@ async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "unauthorized"})))
         .mount(&server)
         .await;
-    // No mock for _find: if the 401 were misclassified as not_found and the
-    // code fell back to a name search, this test would fail with a
-    // connection/mock-mismatch error rather than a clean "auth" assertion,
-    // making a regression here obvious rather than silently passing.
+    // No _find mock: a mistaken fallback would fail before the auth assertion.
 
     let dir = tempfile::tempdir().unwrap();
     let config = write_config(dir.path(), &server.uri());
@@ -234,9 +226,8 @@ async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
     assert_eq!(v["error"]["kind"], "auth");
 }
 
-/// `to_rule_id` tries the selector as a rule_id first. Pin that precedence:
-/// when a selector is simultaneously a valid rule_id for one rule and the
-/// exact display name of a different rule, the rule_id match must win.
+/// `to_rule_id` must prefer a direct rule_id match over a matching display
+/// name.
 #[tokio::test]
 async fn rules_get_prefers_a_direct_rule_id_hit_over_a_colliding_display_name() {
     let server = MockServer::start().await;
@@ -246,10 +237,7 @@ async fn rules_get_prefers_a_direct_rule_id_hit_over_a_colliding_display_name() 
         .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("dup", "Rule A")))
         .mount(&server)
         .await;
-    // A rule whose *name* collides with the other rule's rule_id. If the
-    // implementation ever preferred a name search, this decoy would be
-    // returned instead — and the `.expect(0)` below would also fail the
-    // test outright, since the direct hit must mean this is never queried.
+    // This decoy must never be queried when the direct rule_id lookup hits.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({

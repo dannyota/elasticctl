@@ -20,8 +20,7 @@ async fn server_reporting(build_flavor: &str, number: &str) -> MockServer {
     server_reporting_with_headers(build_flavor, number, &[]).await
 }
 
-/// A status server that also sends the given response headers, so the Cloud
-/// edge proxy can be reproduced offline.
+/// Start a status server with response headers for offline Cloud edge tests.
 async fn server_reporting_with_headers(
     build_flavor: &str,
     number: &str,
@@ -56,11 +55,11 @@ async fn serverless_is_detected_from_build_flavor() {
 
 #[tokio::test]
 async fn a_traditional_build_flavor_on_a_private_host_is_self_managed() {
-    // The literal a real 9.5.1 stack sends, recorded in
-    // tests/fixtures/traditional-9.5.1/status.json. "default" was a
-    // stand-in that no stack has ever reported.
+    // A real 9.5.1 stack reports this value; see
+    // tests/fixtures/traditional-9.5.1/status.json. No stack reports
+    // "default" here.
     let server = server_reporting("traditional", "9.5.1").await;
-    let p = profile_for(&server.uri()); // wiremock binds 127.0.0.1
+    let p = profile_for(&server.uri()); // wiremock binds to 127.0.0.1.
     let t = Transport::new(&p).unwrap();
     let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
     assert_eq!(caps.flavor, Flavor::SelfManaged);
@@ -71,7 +70,7 @@ async fn a_traditional_build_flavor_on_a_private_host_is_self_managed() {
 async fn a_default_build_flavor_on_an_elastic_cloud_host_is_ech() {
     let server = server_reporting("default", "9.5.1").await;
     let t = Transport::new(&profile_for(&server.uri())).unwrap();
-    // The transport still talks to wiremock; only classification reads the URL.
+    // Transport calls wiremock; classification alone reads this URL.
     let caps = Capabilities::probe(&t, "https://abc.kb.us-east-1.aws.found.io")
         .await
         .unwrap();
@@ -94,10 +93,9 @@ async fn a_missing_build_flavor_falls_back_to_self_managed() {
     assert_eq!(caps.flavor, Flavor::SelfManaged);
 }
 
-/// The measurement this whole detection path exists for: Hosted reports the
-/// same `build_flavor` a self-managed stack reports, on a host carrying no
-/// Cloud suffix, and only the edge header separates them. Recorded in
-/// tests/fixtures/ech-9.5.1/status.json.
+/// Hosted and self-managed stacks can report the same `build_flavor`. With no
+/// Cloud suffix, the edge header must distinguish them; see
+/// `tests/fixtures/ech-9.5.1/status.json`.
 #[tokio::test]
 async fn the_cloud_edge_header_makes_a_traditional_stack_ech() {
     let server = server_reporting_with_headers(
@@ -106,16 +104,15 @@ async fn the_cloud_edge_header_makes_a_traditional_stack_ech() {
         &[("x-found-handling-cluster", "REDACTED")],
     )
     .await;
-    let p = profile_for(&server.uri()); // wiremock binds 127.0.0.1: no Cloud suffix
+    let p = profile_for(&server.uri()); // wiremock uses 127.0.0.1, without a Cloud suffix.
     let t = Transport::new(&p).unwrap();
     let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
     assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
     assert_eq!(caps.version, "9.5.1");
 }
 
-/// Serverless sits behind the same edge proxy and sends the same header.
-/// Testing the header before `build_flavor` would classify every Serverless
-/// project as Hosted, so the order is pinned here rather than left to review.
+/// Serverless sends the same edge header as Hosted. It must be checked after
+/// `build_flavor`, or Serverless projects would be classified as Hosted.
 #[tokio::test]
 async fn serverless_wins_over_the_edge_header() {
     let server = server_reporting_with_headers(
@@ -130,8 +127,8 @@ async fn serverless_wins_over_the_edge_header() {
     assert_eq!(caps.flavor, Flavor::Serverless);
 }
 
-/// Header names are case-insensitive, and the same proxy sends different
-/// casing on the Kibana and Elasticsearch endpoints.
+/// HTTP header names are case-insensitive. The proxy uses different casing on
+/// Kibana and Elasticsearch endpoints.
 #[tokio::test]
 async fn the_edge_header_is_matched_regardless_of_casing() {
     let server = server_reporting_with_headers(
@@ -146,22 +143,16 @@ async fn the_edge_header_is_matched_regardless_of_casing() {
     assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
 }
 
-/// Classification checked against the recorded evidence rather than against a
-/// mock built from the same assumption the code makes.
+/// Classify recorded responses rather than mocks built from the same
+/// assumptions.
 ///
-/// Each fixture set is named for the deployment it came from, so the directory
-/// name is the expected answer and `status.json` is the input. If a future
-/// re-record shows a stack reporting something new, this fails here rather
-/// than in the field.
+/// Each fixture directory names the expected flavor, and `status.json` is the
+/// input. A re-recorded response shape fails here first.
 ///
-/// Every set now records headers, so an absent `x-found-handling-cluster` is
-/// measured absent rather than merely unrecorded. That is what makes the
-/// negative half of the Hosted signal evidence instead of inference: a
-/// self-managed stack has no Cloud edge proxy in front of it, and
-/// `traditional-9.5.1` shows the header missing while still carrying the
-/// others its stack sends. The `headers` key is required below — a re-record
-/// that dropped it would quietly return this test to proving only the
-/// positive half.
+/// Every set records headers. Requiring the `headers` key proves that an
+/// absent `x-found-handling-cluster` is absent, not unrecorded. In
+/// `traditional-9.5.1`, the header is absent while other stack headers remain
+/// present.
 #[test]
 fn every_recorded_status_classifies_as_the_flavor_it_came_from() {
     use elasticctl_core::Capabilities;
@@ -193,7 +184,7 @@ fn every_recorded_status_classifies_as_the_flavor_it_came_from() {
             .unwrap_or_else(|| panic!("fixture set {name} records no headers; re-record it"));
         let cloud_edge = headers.get("x-found-handling-cluster").is_some();
 
-        // A host with no Cloud suffix, so only the body and the header decide.
+        // No Cloud suffix: only the body and header determine the flavor.
         let caps = Capabilities::classify(&doc["response"], cloud_edge, "https://kibana.internal");
         assert_eq!(caps.flavor, expected, "fixture set {name}");
         checked += 1;
@@ -321,9 +312,8 @@ async fn probe_spaces_returns_the_ids() {
     );
 }
 
-/// A stack that will not answer must report "unknown", never a fabricated
-/// list. `info` prints null, which is honest; printing the configured space
-/// would look like a probe result and is not one.
+/// An unavailable probe returns no list. `info` prints null rather than a
+/// configured space, which is not a probe result.
 #[tokio::test]
 async fn probe_spaces_returns_none_when_the_probe_fails() {
     let server = MockServer::start().await;
@@ -355,8 +345,7 @@ async fn probe_license_tier_reads_the_license_type() {
     );
 }
 
-/// Serverless has no licence tiers — features gate on project tier — so the
-/// endpoint is not called at all rather than called and expected to fail.
+/// Serverless uses project tiers, so it does not call the license endpoint.
 #[tokio::test]
 async fn probe_license_tier_does_not_call_the_endpoint_on_serverless() {
     let server = MockServer::start().await;

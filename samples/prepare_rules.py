@@ -11,7 +11,7 @@ remove everything it created, and so no untagged rule is ever touched:
 
 Server-owned fields are stripped so the import assigns its own. The DRL
 attribution the converter emits — author, references, license — is kept
-untouched: the licence requires it.
+untouched: the license requires it.
 
 Reads NDJSON on argv, writes NDJSON on stdout. Standard library only.
 """
@@ -64,7 +64,7 @@ def main():
                     continue
                 rule = prepare(json.loads(line))
                 if rule["rule_id"] in seen:
-                    # Two rules slugging to one id would import as one.
+                    # Two rules with the same slug would import as one.
                     print(f"skipping duplicate id {rule['rule_id']}", file=sys.stderr)
                     continue
                 seen.add(rule["rule_id"])

@@ -1,12 +1,8 @@
-//! `elasticctl-api` depends on `serde_json` directly (not only through
-//! `elasticctl-core`), and the CLI's table/CSV column order depends on
-//! `serde_json::Map` preserving insertion order rather than sorting keys.
+//! `elasticctl-api` depends on `serde_json` directly, and CLI table and CSV
+//! column order requires `serde_json::Map` insertion order.
 //!
-//! That behaviour comes from the `preserve_order` feature, declared once in
-//! the workspace root so every crate gets the same map semantics regardless
-//! of which package a given `cargo` invocation selects — `cargo test -p
-//! elasticctl-api` must see the same ordering as `cargo test --workspace`.
-//! This test fails loudly if the feature ever stops being unified.
+//! The workspace root declares `preserve_order`, so every package has the same
+//! map semantics. This test fails if the feature stops being unified.
 
 #[test]
 fn map_iterates_in_insertion_order_not_alphabetical() {

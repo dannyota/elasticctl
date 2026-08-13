@@ -1,16 +1,15 @@
 //! The canonical rule representation.
 //!
-//! Backed by a JSON map rather than a wide struct: the measured create
-//! response carries 36 fields, the set varies by rule type, and it grows
-//! between Elastic versions. A map preserves unknown fields by construction,
-//! which is what round-trip fidelity requires.
+//! A measured create response has 36 fields, which vary by rule type and
+//! Elastic version. A JSON map preserves unknown fields; a fixed struct would
+//! break round trips.
 
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// Server-owned fields that change on every write or execution. Stripped
-/// before diffing, or every pull would report drift that no one caused.
+/// Server-owned fields that change on every write or execution. They are
+/// stripped before diffing to avoid false drift.
 pub const VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "created_at",
@@ -22,11 +21,10 @@ pub const VOLATILE_FIELDS: [&str; 8] = [
     "execution_summary",
 ];
 
-/// Fields the server fills when a create request omits them. Measured by
-/// creating a rule with 13 fields and reading back 36.
+/// Fields the server fills when a create request omits them.
 ///
-/// A sparse hand-authored file must have these filled before it is compared,
-/// or an omitted field reads as drift rather than as "accept the default".
+/// Measured: a 13-field create returned 36 fields. Fill these defaults before
+/// comparison so omitted values do not appear as drift.
 pub fn server_defaults() -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("actions".into(), json!([]));
@@ -58,11 +56,8 @@ impl Rule {
             Value::Object(m) => m,
             _ => return Err(Error::new(ErrorKind::Error, "a rule must be a JSON object")),
         };
-        // The identity is checked here, at the one funnel every decode path
-        // goes through, rather than at each site that reads it back. A rule
-        // whose rule_id is not a string cannot be matched against a remote
-        // rule, written to a per-rule file, or reported — so it is not
-        // constructed.
+        // Validate identity at the shared construction path. A non-string
+        // `rule_id` cannot match, name a file, or be reported.
         match map.get("rule_id") {
             Some(Value::String(_)) => {}
             Some(_) => {
@@ -92,14 +87,11 @@ impl Rule {
         self.0.get(key).and_then(Value::as_str).unwrap_or("")
     }
 
-    /// The stable identity used for all state matching.
+    /// The stable identity used for state matching.
     ///
-    /// `from_value` refuses to construct a `Rule` whose `rule_id` is absent or
-    /// not a string, so every rule that reaches here through a codec has one.
-    /// This still returns a `Result`: the derived `Deserialize` is transparent
-    /// and bypasses that check, and `as_map_mut` can overwrite the key
-    /// afterwards. Reporting the miss beats silently matching the wrong remote
-    /// rule.
+    /// `from_value` requires a string `rule_id`, but transparent `Deserialize`
+    /// and `as_map_mut` can bypass that validation. Return an error rather than
+    /// silently matching the wrong remote rule.
     pub fn rule_id(&self) -> Result<&str> {
         self.0
             .get("rule_id")
@@ -142,8 +134,8 @@ impl Rule {
     }
 }
 
-/// The trailer Kibana appends to an NDJSON export. With zero rules it is the
-/// entire body, so it must never be parsed as a rule.
+/// The trailer Kibana appends to an NDJSON export. It is the entire body for
+/// a zero-rule export, so it must not be parsed as a rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportSummary {
     #[serde(default)]
@@ -152,9 +144,8 @@ pub struct ExportSummary {
     pub exported_rules_count: u64,
     #[serde(default)]
     pub missing_rules_count: u64,
-    /// The rules the server was asked for and did not export — deleted
-    /// between selection and export. Kept as raw values because the entries
-    /// are the server's, not ours to reshape.
+    /// Rules selected for export but not returned, likely deleted after
+    /// selection. Kept as raw server values.
     #[serde(default)]
     pub missing_rules: Vec<Value>,
 }
@@ -165,7 +156,7 @@ mod tests {
     use serde_json::json;
 
     fn probe_rule() -> Value {
-        // Trimmed from a real create response on Serverless Security 9.6.0.
+        // Trimmed from a Serverless Security 9.6.0 create response.
         json!({
             "rule_id": "elasticctl-schema-probe",
             "name": "elasticctl schema probe",
@@ -221,9 +212,8 @@ mod tests {
 
     #[test]
     fn a_non_string_rule_id_is_rejected() {
-        // The identity every state match keys on. A rule that cannot yield it
-        // is not a usable value, so it is refused at construction rather than
-        // defended against at each read site.
+        // State matching requires a readable identity, so construction rejects
+        // non-string `rule_id` values.
         let err = Rule::from_value(json!({"rule_id": 123, "name": "x"})).unwrap_err();
         assert_eq!(err.kind, elasticctl_core::ErrorKind::Error);
         assert!(err.message.contains("string"), "{}", err.message);
@@ -231,15 +221,12 @@ mod tests {
 
     #[test]
     fn a_null_rule_id_is_rejected() {
-        // `rule_id: null` satisfies "the key is present" but carries no
-        // identity, so it must fail the same way a number does.
+        // `rule_id: null` has no identity and must fail like a numeric value.
         assert!(Rule::from_value(json!({"rule_id": null})).is_err());
     }
 
-    /// `from_value` is the funnel, not a guarantee carried by the type:
-    /// `Deserialize` is derived and transparent, so it builds a `Rule` without
-    /// the check. That is why every read site keeps its fallback — and it is
-    /// how the negative tests elsewhere still construct an unreadable rule.
+    /// `from_value` validates construction, but transparent `Deserialize`
+    /// bypasses that validation. Read sites must still handle unreadable IDs.
     #[test]
     fn deserialize_bypasses_the_construction_check() {
         let r: Rule = serde_json::from_value(json!({"rule_id": 123})).unwrap();
@@ -295,7 +282,7 @@ mod tests {
 
     #[test]
     fn volatile_and_default_field_sets_do_not_overlap() {
-        // A field cannot be both stripped and filled — that would be ambiguous.
+        // A field cannot be both stripped and filled.
         for v in VOLATILE_FIELDS {
             assert!(!server_defaults().contains_key(v), "{v} is in both sets");
         }

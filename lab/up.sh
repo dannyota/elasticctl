@@ -6,11 +6,8 @@ ES=http://localhost:9200
 KB=http://localhost:5601
 AUTH='elastic:elasticctl-lab'
 
-# Whichever compose provider actually works here. Locally that is podman,
-# which delegates to a docker-compose binary. On a GitHub runner podman is
-# installed but its socket is not running, so `podman compose` fails with
-# "Cannot connect to the Docker daemon" — the runner's own Docker is the
-# working provider there. Probe rather than assume.
+# Use the first working Compose provider. Locally this is usually Podman,
+# while GitHub runners use Docker even when Podman is installed.
 if docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif podman compose version >/dev/null 2>&1; then
@@ -39,7 +36,7 @@ if [ "$es_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Kibana authenticates as kibana_system; its password must be set explicitly.
+# Set the kibana_system password before Kibana starts using it.
 curl -sf -u "$AUTH" -X POST "$ES/_security/user/kibana_system/_password" \
   -H 'Content-Type: application/json' \
   -d '{"password":"elasticctl-lab-kibana"}' >/dev/null
@@ -59,10 +56,10 @@ if [ "$kb_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Unlocks Platinum-only features for 30 days.
+# Enable Platinum-only features for 30 days.
 curl -sf -u "$AUTH" -X POST "$ES/_license/start_trial?acknowledge=true" >/dev/null || true
 
-# The detection engine will not run rules until its signals index exists.
+# Create the signals index before running detection rules.
 curl -sf -u "$AUTH" -X POST "$KB/api/detection_engine/index" \
   -H 'kbn-xsrf: true' -H 'elastic-api-version: 2023-10-31' >/dev/null || true
 

@@ -1,9 +1,7 @@
-//! Offline checks over the recorded fixtures.
+//! Offline checks for recorded fixtures.
 //!
-//! A fixture is a sample of real traffic. This test is what makes a re-record
-//! after an Elastic upgrade produce a diff something reacts to: if a response
-//! shape changes, or a fixture stops decoding through the same path the live
-//! client uses, it fails here.
+//! A fixture is recorded traffic. These tests fail when an Elastic upgrade
+//! changes a response shape or bypasses the live client's decode path.
 
 use elasticctl_api::Rule;
 use elasticctl_api::codec;
@@ -28,7 +26,7 @@ fn fixture_sets() -> Vec<PathBuf> {
     sets
 }
 
-/// The rule every recorded set creates and then deletes.
+/// The rule that every recorded set creates and deletes.
 fn probe_rule(rules: &[Rule]) -> &Rule {
     rules
         .iter()
@@ -98,11 +96,9 @@ fn rules_find_decodes_to_the_probe_rule() {
     }
 }
 
-/// A fixture set recorded before an exchange existed simply lacks its file:
-/// the self-managed set is re-recorded on demand from the local lab, not on
-/// every change. So each new exchange is asserted wherever it was recorded,
-/// and separately asserted to exist somewhere — a missing recording must not
-/// pass silently in every set at once.
+/// Fixture sets recorded before an exchange lack its file. The self-managed
+/// set is re-recorded from the local lab on demand. Assert each new exchange
+/// where recorded and assert that it exists in at least one set.
 fn sets_with(file: &str) -> Vec<PathBuf> {
     fixture_sets()
         .into_iter()
@@ -133,8 +129,8 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // The production query hardcodes this field; a re-record that fell back
-        // to the name field would pass the live client by.
+        // The production query hardcodes this field. A fallback to `name` must
+        // not pass the fixture check.
         let matched_by = v["request"]["matched_by"]
             .as_str()
             .expect("request.matched_by");
@@ -146,7 +142,7 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // Decode the recorded response the same way the live client does.
+        // Decode the recorded response through the live client's path.
         let hits = rules::decode_preview_hits(&v["response"]);
         assert!(
             hits.total >= 1,
@@ -155,9 +151,8 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // The document the search returned must actually carry the field the
-        // request matched on, and with the queried value, or the match is
-        // coincidence rather than evidence.
+        // The returned document must contain the queried field and value.
+        // Otherwise the match is coincidental.
         let carried = hits
             .sample
             .first()

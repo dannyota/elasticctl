@@ -1,31 +1,23 @@
-//! The dry-run contract. Nothing mutates a remote instance until the operator
-//! has seen what would change and passed --yes.
+//! Dry-run contract. Remote mutations require a preview and `--yes`.
 
 use crate::context::Context;
 use elasticctl_core::Resolved;
 
-/// Commands that mutate: remote for the `rules`/`state` mutations, the local
-/// config file for `config init`. Keyed on the full command path
-/// (`rules delete`, `state push`, ...), never the bare leaf name, so a future
-/// non-mutating `delete` or `import` under another group is not silently
-/// mislabeled.
+/// Mutating commands: remote `rules` and `state` commands, plus local
+/// `config init`. Use full command paths so a non-mutating command with the
+/// same leaf name cannot be mislabeled.
 ///
-/// It lives here, next to the code that enforces it, rather than in the module
-/// that renders it. `cmd::meta` reads it to populate `mutates` in the command
-/// tree — one definition, because a second copy is one nothing checks.
+/// Keep this list with its enforcement. `cmd::meta` reads it for the command
+/// tree, avoiding an unchecked duplicate.
 ///
-/// Two independent contracts keep this list honest:
-/// - `check` asserts its caller is declared here, so a remote mutation that
-///   goes through the guard but was never declared fails its own tests rather
-///   than shipping `mutates: false`.
-/// - the exhaustive tree test in `cmd::meta` pins the declared set, so the
-///   list cannot silently grow.
+/// Two contracts verify the list:
 ///
-/// What is *not* detected: a mutating command that neither calls the guard
-/// nor is declared here. `config init` is the one declared mutator that does
-/// not call the guard — it writes a local file, not the stack — so
-/// `guard ⊆ MUTATING` is the direction enforced: under-declaration, not
-/// over-declaration.
+/// - `check` rejects guarded remote mutations that are not declared here.
+/// - `cmd::meta` pins the declared command-tree paths.
+///
+/// This does not detect mutations that neither call the guard nor appear here.
+/// `config init` is declared but unguarded because it writes a local file.
+/// The enforced relation is `guard ⊆ MUTATING`.
 pub(crate) const MUTATING: [&str; 6] = [
     "rules enable",
     "rules disable",
@@ -37,15 +29,12 @@ pub(crate) const MUTATING: [&str; 6] = [
 
 pub struct Preview {
     pub action: String,
-    /// One line per affected object. Empty is allowed for actions that have
-    /// nothing per-item to say.
+    /// One line per affected object. Empty when no per-object detail applies.
     pub details: Vec<String>,
 }
 
-/// Parenthesised form of the core banner. The field text lives in
-/// `Resolved::banner()` so there is exactly one place that decides how a
-/// target is described — a guard preview and any other reporting path must
-/// never show the operator two different descriptions of the same target.
+/// Parenthesized `Resolved::banner()` text. Use one target description in
+/// previews and other output.
 pub fn banner(resolved: &Resolved) -> String {
     format!("({})", resolved.banner())
 }
@@ -68,18 +57,13 @@ pub fn preview_text(preview: &Preview, resolved: &Resolved, applying: bool) -> S
     out
 }
 
-/// `true` means the caller should proceed with the mutation.
+/// Return `true` when the caller should perform the mutation.
 ///
-/// Writes to stderr, never stdout, so a dry-run preview never contaminates
-/// piped JSON output.
+/// Write to stderr so a dry-run preview does not contaminate piped JSON.
 ///
-/// Every remote mutation reaches the stack through here, so this is the one
-/// place that can enforce `guard ⊆ MUTATING`: a caller whose command path is
-/// not declared in `MUTATING` is an undeclared mutation, and fails loudly
-/// rather than shipping `mutates: false` in the command tree. `path` is the
-/// full command path exactly as `MUTATING` declares it (`"rules delete"`,
-/// `"state push"`, ...) — a string that only approximates it would make the
-/// assertion a lie.
+/// Every guarded remote mutation reaches the stack here. Reject a path absent
+/// from `MUTATING` so the command tree cannot report it as non-mutating.
+/// `path` must exactly match a full path in `MUTATING`.
 pub fn check(ctx: &Context, path: &'static str, preview: &Preview) -> bool {
     assert!(
         MUTATING.contains(&path),
@@ -178,11 +162,8 @@ mod tests {
         }
     }
 
-    /// The guard must refuse to run for a command path it has not been told
-    /// is mutating: that is exactly the undeclared mutation that would
-    /// otherwise ship `mutates: false` in the command tree. A real `Context`
-    /// is built from a scratch config so the assertion is exercised through
-    /// `check`, not just the constant it reads.
+    /// Reject undeclared guarded mutations so the command tree cannot mark
+    /// them as non-mutating. Build a real context to exercise `check`.
     #[test]
     #[should_panic(expected = "rules touch")]
     fn check_rejects_an_undeclared_mutating_path() {

@@ -1,8 +1,7 @@
-//! Selectors on `state pull`, `diff`, and `push`.
+//! Selector coverage for `state pull`, `diff`, and `push`.
 //!
-//! The contract being pinned is that a scoped run narrows *both* sides before
-//! drift is computed, says on screen that it was scoped, and never reads the
-//! corpus to do it.
+//! A scoped run must narrow both sides before computing drift, identify the
+//! scope in its output, and avoid reading the full corpus.
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
@@ -28,7 +27,7 @@ fn remote_rule(id: &str, risk: i64) -> Value {
     })
 }
 
-/// Write a local rule file the way `pull` would.
+/// Writes a local rule file in the format produced by `pull`.
 fn write_local(state: &std::path::Path, id: &str, risk: i64) {
     let rules = state.join("rules");
     fs::create_dir_all(&rules).unwrap();
@@ -43,14 +42,11 @@ fn write_local(state: &std::path::Path, id: &str, risk: i64) {
     .unwrap();
 }
 
-/// A stack whose `_find` answers any filter with the same rules. Good enough
-/// for the cases that care about *what the CLI asked for* rather than about
-/// server-side filtering, which is Elastic's job and is covered by fixtures.
+/// Serves the same rules for every `_find` filter. These tests check the
+/// request shape; server-side filtering is covered by API fixtures.
 ///
-/// The single-rule `GET ...?rule_id=` endpoint is mounted too. Without it a
-/// rule_id selector 404s and silently falls through to the name lookup, which
-/// makes a test that means to exercise id resolution exercise name resolution
-/// instead — and pass or fail for the wrong reason.
+/// Also serves single-rule `rule_id` lookups so id selectors do not fall back
+/// to name resolution.
 async fn server_with(rules: Vec<Value>) -> MockServer {
     let server = MockServer::start().await;
     let total = rules.len();
@@ -83,15 +79,14 @@ fn run(args: &[&std::ffi::OsStr]) -> std::process::Output {
         .unwrap()
 }
 
-/// A scoped read must be a filtered `_find`, never the corpus. This is the
-/// whole performance case for selectors, so it is asserted on the wire rather
-/// than inferred from the output.
+/// A scoped read must use a filtered `_find`, not the full corpus. Assert this
+/// on the wire because output alone cannot prove it.
 #[tokio::test]
 async fn a_scoped_diff_asks_the_server_for_only_the_selected_rule() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
-        // wiremock matches the decoded value; the wire carries it percent-encoded.
+        // Wiremock matches the decoded value; the request carries it encoded.
         .and(query_param(
             "filter",
             "alert.attributes.params.ruleId: \"a\"",
@@ -131,9 +126,8 @@ async fn a_scoped_diff_asks_the_server_for_only_the_selected_rule() {
     assert_eq!(v["local_total"], 2, "the unscoped local count is reported");
 }
 
-/// A rule that exists only on disk has no remote id to be found by. Resolving
-/// remotely first would make it unselectable, which is the case scoped push is
-/// most wanted for.
+/// A local-only rule must resolve by name before remote lookup, so scoped push
+/// can select it before the rule exists remotely.
 #[tokio::test]
 async fn a_local_only_rule_is_selectable_by_name_before_it_exists_remotely() {
     let server = server_with(vec![]).await;
@@ -163,8 +157,8 @@ async fn a_local_only_rule_is_selectable_by_name_before_it_exists_remotely() {
     assert_eq!(v["local"], 1);
 }
 
-/// The banner is the operator's only warning about what is about to change.
-/// A scoped apply that reads identically to a full one defeats it.
+/// The banner is the operator's warning about the pending change. A scoped
+/// apply must identify its selection instead of looking like a full run.
 #[tokio::test]
 async fn the_push_banner_names_the_selection() {
     let server = server_with(vec![]).await;
@@ -199,7 +193,7 @@ async fn the_push_banner_names_the_selection() {
     );
 }
 
-/// An unscoped run must be indistinguishable from 0.1.1, fields included.
+/// An unscoped run must keep the 0.1.1 output shape, including its fields.
 #[tokio::test]
 async fn an_unscoped_run_reports_no_selection_fields() {
     let server = server_with(vec![remote_rule("a", 21)]).await;
@@ -225,8 +219,7 @@ async fn an_unscoped_run_reports_no_selection_fields() {
     );
 }
 
-/// A selector that names nothing is refused rather than widened to everything,
-/// the same way `rules export` refuses one.
+/// An unmatched selector must fail instead of widening to every rule.
 #[tokio::test]
 async fn a_selector_matching_nothing_is_refused() {
     let server = server_with(vec![]).await;
@@ -253,11 +246,10 @@ async fn a_selector_matching_nothing_is_refused() {
     );
 }
 
-/// `pull` reads from the stack and has no local side, so both halves of remote
-/// resolution have to be covered here — the `diff` and `push` tests select
-/// rule_ids that match locally and short-circuit before any request is sent.
+/// `pull` has no local side, so it must cover both remote resolution paths.
+/// `diff` and `push` can resolve matching local rule_ids without a request.
 ///
-/// A rule_id selector must resolve through the single-rule endpoint.
+/// A rule_id selector must use the single-rule endpoint.
 #[tokio::test]
 async fn a_scoped_pull_resolves_a_rule_id_against_the_stack() {
     let server = server_with(vec![remote_rule("a", 21)]).await;
@@ -287,8 +279,8 @@ async fn a_scoped_pull_resolves_a_rule_id_against_the_stack() {
     assert_eq!(v["selected"], 1);
 }
 
-/// And a display name must resolve through the name lookup, which is the half
-/// a rule_id selector never reaches.
+/// A display name first misses the single-rule endpoint, then resolves through
+/// the name lookup.
 #[tokio::test]
 async fn a_scoped_pull_resolves_a_display_name_against_the_stack() {
     let server = server_with(vec![remote_rule("a", 21)]).await;

@@ -4,9 +4,8 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// A config path guaranteed not to exist, so `config list` resolves
-/// deterministically to an empty profile list without touching the real
-/// `~/.elasticctl/config.toml` or any network.
+/// A guaranteed-missing config path. `config list` then returns no profiles
+/// without reading `~/.elasticctl/config.toml` or using the network.
 fn absent_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("absent.toml");
@@ -15,9 +14,8 @@ fn absent_config() -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[test]
 fn version_flag_prints_the_workspace_version() {
-    // Read from the manifest rather than a literal: a hardcoded version turns
-    // every release into a test edit, and the test then only proves that two
-    // copies of the same string match.
+    // Read the manifest so releases do not require test edits. A literal would
+    // only compare two copies of the same string.
     bin()
         .arg("--version")
         .assert()
@@ -44,15 +42,13 @@ fn an_unknown_format_exits_two() {
     bin().args(["info", "--format", "toml"]).assert().code(2);
 }
 
-// `info` and `doctor` need a resolvable, credentialed profile and a live
-// stack, so they cannot stand in for these generic global-flag checks
-// without contacting a real Elastic instance. `config list` exercises the
-// same render path (JSON/table selection, `--out` handling) while staying
-// entirely local, per its no-network contract.
+// These generic global-flag checks must stay local: `info` and `doctor` need a
+// resolvable profile and live stack. `config list` exercises the same render
+// paths (JSON/table selection and `--out`) without network access.
 
 #[test]
 fn info_defaults_to_table_output_when_piped() {
-    // Output must not change based on whether stdout is a terminal.
+    // Piped output must match terminal output.
     let (_dir, config) = absent_config();
     let out = bin()
         .args(["config", "list", "--config"])

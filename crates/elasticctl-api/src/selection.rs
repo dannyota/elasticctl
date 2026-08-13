@@ -1,27 +1,23 @@
-//! Turning user-facing selectors into the stable `rule_id`s they name.
+//! Resolve user-facing selectors to stable `rule_id` values.
 //!
-//! One resolver serves every command that takes selectors. `rules export`,
-//! `delete`, `enable`, and the state commands all answer "which rules?" the
-//! same way, and a second implementation of that question is a second set of
-//! edge cases around ambiguous names and empty matches.
+//! One resolver serves `rules export`, `delete`, `enable`, and state commands.
+//! This keeps ambiguous-name and empty-match behavior consistent.
 //!
-//! Identity is always `rule_id`. A name is only ever a way of finding one.
+//! Identity is always `rule_id`. Names only find IDs.
 
 use crate::model::Rule;
 use crate::rules::{self, RuleFilter};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 
-/// Stands in for a rule's `rule_id` wherever one must be displayed but cannot
-/// be read — a server response with a non-string `rule_id`, for instance.
+/// Displays an unreadable `rule_id`, such as a non-string value from the
+/// server.
 pub const UNREADABLE_RULE_ID: &str = "<unreadable rule_id>";
 
-/// How many same-named candidates one page will consider. No real corpus has a
-/// hundred rules sharing a name; the cap exists so a pathological one cannot
-/// turn a lookup back into a corpus read.
+/// Same-named candidates to consider in one page. The cap prevents a
+/// pathological name lookup from becoming a corpus read.
 pub const NAME_SEARCH_LIMIT: u32 = 100;
 
-/// Exact-match only. A substring match would silently target the wrong
-/// detection when two rules share a prefix.
+/// Match names exactly. A prefix match could target the wrong rule.
 pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
     let matches: Vec<&Rule> = found.iter().filter(|r| r.name() == name).collect();
 
@@ -29,14 +25,13 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
         1 => Ok(matches[0].rule_id()?.to_string()),
         0 => Err(Error::new(
             ErrorKind::NotFound,
-            // The selector may have been a rule_id that missed. Reporting it
-            // as a missed *name* points the operator at the wrong thing.
+            // The selector might be an absent `rule_id`; reporting a missed
+            // name would misidentify the problem.
             format!("No rule with rule_id or name '{name}'"),
         )),
         _ => {
-            // Every candidate must appear, even one with an unreadable
-            // rule_id: dropping it would make the count and the list disagree,
-            // leaving the operator unable to act on either.
+            // List every candidate, including unreadable IDs, so the count and
+            // list agree.
             let ids: Vec<&str> = matches
                 .iter()
                 .map(|r| r.rule_id().unwrap_or(UNREADABLE_RULE_ID))
@@ -53,13 +48,11 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
     }
 }
 
-/// `pick_by_name` over a candidate page, told how many candidates the server
-/// said there were.
+/// Run `pick_by_name` on a candidate page with the server's candidate total.
 ///
-/// The server filter is not the match: a KQL term on an analyzed field can
-/// return a near match, so the exact comparison still happens here. When the
-/// page was truncated and nothing matched exactly, the miss reports the cap
-/// rather than claiming the name does not exist — those are different answers.
+/// The KQL filter can return near matches on an analyzed field, so compare
+/// exactly here. If the page is truncated with no exact match, report the cap
+/// instead of claiming the name is absent.
 pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<String> {
     match pick_by_name(found, name) {
         Err(e) if e.kind == ErrorKind::NotFound && total > found.len() as u64 => Err(Error::new(
@@ -74,13 +67,11 @@ pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<Str
     }
 }
 
-/// A selector is a `rule_id` or a display name, resolved against the stack.
-/// `rule_id` is tried first because it is unambiguous; a name lookup only
-/// happens when that misses.
+/// Resolve a `rule_id` or display name against the stack. Try `rule_id` first
+/// because it is unambiguous.
 ///
-/// The name lookup is one server-side filtered `_find`, not a walk of every
-/// page. Walking cost 8.8 seconds against 2,066 rules just to report that
-/// nothing matched, and the whole answer fits in one request.
+/// Name lookup uses one server-filtered `_find`. Walking 2,066 rules took 8.8
+/// seconds only to report no match.
 pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
     match rules::get(t, selector).await {
         Ok(r) => return Ok(r.rule_id()?.to_string()),
@@ -96,11 +87,10 @@ pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
     pick_by_name_capped(&candidates, selector, total)
 }
 
-/// A selector matched against rules already on disk, before the stack is asked.
+/// Match a selector against local rules before querying the stack.
 ///
-/// `None` means no local rule answers to it, which is not an error — the
-/// caller falls through to the stack. `Some(Err(..))` is an ambiguous local
-/// name, which is.
+/// `None` means no local match, so the caller queries the stack.
+/// `Some(Err(..))` indicates an ambiguous local name.
 fn local_match(local: &[Rule], selector: &str) -> Option<Result<String>> {
     if local.iter().any(|r| r.rule_id().ok() == Some(selector)) {
         return Some(Ok(selector.to_string()));
@@ -127,18 +117,15 @@ fn local_match(local: &[Rule], selector: &str) -> Option<Result<String>> {
     }
 }
 
-/// The `rule_id`s named by a set of selectors and an optional tag, or `None`
-/// when neither was given and the caller should act on everything.
+/// Resolve selectors and an optional tag to `rule_id` values. Returns `None`
+/// when neither is given and the caller should act on every rule.
 ///
-/// `local` is consulted before the stack. Pass an empty slice for a command
-/// that reads from the stack, such as `rules export` or `state pull`. Pass the
-/// rules read from disk for a command that acts on the local directory: a
-/// locally-added rule exists in no remote index yet, so resolving remotely
-/// first would make it unselectable, which is the case scoped `push` is most
-/// wanted for.
+/// Check `local` before the stack. Pass an empty slice for `rules export` and
+/// `state pull`. Pass disk rules for local commands so scoped `push` can select
+/// locally added rules that the stack does not have.
 ///
-/// `noun` completes the refusal messages ("nothing to export"), so each
-/// command's failure reads as its own rather than as a generic one.
+/// `noun` completes command-specific refusal messages, such as "nothing to
+/// export".
 pub async fn resolve(
     t: &Transport,
     selectors: &[String],
@@ -158,8 +145,7 @@ pub async fn resolve(
         }
     }
 
-    // The tag's contribution is tracked separately: a tag that matched nothing
-    // must not disappear into a union that a selector rescued.
+    // Track tag matches separately so a selector cannot hide an unmatched tag.
     let mut tag_matched = false;
     if let Some(tag) = tag {
         for rule in local.iter().filter(|r| r.tags().contains(&tag)) {
@@ -180,10 +166,8 @@ pub async fn resolve(
     ids.sort();
     ids.dedup();
 
-    // A `--tag` that matched nothing is a miss worth reporting even when a
-    // selector resolved and rescued the union: a typo'd tag must not silently
-    // shrink the result. This is also the empty-selection refusal — with no
-    // selectors, the tag's zero matches leave `ids` empty.
+    // Report an unmatched `--tag` even when a selector matched. A mistyped tag
+    // must not silently shrink the result.
     if let Some(t) = tag
         && !tag_matched
     {
@@ -193,9 +177,8 @@ pub async fn resolve(
         ));
     }
 
-    // Defensive: unreachable today — a selector either resolves or fails, and
-    // the whole-space case returned `Ok(None)` above — but the message must
-    // name what was asked for, not emit a blank selector.
+    // Defensive fallback: name the selector in the refusal rather than leaving
+    // it blank.
     if ids.is_empty() {
         return Err(Error::new(
             ErrorKind::NotFound,
@@ -244,8 +227,7 @@ mod tests {
 
     #[test]
     fn a_capped_candidate_page_says_so_rather_than_claiming_the_name_is_absent() {
-        // 100 same-named rules is beyond any real corpus, but reporting
-        // "no such rule" when the answer was truncated would be a lie.
+        // A truncated result must not report the name as absent.
         let found: Vec<Rule> = (0..NAME_SEARCH_LIMIT)
             .map(|i| rule(&format!("id-{i}"), "Other"))
             .collect();
@@ -267,9 +249,8 @@ mod tests {
     #[test]
     fn a_conflict_still_names_every_candidate_when_one_rule_id_is_unreadable() {
         let readable = rule("a", "Same");
-        // `Rule::from_value` refuses a non-string rule_id; the derived
-        // transparent `Deserialize` does not, which is why `pick_by_name` still
-        // has to cope with one.
+        // `Rule::from_value` rejects non-string IDs, but transparent
+        // `Deserialize` does not, so `pick_by_name` must handle one.
         let unreadable: Rule =
             serde_json::from_value(json!({"rule_id": 123, "name": "Same"})).unwrap();
         let found = vec![readable, unreadable];

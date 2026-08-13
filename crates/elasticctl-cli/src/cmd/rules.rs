@@ -1,4 +1,4 @@
-//! The rules command group.
+//! Rule commands.
 
 use crate::context::Context;
 use crate::guard::{self, Preview};
@@ -12,13 +12,11 @@ use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::path::Path;
 
-/// The summary shape shown by `rules list`. Full rule bodies are available
-/// through `rules get` and `rules export`.
+/// Summary shown by `rules list`. Use `rules get` or `rules export` for full
+/// rule bodies.
 ///
-/// A rule with an unreadable `rule_id` is a server-side anomaly, not
-/// something the operator can act on the way they can a bad local file — so
-/// it is flagged visibly (`resolve::UNREADABLE_RULE_ID`) rather than either
-/// hidden behind a blank string or failing the whole listing over one row.
+/// An unreadable `rule_id` is a server anomaly. Flag it as
+/// `resolve::UNREADABLE_RULE_ID` instead of hiding it or failing the listing.
 fn summarize(r: &Rule) -> Value {
     json!({
         "rule_id": r.rule_id().unwrap_or(resolve::UNREADABLE_RULE_ID),
@@ -32,9 +30,8 @@ fn summarize(r: &Rule) -> Value {
 }
 
 pub async fn list(ctx: &Context, filter: &RuleFilter) -> Result<Value> {
-    // A live connection is required below; check the credential first so a
-    // missing one produces its profile-naming message, not the generic one
-    // `Transport::new` would give.
+    // Check the credential first so a missing one names the profile instead
+    // of returning Transport's generic error.
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
     let found = api::find_all(transport, filter).await?;
@@ -49,15 +46,12 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
     Ok(normalize::canonical(&rule).into_value())
 }
 
-/// Local only. Never contacts a server, so it works offline and in CI.
+/// Validates a local file without contacting a server.
 ///
-/// Both codec paths now reject a rule whose `rule_id` is absent or not a
-/// string, naming the line or the index, so a file that decodes has usable
-/// identities. The per-rule check below is kept as defence — `Rule` can still
-/// be built through its derived `Deserialize`, which skips that validation —
-/// and because this loop also has to report which server defaults each rule
-/// would take on. Every rule is checked, not just the first bad one, so a
-/// mixed file names every failing index at once.
+/// The codecs reject missing or non-string `rule_id` values. Keep the
+/// per-rule check because derived `Rule::Deserialize` bypasses that
+/// validation, and because this loop reports server defaults. Check every
+/// rule so one report names every invalid index.
 pub fn validate(path: &Path) -> Result<Value> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
@@ -74,8 +68,7 @@ pub fn validate(path: &Path) -> Result<Value> {
     for (i, r) in rules.iter().enumerate() {
         match r.rule_id() {
             Ok(rule_id) => {
-                // Show what a sparse file becomes, so the operator is not
-                // surprised by fields they never wrote.
+                // Show server defaults applied to sparse rules.
                 let mut applied: Vec<&String> = defaults
                     .keys()
                     .filter(|k| !r.as_map().contains_key(*k))
@@ -88,25 +81,22 @@ pub fn validate(path: &Path) -> Result<Value> {
                     "defaults_applied": applied,
                 }));
             }
-            // Do not emit an empty-string rule_id for this entry: a blank
-            // identity next to "valid": true is exactly the false clean
-            // bill of health this check exists to prevent.
+            // Do not report a blank rule ID as valid.
             Err(e) => failures.push(format!("rule at index {i}: {}", e.message)),
         }
     }
 
     if !failures.is_empty() {
-        // One bad rule invalidates the whole file — reported the same way a
-        // decode failure already is: a single classified error, not a
-        // partial report with "valid": false buried in a success payload.
+        // An invalid rule invalidates the file. Return a classified error,
+        // not a partial success payload.
         return Err(Error::new(ErrorKind::Error, failures.join("; ")));
     }
 
     Ok(json!({"valid": true, "count": rules.len(), "rules": reports}))
 }
 
-/// Resolve every selector before previewing, so the preview reflects reality
-/// and an unresolvable selector fails before anything changes.
+/// Resolve every selector before previewing so the preview is accurate and
+/// unresolved selectors fail before mutation.
 async fn resolve_all(ctx: &Context, selectors: &[String]) -> Result<Vec<(String, Rule)>> {
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
@@ -138,9 +128,8 @@ pub async fn set_enabled(ctx: &Context, selectors: &[String], enabled: bool) -> 
         details,
     };
 
-    // One function serves both `enable` and `disable`; the path passed to the
-    // guard is derived from the same `enabled` flag that already chose the
-    // verb, so the string cannot lie about which command is mutating.
+    // Derive the guard path from the flag that selects the verb so it cannot
+    // name the wrong mutating command.
     let path = if enabled {
         "rules enable"
     } else {
@@ -183,11 +172,8 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
         return Ok(json!({"applied": false, "total": targets.len()}));
     }
 
-    // Delete one at a time, continuing past a per-rule failure, so a partial
-    // failure reports exactly which rules survived and which did not — an
-    // early `?` return here would drop everything already deleted on the
-    // floor, leaving the operator unable to tell what state the rules are
-    // actually in.
+    // Continue after per-rule failures so the result records every deletion
+    // and every rule that remains.
     let transport = ctx.transport().await?;
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
@@ -206,34 +192,26 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
     }))
 }
 
-/// Turn selectors and a tag into the exact set of rule ids to export.
+/// Resolve selectors and a tag to the rule IDs to export.
 ///
-/// `None` means "the whole space" and is only ever produced by asking for
-/// nothing. An empty *selection* is refused instead: a tag that matches
-/// nothing quietly becoming "everything" is the same failure mode an unscoped
-/// bulk action would be.
+/// `None` means all rules and occurs only without selectors or a tag. Reject
+/// an empty selection so a non-matching tag cannot export every rule.
 async fn export_selection(
     ctx: &Context,
     selectors: &[String],
     tag: Option<&str>,
 ) -> Result<Option<Vec<String>>> {
     let transport = ctx.transport().await?;
-    // Export reads from the stack, so there is no local side: every selector
-    // names a rule the server holds.
+    // Export reads from the stack, so every selector names a server rule.
     selection::resolve(transport, selectors, tag, &[], "export").await
 }
 
-/// Fetch the selected rules, canonicalize them, and sort by rule_id. Two
-/// exports from an unchanged stack are byte-identical, which is what makes the
-/// file reviewable in version control.
+/// Fetch, canonicalize, and sort selected rules by rule ID. Exports from an
+/// unchanged stack are byte-identical for version-control review.
 ///
-/// The write happens here, directly, rather than through the generic render
-/// path: `--format`/`--json` govern how a command's *report* is rendered and
-/// must never reshape the exported rule file itself (`--format-file` owns
-/// that). When `out` is given, the file is written now and a small
-/// confirmation is returned in its place — `main` redirects that confirmation
-/// to stdout rather than letting it flow back through the same `--out` a
-/// second time, which would clobber the file just written.
+/// Write the file directly because `--format-file`, not `--format` or
+/// `--json`, controls its format. With `out`, return a confirmation; `main`
+/// writes it to stdout so it cannot overwrite the exported file.
 pub async fn export(
     ctx: &Context,
     selectors: &[String],
@@ -256,9 +234,8 @@ pub async fn export(
         FileFormat::Ndjson => codec::encode_ndjson(&rules)?,
     };
 
-    // A rule the server was asked for and did not return was deleted between
-    // selection and export. Reporting a short export as a success would hide
-    // that; `failed` is the shape `render::exit_code_for_value` already reads.
+    // A requested but missing rule was deleted after selection. Report it in
+    // `failed` so a short export has a nonzero exit code.
     let missing = summary.map(|s| s.missing_rules).unwrap_or_default();
 
     match out {
@@ -272,12 +249,8 @@ pub async fn export(
                 "failed": missing,
             }))
         }
-        // Without --out there is nowhere else for the content to go: return
-        // it alongside the same `failed` report the --out arm carries, so a
-        // short export still trips `exit_code_for_value`. `main` recognizes
-        // the `text` field, writes it raw to stdout (bypassing
-        // `--format`/`--json` so the exported file content is never
-        // re-encoded), and reads the exit code from the `failed` field.
+        // Without `--out`, return raw content with the failure report. `main`
+        // writes `text` unchanged and derives the exit code from `failed`.
         None => Ok(json!({
             "text": text,
             "failed": missing,
@@ -285,13 +258,11 @@ pub async fn export(
     }
 }
 
-/// Local file to server. Guarded: it mutates, so it previews before it
-/// uploads and only uploads once `--yes` is passed.
+/// Import a local file into the server. The guard previews the mutation and
+/// uploads only with `--yes`.
 ///
-/// With `--skip-existing`, the server is asked which of the file's rule ids
-/// already exist *before* the preview runs. That is what makes the dry run
-/// honest — it previously listed every rule as if it would import, which is
-/// exactly the warning an operator re-running an import needed.
+/// With `--skip-existing`, check existing rule IDs before the preview so it
+/// shows only rules that would import.
 pub async fn import(
     ctx: &Context,
     path: &Path,
@@ -370,8 +341,7 @@ pub async fn import(
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
 
-    // Every rule in the file already exists: there is nothing to upload, and
-    // posting an empty NDJSON would be a request that can only fail.
+    // Do not upload empty NDJSON when every rule already exists.
     if to_upload.is_empty() {
         return Ok(json!({
             "applied": true,
@@ -386,10 +356,8 @@ pub async fn import(
     let ndjson = codec::encode_ndjson(&to_upload)?;
     let response = api::import(transport, &ndjson, overwrite).await?;
 
-    // Kibana reports success_count/rules_count/errors, not the
-    // succeeded/failed/total shape the bulk-action endpoint uses. Translate
-    // onto that same shared shape so a partial failure trips
-    // render::exit_code_for_value's existing convention instead of a new one.
+    // Normalize Kibana's response to the bulk-action shape so partial imports
+    // use the existing exit-code rule.
     let succeeded = response.get("success_count").cloned().unwrap_or(json!(0));
     let failed = response.get("errors").cloned().unwrap_or_else(|| json!([]));
 
@@ -402,19 +370,14 @@ pub async fn import(
     }))
 }
 
-/// A sample larger than this is refused. The command exists to answer "did it
-/// match"; dumping a thousand alert documents answers something else, slowly.
+/// Maximum matched documents returned with a preview.
 const MAX_SAMPLE: u32 = 100;
 
-/// One extra attempt, and only when the first sees nothing.
+/// Retry once only when the first search finds no hits.
 ///
-/// Every simulated invocation has completed by the time the preview responds —
-/// each has its own `logs` entry — so there is nothing to poll. What remains
-/// is Elasticsearch's one-second default refresh interval: alerts written
-/// microseconds ago can legitimately be invisible to the first search.
-/// Retrying only on a zero means a rule that matched pays nothing, and a rule
-/// that really matched nothing pays one second rather than reporting a false
-/// zero.
+/// The preview already completed each invocation. A newly written alert can
+/// miss the first search because of Elasticsearch's refresh interval. Retrying
+/// only zero hits avoids delay for matching rules and false zero results.
 async fn fetch_hits(
     transport: &elasticctl_core::Transport,
     space: &str,
@@ -429,14 +392,11 @@ async fn fetch_hits(
     api::preview_hits(transport, space, preview_id, sample).await
 }
 
-/// Preview a rule. The selector is a file path when one exists on disk,
-/// otherwise a rule_id or name on the stack — previewing an unpushed local
-/// rule is the main reason this command exists.
+/// Preview a rule. An existing file path wins; otherwise the source is a rule
+/// ID or name from the stack. This supports unpushed local rules.
 pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32) -> Result<Value> {
-    // Previewing always ends in a POST to the server, whether the rule body
-    // comes from disk or from the stack, so check the credential up front —
-    // the same shape `get`/`list`/`export` use to fail with a message naming
-    // the profile, instead of the generic one `transport()` would give.
+    // Preview posts to the server for both local and stack rules. Check the
+    // credential first so a missing one names the profile.
     ctx.require_credential()?;
     if sample > MAX_SAMPLE {
         return Err(Error::new(
@@ -471,9 +431,8 @@ pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32)
     let timeframe_end = now_rfc3339();
     let result = api::preview(transport, &rule, invocations, &timeframe_end).await?;
 
-    // A failed read degrades: `hits` becomes null and `hits_error` says why,
-    // while the preview's own id, errors, and warnings are reported as before.
-    // Preview is a diagnostic — losing the count must not lose the run.
+    // Preserve the preview when reading hits fails. Set `hits` to null and
+    // report the error in `hits_error`.
     let (hits, hits_error, sample_hits) = match &result.preview_id {
         None => (
             Value::Null,
@@ -507,7 +466,7 @@ fn now_rfc3339() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Formatted without pulling in a date library; the API accepts UTC ISO-8601.
+    // Format directly to avoid a date dependency; the API accepts UTC ISO-8601.
     let days = secs / 86_400;
     let rem = secs % 86_400;
     let (y, m, d) = civil_from_days(days as i64);
@@ -519,8 +478,7 @@ fn now_rfc3339() -> String {
     )
 }
 
-/// Howard Hinnant's days-from-civil inverse. Avoids a dependency for the one
-/// timestamp this command needs.
+/// Howard Hinnant's days-from-civil inverse, used without a date dependency.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -538,12 +496,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod date_tests {
     use super::*;
 
-    /// Every epoch-day input was independently computed with
-    /// `date -u -d '<date>' +%s`, divided by 86400. A wrong-but-plausible
-    /// sign flip in `div_euclid`/`rem_euclid` or an off-by-one in the
-    /// `era`/`yoe`/`doy` arithmetic would otherwise pass the whole suite
-    /// silently — the only symptom would be `timeframeEnd` quietly shifting
-    /// the window a preview evaluates over.
+    /// Independently computed epoch days catch plausible arithmetic errors
+    /// that would shift a preview's `timeframeEnd`.
     #[test]
     fn civil_from_days_matches_independently_computed_epoch_days() {
         let cases = [
@@ -552,10 +506,7 @@ mod date_tests {
             (11017, (2000, 3, 1), "century leap year (2000 % 400 == 0)"),
             (20818, (2026, 12, 31), "year end"),
             (20819, (2027, 1, 1), "year rollover"),
-            // 2100 is divisible by 100 but not 400, so it is not a leap
-            // year: day 47540 is 2100-02-28, and 2100-03-01 is 47541, not
-            // 47540. (Verified with `date -u -d 2100-03-01 +%s`; a table
-            // supplied during review had this one off by a day.)
+            // 2100 is divisible by 100 but not 400, so it is not a leap year.
             (47541, (2100, 3, 1), "century non-leap (2100 % 400 != 0)"),
             (
                 47540,
@@ -569,9 +520,7 @@ mod date_tests {
         }
     }
 
-    /// The API rejects any `timeframeEnd` that is not exactly this shape, so
-    /// the format string itself — not just the underlying instant — is
-    /// pinned here.
+    /// The API requires this exact `timeframeEnd` format.
     #[test]
     fn now_rfc3339_matches_the_shape_the_api_requires() {
         let s = now_rfc3339();

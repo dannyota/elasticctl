@@ -1,5 +1,5 @@
-//! The HTTP layer. Owns URL construction, required headers, retry, and the
-//! translation of any non-success response into a classified `Error`.
+//! HTTP transport, including URL construction, headers, retries, and error
+//! classification.
 
 use crate::auth::Credential;
 use crate::config::Profile;
@@ -9,33 +9,28 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The versioned public API contract this client is written against.
+/// Version of the public API this client targets.
 const API_VERSION: &str = "2023-10-31";
 const MAX_ATTEMPTS: u32 = 3;
 
-/// Response headers worth carrying past the transport boundary.
+/// Response headers retained past the transport boundary.
 ///
-/// An allowlist rather than "keep everything": these headers end up in
-/// recorded fixtures, and fixtures are public. Capturing the whole map would
-/// accumulate cookies, rate-limit counters, and whatever a proxy decides to
-/// add next, one upgrade away from committing something that should not be in
-/// the repository.
+/// These headers are allowlisted because recorded fixtures are public.
+/// Capturing all headers could record cookies, rate-limit counters, or future
+/// proxy headers that do not belong in the repository.
 ///
-/// `x-found-handling-cluster` is the one the capability probe reads. The other
-/// two are captured because a recorded set that shows which Cloud headers were
-/// present is worth more than one that shows only the header we happened to
-/// need on the day.
+/// The capability probe reads `x-found-handling-cluster`. The other two show
+/// which Cloud headers the recorded response contained.
 const CAPTURED_HEADERS: [&str; 3] = [
     "x-found-handling-cluster",
     "x-found-handling-instance",
     "x-elastic-product",
 ];
 
-/// A response body together with the captured subset of its headers.
+/// A response body and its captured headers.
 ///
-/// Exists because deployment flavor is not derivable from any response body:
-/// Elastic Cloud Hosted and a self-managed stack report identical `/api/status`
-/// documents, and only an edge-proxy header separates them.
+/// Hosted and self-managed stacks return the same `/api/status` body. An
+/// edge-proxy header distinguishes them.
 #[derive(Debug, Clone)]
 pub struct Responded {
     pub body: Value,
@@ -43,24 +38,19 @@ pub struct Responded {
 }
 
 impl Responded {
-    /// Header lookup by lowercase name. HTTP header names are
-    /// case-insensitive and the same Elastic proxy sends
-    /// `X-Found-Handling-Cluster` on one endpoint and
-    /// `x-found-handling-cluster` on another, so matching on the raw casing
-    /// would make detection depend on which host answered.
+    /// Look up a header case-insensitively.
+    ///
+    /// The Elastic proxy varies the casing of `x-found-handling-cluster` by
+    /// endpoint.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(&name.to_ascii_lowercase()).map(|s| &**s)
     }
 }
 
-/// Percent-encode a query-string value. Only the characters that actually
-/// break a URL are escaped, so recorded fixtures and `--debug` lines stay
-/// readable.
+/// Percent-encode a query value while leaving URL-safe characters unchanged.
 ///
-/// Lives here rather than beside the endpoint wrappers because both the API
-/// client and the fixture recorder build URLs, and two copies of an encoder is
-/// two chances to encode a scoped filter differently from the request it is
-/// meant to reproduce.
+/// The API client and fixture recorder share this encoder so they produce the
+/// same scoped-filter URL.
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -77,9 +67,8 @@ pub fn urlencode(s: &str) -> String {
 pub struct Transport {
     client: Client,
     base: String,
-    /// Elasticsearch lives at a different host from Kibana on Cloud
-    /// deployments. Falls back to the Kibana host when no separate URL is set,
-    /// which is the usual self-managed single-host case.
+    /// Elasticsearch host. Cloud deployments use a different host from
+    /// Kibana; otherwise this uses the Kibana host.
     es_base: String,
     space: String,
     auth_header: String,
@@ -91,9 +80,9 @@ impl Transport {
         Self::with_debug(profile, false)
     }
 
-    /// Build a transport with HTTP request logging enabled or disabled. Kept
-    /// as a separate constructor so `debug` is a plain `bool` here — the CLI's
-    /// `clap` types never cross into `-core`.
+    /// Build a transport with HTTP request logging enabled or disabled.
+    ///
+    /// Keeping `debug` as a `bool` prevents CLI `clap` types entering `-core`.
     pub fn with_debug(profile: &Profile, debug: bool) -> Result<Transport> {
         let credential = Credential::from_profile(profile)?;
         let client = Client::builder()
@@ -120,9 +109,10 @@ impl Transport {
         })
     }
 
-    /// One stderr line per request/response event. Method, URL, and status
-    /// only — never the `Authorization` header, never a body, never a
-    /// query-string credential.
+    /// Log one request or response line to stderr.
+    ///
+    /// Logs include only the method, URL, and status. They exclude
+    /// authorization headers, bodies, and query-string credentials.
     fn debug_log(&self, method: &Method, url: &str, status: u16, attempt: u32) {
         if !self.debug {
             return;
@@ -137,8 +127,7 @@ impl Transport {
         }
     }
 
-    /// Logged before the request goes out. Without it, a request that never
-    /// returns — the case `--debug` exists for — produces no output at all.
+    /// Log the request before sending it so timeouts produce debug output.
     fn debug_request(&self, method: &Method, url: &str, attempt: u32) {
         if !self.debug {
             return;
@@ -150,9 +139,7 @@ impl Transport {
         }
     }
 
-    /// Logged on an outcome that never produced a status: a timeout or a
-    /// connection failure. Same shape as the response line, so one log format
-    /// covers every outcome.
+    /// Log a timeout or connection failure in the response-line format.
     fn debug_failure(&self, method: &Method, url: &str, what: &str) {
         if !self.debug {
             return;
@@ -160,9 +147,9 @@ impl Transport {
         eprintln!("[debug] {} {url} -> {what}", method.as_str());
     }
 
-    /// Kibana serves the default space at the bare path and every other space
-    /// under `/s/<name>`. Prefixing the default space also works, but keeping
-    /// URLs bare makes recorded fixtures and `--debug` output easier to read.
+    /// Prefix non-default spaces with `/s/<name>`.
+    ///
+    /// Kibana serves the default space at the bare path.
     pub fn space_path(space: &str, path: &str) -> String {
         if space.is_empty() || space == "default" {
             path.to_string()
@@ -222,8 +209,8 @@ impl Transport {
                 return Ok(response);
             }
 
-            // Retry only transient failures. A 4xx is the caller's problem and
-            // retrying it just multiplies the same error.
+            // Retry transient failures only. Retrying a 4xx repeats the same
+            // caller error.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if transient && attempt < MAX_ATTEMPTS {
                 let backoff = Duration::from_millis(200 * 2u64.pow(attempt - 1));
@@ -254,12 +241,10 @@ impl Transport {
         self.send_json(Method::GET, path, None).await
     }
 
-    /// GET returning the body alongside the captured headers.
+    /// GET a body with its captured headers.
     ///
-    /// Separate from `get` rather than replacing it: exactly one caller — the
-    /// capability probe — needs headers, and widening every endpoint wrapper's
-    /// return type to carry a map that nothing else reads would be a change
-    /// felt in every module for the benefit of one.
+    /// This is separate from `get` because only the capability probe needs
+    /// headers.
     pub async fn get_with_headers(&self, path: &str) -> Result<Responded> {
         let response = self.send(Method::GET, path, None).await?;
 
@@ -302,8 +287,9 @@ impl Transport {
         self.send_json(Method::DELETE, path, None).await
     }
 
-    /// Elasticsearch lives at a different host from Kibana on Cloud
-    /// deployments, so ES calls do not go through the space-prefixed path.
+    /// GET Elasticsearch without a Kibana space prefix.
+    ///
+    /// Cloud deployments use a different Elasticsearch host.
     pub async fn get_absolute_es(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.es_base, path);
         self.debug_request(&Method::GET, &url, 1);
@@ -327,16 +313,15 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
 
-    /// POST a JSON body to Elasticsearch. Separate from `post` because
-    /// Elasticsearch lives at a different host from Kibana on Cloud
-    /// deployments and takes no space prefix and no `kbn-xsrf` header.
+    /// POST JSON to Elasticsearch without a Kibana space prefix or `kbn-xsrf`
+    /// header.
     pub async fn post_absolute_es(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_absolute_es(Method::POST, path, Some(body)).await
     }
 
-    /// DELETE against Elasticsearch. Used by the fixture recorder to remove
-    /// the scratch index it creates; a recording session must leave the stack
-    /// exactly as it found it.
+    /// DELETE from Elasticsearch.
+    ///
+    /// The fixture recorder uses this to remove its scratch index.
     pub async fn delete_absolute_es(&self, path: &str) -> Result<Value> {
         self.send_absolute_es(Method::DELETE, path, None).await
     }
@@ -375,7 +360,7 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
 
-    /// Raw body, for endpoints that return NDJSON rather than a JSON document.
+    /// POST and return the raw body for NDJSON endpoints.
     pub async fn post_text(&self, path: &str, body: Option<&Value>) -> Result<String> {
         let response = self.send(Method::POST, path, body).await?;
         response
@@ -384,7 +369,7 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))
     }
 
-    /// Kibana's rule import takes a multipart file upload, not a JSON body.
+    /// Upload a multipart NDJSON file for Kibana rule import.
     pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
         let url = self.url(path);
         let part = reqwest::multipart::Part::text(ndjson.to_string())

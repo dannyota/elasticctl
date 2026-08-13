@@ -3,7 +3,7 @@
 **/*.rs.bk
 *.pdb
 
-# Secrets & credentials — never commit
+# Secrets and credentials; never commit them.
 .env
 .env.*
 !.env.example
@@ -11,12 +11,12 @@
 *.pem
 *.p12
 credentials.json
-# A local operator config at the repo root; the committed `.cargo/config.toml`
-# holds the `xtask` alias and must not be swept up by this rule.
+# Ignore the local root config, but keep `.cargo/config.toml`: it holds the
+# `xtask` alias.
 /config.toml
 .elasticctl/
 
-# Recorded fixtures may capture live credentials until scrubbed
+# Recorded fixtures may contain live credentials until scrubbed.
 tests/fixtures/**/*.unscrubbed.json
 
 # Local lab state
@@ -29,11 +29,11 @@ lab/.env
 .playwright-profile/
 .playwright-mcp/
 
-# Local-only working notes
+# Local working notes
 PLAN.md
 scratch/
 
-# Fetched sample corpora — the harness downloads these on demand
+# Fetched sample corpora; the harness downloads them on demand.
 samples/out/
 
 # OS

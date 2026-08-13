@@ -1,4 +1,4 @@
-//! Conformance against a real stack. Run with:
+//! Run conformance tests against a real stack:
 //!   ELASTICCTL_LIVE=1 cargo test -- --ignored
 
 use assert_cmd::Command;
@@ -6,12 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Mutex, MutexGuard};
 
-/// The live suite targets one shared remote space. The round-trip test
-/// creates and deletes a rule there while the pull/diff test asserts that the
-/// remote is stable between its two reads; run concurrently, one test's rule
-/// appears or disappears in the middle of the other's window. A single lock
-/// serializes them. Poisoning is recovered from, so one test's assertion
-/// failure does not strand the others.
+/// Serialize tests that share one remote space. The round-trip test creates
+/// and deletes a rule while the pull/diff test reads the remote twice; without
+/// the lock, one test could change the other's results. Recover lock poisoning
+/// so an assertion failure does not strand later tests.
 static LIVE_LOCK: Mutex<()> = Mutex::new(());
 
 fn serialize_live() -> MutexGuard<'static, ()> {
@@ -34,10 +32,10 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Write a profile from the environment, so a live run never touches the
-/// operator's real `~/.elasticctl/config.toml`. `ELASTICCTL_ES_URL` is
-/// optional: on a self-managed single host the Kibana URL doubles as the ES
-/// URL, but on Cloud the ES host differs and must be supplied.
+/// Build a profile from environment variables so live tests never use the
+/// operator's `~/.elasticctl/config.toml`. `ELASTICCTL_ES_URL` is optional:
+/// self-managed single hosts use the Kibana URL for ES, while Cloud requires a
+/// separate ES host.
 fn write_live_config(dir: &Path) -> PathBuf {
     let kibana_url =
         std::env::var("ELASTICCTL_KIBANA_URL").expect("ELASTICCTL_KIBANA_URL must be set");
@@ -55,8 +53,7 @@ fn write_live_config(dir: &Path) -> PathBuf {
 
     let path = dir.join("config.toml");
     std::fs::write(&path, body).unwrap();
-    // The tool flags a world-readable config as insecure; a generated live
-    // config must be 0600 so the suite's own output stays pristine.
+    // The tool rejects world-readable configs, so this fixture must be 0600.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -145,8 +142,8 @@ fn a_pull_followed_by_a_diff_is_clean() {
     );
 }
 
-/// The exported line for `rule_id` inside an `elasticctl rules export` file.
-/// Export writes one canonical rule per line, sorted keys, no trailer.
+/// Find the canonical export line containing `rule_id`.
+/// Export writes one canonical rule per line, with sorted keys and no trailer.
 fn rule_line_in_export(path: &Path, rule_id: &str) -> String {
     let body = std::fs::read_to_string(path).unwrap();
     let needle = format!("\"rule_id\":\"{rule_id}\"");
@@ -166,8 +163,8 @@ fn a_rule_survives_a_create_export_import_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
 
-    // A fresh id each run, so a stale rule from a previously failed run can
-    // neither satisfy the import nor fail it with a spurious conflict.
+    // Use a fresh ID so a stale rule cannot satisfy the import or cause a
+    // conflict.
     let rule_id = format!(
         "elasticctl-live-roundtrip-{}",
         std::time::SystemTime::now()
@@ -176,17 +173,16 @@ fn a_rule_survives_a_create_export_import_round_trip() {
             .as_nanos()
     );
 
-    // Cleanup on every exit path: the guard deletes the rule on Drop, so a
-    // failed assertion cannot leave it behind for the next run.
+    // Delete the rule on every exit path. Drop cleanup prevents failed
+    // assertions from leaving state for the next run.
     struct Cleanup {
         rule_id: String,
         config: PathBuf,
     }
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            // Retry: a transient 429 from a busy stack must not strand the
-            // rule. The final attempt still reports, so a persistent failure
-            // is visible rather than silently leaving a rule behind.
+            // Retry transient 429s. Report the final failure so a persistent
+            // error does not silently leave a rule behind.
             for attempt in 0..3 {
                 let out = bin()
                     .args(["rules", "delete", &self.rule_id, "--yes", "--config"])
@@ -239,7 +235,7 @@ fn a_rule_survives_a_create_export_import_round_trip() {
         .unwrap();
     success(&created, "rules import (create)");
 
-    // 2. Export everything and keep our rule's canonical line.
+    // 2. Export all rules and keep this rule's canonical line.
     let export1 = dir.path().join("export1.ndjson");
     let ex1 = bin()
         .args(["rules", "export", "--config"])
@@ -251,7 +247,7 @@ fn a_rule_survives_a_create_export_import_round_trip() {
     success(&ex1, "rules export (first)");
     let canonical_first = rule_line_in_export(&export1, &rule_id);
 
-    // 3. Delete it.
+    // 3. Delete the rule.
     let deleted = bin()
         .args(["rules", "delete", &rule_id, "--yes", "--config"])
         .arg(&config)
@@ -259,7 +255,7 @@ fn a_rule_survives_a_create_export_import_round_trip() {
         .unwrap();
     success(&deleted, "rules delete");
 
-    // 4. Re-import just our rule from its exported canonical form.
+    // 4. Re-import the rule from its canonical exported line.
     let reimport = dir.path().join("reimport.ndjson");
     std::fs::write(&reimport, format!("{canonical_first}\n")).unwrap();
     let recreated = bin()
@@ -271,7 +267,7 @@ fn a_rule_survives_a_create_export_import_round_trip() {
         .unwrap();
     success(&recreated, "rules import (re-import)");
 
-    // 5. Export again; the canonical forms must match byte for byte.
+    // 5. Export again and compare canonical lines byte for byte.
     let export2 = dir.path().join("export2.ndjson");
     let ex2 = bin()
         .args(["rules", "export", "--config"])

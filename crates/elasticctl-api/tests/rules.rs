@@ -28,15 +28,14 @@ fn rule_json(id: &str) -> serde_json::Value {
     json!({"rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21})
 }
 
-/// A `_find` response body carrying `total` and exactly the given rules. The
-/// per-slice short-read check compares the returned rule count against
-/// `total`, so a passing partition test serves one entry per counted rule.
+/// A `_find` response with `total` and exactly these rules. Partition tests
+/// need one returned rule per counted rule to avoid a short-read failure.
 fn find_body(total: u64, data: Vec<serde_json::Value>) -> serde_json::Value {
     json!({"page": 1, "perPage": 10000, "total": total, "data": data})
 }
 
-/// `count` rules with ids `{prefix}-0..{prefix}-{count-1}`, so a slice's data
-/// matches its own total exactly.
+/// `count` rules named `{prefix}-0` through `{prefix}-{count - 1}`. The slice
+/// data matches its total exactly.
 fn rules_of(prefix: &str, count: u64) -> Vec<serde_json::Value> {
     (0..count)
         .map(|i| rule_json(&format!("{prefix}-{i}")))
@@ -121,9 +120,8 @@ async fn find_page_returns_rules_and_the_total() {
     assert_eq!(total, 2);
 }
 
-/// The corpus is read in one request at the result window, not paged. The
-/// `.expect(1)` is the assertion: a second request would mean the page walk
-/// came back.
+/// The corpus is read once at the result window, not paged. `.expect(1)` fails
+/// if page walking returns.
 #[tokio::test]
 async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     let server = MockServer::start().await;
@@ -145,10 +143,8 @@ async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     assert_eq!(all.len(), 3);
 }
 
-/// Above the window the corpus is read as one `_find` per rule type rather
-/// than refused. Six types hold one rule each and `new_terms` holds the
-/// remaining 9,995, so the seven slice totals sum back to the corpus's
-/// 10,001 and every rule from every slice comes back.
+/// A corpus above the window is read once per rule type. Six types hold one
+/// rule and `new_terms` holds 9,995, so seven slices return all 10,001 rules.
 #[tokio::test]
 async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     let server = MockServer::start().await;
@@ -197,9 +193,8 @@ async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     );
 }
 
-/// A single type still over the window is split again on `enabled`, which is
-/// likewise disjoint and exhaustive. A caller's `rule_type` narrows the
-/// partition to one slice before the enabled split.
+/// A type still over the window is partitioned by `enabled`. A caller's
+/// `rule_type` selects one type slice before that partition.
 #[tokio::test]
 async fn find_all_splits_an_oversized_type_by_enabled() {
     let server = MockServer::start().await;
@@ -208,8 +203,7 @@ async fn find_all_splits_an_oversized_type_by_enabled() {
         ..Default::default()
     };
 
-    // The initial read and the type slice carry the same filter and are both
-    // over the window.
+    // The initial read and type slice use the same oversized filter.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
@@ -246,9 +240,8 @@ async fn find_all_splits_an_oversized_type_by_enabled() {
     assert_eq!(all.len(), 10001);
 }
 
-/// The slice totals must sum back to the corpus total. Here the server counts
-/// 10,001 rules but serves one per type, so the seven slices sum to 7 — a
-/// short read, refused rather than silently dropped.
+/// Slice totals must equal the corpus total. Here seven slices return 7 rules
+/// for a corpus of 10,001, so the short read is refused.
 #[tokio::test]
 async fn find_all_refuses_slice_totals_that_do_not_sum_to_the_corpus() {
     let server = MockServer::start().await;
@@ -293,10 +286,8 @@ async fn find_all_refuses_slice_totals_that_do_not_sum_to_the_corpus() {
     );
 }
 
-/// A slice still over the window after both the type and enabled partitions
-/// cannot be served. The refusal names the count and the window limit and
-/// never points at `rules export`, which carries its own 10,000 cap (spec
-/// 5.2) and is not an escape hatch.
+/// A slice above the window after both partitions cannot be served. The error
+/// names the count and limit, without suggesting `rules export` as an escape.
 #[tokio::test]
 async fn find_all_refuses_a_slice_still_over_the_window() {
     let server = MockServer::start().await;
@@ -344,9 +335,8 @@ async fn find_all_refuses_a_slice_still_over_the_window() {
     );
 }
 
-/// A server that counts more rules than it serves has contradicted itself.
-/// Previously this returned a short list, which a caller could not tell apart
-/// from rules having been deleted.
+/// A server that counts more rules than it serves contradicts itself. A short
+/// list is indistinguishable from deleted rules.
 #[tokio::test]
 async fn find_all_refuses_a_short_read() {
     let server = MockServer::start().await;
@@ -369,7 +359,7 @@ async fn find_all_refuses_a_short_read() {
     );
 }
 
-/// An empty space is empty, not a short read.
+/// An empty space is not a short read.
 #[tokio::test]
 async fn find_all_accepts_an_honestly_empty_corpus() {
     let server = MockServer::start().await;
@@ -403,8 +393,7 @@ async fn get_queries_by_rule_id_not_by_server_id() {
     assert_eq!(r.rule_id().unwrap(), "abc");
 }
 
-/// A rule as it comes back from the API: carries the volatile fields a
-/// create/update body must never forward.
+/// An API rule with volatile fields that create and update must not forward.
 fn rule_with_volatile_fields(id: &str) -> Rule {
     Rule::from_value(json!({
         "rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21,
@@ -566,7 +555,7 @@ async fn bulk_dry_run_sets_the_query_parameter() {
 
 #[tokio::test]
 async fn bulk_with_no_targets_makes_no_request() {
-    // An empty selection must not become an unscoped query that hits every rule.
+    // An empty selection must not query every rule.
     let server = MockServer::start().await;
     let out = rules::bulk_by_rule_ids(&transport(&server), BulkAction::Delete, &[], false)
         .await
@@ -624,8 +613,7 @@ async fn a_scoped_export_sends_the_objects_body() {
     assert_eq!(summary.missing_rules[0]["rule_id"], "b");
 }
 
-/// The unscoped call must stay byte-identical: no body at all, exactly as
-/// before, or every existing export changes shape.
+/// An unscoped export posts no body, preserving the established request shape.
 #[tokio::test]
 async fn an_unscoped_export_sends_no_body() {
     let server = MockServer::start().await;
@@ -702,8 +690,7 @@ async fn import_reflects_overwrite_true_in_the_query_string() {
 
 #[tokio::test]
 async fn import_reflects_overwrite_false_in_the_query_string() {
-    // Overwrite silently replaces existing detections; the two settings must
-    // never be conflated.
+    // Overwrite replaces existing rules, so the settings must stay distinct.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules/_import"))
@@ -723,8 +710,7 @@ async fn import_reflects_overwrite_false_in_the_query_string() {
 
 #[tokio::test]
 async fn import_sends_the_ndjson_as_a_multipart_upload() {
-    // Kibana's import takes a multipart file upload, not a JSON body — easy
-    // to get wrong in a way no other test would catch.
+    // Kibana import requires a multipart file upload, not a JSON body.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules/_import"))
@@ -787,8 +773,8 @@ async fn a_404_from_get_is_a_not_found_error() {
     assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
 }
 
-/// The recorded exchange, replayed. A hand-written mock would encode what we
-/// assumed the preview alerts index returns; this encodes what it sent.
+/// Replay the recorded exchange. A hand-written mock would test assumptions,
+/// not the preview alerts index response.
 #[tokio::test]
 async fn preview_hits_parses_the_recorded_response() {
     let fixture: serde_json::Value = serde_json::from_str(

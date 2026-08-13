@@ -1,4 +1,4 @@
-//! Self-description: shell completion and a machine-readable command tree.
+//! CLI metadata: shell completion and a machine-readable command tree.
 
 use crate::cli::Cli;
 use crate::guard::MUTATING;
@@ -22,9 +22,8 @@ fn arg(a: &clap::Arg) -> Value {
     })
 }
 
-/// `path` is the full, space-joined command path of `cmd` (`rules`,
-/// `rules delete`, ...), accumulated while recursing so `mutates` is keyed on
-/// where the command lives, not just its leaf name.
+/// `path` is the full, space-separated command path (`rules`, `rules delete`,
+/// ...). It keys `mutates` by command location rather than leaf name.
 fn describe(cmd: &clap::Command, path: &str) -> Value {
     let args: Vec<Value> = cmd
         .get_arguments()
@@ -50,11 +49,8 @@ fn describe(cmd: &clap::Command, path: &str) -> Value {
 
 pub fn command_tree() -> Result<Value> {
     let cmd = Cli::command();
-    // The global flags (`--profile`, `--json`, `--timeout`, ...) are declared
-    // once on the root and propagate to every subcommand at parse time, so a
-    // consumer modelling the full surface needs them alongside the tree. They
-    // are walked from clap metadata like everything else — never a hand-kept
-    // list, or a newly added global flag would drift out of the record.
+    // Global flags propagate from the root to every subcommand. Read them from
+    // clap metadata so a new flag cannot drift from this record.
     let global_args: Vec<Value> = cmd
         .get_arguments()
         .filter(|a| !a.is_hide_set())
@@ -96,7 +92,7 @@ mod tests {
         }
     }
 
-    /// Collect the full paths of every node in the tree marked `mutates: true`.
+    /// Collect full paths of tree nodes marked `mutates: true`.
     fn mutating_paths(value: &Value, path: &str) -> Vec<String> {
         let mut found = Vec::new();
         if value["mutates"] == true {
@@ -118,14 +114,9 @@ mod tests {
         found
     }
 
-    /// The whole point of the explicit `MUTATING` list is that a reviewer can
-    /// read the mutating surface at a glance — so it must stay exactly right.
-    /// This walks the tree and pins the set of `mutates: true` paths to the
-    /// six declared commands, failing if a seventh appears (a new mutating
-    /// command nobody reviewed) or one of the six disappears (a rename or
-    /// removal that broke a declared contract). The expected set is written
-    /// out here rather than read back from `MUTATING`, so the test is an
-    /// independent contract, not a tautology.
+    /// Keep `MUTATING` exact and reviewable. This test pins `mutates: true` to
+    /// the six declared paths and fails on an unreviewed addition, rename, or
+    /// removal. It declares the expected paths independently of `MUTATING`.
     #[test]
     fn the_mutating_set_is_exactly_the_six_declared_paths() {
         let tree = command_tree().unwrap();
