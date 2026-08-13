@@ -191,6 +191,36 @@ async fn export_without_out_prints_the_file_body_to_stdout() {
     assert!(!text.contains("updated_at"), "{text}");
 }
 
+/// The exported rule content is the payload, not a report. `--format csv`
+/// (and every other report format) must not re-encode it — CSV/table column
+/// derivation keys off object fields, so a plain string would silently empty.
+#[tokio::test]
+async fn export_without_out_bypasses_the_report_format_pipeline() {
+    let server = exporting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "--format", "csv", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(
+        text.lines().all(|l| l.starts_with('{')),
+        "stdout must carry NDJSON, not a CSV report: {text}"
+    );
+    assert!(text.contains("rule_id"), "{text}");
+}
+
 #[tokio::test]
 async fn import_is_guarded_and_sends_nothing_on_a_dry_run() {
     let server = MockServer::start().await;

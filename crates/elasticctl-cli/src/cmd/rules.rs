@@ -238,9 +238,9 @@ pub async fn export(ctx: &Context, out: Option<&Path>, format: FileFormat) -> Re
             Ok(json!({"exported": rules.len(), "path": path.display().to_string()}))
         }
         // Without --out there is nowhere else for the content to go: return
-        // it as the payload so the normal render path prints it — raw under
-        // the default table format, JSON-quoted under --json, which is the
-        // correct representation of file content inside a JSON document.
+        // it as the payload. `main` recognizes this shape and writes the raw
+        // text to stdout, bypassing `--format`/`--json` so the exported file
+        // content is never re-encoded.
         None => Ok(Value::String(text)),
     }
 }

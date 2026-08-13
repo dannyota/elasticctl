@@ -58,7 +58,9 @@ impl Context {
     /// the profile and the remedy — instead.
     pub async fn transport(&self) -> Result<&Transport> {
         self.transport
-            .get_or_try_init(|| async { Transport::new(&self.resolved.profile) })
+            .get_or_try_init(|| async {
+                Transport::with_debug(&self.resolved.profile, self.global.debug)
+            })
             .await
     }
 

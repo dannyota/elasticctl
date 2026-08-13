@@ -134,15 +134,15 @@ elasticctl rules validate --path FILE        Local schema check, no server conta
 elasticctl rules enable  <name|rule_id>...   [guarded]
 elasticctl rules disable <name|rule_id>...   [guarded]
 elasticctl rules delete  <name|rule_id>...   [guarded]
-elasticctl rules export --out FILE [--format ndjson|yaml] [filters]
+elasticctl rules export --out FILE [--format-file ndjson|yaml]
 elasticctl rules import --path FILE [--overwrite]              [guarded]
 elasticctl rules preview <file|name|rule_id> Run a rule against history, no alerts written
 
-elasticctl state pull --dir config/ [--format ndjson|yaml]
+elasticctl state pull --dir config/ [--format-file ndjson|yaml]
 elasticctl state diff --dir config/          Field-level structured drift
 elasticctl state push --dir config/ [--report FILE]            [guarded]
 
-elasticctl completion bash|zsh|fish
+elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands                          Machine-readable command tree
 ```
 
@@ -178,7 +178,7 @@ instruction. Deletion is always the explicit `rules delete`.
 
 Creating a rule with 13 fields returns 36. The server fills 16 defaults —
 `max_signals: 100`, `to: "now"`, `rule_source: {"type":"internal"}`,
-`actions: []`, and similar — on top of the 7 volatile fields.
+`actions: []`, and similar — on top of the 8 volatile fields.
 
 That means a hand-authored rule file omitting `max_signals` would diff against
 its pulled counterpart forever. Two modes resolve it:

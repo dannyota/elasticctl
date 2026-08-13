@@ -21,10 +21,18 @@ pub struct Transport {
     es_base: String,
     space: String,
     auth_header: String,
+    debug: bool,
 }
 
 impl Transport {
     pub fn new(profile: &Profile) -> Result<Transport> {
+        Self::with_debug(profile, false)
+    }
+
+    /// Build a transport with HTTP request logging enabled or disabled. Kept
+    /// as a separate constructor so `debug` is a plain `bool` here — the CLI's
+    /// `clap` types never cross into `-core`.
+    pub fn with_debug(profile: &Profile, debug: bool) -> Result<Transport> {
         let credential = Credential::from_profile(profile)?;
         let client = Client::builder()
             .timeout(Duration::from_secs(profile.timeout_secs))
@@ -46,7 +54,25 @@ impl Transport {
             es_base,
             space: profile.space.clone(),
             auth_header: credential.header_value(),
+            debug,
         })
+    }
+
+    /// One stderr line per request/response event. Method, URL, and status
+    /// only — never the `Authorization` header, never a body, never a
+    /// query-string credential.
+    fn debug_log(&self, method: &Method, url: &str, status: u16, attempt: u32) {
+        if !self.debug {
+            return;
+        }
+        if attempt > 1 {
+            eprintln!(
+                "[debug] {} {url} -> {status} (attempt {attempt})",
+                method.as_str()
+            );
+        } else {
+            eprintln!("[debug] {} {url} -> {status}", method.as_str());
+        }
     }
 
     /// Kibana serves the default space at the bare path and every other space
@@ -103,6 +129,7 @@ impl Transport {
             };
 
             let status = response.status();
+            self.debug_log(&method, &url, status.as_u16(), attempt);
             if status.is_success() {
                 return Ok(response);
             }
@@ -167,6 +194,7 @@ impl Transport {
             .await
             .map_err(|e| Error::new(ErrorKind::Connection, format!("request failed: {e}")))?;
         let status = response.status().as_u16();
+        self.debug_log(&Method::GET, &url, status, 1);
         let text = response.text().await.unwrap_or_default();
         if !(200..300).contains(&status) {
             return Err(Error::from_response_body(status, &text));
@@ -205,6 +233,7 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Connection, format!("upload failed: {e}")))?;
 
         let status = response.status().as_u16();
+        self.debug_log(&Method::POST, &url, status, 1);
         let text = response
             .text()
             .await
