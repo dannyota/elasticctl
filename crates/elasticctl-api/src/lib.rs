@@ -6,6 +6,7 @@ pub mod model;
 pub mod normalize;
 pub mod report;
 pub mod rules;
+pub mod selection;
 
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};

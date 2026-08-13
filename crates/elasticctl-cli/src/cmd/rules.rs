@@ -7,6 +7,7 @@ use elasticctl_api::codec::{self, Format as FileFormat};
 use elasticctl_api::model::{Rule, server_defaults};
 use elasticctl_api::normalize;
 use elasticctl_api::rules::{self as api, BulkAction, RuleFilter};
+use elasticctl_api::selection;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -216,59 +217,10 @@ async fn export_selection(
     selectors: &[String],
     tag: Option<&str>,
 ) -> Result<Option<Vec<String>>> {
-    if selectors.is_empty() && tag.is_none() {
-        return Ok(None);
-    }
-
-    let mut ids: Vec<String> = Vec::new();
-    for s in selectors {
-        ids.push(resolve::to_rule_id(ctx, s).await?);
-    }
-
-    // The tag's contribution is tracked separately: a tag that matched
-    // nothing must not disappear into a union that a selector rescued.
-    let mut tag_matched = false;
-    if let Some(tag) = tag {
-        let transport = ctx.transport().await?;
-        let filter = RuleFilter {
-            tag: Some(tag.to_string()),
-            ..Default::default()
-        };
-        for rule in api::find_all(transport, &filter).await? {
-            tag_matched = true;
-            ids.push(rule.rule_id()?.to_string());
-        }
-    }
-
-    ids.sort();
-    ids.dedup();
-
-    // A `--tag` that matched nothing is a miss worth reporting even when a
-    // selector resolved and rescued the union: a typo'd tag must not silently
-    // shrink the export. This is also the empty-selection refusal — with no
-    // selectors, the tag's zero matches leave `ids` empty.
-    if let Some(t) = tag
-        && !tag_matched
-    {
-        return Err(Error::new(
-            ErrorKind::NotFound,
-            format!("No rules matched tag '{t}'; nothing to export"),
-        ));
-    }
-
-    // Defensive: unreachable today — a selector either resolves or fails, and
-    // the whole-space case returned `Ok(None)` above — but the message must
-    // name what was asked for, not emit a blank selector.
-    if ids.is_empty() {
-        return Err(Error::new(
-            ErrorKind::NotFound,
-            format!(
-                "No rules matched the selector(s) '{}'; nothing to export",
-                selectors.join("', '")
-            ),
-        ));
-    }
-    Ok(Some(ids))
+    let transport = ctx.transport().await?;
+    // Export reads from the stack, so there is no local side: every selector
+    // names a rule the server holds.
+    selection::resolve(transport, selectors, tag, &[], "export").await
 }
 
 /// Fetch the selected rules, canonicalize them, and sort by rule_id. Two
