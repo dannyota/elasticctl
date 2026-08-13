@@ -1,6 +1,6 @@
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn profile_for(server: &MockServer) -> Profile {
@@ -123,6 +123,84 @@ async fn a_400_is_never_retried() {
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert!(t.get("/api/bad").await.is_err());
     // MockServer verifies the `expect(1)` on drop.
+}
+
+#[test]
+fn urlencode_escapes_what_breaks_a_url_and_leaves_the_rest() {
+    // Only the characters that actually break a query string are escaped, so
+    // a recorded fixture stays readable.
+    assert_eq!(elasticctl_core::urlencode("a-b_c.d~e"), "a-b_c.d~e");
+    assert_eq!(elasticctl_core::urlencode("a b"), "a%20b");
+    assert_eq!(elasticctl_core::urlencode("x\"y"), "x%22y");
+    assert_eq!(
+        elasticctl_core::urlencode("alert.attributes.params.ruleId: \"a/b\""),
+        "alert.attributes.params.ruleId%3A%20%22a%2Fb%22"
+    );
+}
+
+#[tokio::test]
+async fn post_absolute_es_sends_the_body_to_the_es_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/index/_search"))
+        .and(header("authorization", "ApiKey essu_test"))
+        .and(body_partial_json(json!({"size": 1})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"hits": {"total": {"value": 3}}})),
+        )
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    // A Cloud deployment serves Elasticsearch from a different host; the ES
+    // methods must use that one, not the Kibana base.
+    profile.es_url = Some(server.uri());
+    profile.kibana_url = "https://kibana.invalid".into();
+    let t = Transport::new(&profile).unwrap();
+
+    let body = t
+        .post_absolute_es("/index/_search", &json!({"size": 1}))
+        .await
+        .unwrap();
+    assert_eq!(body["hits"]["total"]["value"], 3);
+}
+
+#[tokio::test]
+async fn post_absolute_es_classifies_an_error_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/index/_search"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "no access"})))
+        .mount(&server)
+        .await;
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    let err = t
+        .post_absolute_es("/index/_search", &json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Permission);
+    assert_eq!(err.message, "no access");
+}
+
+#[tokio::test]
+async fn delete_absolute_es_targets_the_es_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/scratch-index"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    assert_eq!(
+        t.delete_absolute_es("/scratch-index").await.unwrap()["acknowledged"],
+        true
+    );
 }
 
 #[tokio::test]

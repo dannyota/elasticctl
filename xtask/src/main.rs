@@ -3,6 +3,7 @@
 //! Fixtures encode what Elastic actually sent. Hand-written mocks encode what
 //! we assumed, which is exactly where API bugs hide.
 
+use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -65,21 +66,6 @@ fn redact(val: &mut Value) {
         }
         _ => *val = json!("REDACTED"),
     }
-}
-
-/// Percent-encode a query-string value the same way the API client does, so a
-/// scoped find filter survives the trip through a URL.
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
