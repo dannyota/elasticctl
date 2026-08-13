@@ -133,10 +133,11 @@ strand a published crate with an unpublished dependency. (`elasticctl-api`
 depends on `elasticctl-core`, and `elasticctl` depends on both; `xtask` is not
 published.)
 
-Early versions tag without publishing: push the tag, let the workflow build
-the GitHub Release binaries, and skip crates.io until the tool has proven
-itself. A tag costs nothing and a GitHub Release can be deleted; a crates.io
-version is forever.
+Releases through 0.1.2 tagged without publishing. From 0.1.3 both happen: the
+tag builds the GitHub Release binaries and the workspace publishes to
+crates.io. Publish all three crates together or none — the binary depends on
+both libraries by version, so publishing it alone leaves `cargo install
+elasticctl` unable to resolve.
 
 1. Bump the version in `Cargo.toml` in two places: `[workspace.package] version`
    and the `version` fields of `elasticctl-core` and `elasticctl-api` in

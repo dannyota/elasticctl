@@ -758,11 +758,24 @@ temporary registry before uploading any — a sequence that fails partway would
 otherwise strand a crate on crates.io, where a version can be yanked but never
 deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
 
-Publishing is nonetheless *deferred* while the tool is early: a release tags
-and builds GitHub Release binaries and skips crates.io. A tag costs nothing and
-a GitHub Release can be deleted; a crates.io version is forever. Publishing
-`elasticctl-core` and `elasticctl-api` makes their Rust APIs a real contract,
-and those boundaries are still moving.
+Publishing was deferred through 0.1.2 on the reasoning that a crates.io version
+is forever while a tag costs nothing, and that publishing `elasticctl-core` and
+`elasticctl-api` would make their Rust APIs a contract while those boundaries
+still moved. From 0.1.3 a release publishes to crates.io as well as tagging.
+
+The deferral is dropped because its central cost was already priced in. Under
+Cargo's `0.x` rules the minor position is the breaking position, so
+`0.1.x` → `0.2.0` is a break a consumer must opt into, and 11 already bumps the
+minor for every new capability area. The crate boundaries are therefore free to
+move exactly as much after publishing as before.
+
+What does not reverse is name ownership. All three names were unclaimed, and a
+name is claimable by anyone until taken — the one cost here that cannot be
+recovered from, where a bad version can still be yanked.
+
+All three publish or none do. The binary crate depends on both libraries by
+version, so publishing it alone leaves `cargo install elasticctl` unable to
+resolve.
 
 ## 12. Credentials in this repository
 
