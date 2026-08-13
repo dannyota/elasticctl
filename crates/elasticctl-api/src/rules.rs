@@ -84,6 +84,13 @@ pub async fn find_page(
     }
 
     let body = t.get(&path).await?;
+    decode_find(&body)
+}
+
+/// Decode a `_find` response envelope into its rules and total. Extracted so
+/// the recorded `rules_find` fixture can be decoded offline by the same path
+/// the live client uses.
+pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     let total = body["total"].as_u64().unwrap_or(0);
     let data = body["data"].as_array().cloned().unwrap_or_default();
     let rules = data

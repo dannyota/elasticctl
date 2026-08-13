@@ -9,9 +9,9 @@ use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// Server-owned fields that change on every write. Stripped before diffing,
-/// or every pull would report drift that no one caused.
-pub const VOLATILE_FIELDS: [&str; 7] = [
+/// Server-owned fields that change on every write or execution. Stripped
+/// before diffing, or every pull would report drift that no one caused.
+pub const VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "created_at",
     "created_by",
@@ -19,6 +19,7 @@ pub const VOLATILE_FIELDS: [&str; 7] = [
     "updated_by",
     "revision",
     "version",
+    "execution_summary",
 ];
 
 /// Fields the server fills when a create request omits them. Measured by
@@ -221,6 +222,7 @@ mod tests {
             [
                 "created_at",
                 "created_by",
+                "execution_summary",
                 "id",
                 "revision",
                 "updated_at",

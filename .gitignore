@@ -11,7 +11,9 @@
 *.pem
 *.p12
 credentials.json
-config.toml
+# A local operator config at the repo root; the committed `.cargo/config.toml`
+# holds the `xtask` alias and must not be swept up by this rule.
+/config.toml
 .elasticctl/
 
 # Recorded fixtures may capture live credentials until scrubbed

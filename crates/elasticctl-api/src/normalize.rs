@@ -94,6 +94,7 @@ mod tests {
             "created_at": "2026-08-12T17:49:01.682Z", "created_by": "key-id",
             "updated_at": "2026-08-12T17:49:01.682Z", "updated_by": "key-id",
             "revision": 0, "version": 1,
+            "execution_summary": {"last_execution": {"date": "2026-08-13T03:00:20.804Z"}},
             "max_signals": 100, "to": "now"
         }))
         .unwrap()
@@ -108,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_volatile_removes_all_seven_measured_fields() {
+    fn strip_volatile_removes_all_eight_measured_fields() {
         let mut r = pulled();
         strip_volatile(&mut r);
         for f in VOLATILE_FIELDS {
