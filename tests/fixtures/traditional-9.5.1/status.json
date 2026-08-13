@@ -3,8 +3,8 @@
   "version": "9.5.1",
   "operation": "status",
   "response": {
-    "name": "98379b607171",
-    "uuid": "c1827489-add6-41aa-bca3-6182724aed04",
+    "name": "924b7ad60f95",
+    "uuid": "9a4b95b9-ba55-4224-8fa9-c44fdb04c7b7",
     "version": {
       "number": "9.5.1",
       "build_hash": "c9539950cdb7c83db5f1a7d4eda28880aded9a95",
@@ -955,22 +955,22 @@
       }
     },
     "metrics": {
-      "last_updated": "2026-08-13T04:09:19.930Z",
+      "last_updated": "2026-08-13T15:16:07.392Z",
       "collection_interval_in_millis": 5000,
       "os": {
         "platform": "linux",
-        "platformRelease": "linux-7.1.6-201.fc44.x86_64",
+        "platformRelease": "linux-7.1.8-200.fc44.x86_64",
         "load": {
-          "1m": 2.05,
-          "5m": 1.69,
-          "15m": 1.38
+          "1m": 3.44,
+          "5m": 3.93,
+          "15m": 2.8
         },
         "memory": {
-          "total_in_bytes": 33134485504,
-          "free_in_bytes": 10350723072,
-          "used_in_bytes": 22783762432
+          "total_in_bytes": 33134481408,
+          "free_in_bytes": 16264790016,
+          "used_in_bytes": 16869691392
         },
-        "uptime_in_millis": 95571000,
+        "uptime_in_millis": 23619470,
         "distro": "Red Hat Linux",
         "distroRelease": "Red Hat Linux-9.8",
         "cpu": {
@@ -985,85 +985,85 @@
         },
         "cpuacct": {
           "control_group": "/",
-          "usage_nanos": 24874575
+          "usage_nanos": 28240101
         },
         "cgroup_memory": {
-          "current_in_bytes": 1710968832,
+          "current_in_bytes": 1912836096,
           "swap_current_in_bytes": 0
         }
       },
       "process": {
         "memory": {
           "heap": {
-            "total_in_bytes": 1258979328,
-            "used_in_bytes": 722063160,
+            "total_in_bytes": 1268789248,
+            "used_in_bytes": 766667976,
             "size_limit": 4496293888
           },
-          "resident_set_size_in_bytes": 1670107136,
-          "array_buffers_in_bytes": 1677722,
-          "external_in_bytes": 5950746
+          "resident_set_size_in_bytes": 1598578688,
+          "array_buffers_in_bytes": 3053427,
+          "external_in_bytes": 7326451
         },
         "pid": 2,
-        "event_loop_delay": 91.291647,
+        "event_loop_delay": 10.903551,
         "event_loop_delay_histogram": {
-          "min": 9.084928,
-          "max": 91.291647,
-          "mean": 10.295820694214877,
+          "min": 9.076736,
+          "max": 10.903551,
+          "mean": 10.0837715951417,
           "exceeds": 0,
-          "stddev": 3.753066645165972,
-          "fromTimestamp": "2026-08-13T04:09:14.929Z",
-          "lastUpdatedAt": "2026-08-13T04:09:19.928Z",
+          "stddev": 0.13659341590607038,
+          "fromTimestamp": "2026-08-13T15:16:02.393Z",
+          "lastUpdatedAt": "2026-08-13T15:16:07.391Z",
           "percentiles": {
             "50": 10.084351,
             "75": 10.100735,
             "90": 10.149887,
-            "95": 10.174463,
-            "99": 10.829823
+            "95": 10.199039,
+            "99": 10.477567
           }
         },
         "event_loop_utilization": {
-          "active": 269.3729990049851,
-          "idle": 4730.354998000001,
-          "utilization": 0.05387753077094375
+          "active": 41.46040500151139,
+          "idle": 4956.217324999998,
+          "utilization": 0.008295934080066998
         },
-        "uptime_in_millis": 31038.94072
+        "uptime_in_millis": 83431.871395
       },
       "processes": [
         {
           "memory": {
             "heap": {
-              "total_in_bytes": 1258979328,
-              "used_in_bytes": 722063160,
+              "total_in_bytes": 1268789248,
+              "used_in_bytes": 766667976,
               "size_limit": 4496293888
             },
-            "resident_set_size_in_bytes": 1670107136,
-            "array_buffers_in_bytes": 1677722,
-            "external_in_bytes": 5950746
+            "resident_set_size_in_bytes": 1598578688,
+            "array_buffers_in_bytes": 3053427,
+            "external_in_bytes": 7326451
           },
           "pid": 2,
-          "event_loop_delay": 91.291647,
+          "event_loop_delay": 10.903551,
           "event_loop_delay_histogram": {
-            "min": 9.084928,
-            "max": 91.291647,
-            "mean": 10.295820694214877,
+            "min": 9.076736,
+            "max": 10.903551,
+            "mean": 10.0837715951417,
             "exceeds": 0,
-            "stddev": 3.753066645165972,
-            "fromTimestamp": "2026-08-13T04:09:14.929Z",
-            "lastUpdatedAt": "2026-08-13T04:09:19.928Z",
+            "stddev": 0.13659341590607038,
+            "fromTimestamp": "2026-08-13T15:16:02.393Z",
+            "lastUpdatedAt": "2026-08-13T15:16:07.391Z",
             "percentiles": {
               "50": 10.084351,
               "75": 10.100735,
               "90": 10.149887,
-              "95": 10.174463,
-              "99": 10.829823
+              "95": 10.199039,
+              "99": 10.477567
             }
           },
           "event_loop_utilization": {
-            "active": 269.3729990049851,
-            "idle": 4730.354998000001,
-            "utilization": 0.05387753077094375
+            "active": 41.46040500151139,
+            "idle": 4956.217324999998,
+            "utilization": 0.008295934080066998
           },
-          "uptime_in_millis": 31038.94072
+          "uptime_in_millis": 83431.871395
         }
       ],
       "response_times": {
@@ -1078,10 +1078,11 @@
         "status_codes": {}
       },
       "elasticsearch_client": {
-        "totalActiveSockets": 1,
-        "totalIdleSockets": 136,
+        "totalActiveSockets": 0,
+        "totalIdleSockets": 36,
         "totalQueuedRequests": 0
       }
     }
-  }
+  },
+  "headers": {}
 }

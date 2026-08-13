@@ -3,7 +3,7 @@
   "version": "9.6.0",
   "operation": "rules_delete",
   "response": {
-    "id": "2fea8e02-facd-43cb-805e-c1c3b211af88",
+    "id": "8acd1ab8-4cbb-45ea-bb29-832740508897",
     "rule_id": "elasticctl-fixture-probe",
     "name": "elasticctl fixture probe",
     "immutable": false,
@@ -12,23 +12,14 @@
     },
     "version": 1,
     "revision": 0,
-    "updated_at": "2026-08-13T11:06:55.437Z",
+    "updated_at": "2026-08-13T15:15:19.516Z",
     "updated_by": "REDACTED",
-    "created_at": "2026-08-13T11:06:52.444Z",
+    "created_at": "2026-08-13T15:15:15.966Z",
     "created_by": "REDACTED",
     "enabled": false,
     "interval": "5m",
     "from": "now-6m",
     "to": "now",
-    "execution_summary": {
-      "last_execution": {
-        "date": "2026-08-13T11:06:56.557Z",
-        "status": "failed",
-        "status_order": 30,
-        "message": "Rule failed to execute because rule ran after it was disabled.",
-        "metrics": {}
-      }
-    },
     "description": "Recorded by cargo xtask record. Safe to delete.",
     "tags": [
       "elasticctl",

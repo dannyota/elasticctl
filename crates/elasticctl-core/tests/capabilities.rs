@@ -154,11 +154,14 @@ async fn the_edge_header_is_matched_regardless_of_casing() {
 /// re-record shows a stack reporting something new, this fails here rather
 /// than in the field.
 ///
-/// One asymmetry is deliberate and worth knowing: `traditional-9.5.1` predates
-/// header recording, so its absent `headers` key means "not recorded", not
-/// "measured absent". It classifies correctly either way, but the negative half
-/// of the Hosted signal stays an inference until that set is re-recorded from
-/// the lab stack.
+/// Every set now records headers, so an absent `x-found-handling-cluster` is
+/// measured absent rather than merely unrecorded. That is what makes the
+/// negative half of the Hosted signal evidence instead of inference: a
+/// self-managed stack has no Cloud edge proxy in front of it, and
+/// `traditional-9.5.1` shows the header missing while still carrying the
+/// others its stack sends. The `headers` key is required below — a re-record
+/// that dropped it would quietly return this test to proving only the
+/// positive half.
 #[test]
 fn every_recorded_status_classifies_as_the_flavor_it_came_from() {
     use elasticctl_core::Capabilities;
@@ -185,10 +188,10 @@ fn every_recorded_status_classifies_as_the_flavor_it_came_from() {
         let doc: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&status).expect("read status"))
                 .expect("status fixture is JSON");
-        let cloud_edge = doc
+        let headers = doc
             .get("headers")
-            .and_then(|h| h.get("x-found-handling-cluster"))
-            .is_some();
+            .unwrap_or_else(|| panic!("fixture set {name} records no headers; re-record it"));
+        let cloud_edge = headers.get("x-found-handling-cluster").is_some();
 
         // A host with no Cloud suffix, so only the body and the header decide.
         let caps = Capabilities::classify(&doc["response"], cloud_edge, "https://kibana.internal");

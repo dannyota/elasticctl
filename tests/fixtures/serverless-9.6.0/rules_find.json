@@ -8,7 +8,7 @@
     "total": 1,
     "data": [
       {
-        "id": "2fea8e02-facd-43cb-805e-c1c3b211af88",
+        "id": "8acd1ab8-4cbb-45ea-bb29-832740508897",
         "rule_id": "elasticctl-fixture-probe",
         "name": "elasticctl fixture probe",
         "immutable": false,
@@ -17,9 +17,9 @@
         },
         "version": 1,
         "revision": 0,
-        "updated_at": "2026-08-13T11:06:52.444Z",
+        "updated_at": "2026-08-13T15:15:15.966Z",
         "updated_by": "REDACTED",
-        "created_at": "2026-08-13T11:06:52.444Z",
+        "created_at": "2026-08-13T15:15:15.966Z",
         "created_by": "REDACTED",
         "enabled": false,
         "interval": "5m",

@@ -1,0 +1,21 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "license",
+  "response": {
+    "license": {
+      "status": "active",
+      "uid": "3da648af-bfa5-4f7c-8487-d8015cb1a6da",
+      "type": "trial",
+      "issue_date": "2026-08-13T15:15:06.425Z",
+      "issue_date_in_millis": 1786634106425,
+      "expiry_date": "2026-09-12T15:15:06.425Z",
+      "expiry_date_in_millis": 1789226106425,
+      "max_nodes": 1000,
+      "max_resource_units": null,
+      "issued_to": "docker-cluster",
+      "issuer": "elasticsearch",
+      "start_date_in_millis": -1
+    }
+  }
+}

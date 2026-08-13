@@ -815,22 +815,22 @@
       }
     },
     "metrics": {
-      "last_updated": "2026-08-13T11:06:46.762Z",
+      "last_updated": "2026-08-13T15:15:15.072Z",
       "collection_interval_in_millis": 5000,
       "os": {
         "platform": "linux",
         "platformRelease": "linux-6.12.92-122.166.amzn2023.aarch64",
         "load": {
-          "1m": 2.18,
-          "5m": 2.28,
-          "15m": 2.52
+          "1m": 1.92,
+          "5m": 1.99,
+          "15m": 2.24
         },
         "memory": {
           "total_in_bytes": 132127105024,
-          "free_in_bytes": 87806582784,
-          "used_in_bytes": 44320522240
+          "free_in_bytes": 86466371584,
+          "used_in_bytes": 45660733440
         },
-        "uptime_in_millis": 3622571390,
+        "uptime_in_millis": 3637479700,
         "distro": "Raspbian",
         "distroRelease": "Raspbian-20230214",
         "cpu": {
@@ -838,114 +838,118 @@
           "cfs_period_micros": 100000,
           "control_group": "/",
           "stat": {
-            "number_of_elapsed_periods": 284766,
-            "number_of_times_throttled": 2209,
-            "time_throttled_nanos": 454676271
+            "number_of_elapsed_periods": 349454,
+            "number_of_times_throttled": 2665,
+            "time_throttled_nanos": 560952729
           }
         },
         "cpuacct": {
           "control_group": "/",
-          "usage_nanos": 1371459815
+          "usage_nanos": 1616131795
         },
         "cgroup_memory": {
-          "current_in_bytes": 839847936,
+          "current_in_bytes": 839630848,
           "swap_current_in_bytes": 0
         }
       },
       "process": {
         "memory": {
           "heap": {
-            "total_in_bytes": 681545728,
-            "used_in_bytes": 621904296,
+            "total_in_bytes": 679186432,
+            "used_in_bytes": 653296040,
             "size_limit": 1818230784
           },
-          "resident_set_size_in_bytes": 840572928,
-          "array_buffers_in_bytes": 1770042,
-          "external_in_bytes": 6230538
+          "resident_set_size_in_bytes": 839831552,
+          "array_buffers_in_bytes": 4202863,
+          "external_in_bytes": 8663359
         },
         "pid": 8,
-        "event_loop_delay": 76.152831,
+        "event_loop_delay": 11.206655,
         "event_loop_delay_histogram": {
-          "min": 9.060352,
-          "max": 76.152831,
-          "mean": 10.864367825708062,
+          "min": 9.05216,
+          "max": 11.206655,
+          "mean": 10.075191854545457,
           "exceeds": 0,
-          "stddev": 6.290394195725572,
-          "fromTimestamp": "2026-08-13T11:06:41.761Z",
-          "lastUpdatedAt": "2026-08-13T11:06:46.760Z",
+          "stddev": 0.18153448264739025,
+          "fromTimestamp": "2026-08-13T15:15:10.073Z",
+          "lastUpdatedAt": "2026-08-13T15:15:15.071Z",
           "percentiles": {
             "50": 10.067967,
             "75": 10.084351,
-            "90": 10.133503,
-            "95": 10.215423,
-            "99": 39.354367
+            "90": 10.182655,
+            "95": 10.190847,
+            "99": 10.592255
           }
         },
         "event_loop_utilization": {
-          "active": 706.9264378920197,
-          "idle": 4292.896058999002,
-          "utilization": 0.1413903070222191
+          "active": 55.44893012940883,
+          "idle": 4942.979715004563,
+          "utilization": 0.01109327231936961
         },
-        "uptime_in_millis": 63242577.980749
+        "uptime_in_millis": 78150888.43757801
       },
       "processes": [
         {
           "memory": {
             "heap": {
-              "total_in_bytes": 681545728,
-              "used_in_bytes": 621904296,
+              "total_in_bytes": 679186432,
+              "used_in_bytes": 653296040,
               "size_limit": 1818230784
             },
-            "resident_set_size_in_bytes": 840572928,
-            "array_buffers_in_bytes": 1770042,
-            "external_in_bytes": 6230538
+            "resident_set_size_in_bytes": 839831552,
+            "array_buffers_in_bytes": 4202863,
+            "external_in_bytes": 8663359
           },
           "pid": 8,
-          "event_loop_delay": 76.152831,
+          "event_loop_delay": 11.206655,
           "event_loop_delay_histogram": {
-            "min": 9.060352,
-            "max": 76.152831,
-            "mean": 10.864367825708062,
+            "min": 9.05216,
+            "max": 11.206655,
+            "mean": 10.075191854545457,
             "exceeds": 0,
-            "stddev": 6.290394195725572,
-            "fromTimestamp": "2026-08-13T11:06:41.761Z",
-            "lastUpdatedAt": "2026-08-13T11:06:46.760Z",
+            "stddev": 0.18153448264739025,
+            "fromTimestamp": "2026-08-13T15:15:10.073Z",
+            "lastUpdatedAt": "2026-08-13T15:15:15.071Z",
             "percentiles": {
               "50": 10.067967,
               "75": 10.084351,
-              "90": 10.133503,
-              "95": 10.215423,
-              "99": 39.354367
+              "90": 10.182655,
+              "95": 10.190847,
+              "99": 10.592255
             }
           },
           "event_loop_utilization": {
-            "active": 706.9264378920197,
-            "idle": 4292.896058999002,
-            "utilization": 0.1413903070222191
+            "active": 55.44893012940883,
+            "idle": 4942.979715004563,
+            "utilization": 0.01109327231936961
           },
-          "uptime_in_millis": 63242577.980749
+          "uptime_in_millis": 78150888.43757801
         }
       ],
       "response_times": {
-        "avg_in_millis": 3,
-        "max_in_millis": 4
+        "avg_in_millis": 5.5,
+        "max_in_millis": 9
       },
-      "concurrent_connections": 3,
+      "concurrent_connections": 4,
       "requests": {
         "disconnects": 0,
-        "total": 2,
+        "total": 6,
         "statusCodes": {
-          "200": 2
+          "200": 6
         },
         "status_codes": {
-          "200": 2
+          "200": 6
         }
       },
       "elasticsearch_client": {
         "totalActiveSockets": 0,
-        "totalIdleSockets": 3,
+        "totalIdleSockets": 2,
         "totalQueuedRequests": 0
       }
     }
+  },
+  "headers": {
+    "x-found-handling-cluster": "REDACTED",
+    "x-found-handling-instance": "REDACTED"
   }
 }
