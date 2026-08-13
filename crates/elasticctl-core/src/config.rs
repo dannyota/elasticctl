@@ -14,7 +14,7 @@ const REDACTED: &str = "***";
 /// changes the provenance reported in the guard banner; overriding a
 /// non-identity field (timeout, space) does not.
 fn is_identity_override(ov: &Overrides) -> bool {
-    ov.kibana_url.is_some() || ov.api_key.is_some()
+    ov.kibana_url.is_some() || ov.es_url.is_some() || ov.api_key.is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +139,7 @@ impl Resolved {
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
     pub kibana_url: Option<String>,
+    pub es_url: Option<String>,
     pub api_key: Option<String>,
     pub space: Option<String>,
     pub timeout_secs: Option<u64>,
@@ -146,9 +147,16 @@ pub struct Overrides {
 
 impl Overrides {
     /// Read `ELASTICCTL_*` environment variables into an override set.
+    ///
+    /// `es_url` belongs here with `kibana_url`, not with the settings. On a
+    /// Cloud deployment the two hosts are different stacks' endpoints, so
+    /// overriding one and inheriting the other from the saved profile aims the
+    /// client at two deployments at once — and sends the overridden
+    /// credential to whichever host the profile happened to name.
     pub fn from_env() -> Overrides {
         Overrides {
             kibana_url: std::env::var("ELASTICCTL_KIBANA_URL").ok(),
+            es_url: std::env::var("ELASTICCTL_ES_URL").ok(),
             api_key: std::env::var("ELASTICCTL_API_KEY").ok(),
             space: std::env::var("ELASTICCTL_SPACE").ok(),
             timeout_secs: std::env::var("ELASTICCTL_TIMEOUT")
@@ -161,6 +169,7 @@ impl Overrides {
     pub fn merge_over(self, lower: Overrides) -> Overrides {
         Overrides {
             kibana_url: self.kibana_url.or(lower.kibana_url),
+            es_url: self.es_url.or(lower.es_url),
             api_key: self.api_key.or(lower.api_key),
             space: self.space.or(lower.space),
             timeout_secs: self.timeout_secs.or(lower.timeout_secs),
@@ -283,6 +292,17 @@ impl Config {
         if let Some(v) = &ov.kibana_url {
             profile.kibana_url = v.clone();
         }
+        // An overridden Kibana host with an inherited Elasticsearch host is
+        // two different deployments, so a kibana_url override with no es_url
+        // clears the profile's rather than keeping it. The transport then
+        // falls back to the Kibana host, which is the single-host
+        // self-managed case and is at worst a 404 — never a request to the
+        // wrong stack carrying this stack's key.
+        if let Some(v) = &ov.es_url {
+            profile.es_url = Some(v.clone());
+        } else if ov.kibana_url.is_some() {
+            profile.es_url = None;
+        }
         if let Some(v) = &ov.api_key {
             profile.api_key = Some(v.clone());
         }
@@ -383,6 +403,66 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind, ErrorKind::NotFound);
         assert!(err.message.contains("nope"));
+    }
+
+    /// `ELASTICCTL_ES_URL` is documented in `.env.example` and read by the
+    /// fixture recorder, but the CLI ignored it: an environment override of
+    /// the Kibana host left `es_url` pointing at whatever the saved profile
+    /// named, aiming one client at two deployments.
+    #[test]
+    fn an_es_url_override_is_applied() {
+        let r = sample()
+            .resolve(
+                None,
+                &Overrides {
+                    es_url: Some("https://other-es.example.com".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            r.profile.es_url.as_deref(),
+            Some("https://other-es.example.com")
+        );
+    }
+
+    /// The safety half. Overriding only the Kibana host must not leave the
+    /// profile's Elasticsearch host in place: those are two different
+    /// deployments, and the request would carry the overridden credential to
+    /// the one the operator did not name.
+    #[test]
+    fn overriding_only_the_kibana_url_clears_the_profiles_es_url() {
+        let r = sample()
+            .resolve(
+                None,
+                &Overrides {
+                    kibana_url: Some("https://other-kb.example.com".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            r.profile.es_url, None,
+            "an inherited es_url would point at the profile's stack, not the overridden one"
+        );
+    }
+
+    #[test]
+    fn an_es_url_override_counts_as_an_identity_override() {
+        let r = sample()
+            .resolve(
+                None,
+                &Overrides {
+                    es_url: Some("https://other-es.example.com".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            r.source,
+            Source::Flags,
+            "changing which stack is addressed is an identity change"
+        );
     }
 
     #[test]

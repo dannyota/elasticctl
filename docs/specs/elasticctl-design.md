@@ -82,6 +82,14 @@ Knows nothing about detection rules.
   (`ELASTICCTL_*`) → profile → defaults. Returns the effective config *and its
   provenance*, so the guard banner can name which profile is about to be
   mutated.
+  `kibana_url` and `es_url` are both identity: on a Cloud deployment they are
+  two hosts of one stack, and on self-managed `es_url` is absent and the Kibana
+  host serves both. They resolve together. An environment or flag override of
+  one without the other does not inherit the profile's value for the other —
+  overriding `kibana_url` alone clears `es_url` rather than keeping a host
+  belonging to a different deployment, because inheriting it would aim one
+  client at two stacks and send the overridden credential to the host the
+  operator did not name.
   Any `user:password@` prefix in `kibana_url` or `es_url` is stripped at
   resolution and before a profile is written. Credentials come from `api_key`
   or `username`/`password`; a URL has never been an authentication channel
