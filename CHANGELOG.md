@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.2 — unreleased
+## 0.1.2 — 2026-08-13
 
 Finishes the detection-rules vertical. No breaking changes: every command
 without selectors behaves exactly as it did in 0.1.1, output fields included.

@@ -15,11 +15,14 @@ fn absent_config() -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[test]
 fn version_flag_prints_the_workspace_version() {
+    // Read from the manifest rather than a literal: a hardcoded version turns
+    // every release into a test edit, and the test then only proves that two
+    // copies of the same string match.
     bin()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("0.1.1"));
+        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

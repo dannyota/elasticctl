@@ -81,6 +81,18 @@ elasticctl state push --dir state   # preview; add --yes to apply
 
 `push` and every other mutation preview by default and apply only with `--yes`.
 
+All three take the same positional selectors and `--tag` as `rules export`, and
+a selection narrows both sides before drift is computed — so a scoped run reads
+one filtered query rather than the whole corpus:
+
+```bash
+elasticctl state diff --dir state my-rule-id      # one rule
+elasticctl state push --dir state --tag prod      # one tag
+```
+
+`diff` and `push` resolve a selector against the directory first, so a rule you
+have only written locally is selectable by name before it exists on the stack.
+
 Inspect and manage individual rules:
 
 ```bash
@@ -102,7 +114,7 @@ elasticctl info
 elasticctl rules list | get | validate | enable | disable | delete
 elasticctl rules export [<selector>...] [--tag TAG] | import [--skip-existing] | preview [--sample N]
 
-elasticctl state pull | diff | push
+elasticctl state pull | diff | push  [<selector>...] [--tag TAG] --dir DIR
 
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands
