@@ -434,10 +434,11 @@ per-space preview alerts index and are searched with the returned `previewId`:
 | Preview alerts index | `.preview.alerts-security.alerts-<space>` | **Measured** by the `rules_preview_hits` fixture |
 | Field carrying the preview id | `kibana.alert.rule.uuid` | **Measured** by the same fixture |
 | Readable with a project-scoped Elasticsearch API key | yes | **Measured** by the same fixture |
-| Visible to search when the preview response returns | yes | **Measured**; the fixture records `attempts_until_hits: 1` |
+| Visible to search when the preview response returns | Observed on the first search of the recorded run | **Measured**; the fixture records `attempts_until_hits: 1` for that run |
 
-Measured: the alerts were visible to the first search, so the retry below is
-insurance against a slower stack rather than a routine second round trip.
+Measured: in the recorded run the alerts were visible to the first search. A
+slower stack may not be, so the retry below is insurance against that rather
+than a claim about every stack.
 
 The read is an Elasticsearch search rather than a Kibana route because the
 evaluation already recovered true hit counts from Elasticsearch with the same

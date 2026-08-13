@@ -220,14 +220,33 @@ fn write_exchange(
 /// prefix: `logs-*-*` matches Elastic's own template, which would turn this
 /// into a data stream and reject a plain document write.
 const PREVIEW_PROBE_INDEX: &str = "elasticctl-sample-fixture";
-/// A name no other rule on the stack has, so the diagnostic fallback below
-/// stays scoped to this recorder's own object.
+/// Base of the preview probe's name. A per-run suffix is appended because
+/// preview alerts are never deleted, so a constant name could be satisfied by
+/// a stale alert from an earlier recording — the suffix keeps the fallback
+/// scoped to this run's own alerts.
 const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
 /// Fixed rather than "now": the probe document is written at a fixed instant
 /// inside the window this end implies, so the recording is reproducible and
 /// needs no date arithmetic.
 const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
 const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
+
+/// A per-run suffix so a re-record's fallback cannot match a previous run's
+/// leftover preview alerts.
+fn run_token() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().to_string())
+        .unwrap_or_else(|_| std::process::id().to_string())
+}
+
+/// The request that found the hits, alongside the search response. Kept apart
+/// from the fixture write so the caller runs its cleanups before anything is
+/// written to disk.
+struct PreviewHitsExchange {
+    request: Value,
+    response: Value,
+}
 
 /// Record what a preview actually wrote.
 ///
@@ -238,15 +257,14 @@ const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
 /// visible to search the moment the preview returns — is measured by recording
 /// which attempt first saw them.
 ///
-/// Returns `Err` rather than panicking so the caller can delete the scratch
-/// index on every path.
+/// Returns `Err` rather than panicking, and returns the exchange rather than
+/// writing it, so the caller deletes the scratch index and the probe rule on
+/// every path. A recording that finds no hits is an error, never a fixture
+/// that claims a field matched when nothing did.
 async fn record_preview_hits(
     t: &elasticctl_core::Transport,
-    dir: &PathBuf,
-    flavor: &str,
-    version: &str,
     space: &str,
-) -> elasticctl_core::Result<()> {
+) -> elasticctl_core::Result<PreviewHitsExchange> {
     // One document the probe rule is certain to match.
     let doc = json!({
         "@timestamp": PREVIEW_DOC_TIMESTAMP,
@@ -264,8 +282,9 @@ async fn record_preview_hits(
     )
     .await?;
 
+    let probe_name = format!("{PREVIEW_PROBE_NAME} {}", run_token());
     let preview_body = json!({
-        "name": PREVIEW_PROBE_NAME,
+        "name": probe_name,
         "description": "Recorded by cargo xtask record. Safe to delete.",
         "type": "query",
         "language": "kuery",
@@ -307,66 +326,66 @@ async fn record_preview_hits(
         }
     };
 
+    let hits_of = |v: &Value| v["hits"]["total"]["value"].as_u64().unwrap_or(0);
+
     // Attempt 1 immediately, attempt 2 after Elasticsearch's default
     // one-second refresh interval. Which one first sees the alerts is the
     // measurement.
     let mut response = search(by_uuid.clone()).await?;
-    let mut attempts = 1;
-    if response["hits"]["total"]["value"].as_u64().unwrap_or(0) == 0 {
+    let mut uuid_attempts = 1;
+    if hits_of(&response) == 0 {
         // Blocking sleep: the recorder does one thing at a time.
         std::thread::sleep(std::time::Duration::from_millis(1000));
         response = search(by_uuid.clone()).await?;
-        attempts = 2;
+        uuid_attempts = 2;
     }
 
-    let mut request = json!({
-        "index": index,
-        "body": by_uuid,
-        "matched_by": "kibana.alert.rule.uuid",
-        "attempts_until_hits": attempts,
-    });
-
-    if response["hits"]["total"]["value"].as_u64().unwrap_or(0) == 0 {
-        // The uuid field is a guess. Fall back to a query scoped by this
-        // probe's own unique rule name, which is still scoped to an object
-        // this recorder created, and record what came back so the real field
-        // is discoverable instead of merely absent.
-        println!("no hits by kibana.alert.rule.uuid; retrying by rule name");
-        let by_name = json!({
-            "size": 3,
-            "track_total_hits": true,
-            "query": {"match_phrase": {"kibana.alert.rule.name": PREVIEW_PROBE_NAME}}
+    if hits_of(&response) > 0 {
+        return Ok(PreviewHitsExchange {
+            request: json!({
+                "index": index,
+                "body": by_uuid,
+                "matched_by": "kibana.alert.rule.uuid",
+                "attempts_until_hits": uuid_attempts,
+            }),
+            response,
         });
-        let fallback = search(by_name.clone()).await?;
-        if fallback["hits"]["total"]["value"].as_u64().unwrap_or(0) > 0 {
-            response = fallback;
-            request = json!({
+    }
+
+    // The uuid field is a guess. Fall back to a query scoped by this probe's
+    // own, run-unique rule name, which still names an object this recorder
+    // created, and record what came back so the real field is discoverable
+    // instead of merely absent.
+    println!("no hits by kibana.alert.rule.uuid; retrying by rule name");
+    let by_name = json!({
+        "size": 3,
+        "track_total_hits": true,
+        "query": {"match_phrase": {"kibana.alert.rule.name": probe_name}}
+    });
+    let fallback = search(by_name.clone()).await?;
+    if hits_of(&fallback) > 0 {
+        return Ok(PreviewHitsExchange {
+            request: json!({
                 "index": index,
                 "body": by_name,
                 "matched_by": "kibana.alert.rule.name",
-                "attempts_until_hits": attempts,
-            });
-        }
+                // The fallback runs only after the uuid retries, so this is
+                // the first search of *this* query — its own attempt count,
+                // not the uuid query's.
+                "attempts_until_hits": 1,
+            }),
+            response: fallback,
+        });
     }
 
-    let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
-    if total == 0 {
-        println!(
-            "WARNING: no preview alerts found in {index}. \
-             The index name or the query field is wrong; inspect the index by hand \
-             before Task 11 relies on either."
-        );
-    }
-
-    write_exchange(
-        dir,
-        "rules_preview_hits",
-        flavor,
-        version,
-        request,
-        response,
-    );
-    Ok(())
+    Err(elasticctl_core::Error::new(
+        elasticctl_core::ErrorKind::Error,
+        format!(
+            "no preview alerts found in {index}: kibana.alert.rule.uuid \
+             ({uuid_attempts} search(es)) and kibana.alert.rule.name (1 search) \
+             both returned zero hits"
+        ),
+    ))
 }
 
 async fn record() {
@@ -501,7 +520,8 @@ async fn record() {
     write_fixture(&dir, "rules_preview", &flavor, &version, preview);
 
     let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
-    let hits = record_preview_hits(&t, &dir, &flavor, &version, &space).await;
+    let hits = record_preview_hits(&t, &space).await;
+
     // Always drop the scratch index, on every path: a recording session must
     // leave the stack exactly as it found it.
     let cleanup = t
@@ -513,7 +533,6 @@ async fn record() {
             e.message
         );
     }
-    hits.expect("record preview hits");
 
     // Export before delete, so the fixture contains a real rule line. The
     // export is scoped to the probe rule: a fixture is a representative sample
@@ -524,8 +543,25 @@ async fn record() {
             "/api/detection_engine/rules/_export",
             Some(&json!({"objects": [{"rule_id": rule_id}]})),
         )
-        .await
-        .expect("export");
+        .await;
+
+    // Always delete the probe rule, on every path, before surfacing the export
+    // or preview-hits error: a failed recording must not strand the rule on a
+    // live project.
+    let deleted = t
+        .delete(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
+        .await;
+    if let Err(e) = &deleted {
+        println!(
+            "WARNING: could not delete probe rule {rule_id}: {}",
+            e.message
+        );
+    }
+
+    // Both cleanups have run; only now is it safe to surface failures.
+    let exchange = hits.expect("record preview hits");
+
+    let export = export.expect("export");
     let (_, _summary) = elasticctl_api::codec::decode_ndjson(&export).expect("decode export");
     write_fixture(
         &dir,
@@ -535,11 +571,17 @@ async fn record() {
         json!({"ndjson": scrub_ndjson(&export)}),
     );
 
-    let deleted = t
-        .delete(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
-        .await
-        .expect("delete");
+    let deleted = deleted.expect("delete");
     write_fixture(&dir, "rules_delete", &flavor, &version, deleted);
+
+    write_exchange(
+        &dir,
+        "rules_preview_hits",
+        &flavor,
+        &version,
+        exchange.request,
+        exchange.response,
+    );
 
     println!("recorded {flavor} {version}");
 }

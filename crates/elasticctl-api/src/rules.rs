@@ -390,6 +390,13 @@ pub async fn preview_hits(
         .post_absolute_es(&format!("/{index}/_search?ignore_unavailable=true"), &body)
         .await?;
 
+    Ok(decode_preview_hits(&response))
+}
+
+/// Decode a preview-hits search response. Extracted so the recorded
+/// `rules_preview_hits` fixture can be decoded offline by the same path the
+/// live client uses.
+pub fn decode_preview_hits(response: &Value) -> PreviewHits {
     let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
     let sample = response["hits"]["hits"]
         .as_array()
@@ -405,7 +412,7 @@ pub async fn preview_hits(
         })
         .unwrap_or_default();
 
-    Ok(PreviewHits { total, sample })
+    PreviewHits { total, sample }
 }
 
 #[cfg(test)]
