@@ -61,6 +61,10 @@ pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<V
         timeout_secs: env.timeout_secs.unwrap_or(30),
     };
 
+    // `resolve` strips on read; stripping here as well means a credential in
+    // ELASTICCTL_KIBANA_URL never reaches disk in the first place.
+    let mut profile = profile;
+    profile.strip_userinfo();
     config.profiles.insert(name.clone(), profile);
     if config.current.is_empty() {
         config.current = name.clone();

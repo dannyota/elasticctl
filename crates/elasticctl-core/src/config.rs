@@ -73,6 +73,34 @@ impl Profile {
         // Fall back to original if parsing fails or result is empty
         self.kibana_url.clone()
     }
+
+    /// Drop any `user:password@` prefix from `kibana_url` and `es_url`.
+    ///
+    /// Credentials belong in `api_key` or `username`/`password`. The transport
+    /// has never read them from a URL, so nothing that authenticated stops
+    /// authenticating — but a URL carrying userinfo would print in the guard
+    /// banner, in `config show`, and in every `--debug` line, which is exactly
+    /// the class this closes.
+    pub fn strip_userinfo(&mut self) {
+        self.kibana_url = strip_userinfo(&self.kibana_url);
+        self.es_url = self.es_url.as_deref().map(strip_userinfo);
+    }
+}
+
+/// Remove userinfo from a URL's authority, leaving everything else byte for
+/// byte. Only the authority is examined: a path or query may legitimately
+/// contain `@`.
+fn strip_userinfo(url: &str) -> String {
+    let (scheme, rest) = match url.find("://") {
+        Some(i) => url.split_at(i + 3),
+        None => ("", url),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    match authority.rfind('@') {
+        Some(i) => format!("{scheme}{}{tail}", &authority[i + 1..]),
+        None => url.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -270,6 +298,12 @@ impl Config {
         } else {
             Source::Profile
         };
+
+        // After the overrides, not before: a userinfo URL can arrive from the
+        // file, the environment, or a flag, and this is the one point all
+        // three have already passed through.
+        profile.strip_userinfo();
+
         Ok(Resolved {
             profile,
             name: wanted.to_string(),
@@ -595,5 +629,98 @@ mod tests {
     fn permission_warning_is_none_for_a_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         assert!(Config::permission_warning(&dir.path().join("absent.toml")).is_none());
+    }
+
+    fn with_urls(kibana: &str, es: Option<&str>) -> Config {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "default".to_string(),
+            Profile {
+                kibana_url: kibana.into(),
+                es_url: es.map(String::from),
+                api_key: Some("essu_SECRET".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            },
+        );
+        Config {
+            current: "default".into(),
+            profiles,
+        }
+    }
+
+    #[test]
+    fn resolve_strips_userinfo_from_both_urls() {
+        let r = with_urls(
+            "https://user:pass@kb.example.com",
+            Some("https://user:pass@es.example.com:9243/"),
+        )
+        .resolve(None, &Overrides::default())
+        .unwrap();
+        assert_eq!(r.profile.kibana_url, "https://kb.example.com");
+        assert_eq!(
+            r.profile.es_url.as_deref(),
+            Some("https://es.example.com:9243/")
+        );
+    }
+
+    #[test]
+    fn resolve_strips_userinfo_supplied_by_an_override() {
+        // Flags and environment reach the profile after it is loaded, so the
+        // strip has to sit downstream of them, not at load.
+        let ov = Overrides {
+            kibana_url: Some("https://user:pass@override.example.com".into()),
+            ..Default::default()
+        };
+        let r = with_urls("https://kb.example.com", None)
+            .resolve(None, &ov)
+            .unwrap();
+        assert_eq!(r.profile.kibana_url, "https://override.example.com");
+    }
+
+    #[test]
+    fn the_banner_never_shows_userinfo() {
+        // The banner is the one thing an operator reads before approving a
+        // mutation. It must not be where a password first appears.
+        let r = with_urls("https://user:hunter2@prod.example.com", None)
+            .resolve(None, &Overrides::default())
+            .unwrap();
+        let b = r.banner();
+        assert!(!b.contains("hunter2"), "{b}");
+        // The banner's only `@` is the documented separator between profile
+        // name and host; a leaked `user:pass@` would add a second.
+        assert_eq!(b.matches('@').count(), 1, "{b}");
+        assert!(b.contains("prod.example.com"), "{b}");
+    }
+
+    #[test]
+    fn a_url_without_userinfo_is_left_exactly_as_written() {
+        for url in [
+            "https://kb.example.com",
+            "https://kb.example.com:5601/base/path?q=1",
+            "http://localhost:5601",
+            "kb.example.com",
+            "",
+        ] {
+            let mut p = with_urls(url, None).profiles["default"].clone();
+            p.strip_userinfo();
+            assert_eq!(
+                p.kibana_url, url,
+                "unchanged input must stay byte-identical"
+            );
+        }
+    }
+
+    #[test]
+    fn an_at_sign_outside_the_authority_is_not_treated_as_userinfo() {
+        // A path or query may legitimately contain '@'; only the authority
+        // carries userinfo.
+        let mut p =
+            with_urls("https://kb.example.com/a@b?user=x@y", None).profiles["default"].clone();
+        p.strip_userinfo();
+        assert_eq!(p.kibana_url, "https://kb.example.com/a@b?user=x@y");
     }
 }
