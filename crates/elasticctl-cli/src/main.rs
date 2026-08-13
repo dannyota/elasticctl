@@ -8,7 +8,7 @@ mod render;
 mod resolve;
 
 use clap::Parser;
-use cli::{Cli, Command, ConfigAction, GlobalArgs, RulesAction};
+use cli::{Cli, Command, ConfigAction, GlobalArgs, RulesAction, StateAction};
 use context::Context;
 use elasticctl_api::rules::RuleFilter;
 use elasticctl_core::{Config, Error, ErrorKind};
@@ -124,6 +124,23 @@ async fn main() {
                 invocations,
             } => match Context::build(&args.global) {
                 Ok(ctx) => cmd::rules::preview(&ctx, source, *invocations).await,
+                Err(e) => Err(e),
+            },
+        },
+        Command::State { action } => match action {
+            StateAction::Pull { dir, format_file } => match parse_file_format(format_file) {
+                Ok(format) => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::state::pull(&ctx, dir, format).await,
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            StateAction::Diff { dir } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::state::diff(&ctx, dir).await,
+                Err(e) => Err(e),
+            },
+            StateAction::Push { dir, report } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::state::push(&ctx, dir, report.as_deref()).await,
                 Err(e) => Err(e),
             },
         },

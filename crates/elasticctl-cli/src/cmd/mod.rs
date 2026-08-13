@@ -4,3 +4,4 @@ pub mod config_cmd;
 pub mod doctor;
 pub mod info;
 pub mod rules;
+pub mod state;

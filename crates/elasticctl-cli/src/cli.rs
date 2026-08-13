@@ -117,6 +117,11 @@ pub enum Command {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// Manage rules as code
+    State {
+        #[command(subcommand)]
+        action: StateAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -174,6 +179,30 @@ pub enum RulesAction {
         /// Number of simulated rule executions
         #[arg(long, default_value = "1")]
         invocations: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StateAction {
+    /// Write live rules to a directory
+    Pull {
+        #[arg(long)]
+        dir: std::path::PathBuf,
+        #[arg(long = "format-file", default_value = "ndjson")]
+        format_file: String,
+    },
+    /// Show field-level drift between the directory and the stack
+    Diff {
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
+    /// Apply the directory's rules to the stack
+    Push {
+        #[arg(long)]
+        dir: std::path::PathBuf,
+        /// Write a change-evidence report
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
     },
 }
 
