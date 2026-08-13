@@ -4,8 +4,9 @@ on:
     branches: [master]
   pull_request:
   schedule:
-    # Weekly, Sunday 03:00 UTC. The live job only runs on schedule and on
-    # manual dispatch; the offline test job runs on every event.
+    # Weekly, Sunday 03:00 UTC. Advisories land against a dependency tree that
+    # has not changed, so the audit job needs a clock of its own — a repo with
+    # no commits this week is exactly the one nobody has checked.
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
@@ -25,39 +26,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  live:
+  # Software composition: what the 240-odd transitive crates carry with them.
+  # Advisories, licences, and duplicate/unvetted sources, all from deny.toml.
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # `./lab/up.sh` probes for a working compose provider. The runner ships
-      # Docker with the compose plugin, so nothing needs installing here —
-      # installing podman instead gives a binary whose socket is not running,
-      # and compose then fails with "Cannot connect to the Docker daemon".
-      # The lab is self-contained: its credentials are throwaway local values
-      # and its API key is generated at runtime, so no GitHub secret is needed.
-      - name: Show the compose provider
-        run: docker compose version
-      - name: Start the local lab
-        run: ./lab/up.sh
-      - name: Point the live suite at the lab
-        run: |
-          KEY=$(curl -sf -u elastic:elasticctl-lab -X POST http://localhost:9200/_security/api_key \
-            -H 'Content-Type: application/json' \
-            -d '{"name":"elasticctl-ci"}' \
-            | python3 -c 'import json,sys;print(json.load(sys.stdin)["encoded"])')
-          echo "ELASTICCTL_KIBANA_URL=http://localhost:5601" >> "$GITHUB_ENV"
-          echo "ELASTICCTL_ES_URL=http://localhost:9200" >> "$GITHUB_ENV"
-          echo "ELASTICCTL_API_KEY=$KEY" >> "$GITHUB_ENV"
-      # Seed prebuilt rules so the pull/diff test runs against real data
-      # rather than an empty stack, where a clean diff is vacuous.
-      - name: Install prebuilt rules
-        run: cargo xtask seed
-      - name: Run the live conformance suite
-        run: ELASTICCTL_LIVE=1 cargo test --workspace -- --ignored
-      - name: Tear down the lab
-        if: always()
-        run: ./lab/down.sh
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  # Fixtures are recorded from a live stack and committed to a public repo.
+  # A generic secret scanner does not catch what actually leaked here: a
+  # project hostname under `kibana.alert.url`, which is identity in a value
+  # rather than a credential in a key. This checks the shapes that matter.
+  fixture-leak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan recorded fixtures for identity and credentials
+        run: ./scripts/check-fixtures.sh

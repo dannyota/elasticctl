@@ -1,0 +1,51 @@
+# cargo-deny: what the dependency tree carries.
+#
+# `cargo test` proves our code; this proves everything under it. The tree is
+# ~240 crates deep behind reqwest, tokio, and serde, and an advisory lands
+# against a tree that has not changed — which is why CI runs this on a clock
+# as well as on every push.
+
+[advisories]
+# RustSec. Vulnerabilities always fail — cargo-deny 0.20 removed the knob that
+# let them warn, which is the right default. `unmaintained` is scoped to crates
+# this workspace depends on directly: a transitive crate someone stopped
+# tagging is a real signal but not a reason to block a release.
+yanked = "deny"
+unmaintained = "workspace"
+
+[licenses]
+# The binary is Apache-2.0. These are the permissive licences the Rust
+# ecosystem actually uses; anything outside the list is a deliberate decision,
+# not a default.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # option-ext, reached through directories -> dirs-sys, and the one crate in
+    # the tree offered under no other licence. MPL-2.0 is file-level copyleft:
+    # its terms attach to its own files, so linking it into an Apache-2.0
+    # binary is fine and only modifications to those files would have to be
+    # published. We vendor nothing and modify nothing. Allowed deliberately
+    # rather than by widening the list until the check passes.
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of the same crate is usually a transitive lag rather than a
+# fault, so it warns. A wildcard dependency is a supply-chain hole: it accepts
+# whatever the registry serves next.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io. A git or a private registry dependency is a decision that
+# should have to be argued for, not one that slips in.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
