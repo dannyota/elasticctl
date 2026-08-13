@@ -82,16 +82,30 @@ Knows nothing about detection rules.
   (`ELASTICCTL_*`) → profile → defaults. Returns the effective config *and its
   provenance*, so the guard banner can name which profile is about to be
   mutated.
+  Any `user:password@` prefix in `kibana_url` or `es_url` is stripped at
+  resolution and before a profile is written. Credentials come from `api_key`
+  or `username`/`password`; a URL has never been an authentication channel
+  here, and one carrying userinfo would surface in the guard banner and in
+  every `--debug` line.
 - **`auth`** — `ApiKey` (`Authorization: ApiKey <base64(id:key)>`) or `Basic`.
   API key is the default; basic auth exists for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
   on every non-GET request, `elastic-api-version` where required, and prefixes
   space-scoped paths as `/s/<space>/api/...`. Retries with backoff on 429 and
   5xx only, never on 4xx.
+  Under `--debug` it logs one line before each request is sent and one on every
+  outcome, including the timeout and connection-error branches — the cases an
+  operator reaches for `--debug` to see. Method, URL, and status only: never a
+  header, never a body.
 - **`capabilities`** — one probe at connect time reading `GET /api/status`.
-  Yields `Capabilities { flavor, version, license_tier, spaces }`. Commands
-  consult it and return a typed `Unsupported` error naming the flavor rather
-  than surfacing a confusing 404.
+  Yields `Capabilities { flavor, version }`. Commands consult it and return a
+  typed `Unsupported` error naming the flavor rather than surfacing a confusing
+  404. Spaces and licence tier are *not* part of that probe: they cost a request
+  each, and `doctor` and `config test` need neither. `info` probes them
+  directly — the space list from `GET /api/spaces/space`, the licence tier from
+  `GET /_license`, which does not exist on Serverless — and reports `null` for
+  either when it cannot be determined, rather than reporting a hardcoded value
+  that happens to be right on one flavor.
 - **`errors`** — `thiserror` enums classified at one point into the taxonomy
   below.
 
@@ -134,9 +148,9 @@ elasticctl rules validate --path FILE        Local schema check, no server conta
 elasticctl rules enable  <name|rule_id>...   [guarded]
 elasticctl rules disable <name|rule_id>...   [guarded]
 elasticctl rules delete  <name|rule_id>...   [guarded]
-elasticctl rules export --out FILE [--format-file ndjson|yaml]
-elasticctl rules import --path FILE [--overwrite]              [guarded]
-elasticctl rules preview <file|name|rule_id> Run a rule against history, no alerts written
+elasticctl rules export [<name|rule_id>...] [--tag TAG] [--out FILE] [--format-file ndjson|yaml]
+elasticctl rules import --path FILE [--overwrite | --skip-existing]  [guarded]
+elasticctl rules preview <file|name|rule_id> [--invocations N] [--sample N]
 
 elasticctl state pull --dir config/ [--format-file ndjson|yaml]
 elasticctl state diff --dir config/          Field-level structured drift
@@ -149,10 +163,22 @@ elasticctl commands                          Machine-readable command tree
 ### 4.1 Rule identity
 
 Engineers think in names; the API has `rule_id` (a stable UUID) and `id` (a
-volatile saved-object id). Commands accept either a name or a `rule_id`. Names
-resolve through `_find`; a non-unique name returns a typed `conflict` error
-listing the candidates rather than silently picking the first match. State
-matching is **always** by `rule_id` — never by name, never by `id`.
+volatile saved-object id). Commands accept either a name or a `rule_id`. A
+`rule_id` is tried first; only when that misses does a name lookup happen, and
+that lookup is a **single `_find` filtered server-side on
+`alert.attributes.name`**, never a walk of the whole space. Walking cost 8.8
+seconds against 2,066 rules just to report that nothing matched.
+
+The returned candidates are still matched exactly client-side, so a name is
+never resolved by prefix or substring, and a non-unique name returns a typed
+`conflict` error listing the candidates rather than silently picking the first
+match. The candidate page is capped at 100; a name with more candidates than
+that and no exact match reports that the search was capped rather than claiming
+the name does not exist. A selector that matches neither an id nor a name is
+reported as `No rule with rule_id or name '...'`, because reporting a missed
+`rule_id` as a missed *name* points the operator at the wrong thing.
+
+State matching is **always** by `rule_id` — never by name, never by `id`.
 
 ### 4.2 Global flags
 
@@ -160,10 +186,52 @@ Accepted before or after the subcommand: `--profile`, `--config`, `--space`,
 `--json`, `--format`, `--fields`, `--out`, `--yes`/`-y`, `--timeout`,
 `--debug`.
 
+### 4.3 Export selection
+
+`rules export` takes the same positional selectors as `enable`, `disable`, and
+`delete` — a name or a `rule_id`, resolved the same way — and a `--tag` filter.
+Given both, the union is exported. Given neither, the whole space is exported,
+which is the historical behaviour and stays the default.
+
+Selection is turned into the scoped export body `{"objects": [{"rule_id": ...}]}`
+rather than filtered client-side, so a subset export transfers only the subset.
+
+A selection that resolves to no rules is refused with `not_found` naming the
+selector. It is never widened to "export everything": an empty selection
+silently meaning "all" is the same failure mode an unscoped bulk action would
+be.
+
+A rule deleted between selection and export comes back in the export trailer's
+`missing_rules`. Those ids are reported as failures, so the command exits 1
+rather than reporting a short export as a success.
+
+### 4.4 Import conflict handling
+
+Re-importing rules that already exist is a per-rule 409 for every one of them
+and exit 1 — not a skip. Two flags resolve it, and they are mutually exclusive
+because they are opposite answers to the same question:
+
+- `--overwrite` replaces the existing rule.
+- `--skip-existing` leaves it alone and reports it as skipped.
+
+`--skip-existing` asks the server which of the file's `rule_id`s already exist,
+in chunks, before the guard runs. That is what makes the dry run honest: the
+preview names what would be created and what would be skipped, instead of
+listing every rule in the file as if it would import. Skipped rules are removed
+from the uploaded NDJSON and never affect the exit code — a rule the server was
+never asked to change is not a failure.
+
+The default is unchanged: without either flag, a conflict is a reported failure.
+
 ## 5. State engine
 
 - **`pull`** — page through `_find`, map to `Rule`, normalize, write the tree
-  in the requested format.
+  in the requested format. Filenames are planned for every rule before the
+  first file is written, so a `rule_id` pair that sanitises to one filename is
+  refused with `conflict` naming **every** colliding pair at once, and refused
+  before the directory is created. Reporting one collision per run hides the
+  second until a re-run, and writing files up to the collision leaves a mirror
+  that is neither the old state nor the new one.
 - **`diff`** — read local, fetch remote, normalize both, emit field-level
   drift. Because NDJSON lines are not readable by eye, `diff` is the human
   view; `git diff` is the fidelity record.
@@ -213,6 +281,19 @@ change.
 Table output by default, `--json` explicit — matching splunkctl rather than
 detecting a TTY, so a command behaves identically in a terminal and in a
 script.
+
+`--json` and `--format` govern how a command's *report* is rendered. They never
+reshape file content. `rules export` without `--out` has no report: its stdout
+**is** the exported rule file, emitted verbatim in whatever `--format-file`
+selected. Wrapping it — `{"ndjson": "..."}` — would make
+`elasticctl rules export --json > rules.ndjson` produce a file Kibana cannot
+import, so the raw body is the contract in that mode, under every value of
+`--format`.
+
+Identifiers that are not secrets but still identify a credential — the API key
+id `doctor` reads back from `_security/_authenticate`, for instance — are
+truncated in output when longer than twelve characters. The secret half is
+never printed at all.
 
 Failures emit one JSON object on stderr:
 
@@ -336,6 +417,41 @@ kibana:      {"statusCode":400,"error":"Bad Request","message":"..."}
 The edge proxy shape also appears for a hostname that no longer resolves to a
 live project, which is a realistic failure mode after a project rename.
 
+### 7.5 Preview results
+
+`POST /api/detection_engine/rules/preview` returns
+`{previewId, logs: [{errors, warnings}]}` and **no hit count**. A rule that
+matched four documents and a rule that matched none produce byte-identical
+responses; the only in-band signal is the `max_signals` warning, which fires
+only at 100 or more. That defeats the command for its main user, a detection
+engineer iterating on a query.
+
+The hits are therefore read back. The alerts a preview writes land in a
+per-space preview alerts index and are searched with the returned `previewId`:
+
+| Fact | Value | Status |
+|---|---|---|
+| Preview alerts index | `.preview.alerts-security.alerts-<space>` | **Unverified**; proved by the `rules_preview_hits` fixture |
+| Field carrying the preview id | `kibana.alert.rule.uuid` | **Unverified**; proved by the same fixture |
+| Readable with a project-scoped Elasticsearch API key | yes | **Unverified**; proved by the same fixture |
+| Visible to search when the preview response returns | assumed yes | **Unverified**; the fixture records which attempt saw the hits |
+
+The read is an Elasticsearch search rather than a Kibana route because the
+evaluation already recovered true hit counts from Elasticsearch with the same
+project-scoped key, so credential and transport are proven and only these
+names are open.
+
+Every simulated invocation has completed by the time the preview response
+returns — each has its own `logs` entry — so there is nothing to poll. The one
+remaining race is Elasticsearch's one-second default refresh interval, so a
+first search that sees zero hits is retried once after one second. A rule that
+matched pays nothing.
+
+A failed read degrades rather than fails: `hits` is `null`, `hits_error`
+carries the classified message, and the preview's own id, errors, and warnings
+are reported as before. Preview is a diagnostic; losing the count must not lose
+the run.
+
 ## 8. Testing
 
 | Tier | Runs | Covers |
@@ -350,6 +466,25 @@ records the flavor and stack version it came from so drift is visible.
 
 CI runs unit and fixture tiers on every push; the live tier runs on a schedule
 and before releases.
+
+### 8.1 Sample corpora
+
+Making a rule fire needs rules and events, and neither belongs in this
+repository. `samples/` holds scripts that fetch them on demand and never vendor
+them:
+
+- A slice of SigmaHQ/sigma Windows `process_creation` rules, converted to
+  importable Kibana NDJSON by `sigma-cli` with the `lucene` target and the
+  `ecs_windows` pipeline. Detection Rule License 1.1: redistribution requires
+  the per-rule `author`, a link to the rule set, and the licence text, which is
+  why the harness fetches rather than commits.
+- Three MIT-licensed OTRF Security-Datasets event sets. Their events use
+  pre-ECS Winlogbeat field names, so a remap and a timestamp rewrite run before
+  ingest — without them no rule can ever match.
+
+`sbousseaden/EVTX-ATTACK-SAMPLES` is excluded: the repository carries no
+licence at all. `elastic/detection-rules` content is Elastic License v2 and is
+never committed here.
 
 ## 9. Local lab
 
@@ -444,11 +579,17 @@ failures.
 
 One shared workspace version, so all three crates move together.
 
-Only the `elasticctl` binary publishes to crates.io. `elasticctl-core` and
-`elasticctl-api` are `publish = false`. Publishing them would make their Rust
-APIs a SemVer contract with real consumers, turning every internal refactor
-into a version event, and the boundaries are still moving. They can be
-published later; they cannot be un-published.
+All three crates are publishable and publish together with
+`cargo publish --workspace`, which packages and verifies every crate against a
+temporary registry before uploading any — a sequence that fails partway would
+otherwise strand a crate on crates.io, where a version can be yanked but never
+deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
+
+Publishing is nonetheless *deferred* while the tool is early: a release tags
+and builds GitHub Release binaries and skips crates.io. A tag costs nothing and
+a GitHub Release can be deleted; a crates.io version is forever. Publishing
+`elasticctl-core` and `elasticctl-api` makes their Rust APIs a real contract,
+and those boundaries are still moving.
 
 ## 12. Credentials in this repository
 
@@ -482,7 +623,11 @@ are unreachable here. `2023-10-31` is the only version this client needs.
 The command stays in 0.1.0 and off the trim line. It still needs confirmation
 against a self-managed stack in the fixture-recording session.
 
-**Empty project.** The serverless project currently holds zero rules, so
-`state pull` has nothing to read and `rules preview` has no data. The first
-implementation step installs a set of prebuilt Elastic rules and seeds sample
-events.
+**Empty project — resolved.** The serverless development project now holds
+2,066 prebuilt Elastic rules covering all seven rule types, seeded for scale
+testing. Measured against them: `state pull` writes 2,066 files in ~8.4 s, a
+second pull is byte-identical, `state diff` reports zero drift, and export
+round-trips every type exactly. They are read-only ground truth — a live test
+never mutates an untagged rule, every object it creates carries the
+`elasticctl-sample` marker, and a run ends by verifying the project is back to
+that baseline.
