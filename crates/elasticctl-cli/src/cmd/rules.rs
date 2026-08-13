@@ -137,7 +137,15 @@ pub async fn set_enabled(ctx: &Context, selectors: &[String], enabled: bool) -> 
         details,
     };
 
-    if !guard::check(ctx, &preview) {
+    // One function serves both `enable` and `disable`; the path passed to the
+    // guard is derived from the same `enabled` flag that already chose the
+    // verb, so the string cannot lie about which command is mutating.
+    let path = if enabled {
+        "rules enable"
+    } else {
+        "rules disable"
+    };
+    if !guard::check(ctx, path, &preview) {
         return Ok(json!({"applied": false, "total": targets.len()}));
     }
 
@@ -170,7 +178,7 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
             .collect(),
     };
 
-    if !guard::check(ctx, &preview) {
+    if !guard::check(ctx, "rules delete", &preview) {
         return Ok(json!({"applied": false, "total": targets.len()}));
     }
 
@@ -266,7 +274,7 @@ pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value
             .collect(),
     };
 
-    if !guard::check(ctx, &preview) {
+    if !guard::check(ctx, "rules import", &preview) {
         return Ok(json!({"applied": false, "total": rules.len()}));
     }
 

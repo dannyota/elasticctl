@@ -12,14 +12,25 @@ pub fn completion(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-/// Commands that change state — remote for the `rules`/`state` mutations,
-/// the local config file for `config init`. Keyed on the full command path
+/// Commands that mutate: remote for the `rules`/`state` mutations, the local
+/// config file for `config init`. Keyed on the full command path
 /// (`rules delete`, `state push`, ...), never the bare leaf name, so a future
 /// non-mutating `delete` or `import` under another group is not silently
-/// mislabeled. Kept as an explicit list rather than inferred, so adding a
-/// mutating command without declaring it here fails the exhaustive test in
-/// this module rather than shipping an unguarded mutation.
-const MUTATING: [&str; 6] = [
+/// mislabeled.
+///
+/// Two independent contracts keep this list honest:
+/// - `guard::check` asserts its caller is declared here, so a remote mutation
+///   that goes through the guard but was never declared fails its own tests
+///   rather than shipping `mutates: false`.
+/// - the exhaustive tree test in this module pins the declared set, so the
+///   list cannot silently grow.
+///
+/// What is *not* detected: a mutating command that neither calls the guard
+/// nor is declared here. `config init` is the one declared mutator that does
+/// not call the guard — it writes a local file, not the stack — so
+/// `guard ⊆ MUTATING` is the direction enforced: under-declaration, not
+/// over-declaration.
+pub(crate) const MUTATING: [&str; 6] = [
     "rules enable",
     "rules disable",
     "rules delete",

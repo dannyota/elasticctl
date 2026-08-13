@@ -1,6 +1,7 @@
 //! The dry-run contract. Nothing mutates a remote instance until the operator
 //! has seen what would change and passed --yes.
 
+use crate::cmd::meta::MUTATING;
 use crate::context::Context;
 use elasticctl_core::Resolved;
 
@@ -41,7 +42,21 @@ pub fn preview_text(preview: &Preview, resolved: &Resolved, applying: bool) -> S
 ///
 /// Writes to stderr, never stdout, so a dry-run preview never contaminates
 /// piped JSON output.
-pub fn check(ctx: &Context, preview: &Preview) -> bool {
+///
+/// Every remote mutation reaches the stack through here, so this is the one
+/// place that can enforce `guard ⊆ MUTATING`: a caller whose command path is
+/// not declared in `MUTATING` is an undeclared mutation, and fails loudly
+/// rather than shipping `mutates: false` in the command tree. `path` is the
+/// full command path exactly as `MUTATING` declares it (`"rules delete"`,
+/// `"state push"`, ...) — a string that only approximates it would make the
+/// assertion a lie.
+pub fn check(ctx: &Context, path: &'static str, preview: &Preview) -> bool {
+    assert!(
+        MUTATING.contains(&path),
+        "guard::check called from \"{path}\", which is not in MUTATING — \
+         a mutating command must be declared there or it ships mutates:false \
+         in the command tree"
+    );
     let applying = ctx.global.yes;
     eprint!("{}", preview_text(preview, &ctx.resolved, applying));
     applying
@@ -131,5 +146,37 @@ mod tests {
             );
             assert!(text.contains("prod.example.com"), "{text}");
         }
+    }
+
+    /// The guard must refuse to run for a command path it has not been told
+    /// is mutating: that is exactly the undeclared mutation that would
+    /// otherwise ship `mutates: false` in the command tree. A real `Context`
+    /// is built from a scratch config so the assertion is exercised through
+    /// `check`, not just the constant it reads.
+    #[test]
+    #[should_panic(expected = "rules touch")]
+    fn check_rejects_an_undeclared_mutating_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "current = \"test\"\n\n\
+             [profiles.test]\n\
+             kibana_url = \"https://kb.example.com\"\n\
+             space = \"default\"\n\
+             verify = true\n\
+             timeout_secs = 30\n",
+        )
+        .unwrap();
+        let global = crate::cli::GlobalArgs {
+            config: Some(config),
+            ..Default::default()
+        };
+        let ctx = crate::context::Context::build(&global).unwrap();
+        let preview = Preview {
+            action: "Touch 1 rule".into(),
+            details: vec![],
+        };
+        let _ = check(&ctx, "rules touch", &preview);
     }
 }

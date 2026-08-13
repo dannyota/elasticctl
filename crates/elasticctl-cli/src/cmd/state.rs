@@ -223,7 +223,7 @@ pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Resu
         details,
     };
 
-    let applying = guard::check(ctx, &preview);
+    let applying = guard::check(ctx, "state push", &preview);
 
     // Every actionable change gets an entry regardless of `applying`: the
     // report exists to record what was *proposed*, not only what was
