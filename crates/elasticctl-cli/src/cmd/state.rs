@@ -10,7 +10,7 @@ use elasticctl_api::report::{ChangeReport, ReportEntry};
 use elasticctl_api::rules as api;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn rules_dir(dir: &Path) -> PathBuf {
@@ -82,7 +82,59 @@ fn read_local(dir: &Path) -> Result<Vec<Rule>> {
 pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value> {
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
-    let remote = api::find_all(transport, &Default::default()).await?;
+    let mut remote = api::find_all(transport, &Default::default()).await?;
+    // Server order is not stable across calls; a collision report and the
+    // write order both have to be.
+    normalize::sort_rules(&mut remote);
+
+    let ext = match format {
+        FileFormat::Yaml => "yaml",
+        FileFormat::Ndjson => "ndjson",
+    };
+
+    // `safe_filename` closes path traversal by replacing every character
+    // outside [A-Za-z0-9_-] with `_`, and that replacement can map two
+    // distinct rule ids onto one filename ("a/b" and "a_b" both become
+    // "a_b"). An unnoticed collision silently drops a rule from the mirror
+    // while the pulled count keeps counting both.
+    //
+    // Plan every filename first. Refusing after the first write leaves a
+    // directory that is neither the old state nor the new one, and reporting
+    // one pair per run hides the second until a re-run.
+    let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+    let mut collisions: Vec<String> = Vec::new();
+    let mut planned: Vec<(String, Rule)> = Vec::with_capacity(remote.len());
+
+    for rule in &remote {
+        // Canonicalise before encoding: `serde_json` runs with
+        // `preserve_order`, so encoding a rule straight from the API would
+        // emit keys in response order and two pulls from an unchanged stack
+        // would not be byte-identical.
+        let canonical = normalize::canonical(rule);
+        let rule_id = canonical.rule_id()?.to_string();
+        let filename = safe_filename(&rule_id, ext);
+
+        match claimed.get(&filename) {
+            Some(other) => collisions.push(format!(
+                "\"{other}\" and \"{rule_id}\" both sanitise to \"{filename}\""
+            )),
+            None => {
+                claimed.insert(filename.clone(), rule_id);
+                planned.push((filename, canonical));
+            }
+        }
+    }
+
+    if !collisions.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "{} filename collision(s); rename one rule id in each pair: {}",
+                collisions.len(),
+                collisions.join("; ")
+            ),
+        ));
+    }
 
     let target = rules_dir(dir);
     std::fs::create_dir_all(&target).map_err(|e| {
@@ -92,51 +144,18 @@ pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value
         )
     })?;
 
-    let ext = match format {
-        FileFormat::Yaml => "yaml",
-        FileFormat::Ndjson => "ndjson",
-    };
-
-    let mut written = 0;
-    // `safe_filename` correctly closes path traversal by replacing every
-    // character outside `[A-Za-z0-9_-]` with `_`, but that same replacement
-    // can make two distinct rule ids collide on one filename (e.g. "a/b" and
-    // "a_b" both sanitise to "a_b"). An unnoticed collision would silently
-    // drop a rule from the local mirror while `written` kept counting both —
-    // the same class of authoring conflict `Drift::compute` already refuses
-    // to paper over for a duplicate `rule_id`, so it is refused here too.
-    let mut claimed: HashMap<String, String> = HashMap::new();
-    for rule in &remote {
-        // Canonicalise before encoding: `serde_json` runs with
-        // `preserve_order`, so encoding a rule straight from the API would
-        // emit keys in API response order rather than sorted order, and two
-        // pulls from an unchanged stack would not be byte-identical.
-        let canonical = normalize::canonical(rule);
-        let rule_id = canonical.rule_id()?.to_string();
-        let filename = safe_filename(&rule_id, ext);
-
-        if let Some(other_id) = claimed.get(&filename) {
-            return Err(Error::new(
-                ErrorKind::Conflict,
-                format!(
-                    "rule ids \"{other_id}\" and \"{rule_id}\" both sanitise to the filename \"{filename}\"; rename one of them"
-                ),
-            ));
-        }
-        claimed.insert(filename.clone(), rule_id.clone());
-
+    for (filename, canonical) in &planned {
         let body = match format {
-            FileFormat::Yaml => codec::encode_yaml(std::slice::from_ref(&canonical))?,
-            FileFormat::Ndjson => codec::encode_ndjson(std::slice::from_ref(&canonical))?,
+            FileFormat::Yaml => codec::encode_yaml(std::slice::from_ref(canonical))?,
+            FileFormat::Ndjson => codec::encode_ndjson(std::slice::from_ref(canonical))?,
         };
-        let path = target.join(&filename);
+        let path = target.join(filename);
         std::fs::write(&path, body).map_err(|e| {
             Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
         })?;
-        written += 1;
     }
 
-    Ok(json!({"pulled": written, "dir": target.display().to_string()}))
+    Ok(json!({"pulled": planned.len(), "dir": target.display().to_string()}))
 }
 
 pub async fn diff(ctx: &Context, dir: &Path) -> Result<Value> {

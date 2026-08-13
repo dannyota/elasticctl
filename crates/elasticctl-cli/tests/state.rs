@@ -96,6 +96,102 @@ async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename
     assert!(msg.contains("a_b"), "{msg}");
 }
 
+// Two colliding pairs, reported one per run, means two failed runs to learn
+// what one run could have said.
+#[tokio::test]
+async fn pull_reports_every_filename_collision_at_once() {
+    let server = server_with(vec![
+        remote_rule("a/b", 21),
+        remote_rule("a_b", 21),
+        remote_rule("c/d", 21),
+        remote_rule("c_d", 21),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stderr).expect("error envelope on stderr");
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert_eq!(v["error"]["kind"], "conflict");
+    for id in ["a/b", "a_b", "c/d", "c_d"] {
+        assert!(msg.contains(id), "every colliding id must be named: {msg}");
+    }
+}
+
+// A refused pull must leave nothing behind. A directory holding half a mirror
+// is neither the old state nor the new one, and `diff` would then report the
+// missing rules as drift.
+#[tokio::test]
+async fn a_refused_pull_writes_no_files_at_all() {
+    let server = server_with(vec![
+        remote_rule("z-written-first", 21),
+        remote_rule("a/b", 21),
+        remote_rule("a_b", 21),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !state.join("rules").exists(),
+        "a refused pull must not create the directory, let alone populate it"
+    );
+}
+
+// The report has to be the same on every run, or a reviewer cannot tell a
+// changed corpus from a reshuffled one.
+#[tokio::test]
+async fn the_collision_report_is_ordered_by_rule_id() {
+    let server = server_with(vec![
+        remote_rule("m_n", 21),
+        remote_rule("m/n", 21),
+        remote_rule("b/c", 21),
+        remote_rule("b_c", 21),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(dir.path().join("state"))
+        .output()
+        .unwrap();
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.find("b/c").unwrap() < msg.find("m/n").unwrap(),
+        "collisions must be reported in rule_id order: {msg}"
+    );
+}
+
 #[tokio::test]
 async fn pull_writes_distinct_files_when_sanitised_names_do_not_collide() {
     let server = server_with(vec![remote_rule("a.one", 21), remote_rule("b.two", 73)]).await;
