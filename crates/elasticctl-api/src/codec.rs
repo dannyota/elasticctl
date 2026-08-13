@@ -61,7 +61,13 @@ pub fn decode_ndjson(body: &str) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
             summary = serde_json::from_value(value).ok();
             continue;
         }
-        rules.push(Rule::from_value(value)?);
+        // Locate the fault the same way a malformed line already is: a
+        // 2,000-line export needs the line number, not just the reason.
+        rules.push(
+            Rule::from_value(value).map_err(|e| {
+                Error::new(ErrorKind::Error, format!("line {}: {}", i + 1, e.message))
+            })?,
+        );
     }
 
     Ok((rules, summary))
@@ -148,6 +154,25 @@ mod tests {
             "message must locate the fault: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn decode_ndjson_names_the_line_of_a_rule_it_rejects() {
+        let body = "{\"rule_id\":\"a\"}\n{\"name\":\"no id\"}\n";
+        let err = decode_ndjson(body).unwrap_err();
+        assert!(
+            err.message.contains("line 2"),
+            "message must locate the fault: {}",
+            err.message
+        );
+        assert!(err.message.contains("rule_id"), "{}", err.message);
+    }
+
+    #[test]
+    fn decode_ndjson_rejects_a_non_string_rule_id() {
+        let err = decode_ndjson("{\"rule_id\":7}\n").unwrap_err();
+        assert!(err.message.contains("line 1"), "{}", err.message);
+        assert!(err.message.contains("string"), "{}", err.message);
     }
 
     #[test]

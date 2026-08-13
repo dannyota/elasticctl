@@ -50,13 +50,13 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
 
 /// Local only. Never contacts a server, so it works offline and in CI.
 ///
-/// `codec::decode_yaml`/`decode_ndjson` only reject a rule that is missing
-/// its `rule_id` *key* — `Rule::from_value` does not check that the value is
-/// a string, so a hand-editing slip like an unquoted `rule_id: 123` decodes
-/// without error. `rule_id()` is what actually catches that, so every rule
-/// is re-checked here rather than trusting decode success to mean "usable".
-/// Every rule is checked, not just the first bad one, so a mixed file names
-/// every failing index at once instead of stopping at the first.
+/// Both codec paths now reject a rule whose `rule_id` is absent or not a
+/// string, naming the line or the index, so a file that decodes has usable
+/// identities. The per-rule check below is kept as defence — `Rule` can still
+/// be built through its derived `Deserialize`, which skips that validation —
+/// and because this loop also has to report which server defaults each rule
+/// would take on. Every rule is checked, not just the first bad one, so a
+/// mixed file names every failing index at once.
 pub fn validate(path: &Path) -> Result<Value> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
