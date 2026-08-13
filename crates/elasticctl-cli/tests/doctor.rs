@@ -5,7 +5,10 @@
 //! error envelope on stderr.
 
 use assert_cmd::Command;
+use serde_json::json;
 use std::fs;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
@@ -43,6 +46,54 @@ verify = true
 timeout_secs = 30
 "#,
     )
+}
+
+/// A config pointing the default profile at a mock stack.
+fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
+    write_config(
+        dir,
+        &format!(
+            r#"
+current = "default"
+
+[profiles.default]
+kibana_url = "{uri}"
+api_key = "essu_t"
+space = "default"
+verify = true
+timeout_secs = 5
+"#
+        ),
+    )
+}
+
+/// A mock stack serving just enough for `doctor` to reach the `auth` check:
+/// the status probe, the identity call, and an empty rules page.
+async fn doctor_server(username: &str, realm: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.6.0", "build_flavor": "serverless"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_security/_authenticate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "username": username,
+            "authentication_realm": {"type": realm}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [], "total": 0
+        })))
+        .mount(&server)
+        .await;
+    server
 }
 
 fn find_check<'a>(v: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
@@ -174,4 +225,31 @@ fn an_unrelated_command_still_fails_fast_on_a_bad_profile() {
         serde_json::from_slice(&out.stderr).expect("error envelope on stderr");
     assert_eq!(v["error"]["kind"], "not_found");
     assert!(v["error"]["message"].as_str().unwrap().contains("ghost"));
+}
+
+#[tokio::test]
+async fn doctor_does_not_print_the_full_api_key_id() {
+    let server = doctor_server("2XTe9p8BLjNicQlhfc9W", "_es_api_key").await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = bin()
+        .args(["doctor", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("2XTe9p8BLjNicQlhfc9W"),
+        "the full key id must not reach stdout: {text}"
+    );
+    assert!(
+        text.contains("2XTe9p..."),
+        "a truncated id must still identify the credential: {text}"
+    );
+    assert!(
+        text.contains("_es_api_key"),
+        "the realm is the useful signal and stays: {text}"
+    );
 }

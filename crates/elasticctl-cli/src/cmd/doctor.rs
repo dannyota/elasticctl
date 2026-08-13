@@ -40,6 +40,25 @@ fn key_scope_check(realm: &str) -> Value {
     }
 }
 
+/// Identities longer than this are truncated in output.
+///
+/// An API key authenticates as its own key id, so `auth` would otherwise print
+/// in full an identifier `config show` redacts. It is not the secret half, but
+/// it names the credential. A generated key id is twenty characters and always
+/// truncates; a human username is short and stays readable, which is what
+/// keeps the check worth reading.
+const MAX_IDENTITY_CHARS: usize = 12;
+
+fn short_identity(value: &str) -> String {
+    if value.chars().count() <= MAX_IDENTITY_CHARS {
+        return value.to_string();
+    }
+    // By characters, not bytes: a byte slice can split a multibyte character
+    // and panic.
+    let head: String = value.chars().take(6).collect();
+    format!("{head}...")
+}
+
 pub async fn run(global: &GlobalArgs) -> Result<Value> {
     let mut checks = Vec::new();
 
@@ -105,7 +124,11 @@ pub async fn run(global: &GlobalArgs) -> Result<Value> {
         // work. An organization key reads fine but cannot enable a rule.
         match identity(&ctx).await {
             Ok((username, realm)) => {
-                checks.push(check("auth", "ok", format!("{username} via {realm}")));
+                checks.push(check(
+                    "auth",
+                    "ok",
+                    format!("{} via {realm}", short_identity(&username)),
+                ));
                 checks.push(key_scope_check(&realm));
             }
             Err(e) => checks.push(check("auth", "fail", e.message)),
@@ -191,5 +214,35 @@ mod tests {
         let c = key_scope_check("unknown");
         assert_eq!(c["status"], "ok");
         assert!(c["message"].as_str().unwrap().contains("unknown"));
+    }
+
+    #[test]
+    fn a_key_id_is_truncated_in_the_auth_check() {
+        // The username an API key authenticates as *is* the key id. Not the
+        // secret half, but an identifier config show redacts, so it must not
+        // reach stdout in full.
+        let full = "2XTe9p8BLjNicQlhfc9W";
+        let short = short_identity(full);
+        assert_eq!(short, "2XTe9p...");
+        assert!(
+            !full.starts_with(&short),
+            "sanity: the id must be shortened"
+        );
+    }
+
+    #[test]
+    fn a_human_username_is_left_readable() {
+        // Truncating "elastic" to "elasti..." would make the check useless
+        // for the case it is most often read for.
+        assert_eq!(short_identity("elastic"), "elastic");
+        assert_eq!(short_identity("admin"), "admin");
+        assert_eq!(short_identity("unknown"), "unknown");
+    }
+
+    #[test]
+    fn truncation_never_splits_a_multibyte_character() {
+        let s = short_identity("ααααααααααααααααα");
+        assert!(s.ends_with("..."));
+        assert_eq!(s.chars().count(), 9);
     }
 }
