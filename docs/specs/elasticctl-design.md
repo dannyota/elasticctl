@@ -790,6 +790,13 @@ Name ownership does not reverse. All three names were unclaimed, and anyone can
 claim a name until it is taken. That cost cannot be recovered, unlike a bad
 version, which can still be yanked.
 
+Publishing runs *after* the tag, because it is the only irreversible step in a
+release. A tag and a GitHub Release can be deleted; a crates.io version can
+only be yanked, and yanking hides a version from resolution rather than
+removing it. Tagging first has the binary matrix prove the build while both the
+tag and the Release are still disposable, which is the check a release
+candidate used to buy separately.
+
 All three publish or none do. The binary crate depends on both libraries by
 version, so publishing it alone leaves `cargo install elasticctl` unable to
 resolve.

@@ -144,10 +144,17 @@ resolve.
 2. Add a dated entry to `CHANGELOG.md`.
 3. `cargo publish --workspace --dry-run` — confirm all three package and
    verify-compile.
-4. `cargo publish --workspace`.
-5. `git tag vX.Y.Z && git push --tags`. The tag triggers
+4. `git tag vX.Y.Z && git push --tags`. The tag triggers
    `.github/workflows/release.yml`, which builds the binary matrix and publishes
    the GitHub Release.
+5. Confirm the release carries a complete asset list.
+6. `cargo publish --workspace`, from the tagged commit.
+
+Publish last, because it is the only step that cannot be undone. A tag and a
+GitHub Release can be deleted; a crates.io version can only be yanked. Running
+the matrix first means a broken build costs a deleted tag rather than a
+permanent version, and it makes every release prove itself the way a release
+candidate would.
 
 Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
@@ -181,10 +188,18 @@ Otherwise, tag `-rc.1`, confirm its assets, install from it, then delete the
 release and tag before tagging for real.
 
 A release candidate costs a second full matrix build and four cleanup commands.
-Its value is testing an unproven matrix before the irreversible crates.io
-publish and final tag. Once a release has proved the unchanged matrix, repeating
-that test adds little protection. Test it again only after the target list
-changes.
+Once a release has proved an unchanged matrix, repeating that test adds little
+protection. Test it again only after the target list changes.
+
+What a candidate no longer has to insure against is the matrix itself, because
+step 4 now runs before step 6: the real tag proves the build while both the tag
+and the Release are still deletable. What it *can* insure, since 0.1.3, is the
+publish. A crates.io version is permanent — yanking hides it from resolution
+but never removes it — and `cargo install elasticctl` now has users to break.
+When a release changes packaging rather than the target list, `cargo publish`
+a `-rc.N` first: pre-release versions are ignored by a `^0.1` requirement and
+by `cargo install` unless asked for by name, so it is a real rehearsal rather
+than a permanent mistake.
 
 ## Development
 

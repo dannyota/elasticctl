@@ -195,9 +195,16 @@ crate-by-crate. A partial failure strands crates on crates.io, where versions
 can be yanked but not deleted. cargo-dist installs as `dist`; `cargo dist` does
 not resolve. `dist build --artifacts=host` builds only the host target.
 
+Tag before publishing. The tag and the GitHub Release are deletable; a
+crates.io version is not, so the irreversible step runs last and only after the
+matrix has produced a complete asset list.
+
 Cut an `-rc.N` tag only when the build matrix is unproven: it has never run, or
 its target list changed. Check the last release's assets first. A complete list
-means a candidate proves nothing. README "Releasing" explains why.
+means a candidate proves nothing. Since 0.1.3 a candidate can also be
+*published* — pre-release versions are ignored by `^0.1` and by
+`cargo install` — which is worth doing when a release changes packaging rather
+than targets. README "Releasing" explains why.
 
 ## Git
 
