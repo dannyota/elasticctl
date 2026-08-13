@@ -221,6 +221,92 @@ async fn export_without_out_bypasses_the_report_format_pipeline() {
     assert!(text.contains("rule_id"), "{text}");
 }
 
+/// `--json` governs how a command's *report* is rendered. `rules export`
+/// without `--out` has no report — its stdout is the file — so `--json` must
+/// not wrap it. Wrapping would make `rules export --json > rules.ndjson`
+/// produce a file Kibana cannot import.
+#[tokio::test]
+async fn export_without_out_emits_raw_ndjson_even_under_json() {
+    let server = exporting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.lines().count(), 2, "one line per rule: {text}");
+    for line in text.lines() {
+        let v: serde_json::Value =
+            serde_json::from_str(line).expect("every line must be one rule object");
+        assert!(v.get("rule_id").is_some(), "{line}");
+    }
+    assert!(
+        !text.contains("\"ndjson\""),
+        "the body must not be wrapped in an envelope: {text}"
+    );
+}
+
+/// The bytes must not depend on the report format at all.
+#[tokio::test]
+async fn export_to_stdout_is_identical_under_every_report_format() {
+    let server = exporting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let run = |extra: &[&str]| {
+        let mut cmd = Command::cargo_bin("elasticctl").unwrap();
+        cmd.args(["rules", "export", "--config"]).arg(&cfg);
+        cmd.args(extra);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let plain = run(&[]);
+    assert_eq!(plain, run(&["--json"]));
+    assert_eq!(plain, run(&["--format", "yaml"]));
+    assert_eq!(plain, run(&["--format", "csv"]));
+}
+
+/// `--format-file` is the flag that does own the on-disk shape, and it still
+/// does when the file goes to stdout.
+#[tokio::test]
+async fn export_to_stdout_honours_format_file_not_format() {
+    let server = exporting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules",
+            "export",
+            "--format-file",
+            "yaml",
+            "--json",
+            "--config",
+        ])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let rules = elasticctl_api::codec::decode_yaml(&text).expect("stdout must be the YAML file");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].rule_id().unwrap(), "a");
+}
+
 #[tokio::test]
 async fn import_is_guarded_and_sends_nothing_on_a_dry_run() {
     let server = MockServer::start().await;
