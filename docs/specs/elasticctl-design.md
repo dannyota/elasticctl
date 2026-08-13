@@ -606,11 +606,16 @@ Kibana both 9.5.1, on 2026-08-13. The full fixture set is recorded under
 | Error envelope | A 404 on a live deployment is Kibana's `{"statusCode","error","message"}`. The Cloud edge `{"ok":false,"message":...}` shape belongs to hostnames that do not resolve, not to live deployments |
 | Licence | `GET /_license` returns `type: "enterprise"`, unlike Serverless where the endpoint does not exist |
 
-The one half not yet measured is the negative: that a self-managed stack emits
-no `x-found-handling-cluster`. It follows from there being no Cloud proxy in
-front of one, and the fixture format now carries headers so the `lab/` stack
-can prove it, but until that recording exists it is an inference rather than a
-measurement.
+The negative half is measured too. `traditional-9.5.1`, recorded from the
+`lab/` stack on 2026-08-13, carries a `headers` object holding the headers that
+stack does send while `x-found-handling-cluster` is absent from it — so the
+header's absence is evidence rather than an assumption about there being no
+Cloud proxy in front of a self-managed deployment.
+
+That distinction is worth keeping: an absent `headers` key would mean "not
+recorded", which proves nothing. The classification test therefore requires the
+key on every fixture set, so a re-record that dropped it fails rather than
+quietly reverting this to an inference.
 
 ## 8. Testing
 
