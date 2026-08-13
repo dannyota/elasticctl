@@ -1,11 +1,12 @@
 //! The rules command group.
 
 use crate::context::Context;
+use crate::guard::{self, Preview};
 use crate::resolve;
 use elasticctl_api::codec::{self, Format as FileFormat};
 use elasticctl_api::model::{Rule, server_defaults};
 use elasticctl_api::normalize;
-use elasticctl_api::rules::{self as api, RuleFilter};
+use elasticctl_api::rules::{self as api, BulkAction, RuleFilter};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -101,4 +102,86 @@ pub fn validate(path: &Path) -> Result<Value> {
     }
 
     Ok(json!({"valid": true, "count": rules.len(), "rules": reports}))
+}
+
+/// Resolve every selector before previewing, so the preview reflects reality
+/// and an unresolvable selector fails before anything changes.
+async fn resolve_all(ctx: &Context, selectors: &[String]) -> Result<Vec<(String, Rule)>> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+
+    let mut out = Vec::new();
+    for s in selectors {
+        let rule_id = resolve::to_rule_id(ctx, s).await?;
+        let rule = api::get(transport, &rule_id).await?;
+        out.push((rule_id, rule));
+    }
+    Ok(out)
+}
+
+pub async fn set_enabled(ctx: &Context, selectors: &[String], enabled: bool) -> Result<Value> {
+    let targets = resolve_all(ctx, selectors).await?;
+    let verb = if enabled { "Enable" } else { "Disable" };
+
+    let details: Vec<String> = targets
+        .iter()
+        .map(|(id, r)| {
+            let from = if r.enabled() { "enabled" } else { "disabled" };
+            let to = if enabled { "enabled" } else { "disabled" };
+            format!("{id}  {}  {from} -> {to}", r.name())
+        })
+        .collect();
+
+    let preview = Preview {
+        action: format!("{verb} {} rule(s)", targets.len()),
+        details,
+    };
+
+    if !guard::check(ctx, &preview) {
+        return Ok(json!({"applied": false, "rules": targets.len()}));
+    }
+
+    let ids: Vec<String> = targets.iter().map(|(id, _)| id.clone()).collect();
+    let action = if enabled {
+        BulkAction::Enable
+    } else {
+        BulkAction::Disable
+    };
+    let transport = ctx.transport().await?;
+    let outcome = api::bulk_by_rule_ids(transport, action, &ids, false).await?;
+
+    Ok(json!({
+        "applied": true,
+        "succeeded": outcome.succeeded,
+        "failed": outcome.failed,
+        "skipped": outcome.skipped,
+        "total": outcome.total,
+    }))
+}
+
+pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
+    let targets = resolve_all(ctx, selectors).await?;
+
+    let preview = Preview {
+        action: format!("Delete {} rule(s)", targets.len()),
+        details: targets
+            .iter()
+            .map(|(id, r)| format!("{id}  {}", r.name()))
+            .collect(),
+    };
+
+    if !guard::check(ctx, &preview) {
+        return Ok(json!({"applied": false, "rules": targets.len()}));
+    }
+
+    // Delete one at a time so a partial failure reports exactly which rules
+    // survived, rather than a bulk summary that hides it.
+    let transport = ctx.transport().await?;
+    let mut deleted = Vec::new();
+    for (id, _) in &targets {
+        api::delete(transport, id).await?;
+        deleted.push(id.clone());
+    }
+
+    Ok(json!({"applied": true, "deleted": deleted, "total": deleted.len()}))
 }

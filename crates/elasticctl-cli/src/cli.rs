@@ -146,6 +146,12 @@ pub enum RulesAction {
         #[arg(long)]
         path: std::path::PathBuf,
     },
+    /// Enable one or more rules
+    Enable { selectors: Vec<String> },
+    /// Disable one or more rules
+    Disable { selectors: Vec<String> },
+    /// Delete one or more rules
+    Delete { selectors: Vec<String> },
 }
 
 #[derive(Debug, Subcommand)]

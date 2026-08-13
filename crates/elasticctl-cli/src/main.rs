@@ -82,6 +82,32 @@ async fn main() {
             // Local only: no Context is built, so this path cannot reach a
             // credential check, transport, or capability probe.
             RulesAction::Validate { path } => cmd::rules::validate(path),
+            // An empty selector list is refused before a context is even
+            // built, so an unscoped mutation can never be expressed.
+            RulesAction::Enable { selectors } if selectors.is_empty() => Err(Error::new(
+                ErrorKind::Error,
+                "Name at least one rule to enable",
+            )),
+            RulesAction::Enable { selectors } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::set_enabled(&ctx, selectors, true).await,
+                Err(e) => Err(e),
+            },
+            RulesAction::Disable { selectors } if selectors.is_empty() => Err(Error::new(
+                ErrorKind::Error,
+                "Name at least one rule to disable",
+            )),
+            RulesAction::Disable { selectors } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::set_enabled(&ctx, selectors, false).await,
+                Err(e) => Err(e),
+            },
+            RulesAction::Delete { selectors } if selectors.is_empty() => Err(Error::new(
+                ErrorKind::Error,
+                "Name at least one rule to delete",
+            )),
+            RulesAction::Delete { selectors } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::delete(&ctx, selectors).await,
+                Err(e) => Err(e),
+            },
         },
     };
 

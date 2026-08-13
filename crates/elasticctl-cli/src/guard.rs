@@ -4,11 +4,6 @@
 use crate::context::Context;
 use elasticctl_core::Resolved;
 
-// Not yet built by any command — wired in as commands adopt the guard in
-// later tasks. (Exercised directly by this module's tests in the meantime,
-// so `#[allow]` rather than `#[expect]`: the lint only fires in a plain
-// build, never in a test build.)
-#[allow(dead_code)]
 pub struct Preview {
     pub action: String,
     /// One line per affected object. Empty is allowed for actions that have
@@ -20,12 +15,10 @@ pub struct Preview {
 /// `Resolved::banner()` so there is exactly one place that decides how a
 /// target is described — a guard preview and any other reporting path must
 /// never show the operator two different descriptions of the same target.
-#[allow(dead_code)]
 pub fn banner(resolved: &Resolved) -> String {
     format!("({})", resolved.banner())
 }
 
-#[allow(dead_code)]
 pub fn preview_text(preview: &Preview, resolved: &Resolved, applying: bool) -> String {
     let tag = banner(resolved);
     let mut out = if applying {
@@ -48,7 +41,6 @@ pub fn preview_text(preview: &Preview, resolved: &Resolved, applying: bool) -> S
 ///
 /// Writes to stderr, never stdout, so a dry-run preview never contaminates
 /// piped JSON output.
-#[expect(dead_code)]
 pub fn check(ctx: &Context, preview: &Preview) -> bool {
     let applying = ctx.global.yes;
     eprint!("{}", preview_text(preview, &ctx.resolved, applying));

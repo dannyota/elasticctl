@@ -1,13 +1,10 @@
 //! Tripwire for the guard's highest-stakes contract: a dry-run preview must
 //! land on stderr, never stdout, or it corrupts piped JSON output on every
-//! dry run. `Context::build` needs a config file to exercise `guard::check`
-//! end-to-end, which makes a unit test awkward — this reads the module's own
-//! source instead and fails if the preview ever reaches for `print!`/
-//! `println!` outside its test module.
-//!
-//! This is an interim guard. A real end-to-end assertion on stdout-versus-
-//! stderr becomes possible once the first mutating command wires `check`
-//! into a live run (Task 14).
+//! dry run. This reads the module's own source and fails if the preview
+//! ever reaches for `print!`/`println!` outside its test module — a fast,
+//! static check that complements the real end-to-end assertion in
+//! `rules_mutate.rs`, which runs `rules disable` as a dry run through
+//! `assert_cmd` and checks stdout/stderr directly.
 
 use std::fs;
 use std::path::Path;
