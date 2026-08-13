@@ -294,3 +294,81 @@ pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value
         "total": total,
     }))
 }
+
+/// Preview a rule. The selector is a file path when one exists on disk,
+/// otherwise a rule_id or name on the stack — previewing an unpushed local
+/// rule is the main reason this command exists.
+pub async fn preview(ctx: &Context, source: &str, invocations: u32) -> Result<Value> {
+    // Previewing always ends in a POST to the server, whether the rule body
+    // comes from disk or from the stack, so check the credential up front —
+    // the same shape `get`/`list`/`export` use to fail with a message naming
+    // the profile, instead of the generic one `transport()` would give.
+    ctx.require_credential()?;
+    let path = Path::new(source);
+
+    let rule = if path.exists() {
+        let body = std::fs::read_to_string(path).map_err(|e| {
+            Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
+        })?;
+        let rules = match FileFormat::from_path(path) {
+            FileFormat::Yaml => codec::decode_yaml(&body)?,
+            FileFormat::Ndjson => codec::decode_ndjson(&body)?.0,
+        };
+        rules.into_iter().next().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Error,
+                format!("{} contains no rules", path.display()),
+            )
+        })?
+    } else {
+        let rule_id = resolve::to_rule_id(ctx, source).await?;
+        let transport = ctx.transport().await?;
+        api::get(transport, &rule_id).await?
+    };
+
+    // The API requires an explicit end of the window it simulates over.
+    let transport = ctx.transport().await?;
+    let timeframe_end = now_rfc3339();
+    let result = api::preview(transport, &rule, invocations, &timeframe_end).await?;
+
+    Ok(json!({
+        "rule": rule.name(),
+        "preview_id": result.preview_id,
+        "invocations": invocations,
+        "errors": result.errors,
+        "warnings": result.warnings,
+    }))
+}
+
+fn now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Formatted without pulling in a date library; the API accepts UTC ISO-8601.
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let (y, m, d) = civil_from_days(days as i64);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Howard Hinnant's days-from-civil inverse. Avoids a dependency for the one
+/// timestamp this command needs.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}

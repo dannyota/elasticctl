@@ -219,6 +219,63 @@ pub async fn import(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Valu
         .await
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PreviewResult {
+    pub preview_id: Option<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Run a rule against historical data without writing alerts.
+///
+/// `invocationCount` and `timeframeEnd` are required by the API. The response
+/// carries a `logs` array with one entry per simulated invocation, each with
+/// its own errors and warnings.
+pub async fn preview(
+    t: &Transport,
+    rule: &Rule,
+    invocation_count: u32,
+    timeframe_end: &str,
+) -> Result<PreviewResult> {
+    let mut body = rule.as_map().clone();
+    // The preview API rejects identity fields that belong to a saved rule.
+    for k in [
+        "rule_id",
+        "id",
+        "immutable",
+        "rule_source",
+        "revision",
+        "version",
+    ] {
+        body.remove(k);
+    }
+    body.insert("invocationCount".into(), json!(invocation_count));
+    body.insert("timeframeEnd".into(), json!(timeframe_end));
+
+    let response = t
+        .post(&format!("{BASE}/preview"), Some(&Value::Object(body)))
+        .await?;
+
+    let collect = |key: &str| -> Vec<String> {
+        response["logs"]
+            .as_array()
+            .map(|logs| {
+                logs.iter()
+                    .filter_map(|l| l.get(key)?.as_array())
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    Ok(PreviewResult {
+        preview_id: response["previewId"].as_str().map(str::to_owned),
+        errors: collect("errors"),
+        warnings: collect("warnings"),
+    })
+}
+
 /// Percent-encode a query-string value. Only the characters that actually
 /// break a URL are escaped, so recorded fixtures stay readable.
 fn urlencode(s: &str) -> String {

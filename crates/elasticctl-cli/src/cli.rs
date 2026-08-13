@@ -167,6 +167,14 @@ pub enum RulesAction {
         #[arg(long)]
         overwrite: bool,
     },
+    /// Run a rule against history without writing alerts
+    Preview {
+        /// A file path, rule_id, or rule name
+        source: String,
+        /// Number of simulated rule executions
+        #[arg(long, default_value = "1")]
+        invocations: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]

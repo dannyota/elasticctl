@@ -119,6 +119,13 @@ async fn main() {
                 Ok(ctx) => cmd::rules::import(&ctx, path, *overwrite).await,
                 Err(e) => Err(e),
             },
+            RulesAction::Preview {
+                source,
+                invocations,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::preview(&ctx, source, *invocations).await,
+                Err(e) => Err(e),
+            },
         },
     };
 
