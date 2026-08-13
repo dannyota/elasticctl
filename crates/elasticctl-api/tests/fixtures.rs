@@ -117,7 +117,7 @@ fn fixture_body(path: &Path) -> Value {
 }
 
 #[test]
-fn preview_hits_are_recorded_with_the_index_and_field_that_found_them() {
+fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field() {
     let sets = sets_with("rules_preview_hits.json");
     assert!(
         !sets.is_empty(),
@@ -132,18 +132,46 @@ fn preview_hits_are_recorded_with_the_index_and_field_that_found_them() {
             "{} recorded an unexpected preview index: {index}",
             set.display()
         );
-        assert!(
-            v["request"]["matched_by"].as_str().is_some(),
-            "{} must record which field matched",
+
+        // The production query hardcodes this field; a re-record that fell back
+        // to the name field would pass the live client by.
+        let matched_by = v["request"]["matched_by"]
+            .as_str()
+            .expect("request.matched_by");
+        assert_eq!(
+            matched_by,
+            "kibana.alert.rule.uuid",
+            "{}: production preview_hits queries this field; a fallback recording \
+             would no longer match the live client. Re-record.",
             set.display()
         );
-        let total = v["response"]["hits"]["total"]["value"]
-            .as_u64()
-            .expect("hits.total.value");
+
+        // Decode the recorded response the same way the live client does.
+        let hits = rules::decode_preview_hits(&v["response"]);
         assert!(
-            total >= 1,
+            hits.total >= 1,
             "{}: a recording with zero hits proves nothing — a wrong field name \
              looks exactly the same. Re-record.",
+            set.display()
+        );
+
+        // The document the search returned must actually carry the field the
+        // request matched on, and with the queried value, or the match is
+        // coincidence rather than evidence.
+        let carried = hits
+            .sample
+            .first()
+            .and_then(|s| s.get("_source"))
+            .and_then(|s| s.get(matched_by));
+        assert!(
+            carried.is_some(),
+            "{}: the returned document must carry the matched field {matched_by}",
+            set.display()
+        );
+        assert_eq!(
+            carried,
+            v["request"]["body"]["query"]["term"].get(matched_by),
+            "{}: the returned document's {matched_by} must equal the queried value",
             set.display()
         );
     }
