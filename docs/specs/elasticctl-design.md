@@ -199,7 +199,9 @@ rather than filtered client-side, so a subset export transfers only the subset.
 A selection that resolves to no rules is refused with `not_found` naming the
 selector. It is never widened to "export everything": an empty selection
 silently meaning "all" is the same failure mode an unscoped bulk action would
-be.
+be. A `--tag` that matches no rules is refused the same way, naming the tag,
+even when a selector also resolved: a typo'd tag otherwise disappears into the
+union and the command reports a short export as a success.
 
 A rule deleted between selection and export comes back in the export trailer's
 `missing_rules`. Those ids are reported as failures, so the command exits 1

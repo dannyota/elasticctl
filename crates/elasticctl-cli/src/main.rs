@@ -197,22 +197,25 @@ async fn main() {
             }
             // `rules export` without `--out` already produced the raw rule
             // file text (see cmd::rules::export) and returned it as the
-            // payload. That text is the content, not a report, so it must
-            // reach stdout untouched — `--format`/`--json` govern report
-            // rendering and must never re-encode exported rule content (CSV
-            // and table column derivation key off object fields, so
-            // re-encoding a plain string silently empties it).
+            // `text` field of its payload, alongside a `failed` report. The
+            // text is the content, not a report, so it must reach stdout
+            // untouched — `--format`/`--json` govern report rendering and must
+            // never re-encode exported rule content (CSV and table column
+            // derivation key off object fields, so re-encoding a plain string
+            // silently empties it). The `failed` half has nowhere to print
+            // without corrupting the file, so it decides the exit code and
+            // nothing more.
             let export_to_stdout = matches!(
                 &args.command,
                 Command::Rules {
                     action: RulesAction::Export { .. }
                 }
             ) && args.global.out.is_none();
-            if export_to_stdout && let Some(text) = value.as_str() {
+            if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
                 use std::io::Write;
                 print!("{text}");
                 std::io::stdout().flush().ok();
-                std::process::exit(0);
+                std::process::exit(render::exit_code_for_value(&value));
             }
             // `rules export --out <path>` already wrote the canonical file
             // itself (see cmd::rules::export) and returned a small

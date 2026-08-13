@@ -225,6 +225,9 @@ async fn export_selection(
         ids.push(resolve::to_rule_id(ctx, s).await?);
     }
 
+    // The tag's contribution is tracked separately: a tag that matched
+    // nothing must not disappear into a union that a selector rescued.
+    let mut tag_matched = false;
     if let Some(tag) = tag {
         let transport = ctx.transport().await?;
         let filter = RuleFilter {
@@ -232,6 +235,7 @@ async fn export_selection(
             ..Default::default()
         };
         for rule in api::find_all(transport, &filter).await? {
+            tag_matched = true;
             ids.push(rule.rule_id()?.to_string());
         }
     }
@@ -239,11 +243,29 @@ async fn export_selection(
     ids.sort();
     ids.dedup();
 
-    if ids.is_empty() {
-        let what = tag.map(|t| format!("tag '{t}'")).unwrap_or_default();
+    // A `--tag` that matched nothing is a miss worth reporting even when a
+    // selector resolved and rescued the union: a typo'd tag must not silently
+    // shrink the export. This is also the empty-selection refusal — with no
+    // selectors, the tag's zero matches leave `ids` empty.
+    if let Some(t) = tag
+        && !tag_matched
+    {
         return Err(Error::new(
             ErrorKind::NotFound,
-            format!("No rules matched {what}; nothing to export"),
+            format!("No rules matched tag '{t}'; nothing to export"),
+        ));
+    }
+
+    // Defensive: unreachable today — a selector either resolves or fails, and
+    // the whole-space case returned `Ok(None)` above — but the message must
+    // name what was asked for, not emit a blank selector.
+    if ids.is_empty() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "No rules matched the selector(s) '{}'; nothing to export",
+                selectors.join("', '")
+            ),
         ));
     }
     Ok(Some(ids))
@@ -299,10 +321,15 @@ pub async fn export(
             }))
         }
         // Without --out there is nowhere else for the content to go: return
-        // it as the payload. `main` recognizes this shape and writes the raw
-        // text to stdout, bypassing `--format`/`--json` so the exported file
-        // content is never re-encoded.
-        None => Ok(Value::String(text)),
+        // it alongside the same `failed` report the --out arm carries, so a
+        // short export still trips `exit_code_for_value`. `main` recognizes
+        // the `text` field, writes it raw to stdout (bypassing
+        // `--format`/`--json` so the exported file content is never
+        // re-encoded), and reads the exit code from the `failed` field.
+        None => Ok(json!({
+            "text": text,
+            "failed": missing,
+        })),
     }
 }
 

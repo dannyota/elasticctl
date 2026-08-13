@@ -620,6 +620,58 @@ async fn a_selection_matching_nothing_is_refused_not_widened() {
     );
 }
 
+/// A `--tag` that matched nothing must not disappear into a union that a
+/// selector rescued: it is refused with `not_found` naming the tag, so a
+/// one-rule export of the selector alone cannot pass as success.
+#[tokio::test]
+async fn a_tag_that_matched_nothing_is_refused_even_when_a_selector_resolved() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "a"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"rule_id": "a", "name": "Alpha"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 100, "total": 0, "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "a", "--tag", "no-such-tag", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(v["error"]["kind"], "not_found");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no-such-tag"),
+        "{v}"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().contains("_export")),
+        "nothing may be exported when the tag matched nothing"
+    );
+}
+
 /// A rule deleted between selection and export comes back as missing. A short
 /// export reported as a success is a silent partial failure.
 #[tokio::test]
@@ -661,6 +713,49 @@ async fn a_missing_rule_is_reported_as_a_failure() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["exported"], 0);
     assert_eq!(v["failed"][0]["rule_id"], "gone");
+}
+
+/// The `--out` arm reports `failed` on stdout; the stdout arm has no report
+/// to print (its stdout is the file), so a short export there must carry the
+/// failure in the exit code alone rather than exit 0.
+#[tokio::test]
+async fn a_short_export_to_stdout_exits_non_zero() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "gone"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"rule_id": "gone", "name": "Gone"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "{\"exported_count\":0,\"exported_rules_count\":0,\"missing_rules\":[{\"rule_id\":\"gone\"}],\"missing_rules_count\":1}\n",
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "gone", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a short export is not a success"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "stdout must stay the file content, not a report: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// Re-importing forty rules produced forty 409s and exit 1. A script could not
