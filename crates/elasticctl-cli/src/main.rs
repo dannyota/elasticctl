@@ -108,15 +108,32 @@ async fn main() {
                 Ok(ctx) => cmd::rules::delete(&ctx, selectors).await,
                 Err(e) => Err(e),
             },
-            RulesAction::Export { format_file } => match parse_file_format(format_file) {
+            RulesAction::Export {
+                selectors,
+                tag,
+                format_file,
+            } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
-                    Ok(ctx) => cmd::rules::export(&ctx, args.global.out.as_deref(), format).await,
+                    Ok(ctx) => {
+                        cmd::rules::export(
+                            &ctx,
+                            selectors,
+                            tag.as_deref(),
+                            args.global.out.as_deref(),
+                            format,
+                        )
+                        .await
+                    }
                     Err(e) => Err(e),
                 },
                 Err(e) => Err(e),
             },
-            RulesAction::Import { path, overwrite } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::rules::import(&ctx, path, *overwrite).await,
+            RulesAction::Import {
+                path,
+                overwrite,
+                skip_existing,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::import(&ctx, path, *overwrite, *skip_existing).await,
                 Err(e) => Err(e),
             },
             RulesAction::Preview {

@@ -152,6 +152,11 @@ pub struct ExportSummary {
     pub exported_rules_count: u64,
     #[serde(default)]
     pub missing_rules_count: u64,
+    /// The rules the server was asked for and did not export — deleted
+    /// between selection and export. Kept as raw values because the entries
+    /// are the server's, not ours to reshape.
+    #[serde(default)]
+    pub missing_rules: Vec<Value>,
 }
 
 #[cfg(test)]

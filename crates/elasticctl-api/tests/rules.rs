@@ -316,9 +316,93 @@ async fn export_separates_rules_from_the_trailer() {
         .mount(&server)
         .await;
 
-    let (rules, summary) = rules::export(&transport(&server)).await.unwrap();
+    let (rules, summary) = rules::export(&transport(&server), None).await.unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(summary.unwrap().exported_rules_count, 1);
+}
+
+#[tokio::test]
+async fn a_scoped_export_sends_the_objects_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .and(body_partial_json(
+            json!({"objects": [{"rule_id": "a"}, {"rule_id": "b"}]}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"a","name":"A"}"#,
+            "\n",
+            r#"{"exported_count":1,"exported_rules_count":1,"missing_rules":[{"rule_id":"b"}],"missing_rules_count":1}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let ids = vec!["a".to_string(), "b".to_string()];
+    let (rules, summary) = rules::export(&transport(&server), Some(&ids))
+        .await
+        .unwrap();
+    assert_eq!(rules.len(), 1);
+    let summary = summary.unwrap();
+    assert_eq!(summary.missing_rules_count, 1);
+    assert_eq!(summary.missing_rules[0]["rule_id"], "b");
+}
+
+/// The unscoped call must stay byte-identical: no body at all, exactly as
+/// before, or every existing export changes shape.
+#[tokio::test]
+async fn an_unscoped_export_sends_no_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "{\"exported_count\":0,\"exported_rules_count\":0,\"missing_rules_count\":0}\n",
+        ))
+        .mount(&server)
+        .await;
+
+    rules::export(&transport(&server), None).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].body.is_empty(),
+        "an unscoped export must post no body: {:?}",
+        String::from_utf8_lossy(&requests[0].body)
+    );
+}
+
+#[tokio::test]
+async fn existing_rule_ids_reports_only_the_ids_the_server_knows() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 3, "total": 1, "data": [rule_json("b")]
+        })))
+        .mount(&server)
+        .await;
+
+    let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let found = rules::existing_rule_ids(&transport(&server), &ids)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found.contains("b"));
+}
+
+#[tokio::test]
+async fn existing_rule_ids_sends_no_request_for_an_empty_list() {
+    let server = MockServer::start().await;
+    assert!(
+        rules::existing_rule_ids(&transport(&server), &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "an empty list must never become an unscoped find"
+    );
 }
 
 #[tokio::test]

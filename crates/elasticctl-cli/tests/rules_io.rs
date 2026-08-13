@@ -1,6 +1,7 @@
 use assert_cmd::Command;
+use serde_json::json;
 use std::fs;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
@@ -476,4 +477,379 @@ async fn a_partial_import_failure_exits_non_zero_and_names_the_failed_rule() {
     let failed = v["failed"].as_array().unwrap();
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0]["rule_id"], "b");
+}
+
+/// Exporting "my forty rules" meant exporting two thousand and filtering the
+/// NDJSON by hand.
+#[tokio::test]
+async fn export_scopes_the_request_to_the_named_selectors() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "a"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"rule_id": "a", "name": "Alpha"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .and(body_partial_json(json!({"objects": [{"rule_id": "a"}]})))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"a","name":"Alpha"}"#,
+            "\n",
+            r#"{"exported_count":1,"exported_rules_count":1,"missing_rules_count":0}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "a", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("\"rule_id\":\"a\""), "{text}");
+}
+
+#[tokio::test]
+async fn export_by_tag_resolves_the_tag_to_ids_first() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 100, "total": 2,
+            "data": [
+                {"rule_id": "a", "name": "Alpha", "tags": ["mine"]},
+                {"rule_id": "b", "name": "Beta", "tags": ["mine"]}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .and(body_partial_json(
+            json!({"objects": [{"rule_id": "a"}, {"rule_id": "b"}]}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"a","name":"Alpha"}"#,
+            "\n",
+            r#"{"rule_id":"b","name":"Beta"}"#,
+            "\n",
+            r#"{"exported_count":2,"exported_rules_count":2,"missing_rules_count":0}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "--tag", "mine", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
+}
+
+/// A tag matching nothing must never widen into "export everything". That is
+/// the same failure mode an unscoped bulk action would be.
+#[tokio::test]
+async fn a_selection_matching_nothing_is_refused_not_widened() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 100, "total": 0, "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules",
+            "export",
+            "--tag",
+            "nothing-has-this",
+            "--json",
+            "--config",
+        ])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(v["error"]["kind"], "not_found");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nothing-has-this"),
+        "{v}"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().contains("_export")),
+        "nothing may be exported when the selection is empty"
+    );
+}
+
+/// A rule deleted between selection and export comes back as missing. A short
+/// export reported as a success is a silent partial failure.
+#[tokio::test]
+async fn a_missing_rule_is_reported_as_a_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "gone"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"rule_id": "gone", "name": "Gone"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "{\"exported_count\":0,\"exported_rules_count\":0,\"missing_rules\":[{\"rule_id\":\"gone\"}],\"missing_rules_count\":1}\n",
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let f = dir.path().join("out.ndjson");
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "export", "gone", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--out")
+        .arg(&f)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a short export is not a success"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["exported"], 0);
+    assert_eq!(v["failed"][0]["rule_id"], "gone");
+}
+
+/// Re-importing forty rules produced forty 409s and exit 1. A script could not
+/// tell "already applied" from "actually broken".
+#[tokio::test]
+async fn skip_existing_uploads_only_the_new_rules() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 2, "total": 1,
+            "data": [{"rule_id": "a", "name": "A"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "success_count": 1, "rules_count": 1, "errors": []
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let src = dir.path().join("in.ndjson");
+    fs::write(
+        &src,
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n{\"rule_id\":\"b\",\"name\":\"B\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules",
+            "import",
+            "--skip-existing",
+            "--yes",
+            "--json",
+            "--config",
+        ])
+        .arg(&cfg)
+        .arg("--path")
+        .arg(&src)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "a skip is not a failure: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["succeeded"], 1);
+    assert_eq!(v["skipped"][0]["rule_id"], "a");
+    assert_eq!(v["total"], 2);
+    assert!(v["failed"].as_array().unwrap().is_empty());
+
+    let uploads: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().contains("_import"))
+        .collect();
+    let body = String::from_utf8_lossy(&uploads[0].body);
+    assert!(body.contains("\"rule_id\":\"b\""), "{body}");
+    assert!(
+        !body.contains("\"rule_id\":\"a\""),
+        "an existing rule must not be uploaded at all: {body}"
+    );
+}
+
+/// The dry run was client-side and listed every rule as if it would import,
+/// which is exactly the warning an operator needed and did not get.
+#[tokio::test]
+async fn the_skip_existing_dry_run_names_what_would_be_skipped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 2, "total": 1,
+            "data": [{"rule_id": "a", "name": "A"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let src = dir.path().join("in.ndjson");
+    fs::write(
+        &src,
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n{\"rule_id\":\"b\",\"name\":\"B\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "import", "--skip-existing", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--path")
+        .arg(&src)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("[DRY RUN]"), "{stderr}");
+    assert!(
+        stderr.contains("skip"),
+        "the preview must name the skip: {stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], false);
+    assert_eq!(v["pending"], 1);
+    assert_eq!(v["skipped"][0]["rule_id"], "a");
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().contains("_import")),
+        "a dry run must not upload"
+    );
+}
+
+#[tokio::test]
+async fn skip_existing_and_overwrite_cannot_be_combined() {
+    // Opposite answers to the same question.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), "http://127.0.0.1:1");
+    let src = dir.path().join("in.ndjson");
+    fs::write(
+        &src,
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "rules",
+            "import",
+            "--overwrite",
+            "--skip-existing",
+            "--config",
+        ])
+        .arg(&cfg)
+        .arg("--path")
+        .arg(&src)
+        .assert()
+        .code(2);
+}
+
+/// Without the flag, nothing changes: a conflict is still a reported failure
+/// and still exits 1.
+#[tokio::test]
+async fn the_default_import_still_reports_a_conflict_as_a_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": false, "success_count": 0, "rules_count": 1,
+            "errors": [{"rule_id": "a", "error": {"status_code": 409, "message": "already exists"}}]
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let src = dir.path().join("in.ndjson");
+    fs::write(
+        &src,
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "import", "--yes", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--path")
+        .arg(&src)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["failed"][0]["rule_id"], "a");
+    assert!(v["skipped"].as_array().unwrap().is_empty());
 }

@@ -164,8 +164,14 @@ pub enum RulesAction {
     Disable { selectors: Vec<String> },
     /// Delete one or more rules
     Delete { selectors: Vec<String> },
-    /// Export every rule to a file or stdout
+    /// Export rules to a file or stdout. Exports every rule unless selectors
+    /// or --tag narrow it.
     Export {
+        /// Rule ids or names to export. Omit to export every rule.
+        selectors: Vec<String>,
+        /// Export every rule carrying this tag, in addition to any selectors
+        #[arg(long)]
+        tag: Option<String>,
         /// File format: ndjson or yaml. Distinct from the global --format,
         /// which renders this command's own report, not the exported file.
         #[arg(long = "format-file", default_value = "ndjson")]
@@ -178,6 +184,9 @@ pub enum RulesAction {
         /// Replace rules that already exist
         #[arg(long)]
         overwrite: bool,
+        /// Leave rules that already exist alone instead of failing on them
+        #[arg(long, conflicts_with = "overwrite")]
+        skip_existing: bool,
     },
     /// Run a rule against history without writing alerts
     Preview {

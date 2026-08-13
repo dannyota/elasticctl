@@ -216,9 +216,67 @@ pub async fn bulk_by_rule_ids(
     })
 }
 
-pub async fn export(t: &Transport) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
-    let body = t.post_text(&format!("{BASE}/_export"), None).await?;
-    codec::decode_ndjson(&body)
+/// Export every rule, or exactly the named ones.
+///
+/// `None` posts no body at all, which is the whole-space export and is
+/// byte-identical to what it has always sent. `Some(ids)` posts the scoped
+/// `objects` form, so a subset export transfers the subset rather than
+/// everything followed by a local filter.
+pub async fn export(
+    t: &Transport,
+    rule_ids: Option<&[String]>,
+) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
+    let body = rule_ids.map(|ids| {
+        json!({
+            "objects": ids
+                .iter()
+                .map(|id| json!({"rule_id": id}))
+                .collect::<Vec<_>>()
+        })
+    });
+    let text = t
+        .post_text(&format!("{BASE}/_export"), body.as_ref())
+        .await?;
+    codec::decode_ndjson(&text)
+}
+
+/// How many ids to ask about in one `_find`. Large enough that a
+/// forty-rule corpus is a single request; small enough that a thousand-rule
+/// one cannot build a URL a proxy will reject.
+const EXISTENCE_CHUNK: usize = 50;
+
+/// Which of these rule ids already exist on the stack.
+///
+/// This is what makes an idempotent import possible: the file's ids are
+/// checked before anything is uploaded, so an existing rule can be skipped
+/// rather than becoming one of N conflict errors, and the dry run can say
+/// which is which instead of listing every rule as if it would import.
+pub async fn existing_rule_ids(
+    t: &Transport,
+    rule_ids: &[String],
+) -> Result<std::collections::BTreeSet<String>> {
+    // An empty list must never become an unscoped find — that would report
+    // every rule in the space as "existing".
+    let mut found = std::collections::BTreeSet::new();
+    if rule_ids.is_empty() {
+        return Ok(found);
+    }
+
+    for chunk in rule_ids.chunks(EXISTENCE_CHUNK) {
+        let path = format!(
+            "{BASE}/_find?page=1&per_page={}&filter={}",
+            chunk.len(),
+            urlencode(&rule_id_query(chunk))
+        );
+        let (rules, _) = decode_find(&t.get(&path).await?)?;
+        for r in rules {
+            if let Ok(id) = r.rule_id() {
+                found.insert(id.to_string());
+            }
+        }
+    }
+
+    Ok(found)
 }
 
 pub async fn import(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Value> {

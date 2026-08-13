@@ -205,21 +205,73 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
     }))
 }
 
-/// Fetch every rule, canonicalize it, and sort by rule_id. Two exports from
-/// an unchanged stack are byte-identical, which is what makes the file
-/// reviewable in version control.
+/// Turn selectors and a tag into the exact set of rule ids to export.
+///
+/// `None` means "the whole space" and is only ever produced by asking for
+/// nothing. An empty *selection* is refused instead: a tag that matches
+/// nothing quietly becoming "everything" is the same failure mode an unscoped
+/// bulk action would be.
+async fn export_selection(
+    ctx: &Context,
+    selectors: &[String],
+    tag: Option<&str>,
+) -> Result<Option<Vec<String>>> {
+    if selectors.is_empty() && tag.is_none() {
+        return Ok(None);
+    }
+
+    let mut ids: Vec<String> = Vec::new();
+    for s in selectors {
+        ids.push(resolve::to_rule_id(ctx, s).await?);
+    }
+
+    if let Some(tag) = tag {
+        let transport = ctx.transport().await?;
+        let filter = RuleFilter {
+            tag: Some(tag.to_string()),
+            ..Default::default()
+        };
+        for rule in api::find_all(transport, &filter).await? {
+            ids.push(rule.rule_id()?.to_string());
+        }
+    }
+
+    ids.sort();
+    ids.dedup();
+
+    if ids.is_empty() {
+        let what = tag.map(|t| format!("tag '{t}'")).unwrap_or_default();
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No rules matched {what}; nothing to export"),
+        ));
+    }
+    Ok(Some(ids))
+}
+
+/// Fetch the selected rules, canonicalize them, and sort by rule_id. Two
+/// exports from an unchanged stack are byte-identical, which is what makes the
+/// file reviewable in version control.
 ///
 /// The write happens here, directly, rather than through the generic render
 /// path: `--format`/`--json` govern how a command's *report* is rendered and
 /// must never reshape the exported rule file itself (`--format-file` owns
 /// that). When `out` is given, the file is written now and a small
-/// confirmation is returned in its place — `main` redirects that
-/// confirmation to stdout rather than letting it flow back through the same
-/// `--out` a second time, which would clobber the file just written.
-pub async fn export(ctx: &Context, out: Option<&Path>, format: FileFormat) -> Result<Value> {
+/// confirmation is returned in its place — `main` redirects that confirmation
+/// to stdout rather than letting it flow back through the same `--out` a
+/// second time, which would clobber the file just written.
+pub async fn export(
+    ctx: &Context,
+    selectors: &[String],
+    tag: Option<&str>,
+    out: Option<&Path>,
+    format: FileFormat,
+) -> Result<Value> {
     ctx.require_credential()?;
+    let selection = export_selection(ctx, selectors, tag).await?;
+
     let transport = ctx.transport().await?;
-    let (mut rules, _summary) = api::export(transport).await?;
+    let (mut rules, summary) = api::export(transport, selection.as_deref()).await?;
     for r in &mut rules {
         *r = normalize::canonical(r);
     }
@@ -230,12 +282,21 @@ pub async fn export(ctx: &Context, out: Option<&Path>, format: FileFormat) -> Re
         FileFormat::Ndjson => codec::encode_ndjson(&rules)?,
     };
 
+    // A rule the server was asked for and did not return was deleted between
+    // selection and export. Reporting a short export as a success would hide
+    // that; `failed` is the shape `render::exit_code_for_value` already reads.
+    let missing = summary.map(|s| s.missing_rules).unwrap_or_default();
+
     match out {
         Some(path) => {
             std::fs::write(path, &text).map_err(|e| {
                 Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
             })?;
-            Ok(json!({"exported": rules.len(), "path": path.display().to_string()}))
+            Ok(json!({
+                "exported": rules.len(),
+                "path": path.display().to_string(),
+                "failed": missing,
+            }))
         }
         // Without --out there is nowhere else for the content to go: return
         // it as the payload. `main` recognizes this shape and writes the raw
@@ -245,10 +306,19 @@ pub async fn export(ctx: &Context, out: Option<&Path>, format: FileFormat) -> Re
     }
 }
 
-/// Local file to server. Guarded: it mutates, so it previews from the file's
-/// own contents (no server round trip needed for that) and only uploads once
-/// `--yes` is passed.
-pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value> {
+/// Local file to server. Guarded: it mutates, so it previews before it
+/// uploads and only uploads once `--yes` is passed.
+///
+/// With `--skip-existing`, the server is asked which of the file's rule ids
+/// already exist *before* the preview runs. That is what makes the dry run
+/// honest — it previously listed every rule as if it would import, which is
+/// exactly the warning an operator re-running an import needed.
+pub async fn import(
+    ctx: &Context,
+    path: &Path,
+    overwrite: bool,
+    skip_existing: bool,
+) -> Result<Value> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
 
@@ -256,32 +326,85 @@ pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value
         FileFormat::Yaml => codec::decode_yaml(&body)?,
         FileFormat::Ndjson => codec::decode_ndjson(&body)?.0,
     };
+    let total = rules.len();
 
+    let mut skipped: Vec<Value> = Vec::new();
+    let mut to_upload = rules;
+
+    if skip_existing {
+        ctx.require_credential()?;
+        let transport = ctx.transport().await?;
+        let ids: Vec<String> = to_upload
+            .iter()
+            .filter_map(|r| r.rule_id().ok().map(str::to_owned))
+            .collect();
+        let existing = api::existing_rule_ids(transport, &ids).await?;
+
+        let mut keep = Vec::with_capacity(to_upload.len());
+        for rule in to_upload {
+            match rule.rule_id() {
+                Ok(id) if existing.contains(id) => {
+                    skipped.push(json!({"rule_id": id, "reason": "exists"}));
+                }
+                _ => keep.push(rule),
+            }
+        }
+        to_upload = keep;
+    }
+
+    let mut details: Vec<String> = to_upload
+        .iter()
+        .map(|r| format!("{}  {}  import", r.rule_id().unwrap_or(""), r.name()))
+        .collect();
+    details.extend(skipped.iter().map(|s| {
+        format!(
+            "{}  skip (already exists)",
+            s["rule_id"].as_str().unwrap_or("")
+        )
+    }));
+
+    let qualifier = if overwrite {
+        ", overwriting existing".to_string()
+    } else if skip_existing && !skipped.is_empty() {
+        format!(", skipping {} that already exist", skipped.len())
+    } else {
+        String::new()
+    };
     let preview = Preview {
         action: format!(
-            "Import {} rule(s) from {}{}",
-            rules.len(),
-            path.display(),
-            if overwrite {
-                ", overwriting existing"
-            } else {
-                ""
-            }
+            "Import {} rule(s) from {}{qualifier}",
+            to_upload.len(),
+            path.display()
         ),
-        details: rules
-            .iter()
-            .map(|r| format!("{}  {}", r.rule_id().unwrap_or(""), r.name()))
-            .collect(),
+        details,
     };
 
     if !guard::check(ctx, "rules import", &preview) {
-        return Ok(json!({"applied": false, "total": rules.len()}));
+        return Ok(json!({
+            "applied": false,
+            "total": total,
+            "skipped": skipped,
+            "pending": to_upload.len(),
+        }));
     }
 
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
+
+    // Every rule in the file already exists: there is nothing to upload, and
+    // posting an empty NDJSON would be a request that can only fail.
+    if to_upload.is_empty() {
+        return Ok(json!({
+            "applied": true,
+            "succeeded": 0,
+            "failed": [],
+            "skipped": skipped,
+            "total": total,
+        }));
+    }
+
     // Kibana's import takes NDJSON regardless of the source file's format.
-    let ndjson = codec::encode_ndjson(&rules)?;
+    let ndjson = codec::encode_ndjson(&to_upload)?;
     let response = api::import(transport, &ndjson, overwrite).await?;
 
     // Kibana reports success_count/rules_count/errors, not the
@@ -290,15 +413,12 @@ pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value
     // render::exit_code_for_value's existing convention instead of a new one.
     let succeeded = response.get("success_count").cloned().unwrap_or(json!(0));
     let failed = response.get("errors").cloned().unwrap_or_else(|| json!([]));
-    let total = response
-        .get("rules_count")
-        .cloned()
-        .unwrap_or_else(|| json!(rules.len()));
 
     Ok(json!({
         "applied": true,
         "succeeded": succeeded,
         "failed": failed,
+        "skipped": skipped,
         "total": total,
     }))
 }
