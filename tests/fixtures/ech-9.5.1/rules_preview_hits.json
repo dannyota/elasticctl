@@ -9,7 +9,7 @@
       "track_total_hits": true,
       "query": {
         "term": {
-          "kibana.alert.rule.uuid": "126b08e1-46e7-4bf2-bd5c-447a9c53bd86"
+          "kibana.alert.rule.uuid": "3447d755-2693-4d21-abff-93833cf9bb35"
         }
       },
       "sort": [
@@ -24,7 +24,7 @@
     "attempts_until_hits": 1
   },
   "response": {
-    "took": 2,
+    "took": 4,
     "timed_out": false,
     "_shards": {
       "total": 1,
@@ -41,12 +41,12 @@
       "hits": [
         {
           "_index": ".internal.preview.alerts-security.alerts-default-000001",
-          "_id": "a58ea5a54e674d134eaa1c903f969ee0591d58e576bbc9a381a53b12e934c874",
+          "_id": "7ab58cfbe595228b34db188ecf95ab1a07d5ae9cfe50343abb96d1e0d463b5a6",
           "_score": null,
           "_source": {
-            "kibana.alert.rule.execution.timestamp": "2026-08-13T14:04:02.660Z",
-            "kibana.alert.start": "2026-08-13T14:04:02.660Z",
-            "kibana.alert.last_detected": "2026-08-13T14:04:02.660Z",
+            "kibana.alert.rule.execution.timestamp": "2026-08-13T14:24:41.471Z",
+            "kibana.alert.start": "2026-08-13T14:24:41.471Z",
+            "kibana.alert.last_detected": "2026-08-13T14:24:41.471Z",
             "kibana.version": "9.5.1",
             "kibana.alert.rule.parameters": {
               "description": "Recorded by cargo xtask record. Safe to delete.",
@@ -55,7 +55,7 @@
               "author": [],
               "false_positives": [],
               "from": "now-6m",
-              "rule_id": "22eb8f83-495e-428d-932d-121903fa1c96",
+              "rule_id": "cbeebd88-0304-4dd5-96f5-38fb21b634ec",
               "max_signals": 100,
               "risk_score_mapping": [],
               "severity_mapping": [],
@@ -80,12 +80,12 @@
             },
             "kibana.alert.rule.category": "Custom Query Rule",
             "kibana.alert.rule.consumer": "siem",
-            "kibana.alert.rule.execution.uuid": "b71e992f-c3a8-4f56-b1cb-13d12368c187",
-            "kibana.alert.rule.name": "elasticctl fixture preview probe 1786629842487583058",
+            "kibana.alert.rule.execution.uuid": "98007304-54cb-44c8-b1b6-a262bfcdfc87",
+            "kibana.alert.rule.name": "elasticctl fixture preview probe 1786631081297956197",
             "kibana.alert.rule.producer": "preview-producer",
             "kibana.alert.rule.revision": 0,
             "kibana.alert.rule.rule_type_id": "siem.queryRule",
-            "kibana.alert.rule.uuid": "126b08e1-46e7-4bf2-bd5c-447a9c53bd86",
+            "kibana.alert.rule.uuid": "3447d755-2693-4d21-abff-93833cf9bb35",
             "kibana.space_ids": [
               "default"
             ],
@@ -122,7 +122,7 @@
             "kibana.alert.original_time": "2026-08-12T17:57:00.000Z",
             "kibana.alert.ancestors": [
               {
-                "id": "Zhpv-58BLqyYRQaF4hwM",
+                "id": "2xqC-58BLqyYRQaFyR57",
                 "type": "event",
                 "index": "elasticctl-sample-fixture",
                 "depth": 0
@@ -131,12 +131,12 @@
             "kibana.alert.status": "active",
             "kibana.alert.workflow_status": "open",
             "kibana.alert.depth": 1,
-            "kibana.alert.reason": "process event with process elasticctl-sample.exe, on elasticctl-sample-host created low alert elasticctl fixture preview probe 1786629842487583058.",
+            "kibana.alert.reason": "process event with process elasticctl-sample.exe, on elasticctl-sample-host created low alert elasticctl fixture preview probe 1786631081297956197.",
             "kibana.alert.severity": "low",
             "kibana.alert.risk_score": 21,
             "kibana.alert.rule.actions": [],
             "kibana.alert.rule.author": [],
-            "kibana.alert.rule.created_at": "2026-08-13T14:04:02.588Z",
+            "kibana.alert.rule.created_at": "2026-08-13T14:24:41.402Z",
             "kibana.alert.rule.created_by": "REDACTED",
             "kibana.alert.rule.description": "Recorded by cargo xtask record. Safe to delete.",
             "kibana.alert.rule.enabled": true,
@@ -151,16 +151,16 @@
             "kibana.alert.rule.max_signals": 100,
             "kibana.alert.rule.references": [],
             "kibana.alert.rule.risk_score_mapping": [],
-            "kibana.alert.rule.rule_id": "22eb8f83-495e-428d-932d-121903fa1c96",
+            "kibana.alert.rule.rule_id": "cbeebd88-0304-4dd5-96f5-38fb21b634ec",
             "kibana.alert.rule.severity_mapping": [],
             "kibana.alert.rule.threat": [],
             "kibana.alert.rule.to": "now",
             "kibana.alert.rule.type": "query",
-            "kibana.alert.rule.updated_at": "2026-08-13T14:04:02.588Z",
+            "kibana.alert.rule.updated_at": "2026-08-13T14:24:41.402Z",
             "kibana.alert.rule.updated_by": "REDACTED",
             "kibana.alert.rule.version": 1,
-            "kibana.alert.url": "https://REDACTED.example.invalid/app/security/alerts/redirect/a58ea5a54e674d134eaa1c903f969ee0591d58e576bbc9a381a53b12e934c874?index=.alerts-security.alerts-default&timestamp=2026-08-12T18:00:00.000Z",
-            "kibana.alert.uuid": "a58ea5a54e674d134eaa1c903f969ee0591d58e576bbc9a381a53b12e934c874",
+            "kibana.alert.url": "https://REDACTED.example.invalid/app/security/alerts/redirect/7ab58cfbe595228b34db188ecf95ab1a07d5ae9cfe50343abb96d1e0d463b5a6?index=.alerts-security.alerts-default&timestamp=2026-08-12T18:00:00.000Z",
+            "kibana.alert.uuid": "7ab58cfbe595228b34db188ecf95ab1a07d5ae9cfe50343abb96d1e0d463b5a6",
             "kibana.alert.workflow_tags": [],
             "kibana.alert.workflow_assignee_ids": [],
             "kibana.alert.rule.risk_score": 21,

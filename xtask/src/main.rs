@@ -5,6 +5,7 @@
 
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Anything that could carry a credential or the operator's identity is
@@ -171,10 +172,48 @@ fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
     elasticctl_core::Transport::new(&profile).expect("transport")
 }
 
-fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, mut body: Value) {
+fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, body: Value) {
+    write_fixture_inner(dir, name, flavor, version, body, None)
+}
+
+/// Like `write_fixture`, but also records which response headers were present.
+///
+/// Only the status fixture needs this: deployment flavor is not derivable from
+/// any response body, and the header that separates Hosted from self-managed is
+/// evidence a fixture has to carry or the detection path has nothing offline to
+/// test against.
+///
+/// Header *values* are redacted, not recorded. `x-found-handling-cluster`
+/// carries the deployment's cluster id, and these fixtures are public. The
+/// detection reads presence, never the value, so a redacted value proves
+/// exactly as much as the real one.
+fn write_fixture_with_headers(
+    dir: &PathBuf,
+    name: &str,
+    flavor: &str,
+    version: &str,
+    body: Value,
+    headers: &BTreeMap<String, String>,
+) {
+    let redacted: BTreeMap<&str, &str> = headers.keys().map(|k| (k.as_str(), "REDACTED")).collect();
+    write_fixture_inner(dir, name, flavor, version, body, Some(json!(redacted)))
+}
+
+fn write_fixture_inner(
+    dir: &PathBuf,
+    name: &str,
+    flavor: &str,
+    version: &str,
+    mut body: Value,
+    headers: Option<Value>,
+) {
     scrub(&mut body);
     scrub_hosts(&mut body, &recording_hosts());
-    let doc = json!({"flavor": flavor, "version": version, "operation": name, "response": body});
+    let mut doc =
+        json!({"flavor": flavor, "version": version, "operation": name, "response": body});
+    if let Some(h) = headers {
+        doc["headers"] = h;
+    }
     std::fs::create_dir_all(dir).expect("create fixture dir");
     let path = dir.join(format!("{name}.json"));
     std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("encode"))
@@ -391,7 +430,8 @@ async fn record_preview_hits(
 async fn record() {
     let t = transport_from_env(60);
 
-    let status = t.get("/api/status").await.expect("status");
+    let responded = t.get_with_headers("/api/status").await.expect("status");
+    let status = responded.body.clone();
     let version = status["version"]["number"]
         .as_str()
         .unwrap_or("unknown")
@@ -413,7 +453,14 @@ async fn record() {
         .join("tests/fixtures")
         .join(format!("{flavor}-{version}"));
 
-    write_fixture(&dir, "status", &flavor, &version, status);
+    write_fixture_with_headers(
+        &dir,
+        "status",
+        &flavor,
+        &version,
+        status,
+        &responded.headers,
+    );
 
     let auth = t
         .get_absolute_es("/_security/_authenticate")

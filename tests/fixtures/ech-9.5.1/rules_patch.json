@@ -29,15 +29,15 @@
     "setup": "",
     "related_integrations": [],
     "required_fields": [],
-    "id": "bd653017-552e-4e72-b798-8c26542d7ab3",
+    "id": "0962cff3-179d-414f-a8f6-dbc4b1f9e0b1",
     "rule_id": "elasticctl-fixture-probe",
     "immutable": false,
     "rule_source": {
       "type": "internal"
     },
-    "updated_at": "2026-08-13T14:03:55.217Z",
+    "updated_at": "2026-08-13T14:24:35.462Z",
     "updated_by": "REDACTED",
-    "created_at": "2026-08-13T14:03:55.217Z",
+    "created_at": "2026-08-13T14:24:35.462Z",
     "created_by": "REDACTED",
     "revision": 0,
     "type": "query",

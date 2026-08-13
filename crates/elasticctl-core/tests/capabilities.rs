@@ -17,14 +17,28 @@ fn profile_for(uri: &str) -> Profile {
 }
 
 async fn server_reporting(build_flavor: &str, number: &str) -> MockServer {
+    server_reporting_with_headers(build_flavor, number, &[]).await
+}
+
+/// A status server that also sends the given response headers, so the Cloud
+/// edge proxy can be reproduced offline.
+async fn server_reporting_with_headers(
+    build_flavor: &str,
+    number: &str,
+    headers: &[(&str, &str)],
+) -> MockServer {
     let server = MockServer::start().await;
+    let mut response = ResponseTemplate::new(200).set_body_json(json!({
+        "name": "kb",
+        "version": {"number": number, "build_flavor": build_flavor},
+        "status": {"overall": {"level": "available"}}
+    }));
+    for (name, value) in headers {
+        response = response.insert_header(*name, *value);
+    }
     Mock::given(method("GET"))
         .and(path("/api/status"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "name": "kb",
-            "version": {"number": number, "build_flavor": build_flavor},
-            "status": {"overall": {"level": "available"}}
-        })))
+        .respond_with(response)
         .mount(&server)
         .await;
     server
@@ -78,6 +92,114 @@ async fn a_missing_build_flavor_falls_back_to_self_managed() {
     let t = Transport::new(&p).unwrap();
     let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
     assert_eq!(caps.flavor, Flavor::SelfManaged);
+}
+
+/// The measurement this whole detection path exists for: Hosted reports the
+/// same `build_flavor` a self-managed stack reports, on a host carrying no
+/// Cloud suffix, and only the edge header separates them. Recorded in
+/// tests/fixtures/ech-9.5.1/status.json.
+#[tokio::test]
+async fn the_cloud_edge_header_makes_a_traditional_stack_ech() {
+    let server = server_reporting_with_headers(
+        "traditional",
+        "9.5.1",
+        &[("x-found-handling-cluster", "REDACTED")],
+    )
+    .await;
+    let p = profile_for(&server.uri()); // wiremock binds 127.0.0.1: no Cloud suffix
+    let t = Transport::new(&p).unwrap();
+    let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+    assert_eq!(caps.version, "9.5.1");
+}
+
+/// Serverless sits behind the same edge proxy and sends the same header.
+/// Testing the header before `build_flavor` would classify every Serverless
+/// project as Hosted, so the order is pinned here rather than left to review.
+#[tokio::test]
+async fn serverless_wins_over_the_edge_header() {
+    let server = server_reporting_with_headers(
+        "serverless",
+        "9.6.0",
+        &[("x-found-handling-cluster", "REDACTED")],
+    )
+    .await;
+    let p = profile_for(&server.uri());
+    let t = Transport::new(&p).unwrap();
+    let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
+    assert_eq!(caps.flavor, Flavor::Serverless);
+}
+
+/// Header names are case-insensitive, and the same proxy sends different
+/// casing on the Kibana and Elasticsearch endpoints.
+#[tokio::test]
+async fn the_edge_header_is_matched_regardless_of_casing() {
+    let server = server_reporting_with_headers(
+        "traditional",
+        "9.5.1",
+        &[("X-Found-Handling-Cluster", "REDACTED")],
+    )
+    .await;
+    let p = profile_for(&server.uri());
+    let t = Transport::new(&p).unwrap();
+    let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+/// Classification checked against the recorded evidence rather than against a
+/// mock built from the same assumption the code makes.
+///
+/// Each fixture set is named for the deployment it came from, so the directory
+/// name is the expected answer and `status.json` is the input. If a future
+/// re-record shows a stack reporting something new, this fails here rather
+/// than in the field.
+///
+/// One asymmetry is deliberate and worth knowing: `traditional-9.5.1` predates
+/// header recording, so its absent `headers` key means "not recorded", not
+/// "measured absent". It classifies correctly either way, but the negative half
+/// of the Hosted signal stays an inference until that set is re-recorded from
+/// the lab stack.
+#[test]
+fn every_recorded_status_classifies_as_the_flavor_it_came_from() {
+    use elasticctl_core::Capabilities;
+    use std::path::Path;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&root).expect("fixtures root") {
+        let dir = entry.expect("entry").path();
+        let status = dir.join("status.json");
+        if !status.is_file() {
+            continue;
+        }
+
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let expected = match name.split('-').next().unwrap() {
+            "serverless" => Flavor::Serverless,
+            "traditional" => Flavor::SelfManaged,
+            "ech" => Flavor::ElasticCloudHosted,
+            other => panic!("fixture set {other} has no expected flavor"),
+        };
+
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&status).expect("read status"))
+                .expect("status fixture is JSON");
+        let cloud_edge = doc
+            .get("headers")
+            .and_then(|h| h.get("x-found-handling-cluster"))
+            .is_some();
+
+        // A host with no Cloud suffix, so only the body and the header decide.
+        let caps = Capabilities::classify(&doc["response"], cloud_edge, "https://kibana.internal");
+        assert_eq!(caps.flavor, expected, "fixture set {name}");
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 3,
+        "expected all three flavors, checked {checked}"
+    );
 }
 
 #[tokio::test]

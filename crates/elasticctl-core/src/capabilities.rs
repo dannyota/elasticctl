@@ -3,14 +3,23 @@
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::transport::Transport;
+use serde_json::Value;
 
 /// Hostname suffixes used by Elastic Cloud Hosted deployments.
+///
+/// A fallback, not the primary signal — see `probe`. Kept for a deployment
+/// reached through a proxy that strips the Cloud edge headers, where the
+/// hostname is the only thing left to go on.
 const ECH_SUFFIXES: [&str; 4] = [
     "elastic-cloud.com",
     "found.io",
     "cloud.es.io",
     "elastic.cloud",
 ];
+
+/// Injected by the Elastic Cloud edge proxy. Present on Hosted and on
+/// Serverless, absent from a stack nothing proxies.
+const CLOUD_EDGE_HEADER: &str = "x-found-handling-cluster";
 
 /// Host portion of a URL: after the last `://`, before the first `/`, minus
 /// any `:port`. Matching the raw URL would let a suffix in a path or query
@@ -55,8 +64,27 @@ pub struct Capabilities {
 
 impl Capabilities {
     pub async fn probe(t: &Transport, kibana_url: &str) -> Result<Capabilities> {
-        let status = t.get("/api/status").await?;
+        let responded = t.get_with_headers("/api/status").await?;
+        Ok(Self::classify(
+            &responded.body,
+            responded.header(CLOUD_EDGE_HEADER).is_some(),
+            kibana_url,
+        ))
+    }
 
+    /// Flavor and version from one status response.
+    ///
+    /// Split out from `probe` so the decision can be tested against a recorded
+    /// fixture rather than only against a mock server — the fixtures are the
+    /// evidence that each flavor reports what this claims it does.
+    ///
+    /// The order of the tests is load-bearing. Elastic Cloud Hosted reports
+    /// `build_flavor: "traditional"`, exactly what a self-managed stack
+    /// reports, so the body alone cannot separate them and the edge header
+    /// must decide. Serverless sits behind that same edge proxy and carries
+    /// the same header, so testing the header first would classify every
+    /// Serverless project as Hosted.
+    pub fn classify(status: &Value, cloud_edge: bool, kibana_url: &str) -> Capabilities {
         let version = status["version"]["number"]
             .as_str()
             .unwrap_or("unknown")
@@ -65,18 +93,23 @@ impl Capabilities {
             .as_str()
             .unwrap_or("default");
 
+        // `||` short-circuits, so the header still decides before the hostname
+        // is ever examined — the fallback only runs for a deployment whose
+        // edge headers never arrived.
+        let cloud = cloud_edge
+            || ECH_SUFFIXES
+                .iter()
+                .any(|s| host_matches(host_of(kibana_url), s));
+
         let flavor = if build_flavor == "serverless" {
             Flavor::Serverless
-        } else if ECH_SUFFIXES
-            .iter()
-            .any(|s| host_matches(host_of(kibana_url), s))
-        {
+        } else if cloud {
             Flavor::ElasticCloudHosted
         } else {
             Flavor::SelfManaged
         };
 
-        Ok(Capabilities { flavor, version })
+        Capabilities { flavor, version }
     }
 
     /// Gate a feature on this deployment. The error names both the feature and

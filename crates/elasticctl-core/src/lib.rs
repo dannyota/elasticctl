@@ -10,4 +10,4 @@ pub use auth::Credential;
 pub use capabilities::{Capabilities, Flavor};
 pub use config::{Config, Overrides, Profile, Resolved, Source};
 pub use error::{Error, ErrorKind, Result};
-pub use transport::{Transport, urlencode};
+pub use transport::{Responded, Transport, urlencode};

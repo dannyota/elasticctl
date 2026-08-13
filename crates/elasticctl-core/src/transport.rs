@@ -6,11 +6,52 @@ use crate::config::Profile;
 use crate::error::{Error, ErrorKind, Result};
 use reqwest::{Client, Method, Response, StatusCode};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// The versioned public API contract this client is written against.
 const API_VERSION: &str = "2023-10-31";
 const MAX_ATTEMPTS: u32 = 3;
+
+/// Response headers worth carrying past the transport boundary.
+///
+/// An allowlist rather than "keep everything": these headers end up in
+/// recorded fixtures, and fixtures are public. Capturing the whole map would
+/// accumulate cookies, rate-limit counters, and whatever a proxy decides to
+/// add next, one upgrade away from committing something that should not be in
+/// the repository.
+///
+/// `x-found-handling-cluster` is the one the capability probe reads. The other
+/// two are captured because a recorded set that shows which Cloud headers were
+/// present is worth more than one that shows only the header we happened to
+/// need on the day.
+const CAPTURED_HEADERS: [&str; 3] = [
+    "x-found-handling-cluster",
+    "x-found-handling-instance",
+    "x-elastic-product",
+];
+
+/// A response body together with the captured subset of its headers.
+///
+/// Exists because deployment flavor is not derivable from any response body:
+/// Elastic Cloud Hosted and a self-managed stack report identical `/api/status`
+/// documents, and only an edge-proxy header separates them.
+#[derive(Debug, Clone)]
+pub struct Responded {
+    pub body: Value,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl Responded {
+    /// Header lookup by lowercase name. HTTP header names are
+    /// case-insensitive and the same Elastic proxy sends
+    /// `X-Found-Handling-Cluster` on one endpoint and
+    /// `x-found-handling-cluster` on another, so matching on the raw casing
+    /// would make detection depend on which host answered.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(&name.to_ascii_lowercase()).map(|s| &**s)
+    }
+}
 
 /// Percent-encode a query-string value. Only the characters that actually
 /// break a URL are escaped, so recorded fixtures and `--debug` lines stay
@@ -211,6 +252,38 @@ impl Transport {
 
     pub async fn get(&self, path: &str) -> Result<Value> {
         self.send_json(Method::GET, path, None).await
+    }
+
+    /// GET returning the body alongside the captured headers.
+    ///
+    /// Separate from `get` rather than replacing it: exactly one caller — the
+    /// capability probe — needs headers, and widening every endpoint wrapper's
+    /// return type to carry a map that nothing else reads would be a change
+    /// felt in every module for the benefit of one.
+    pub async fn get_with_headers(&self, path: &str) -> Result<Responded> {
+        let response = self.send(Method::GET, path, None).await?;
+
+        let mut headers = BTreeMap::new();
+        for name in CAPTURED_HEADERS {
+            if let Some(value) = response.headers().get(name)
+                && let Ok(text) = value.to_str()
+            {
+                headers.insert(name.to_string(), text.to_string());
+            }
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        let body = if text.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text)
+                .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))?
+        };
+
+        Ok(Responded { body, headers })
     }
 
     pub async fn post(&self, path: &str, body: Option<&Value>) -> Result<Value> {
