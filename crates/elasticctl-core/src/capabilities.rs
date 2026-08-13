@@ -51,10 +51,6 @@ impl Flavor {
 pub struct Capabilities {
     pub flavor: Flavor,
     pub version: String,
-    pub spaces: bool,
-    /// `None` on Serverless, which has no licence tiers — features gate on
-    /// project tier instead.
-    pub license_tier: Option<String>,
 }
 
 impl Capabilities {
@@ -80,12 +76,7 @@ impl Capabilities {
             Flavor::SelfManaged
         };
 
-        Ok(Capabilities {
-            flavor,
-            version,
-            spaces: true,
-            license_tier: None,
-        })
+        Ok(Capabilities { flavor, version })
     }
 
     /// Gate a feature on this deployment. The error names both the feature and
@@ -103,4 +94,37 @@ impl Capabilities {
             ),
         ))
     }
+}
+
+/// The ids of the spaces this credential can see, or `None` when the stack
+/// will not say.
+///
+/// Deliberately not part of `Capabilities::probe`: `doctor` and `config test`
+/// read capabilities and report neither a space list nor a licence tier, and
+/// neither should pay a round trip for a field it does not print. `None` means
+/// "could not determine" — never a fabricated list, which would read exactly
+/// like a probe result and is not one.
+pub async fn probe_spaces(t: &Transport) -> Option<Vec<String>> {
+    let body = t.get("/api/spaces/space").await.ok()?;
+    let spaces = body.as_array()?;
+    Some(
+        spaces
+            .iter()
+            .filter_map(|s| s.get("id")?.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+/// The licence tier, or `None` where there is not one to read.
+///
+/// Serverless has no licence tiers — features gate on project tier instead —
+/// so the endpoint is not called there at all. Anywhere else a failure is
+/// reported as unknown rather than as an error: a missing licence tier must
+/// not fail `info`.
+pub async fn probe_license_tier(t: &Transport, flavor: Flavor) -> Option<String> {
+    if flavor == Flavor::Serverless {
+        return None;
+    }
+    let body = t.get_absolute_es("/_license").await.ok()?;
+    body["license"]["type"].as_str().map(str::to_owned)
 }

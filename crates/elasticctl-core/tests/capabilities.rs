@@ -99,8 +99,6 @@ fn require_names_the_flavor_in_the_unsupported_error() {
     let caps = Capabilities {
         flavor: Flavor::Serverless,
         version: "9.6.0".into(),
-        spaces: true,
-        license_tier: None,
     };
     let err = caps.require("machine learning rules", false).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Unsupported);
@@ -117,8 +115,6 @@ fn require_passes_when_the_feature_is_supported() {
     let caps = Capabilities {
         flavor: Flavor::SelfManaged,
         version: "9.5.1".into(),
-        spaces: true,
-        license_tier: Some("platinum".into()),
     };
     assert!(caps.require("anything", true).is_ok());
 }
@@ -179,4 +175,78 @@ async fn lookalike_domain_is_not_misclassified() {
         .await
         .unwrap();
     assert_eq!(caps.flavor, Flavor::SelfManaged);
+}
+
+#[tokio::test]
+async fn probe_spaces_returns_the_ids() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/spaces/space"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "default", "name": "Default"},
+            {"id": "soc", "name": "SOC"}
+        ])))
+        .mount(&server)
+        .await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+
+    assert_eq!(
+        elasticctl_core::capabilities::probe_spaces(&t).await,
+        Some(vec!["default".to_string(), "soc".to_string()])
+    );
+}
+
+/// A stack that will not answer must report "unknown", never a fabricated
+/// list. `info` prints null, which is honest; printing the configured space
+/// would look like a probe result and is not one.
+#[tokio::test]
+async fn probe_spaces_returns_none_when_the_probe_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/spaces/space"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "nope"})))
+        .mount(&server)
+        .await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+
+    assert_eq!(elasticctl_core::capabilities::probe_spaces(&t).await, None);
+}
+
+#[tokio::test]
+async fn probe_license_tier_reads_the_license_type() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/_license"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "license": {"status": "active", "type": "trial"}
+        })))
+        .mount(&server)
+        .await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+
+    assert_eq!(
+        elasticctl_core::capabilities::probe_license_tier(&t, Flavor::SelfManaged).await,
+        Some("trial".to_string())
+    );
+}
+
+/// Serverless has no licence tiers — features gate on project tier — so the
+/// endpoint is not called at all rather than called and expected to fail.
+#[tokio::test]
+async fn probe_license_tier_does_not_call_the_endpoint_on_serverless() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/_license"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"license": {"type": "trial"}})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    let t = Transport::new(&profile_for(&server.uri())).unwrap();
+
+    assert_eq!(
+        elasticctl_core::capabilities::probe_license_tier(&t, Flavor::Serverless).await,
+        None
+    );
 }
