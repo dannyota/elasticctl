@@ -122,6 +122,13 @@ pub enum Command {
         #[command(subcommand)]
         action: StateAction,
     },
+    /// Generate a shell completion script
+    Completion {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Emit the command tree as JSON
+    Commands,
 }
 
 #[derive(Debug, Subcommand)]

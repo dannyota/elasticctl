@@ -12,7 +12,7 @@ use cli::{Cli, Command, ConfigAction, GlobalArgs, RulesAction, StateAction};
 use context::Context;
 use elasticctl_api::rules::RuleFilter;
 use elasticctl_core::{Config, Error, ErrorKind};
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[tokio::main]
 async fn main() {
@@ -144,14 +144,34 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
+        // completion writes its script straight to stdout — a shell script is
+        // text, not a typed value, so it is the one command that streams
+        // rather than returning a renderable payload. The Null placeholder is
+        // never rendered; the match on `result` below exits before rendering.
+        Command::Completion { shell } => cmd::meta::completion(*shell).map(|_| Value::Null),
+        Command::Commands => cmd::meta::command_tree(),
     };
 
-    if result.is_ok() && !matches!(&args.command, Command::Doctor) {
+    // The meta commands describe the CLI itself and never read a profile or
+    // config file, so a config permission warning is noise for them. Doctor is
+    // excluded because it folds the warning into its own report instead.
+    if result.is_ok()
+        && !matches!(
+            &args.command,
+            Command::Doctor | Command::Completion { .. } | Command::Commands
+        )
+    {
         emit_permission_warning(&args.global);
     }
 
     match result {
         Ok(value) => {
+            // completion already streamed its script to stdout; the Null
+            // placeholder is never rendered, or it would land on top of the
+            // script and corrupt it.
+            if matches!(&args.command, Command::Completion { .. }) {
+                std::process::exit(0);
+            }
             // `rules export --out <path>` already wrote the canonical file
             // itself (see cmd::rules::export) and returned a small
             // confirmation in its place. Rendering that confirmation through
