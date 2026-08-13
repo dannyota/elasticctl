@@ -53,6 +53,49 @@ fn is_sensitive(key: &str) -> bool {
         )
 }
 
+/// The stack this recording came from, as bare hostnames.
+///
+/// Read from the environment rather than threaded through, because every write
+/// path needs them and the recorder only ever talks to one stack per run.
+fn recording_hosts() -> Vec<String> {
+    [
+        "ELASTICCTL_KIBANA_URL",
+        "ELASTICCTL_ES_URL",
+        "ELASTICCTL_INGEST_URL",
+    ]
+    .iter()
+    .filter_map(|k| std::env::var(k).ok())
+    .filter_map(|u| {
+        let rest = u.split("://").nth(1).unwrap_or(&u).to_string();
+        let host = rest.split(['/', '?', '#']).next().unwrap_or("").to_string();
+        (!host.is_empty()).then_some(host)
+    })
+    .collect()
+}
+
+/// Replace the recording stack's hostname anywhere it appears in a value.
+///
+/// `is_sensitive` is a key allowlist, and an alert document puts the project's
+/// URL under `kibana.alert.url` — a key no allowlist would think to name,
+/// carrying identity in the *value*. Any recorded string can carry the host, so
+/// the sweep is over values and runs on every fixture. The path is kept so the
+/// document's shape still reads true; only the host that names the owner's
+/// project goes.
+fn scrub_hosts(v: &mut Value, hosts: &[String]) {
+    match v {
+        Value::String(s) => {
+            for h in hosts {
+                if s.contains(h.as_str()) {
+                    *s = s.replace(h.as_str(), "REDACTED.example.invalid");
+                }
+            }
+        }
+        Value::Object(m) => m.values_mut().for_each(|x| scrub_hosts(x, hosts)),
+        Value::Array(a) => a.iter_mut().for_each(|x| scrub_hosts(x, hosts)),
+        _ => {}
+    }
+}
+
 /// Redact a sensitive value without changing its type: a string becomes
 /// "REDACTED", a container keeps its shape with every leaf redacted, and null
 /// stays null — a null `full_name`/`email` is an absence, not a secret. An
@@ -130,6 +173,7 @@ fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
 
 fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, mut body: Value) {
     scrub(&mut body);
+    scrub_hosts(&mut body, &recording_hosts());
     let doc = json!({"flavor": flavor, "version": version, "operation": name, "response": body});
     std::fs::create_dir_all(dir).expect("create fixture dir");
     let path = dir.join(format!("{name}.json"));
@@ -148,10 +192,15 @@ fn write_exchange(
     name: &str,
     flavor: &str,
     version: &str,
-    request: Value,
+    mut request: Value,
     mut body: Value,
 ) {
     scrub(&mut body);
+    let hosts = recording_hosts();
+    // The request is swept too: it embeds the index and query the recorder
+    // built, and an absolute ES URL would carry the host.
+    scrub_hosts(&mut request, &hosts);
+    scrub_hosts(&mut body, &hosts);
     let doc = json!({
         "flavor": flavor,
         "version": version,
