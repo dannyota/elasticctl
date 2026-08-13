@@ -196,3 +196,101 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
         "total": targets.len(),
     }))
 }
+
+/// Fetch every rule, canonicalize it, and sort by rule_id. Two exports from
+/// an unchanged stack are byte-identical, which is what makes the file
+/// reviewable in version control.
+///
+/// The write happens here, directly, rather than through the generic render
+/// path: `--format`/`--json` govern how a command's *report* is rendered and
+/// must never reshape the exported rule file itself (`--format-file` owns
+/// that). When `out` is given, the file is written now and a small
+/// confirmation is returned in its place — `main` redirects that
+/// confirmation to stdout rather than letting it flow back through the same
+/// `--out` a second time, which would clobber the file just written.
+pub async fn export(ctx: &Context, out: Option<&Path>, format: FileFormat) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let (mut rules, _summary) = api::export(transport).await?;
+    for r in &mut rules {
+        *r = normalize::canonical(r);
+    }
+    normalize::sort_rules(&mut rules);
+
+    let text = match format {
+        FileFormat::Yaml => codec::encode_yaml(&rules)?,
+        FileFormat::Ndjson => codec::encode_ndjson(&rules)?,
+    };
+
+    match out {
+        Some(path) => {
+            std::fs::write(path, &text).map_err(|e| {
+                Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+            })?;
+            Ok(json!({"exported": rules.len(), "path": path.display().to_string()}))
+        }
+        // Without --out there is nowhere else for the content to go: return
+        // it as the payload so the normal render path prints it — raw under
+        // the default table format, JSON-quoted under --json, which is the
+        // correct representation of file content inside a JSON document.
+        None => Ok(Value::String(text)),
+    }
+}
+
+/// Local file to server. Guarded: it mutates, so it previews from the file's
+/// own contents (no server round trip needed for that) and only uploads once
+/// `--yes` is passed.
+pub async fn import(ctx: &Context, path: &Path, overwrite: bool) -> Result<Value> {
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
+
+    let rules = match FileFormat::from_path(path) {
+        FileFormat::Yaml => codec::decode_yaml(&body)?,
+        FileFormat::Ndjson => codec::decode_ndjson(&body)?.0,
+    };
+
+    let preview = Preview {
+        action: format!(
+            "Import {} rule(s) from {}{}",
+            rules.len(),
+            path.display(),
+            if overwrite {
+                ", overwriting existing"
+            } else {
+                ""
+            }
+        ),
+        details: rules
+            .iter()
+            .map(|r| format!("{}  {}", r.rule_id().unwrap_or(""), r.name()))
+            .collect(),
+    };
+
+    if !guard::check(ctx, &preview) {
+        return Ok(json!({"applied": false, "total": rules.len()}));
+    }
+
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    // Kibana's import takes NDJSON regardless of the source file's format.
+    let ndjson = codec::encode_ndjson(&rules)?;
+    let response = api::import(transport, &ndjson, overwrite).await?;
+
+    // Kibana reports success_count/rules_count/errors, not the
+    // succeeded/failed/total shape the bulk-action endpoint uses. Translate
+    // onto that same shared shape so a partial failure trips
+    // render::exit_code_for_value's existing convention instead of a new one.
+    let succeeded = response.get("success_count").cloned().unwrap_or(json!(0));
+    let failed = response.get("errors").cloned().unwrap_or_else(|| json!([]));
+    let total = response
+        .get("rules_count")
+        .cloned()
+        .unwrap_or_else(|| json!(rules.len()));
+
+    Ok(json!({
+        "applied": true,
+        "succeeded": succeeded,
+        "failed": failed,
+        "total": total,
+    }))
+}

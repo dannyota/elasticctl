@@ -152,6 +152,21 @@ pub enum RulesAction {
     Disable { selectors: Vec<String> },
     /// Delete one or more rules
     Delete { selectors: Vec<String> },
+    /// Export every rule to a file or stdout
+    Export {
+        /// File format: ndjson or yaml. Distinct from the global --format,
+        /// which renders this command's own report, not the exported file.
+        #[arg(long = "format-file", default_value = "ndjson")]
+        format_file: String,
+    },
+    /// Import rules from a file
+    Import {
+        #[arg(long)]
+        path: std::path::PathBuf,
+        /// Replace rules that already exist
+        #[arg(long)]
+        overwrite: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

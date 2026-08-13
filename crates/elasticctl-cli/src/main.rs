@@ -108,6 +108,17 @@ async fn main() {
                 Ok(ctx) => cmd::rules::delete(&ctx, selectors).await,
                 Err(e) => Err(e),
             },
+            RulesAction::Export { format_file } => match parse_file_format(format_file) {
+                Ok(format) => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::rules::export(&ctx, args.global.out.as_deref(), format).await,
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            RulesAction::Import { path, overwrite } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::import(&ctx, path, *overwrite).await,
+                Err(e) => Err(e),
+            },
         },
     };
 
@@ -116,26 +127,64 @@ async fn main() {
     }
 
     match result {
-        Ok(value) => match render::emit(&value, &args.global) {
-            // The operator needs the report more than the code: render the
-            // payload first, and only then act on a partial failure it
-            // reports internally (e.g. `rules delete` naming which rules
-            // survived a per-rule error).
-            Ok(()) => {
-                let code = render::exit_code_for_value(&value);
-                if code != 0 {
-                    std::process::exit(code);
+        Ok(value) => {
+            // `rules export --out <path>` already wrote the canonical file
+            // itself (see cmd::rules::export) and returned a small
+            // confirmation in its place. Rendering that confirmation through
+            // the normal --out path a second time would re-encode it under
+            // --format and clobber the file just written, so it always goes
+            // to stdout instead.
+            let out_already_written = matches!(
+                &args.command,
+                Command::Rules {
+                    action: RulesAction::Export { .. }
+                }
+            ) && args.global.out.is_some();
+            let render_global = if out_already_written {
+                GlobalArgs {
+                    out: None,
+                    ..args.global.clone()
+                }
+            } else {
+                args.global.clone()
+            };
+
+            match render::emit(&value, &render_global) {
+                // The operator needs the report more than the code: render
+                // the payload first, and only then act on a partial failure
+                // it reports internally (e.g. `rules delete` naming which
+                // rules survived a per-rule error).
+                Ok(()) => {
+                    let code = render::exit_code_for_value(&value);
+                    if code != 0 {
+                        std::process::exit(code);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", e.to_envelope());
+                    std::process::exit(render::exit_code_for(&e));
                 }
             }
-            Err(e) => {
-                eprintln!("{}", e.to_envelope());
-                std::process::exit(render::exit_code_for(&e));
-            }
-        },
+        }
         Err(err) => {
             eprintln!("{}", err.to_envelope());
             std::process::exit(render::exit_code_for(&err));
         }
+    }
+}
+
+/// `--format-file` selects the on-disk shape of an exported/imported rule
+/// file. Kept distinct from the global `--format`, which renders a
+/// command's *report* — the two must never be confused.
+fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
+    use elasticctl_api::codec::Format;
+    match s.to_ascii_lowercase().as_str() {
+        "yaml" | "yml" => Ok(Format::Yaml),
+        "ndjson" | "json" => Ok(Format::Ndjson),
+        other => Err(Error::new(
+            ErrorKind::Error,
+            format!("unknown format-file '{other}'; expected ndjson or yaml"),
+        )),
     }
 }
 
