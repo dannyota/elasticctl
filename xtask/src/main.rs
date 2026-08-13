@@ -309,7 +309,14 @@ async fn record_preview_hits(
         );
     }
 
-    write_exchange(dir, "rules_preview_hits", flavor, version, request, response);
+    write_exchange(
+        dir,
+        "rules_preview_hits",
+        flavor,
+        version,
+        request,
+        response,
+    );
     Ok(())
 }
 
@@ -350,7 +357,10 @@ async fn record() {
     // and print what happened either way.
     match t.get_absolute_es("/_license").await {
         Ok(license) => write_fixture(&dir, "license", &flavor, &version, license),
-        Err(e) => println!("no license endpoint on this stack ({}): {}", flavor, e.message),
+        Err(e) => println!(
+            "no license endpoint on this stack ({}): {}",
+            flavor, e.message
+        ),
     }
 
     // Use a distinctive id so a failed cleanup is obvious in the UI.
@@ -449,7 +459,10 @@ async fn record() {
         .delete_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}"))
         .await;
     if let Err(e) = &cleanup {
-        println!("WARNING: could not delete {PREVIEW_PROBE_INDEX}: {}", e.message);
+        println!(
+            "WARNING: could not delete {PREVIEW_PROBE_INDEX}: {}",
+            e.message
+        );
     }
     hits.expect("record preview hits");
 

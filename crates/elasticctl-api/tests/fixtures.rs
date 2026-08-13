@@ -111,8 +111,7 @@ fn sets_with(file: &str) -> Vec<PathBuf> {
 }
 
 fn fixture_body(path: &Path) -> Value {
-    let body = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let body = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
 }
@@ -182,7 +181,9 @@ fn the_spaces_probe_returns_ids() {
 
     for set in sets {
         let v = fixture_body(&set.join("spaces.json"));
-        let spaces = v["response"].as_array().expect("spaces response is an array");
+        let spaces = v["response"]
+            .as_array()
+            .expect("spaces response is an array");
         assert!(!spaces.is_empty(), "{}", set.display());
         for space in spaces {
             assert!(
