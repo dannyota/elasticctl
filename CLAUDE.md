@@ -43,11 +43,11 @@ one states this restriction in the brief itself, never left to inference.
 
 Parallelism is earned by the design, not the deadline: when the plan pins
 each task's files and interfaces, tasks that share no files can run as
-parallel implementers. Agents own named files, never directories — a slice
-needing a test alongside another's creates a new file rather than editing a
-shared one. One directive, one agent: never fold new work into a running
-agent just because it owns the files. Every task is reviewed before the next
-builds on it.
+parallel implementers, each in its own git worktree so their commits cannot
+tangle. Agents own named files, never directories — a slice needing a test
+alongside another's creates a new file rather than editing a shared one. One
+directive, one agent: never fold new work into a running agent just because
+it owns the files. Every task is reviewed before the next builds on it.
 
 ## Architecture rules
 
@@ -147,18 +147,15 @@ and scrub identity (`username`, `full_name`, `email`, `created_by`,
 `updated_by`) as well as credentials. The export fixture holds NDJSON as an
 opaque string, so it needs its own scrub pass.
 
-## Development target
+## Development target and live testing
 
 Serverless is the primary target; nothing needs to run locally day to day. The
 `lab/` podman stack is an on-demand session (~3 GB, ~20 minutes) used only to
-record self-managed fixtures. Do not assume it is running.
-
-`podman compose` works by delegating to `docker-compose`; `podman-compose` is
-not installed. Kibana's entrypoint only maps `UPPER_SNAKE` env names — the
-dotted `xpack.encryptedSavedObjects.encryptionKey` form is silently ignored,
-and every rule creation then fails.
-
-## Live testing against the dev project
+record self-managed fixtures. Do not assume it is running. `podman compose`
+works by delegating to `docker-compose`; `podman-compose` is not installed.
+Kibana's entrypoint only maps `UPPER_SNAKE` env names — the dotted
+`xpack.encryptedSavedObjects.encryptionKey` form is silently ignored, and
+every rule creation then fails.
 
 The Serverless dev project holds ~2,066 Elastic prebuilt rules, seeded for
 scale testing. They are read-only ground truth: never mutate an untagged
@@ -186,12 +183,16 @@ rewrite `@timestamp` to now before ingest, or no rule will ever match.
 
 The binary crate's package is named `elasticctl` (directory
 `crates/elasticctl-cli`), so `--package elasticctl-cli` no longer resolves.
-Publish with `cargo publish --workspace` (dry-run first): it packages and
-verifies all three crates against a temp registry before uploading any. Never
-publish crate-by-crate — a sequence that fails partway strands crates on
-crates.io, where versions cannot be deleted, only yanked. cargo-dist installs
-as `dist`; `cargo dist` does not resolve. `dist build --artifacts=host` builds
-the host target only.
+Publish with `cargo publish --workspace` (dry-run first): it verifies all
+three crates against a temp registry before uploading any. Never publish
+crate-by-crate — a partial failure strands crates on crates.io, where versions
+cannot be deleted, only yanked. cargo-dist installs as `dist`; `cargo dist`
+does not resolve. `dist build --artifacts=host` builds the host target only.
+
+An `-rc.N` tag is conditional, not ceremony: cut one only when the build
+matrix is unproven — never run, or its target list changed. Check the last
+release's assets first; a complete list means a candidate proves nothing.
+README "Releasing" has the reasoning.
 
 ## Git
 

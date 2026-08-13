@@ -142,6 +142,27 @@ Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
 To build only the host target locally: `dist build --artifacts=host`.
 
+### When a release candidate is worth it
+
+Tag an `-rc.N` first only when the build matrix is genuinely unproven — it has
+never run, or `dist-workspace.toml` changed its target list. Check the last
+release's assets before deciding:
+
+```bash
+gh release view vX.Y.Z --json assets --jq '.assets[].name'
+```
+
+A complete asset list means the matrix works and a candidate proves nothing;
+tag the real version. Otherwise tag `-rc.1`, confirm the assets, install from
+it, then delete the release and the tag before tagging for real.
+
+The reason to keep this conditional: a release candidate costs a second full
+matrix build and four cleanup commands, and it insures against a cost that is
+currently low — no crates.io publish, a deletable GitHub Release, a deletable
+tag, and no downstream consumer to pull a broken build. That calculation
+changes once the crates are published or anyone installs from a tag; until
+then, prove the matrix once and stop repeating the ceremony.
+
 ## Development
 
 Requires a stable Rust toolchain.
