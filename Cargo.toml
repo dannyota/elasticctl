@@ -17,3 +17,8 @@ elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.0" }
 # package a given cargo invocation selects. Insertion order drives table and
 # CSV column order; alphabetical would scramble natural field ordering.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

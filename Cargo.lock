@@ -359,19 +359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "elasticctl-api"
-version = "0.1.0"
-dependencies = [
- "elasticctl-core",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tokio",
- "wiremock",
-]
-
-[[package]]
-name = "elasticctl-cli"
+name = "elasticctl"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
@@ -384,6 +372,18 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "elasticctl-api"
+version = "0.1.0"
+dependencies = [
+ "elasticctl-core",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
  "tokio",
  "wiremock",
 ]
