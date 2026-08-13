@@ -296,15 +296,61 @@ page size at the window returns any corpus that `_find` can serve at all.
 Measured against 2,066 rules: 21 sequential pages of 100 cost 8.4-11 s; one
 request costs 2.4 s.
 
-That bound is also a ceiling on the command. A corpus larger than 10,000 rules
-cannot be read through `_find` by any combination of `page` and `per_page`,
-because the limit applies to their sum rather than to either one. Paging
-smaller does not evade it and neither does concurrency. When `total` exceeds
-the window, the read is refused with an error naming the limit and pointing at
-`rules export`, which streams rather than paging. Returning the first 10,000
-rules as though they were the corpus would make `state diff` report every
-unread rule as remote-only and `state pull` write a mirror missing them —
-silent truncation is the one outcome worse than failing.
+A corpus larger than 10,000 rules cannot be read through one `_find` by any
+combination of `page` and `per_page`, because the limit applies to their sum
+rather than to either one. Paging smaller does not evade it and neither does
+concurrency. Above the window the corpus is read by partitioning instead.
+
+`rules export` is not the escape hatch and must never be offered as one. It
+carries its own 10,000 cap from `xpack.securitySolution.maxRuleImportExportSize`
+and answers `Can't export more than 10000 rules` with a 400. The generic
+saved-objects export cannot serve either: the security rule types register
+`isExportable: false`, so detection rules are not exportable through that
+interface at all. No public API reads past the window in a single call.
+
+#### Partitioned reads above the window
+
+When `total` exceeds the window, the corpus is read as one `_find` per rule
+type, filtered on `alert.attributes.params.type`. Every rule has exactly one
+type, so the slices are disjoint and together exhaustive — measured against
+2,066 rules, the seven types sum to exactly the corpus:
+
+| Type | Rules |
+|---|---|
+| `query` | 455 |
+| `eql` | 1,022 |
+| `esql` | 208 |
+| `threshold` | 28 |
+| `threat_match` | 6 |
+| `machine_learning` | 106 |
+| `new_terms` | 241 |
+| **Total** | **2,066** |
+
+A single type larger than the window is split again on
+`alert.attributes.enabled`, which is likewise disjoint and exhaustive (measured
+2 enabled, 2,064 disabled). Fourteen slices put the ceiling near 140,000.
+
+Exhaustiveness is enforced, not assumed: the slice totals must sum to the
+corpus `total` or the read is refused as a short read, the same rule that
+already covers a server returning fewer rules than it counted. This is why the
+partition is on type rather than on tags — a rule may carry many tags or none,
+so tag slices both double-count and drop rules, and no sum check would hold.
+
+A slice still above the window after both partitions is refused with an error
+naming the limit. Returning the first 10,000 rules as though they were the
+corpus would make `state diff` report every unread rule as remote-only and
+`state pull` write a mirror missing them — silent truncation is the one outcome
+worse than failing.
+
+The single-request path is unchanged for any corpus under the window, which is
+every real corpus today. Partitioning is a fallback, not the default: paying
+seven requests for a 2,066-rule read would forfeit 5.2's whole result.
+
+Kibana does expose `search_after` on `POST /internal/detection_engine/rules/_search`,
+which would remove the ceiling outright. It is rejected deliberately: the route
+is `access: 'internal'` and unversioned, and this tool's reason to exist is
+spanning three deployment flavors whose internal routes need not agree or
+survive an upgrade.
 
 ### 5.3 Scoped state operations
 
@@ -406,6 +452,12 @@ Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 | Export trailer | With zero rules, `POST /api/detection_engine/rules/_export` returns *only* the summary object |
 | Prebuilt rules | The internal route `/internal/detection_engine/prebuilt_rules/status` returns 400 `"exists but is not available with the current configuration"`. Use the public API |
 | `_find` result window | `per_page` is bounded by `from + size <= 10000`; 10001 is a 400 naming the window. One request returns all 2,066 rules in 2.4 s against 8.4-11 s for 21 pages of 100 |
+| `_find` has no cursor | The public route takes only `page`/`per_page`; `search_after` exists solely on `POST /internal/detection_engine/rules/_search`, which is `access: 'internal'` |
+| Export cap | `POST .../rules/_export` is capped at 10,000 by `xpack.securitySolution.maxRuleImportExportSize` and answers `Can't export more than 10000 rules` with a 400. It is not an escape hatch from the `_find` window |
+| Export is count-capped only | `xpack.securitySolution.maxRuleImportPayloadBytes` (10 MB) is read by the import route alone; export has no byte cap |
+| Rules are not saved-object exportable | The security rule types register `isExportable: false`, so `POST /api/saved_objects/_export` cannot return detection rules regardless of `savedObjects.maxImportExportSize` |
+| Partition filters | `alert.attributes.params.type` and `alert.attributes.enabled` are disjoint and exhaustive over the corpus: the 7 types sum to 2,066 and enabled/disabled splits 2/2,064 |
+| `rule_id` filtering works | `alert.attributes.params.ruleId: "<id>"` returns exactly 1 for a live id and 0 for an absent one, despite not appearing in the documented filter-field list |
 
 ### 7.1 Rule schema, measured
 
@@ -731,19 +783,22 @@ afterwards, which works normally.
 
 ## 13. Risks
 
-**Serverless-first bias — partly resolved.** Serverless is the most divergent
-of the three flavors — no licence tiers (features gate on project tier
-instead), different auth, some endpoints versioned differently. Developing only
-against it risks baking serverless assumptions into code that claims to support
+**Serverless-first bias — resolved.** Serverless is the most divergent of the
+three flavors — no licence tiers (features gate on project tier instead),
+different auth, some endpoints versioned differently. Developing only against
+it risks baking serverless assumptions into code that claims to support
 self-managed. Mitigated by tagging fixtures with flavor and version, gating
 divergent behaviour behind the capability probe, and recording each flavor.
 
-All three flavors now have recorded fixtures: `serverless-9.6.0`,
-`traditional-9.5.1`, and `ech-9.5.1`. The remaining gap is that the
-self-managed set holds 10 fixtures against 14 for the other two — it predates
-the operations added in 0.1.1 and needs a `lab/` session to catch up. Until it
-does, self-managed is the least-covered of the three, which is the opposite of
-the bias this risk was written about but the same underlying hazard.
+All three flavors now hold 14 fixtures each: `serverless-9.6.0`,
+`traditional-9.5.1`, and `ech-9.5.1`. Coverage is even, so no flavor is the
+least-tested one.
+
+Both halves of the Hosted signal are now measured rather than inferred. Every
+set records response headers: `traditional-9.5.1` carries headers while lacking
+`x-found-handling-cluster`, and the other two carry it. The self-managed
+recording also closed the last open question about `rules preview`, which had
+only ever been exercised against Serverless.
 
 **`rules preview` stability — resolved.** The concern was that the preview
 endpoint has moved between public and internal paths across Elastic versions.
@@ -756,8 +811,9 @@ with "Invalid version. Received \"1\", expected a valid date string". Since
 internal Kibana routes are versioned numerically, this is a second reason they
 are unreachable here. `2023-10-31` is the only version this client needs.
 
-The command stays in 0.1.0 and off the trim line. It still needs confirmation
-against a self-managed stack in the fixture-recording session.
+The command stays in 0.1.0 and off the trim line. It is now confirmed against a
+self-managed stack too: `traditional-9.5.1` carries recorded `rules_preview`
+and `rules_preview_hits` fixtures.
 
 **Empty project — resolved.** The serverless development project now holds
 2,066 prebuilt Elastic rules covering all seven rule types, seeded for scale
