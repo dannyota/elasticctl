@@ -20,6 +20,9 @@ pub struct RuleFilter {
     pub rule_type: Option<String>,
     pub severity: Option<String>,
     pub tag: Option<String>,
+    /// Exact display name, filtered server-side. Resolving a name by walking
+    /// every page cost 8.8 seconds against 2,066 rules; this is one request.
+    pub name: Option<String>,
     /// A raw KQL fragment, combined with the structured filters above.
     pub query: Option<String>,
 }
@@ -30,6 +33,9 @@ impl RuleFilter {
         let mut parts: Vec<String> = Vec::new();
         if let Some(v) = self.enabled {
             parts.push(format!("alert.attributes.enabled: {v}"));
+        }
+        if let Some(v) = &self.name {
+            parts.push(format!("alert.attributes.name: \"{}\"", kql_escape(v)));
         }
         if let Some(v) = &self.rule_type {
             parts.push(format!(

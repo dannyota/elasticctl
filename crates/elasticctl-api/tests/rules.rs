@@ -47,6 +47,44 @@ fn filters_combine_with_and() {
     assert!(kql.contains(" AND "), "{kql}");
 }
 
+#[test]
+fn a_name_filter_produces_the_recorded_kql_path() {
+    let f = RuleFilter {
+        name: Some("Suspicious PowerShell".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        f.to_kql().unwrap(),
+        "alert.attributes.name: \"Suspicious PowerShell\""
+    );
+}
+
+#[test]
+fn a_name_filter_escapes_a_quote() {
+    let f = RuleFilter {
+        name: Some("a\"b".into()),
+        ..Default::default()
+    };
+    let kql = f.to_kql().unwrap();
+    let mut expected = String::from("alert.attributes.name: \"a");
+    expected.push('\\');
+    expected.push('"');
+    expected.push_str("b\"");
+    assert_eq!(kql, expected);
+}
+
+#[test]
+fn a_name_filter_combines_with_the_others() {
+    let f = RuleFilter {
+        name: Some("X".into()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let kql = f.to_kql().unwrap();
+    assert!(kql.contains("alert.attributes.name: \"X\""), "{kql}");
+    assert!(kql.contains(" AND "), "{kql}");
+}
+
 #[tokio::test]
 async fn find_page_returns_rules_and_the_total() {
     let server = MockServer::start().await;

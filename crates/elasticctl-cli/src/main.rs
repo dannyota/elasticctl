@@ -67,6 +67,7 @@ async fn main() {
                         rule_type: rule_type.clone(),
                         severity: severity.clone(),
                         tag: tag.clone(),
+                        name: None,
                         query: filter.clone(),
                     };
                     match Context::build(&args.global) {

@@ -19,7 +19,9 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
         1 => Ok(matches[0].rule_id()?.to_string()),
         0 => Err(Error::new(
             ErrorKind::NotFound,
-            format!("No rule named '{name}'"),
+            // The selector may have been a rule_id that missed. Reporting it
+            // as a missed *name* points the operator at the wrong thing.
+            format!("No rule with rule_id or name '{name}'"),
         )),
         _ => {
             // Every candidate must appear, even one with an unreadable
@@ -41,8 +43,17 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
     }
 }
 
+/// How many same-named candidates one page will consider. No real corpus has
+/// a hundred rules sharing a name; the cap exists so a pathological one cannot
+/// turn a lookup back into a corpus read.
+pub(crate) const NAME_SEARCH_LIMIT: u32 = 100;
+
 /// A selector is a rule_id or a display name. rule_id is tried first because
 /// it is unambiguous; a name lookup only happens when that misses.
+///
+/// The name lookup is one server-side filtered `_find`, not a walk of every
+/// page. Walking cost 8.8 seconds against 2,066 rules just to report that
+/// nothing matched, and the whole answer fits in one request.
 pub async fn to_rule_id(ctx: &Context, selector: &str) -> Result<String> {
     let transport = ctx.transport().await?;
 
@@ -52,8 +63,33 @@ pub async fn to_rule_id(ctx: &Context, selector: &str) -> Result<String> {
         Err(_) => {}
     }
 
-    let found = rules::find_all(transport, &RuleFilter::default()).await?;
-    pick_by_name(&found, selector)
+    let filter = RuleFilter {
+        name: Some(selector.to_string()),
+        ..Default::default()
+    };
+    let (candidates, total) = rules::find_page(transport, &filter, 1, NAME_SEARCH_LIMIT).await?;
+    pick_by_name_capped(&candidates, selector, total)
+}
+
+/// `pick_by_name` over a candidate page, told how many candidates the server
+/// said there were.
+///
+/// The server filter is not the match: a KQL term on an analyzed field can
+/// return a near match, so the exact comparison still happens here. When the
+/// page was truncated and nothing matched exactly, the miss reports the cap
+/// rather than claiming the name does not exist — those are different answers.
+pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<String> {
+    match pick_by_name(found, name) {
+        Err(e) if e.kind == ErrorKind::NotFound && total > found.len() as u64 => Err(Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "No rule with rule_id or name '{name}' among the first {} of {total} \
+                     candidates; narrow the name",
+                found.len()
+            ),
+        )),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +124,22 @@ mod tests {
     fn a_name_with_no_match_is_not_found() {
         let err = pick_by_name(&[rule("a", "Alpha")], "Ghost").unwrap_err();
         assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_capped_candidate_page_says_so_rather_than_claiming_the_name_is_absent() {
+        // 100 same-named rules is beyond any real corpus, but reporting
+        // "no such rule" when the answer was truncated would be a lie.
+        let found: Vec<Rule> = (0..NAME_SEARCH_LIMIT)
+            .map(|i| rule(&format!("id-{i}"), "Other"))
+            .collect();
+        let err = pick_by_name_capped(&found, "Ghost", NAME_SEARCH_LIMIT as u64 + 1).unwrap_err();
+        assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+        assert!(
+            err.message.contains("first 100"),
+            "the cap must be visible: {}",
+            err.message
+        );
     }
 
     #[test]
