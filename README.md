@@ -120,6 +120,11 @@ strand a published crate with an unpublished dependency. (`elasticctl-api`
 depends on `elasticctl-core`, and `elasticctl` depends on both; `xtask` is not
 published.)
 
+Early versions tag without publishing: push the tag, let the workflow build
+the GitHub Release binaries, and skip crates.io until the tool has proven
+itself. A tag costs nothing and a GitHub Release can be deleted; a crates.io
+version is forever.
+
 1. Bump the version in `Cargo.toml` in two places: `[workspace.package] version`
    and the `version` fields of `elasticctl-core` and `elasticctl-api` in
    `[workspace.dependencies]`. Bumping only `[workspace.package] version` leaves
