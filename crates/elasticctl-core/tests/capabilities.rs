@@ -41,8 +41,11 @@ async fn serverless_is_detected_from_build_flavor() {
 }
 
 #[tokio::test]
-async fn a_default_build_flavor_on_a_private_host_is_self_managed() {
-    let server = server_reporting("default", "9.5.1").await;
+async fn a_traditional_build_flavor_on_a_private_host_is_self_managed() {
+    // The literal a real 9.5.1 stack sends, recorded in
+    // tests/fixtures/traditional-9.5.1/status.json. "default" was a
+    // stand-in that no stack has ever reported.
+    let server = server_reporting("traditional", "9.5.1").await;
     let p = profile_for(&server.uri()); // wiremock binds 127.0.0.1
     let t = Transport::new(&p).unwrap();
     let caps = Capabilities::probe(&t, &p.kibana_url).await.unwrap();

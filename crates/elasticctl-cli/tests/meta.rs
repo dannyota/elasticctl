@@ -4,18 +4,36 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
+/// A smoke test that only checks "non-empty and mentions elasticctl" passes
+/// just as well when the wrong shell's script is emitted. Each shell is
+/// therefore pinned to a token only its own script carries, plus a token it
+/// must never carry.
 #[test]
-fn completion_emits_a_script_for_each_supported_shell() {
-    for shell in ["bash", "zsh", "fish"] {
+fn completion_emits_the_right_script_for_each_shell() {
+    let cases = [
+        ("bash", "complete -F _elasticctl", "#compdef"),
+        ("zsh", "#compdef elasticctl", "complete -c elasticctl"),
+        ("fish", "complete -c elasticctl", "#compdef"),
+        (
+            "elvish",
+            "edit:completion:arg-completer[elasticctl]",
+            "#compdef",
+        ),
+        ("powershell", "Register-ArgumentCompleter", "complete -F"),
+    ];
+
+    for (shell, must_contain, must_not_contain) in cases {
         let out = bin().args(["completion", shell]).output().unwrap();
         assert!(out.status.success(), "{shell} completion must succeed");
+        let script = String::from_utf8_lossy(&out.stdout);
         assert!(
-            !out.stdout.is_empty(),
-            "{shell} completion must emit a script"
+            script.contains(must_contain),
+            "{shell} script must contain {must_contain:?}: {script}"
         );
         assert!(
-            String::from_utf8_lossy(&out.stdout).contains("elasticctl"),
-            "{shell} script must reference the binary name"
+            !script.contains(must_not_contain),
+            "{shell} script must not contain another shell's marker \
+             {must_not_contain:?}: {script}"
         );
     }
 }
