@@ -5,11 +5,13 @@ mod cmd;
 mod context;
 mod guard;
 mod render;
+mod resolve;
 
 use clap::Parser;
-use cli::{Cli, Command, ConfigAction, GlobalArgs};
+use cli::{Cli, Command, ConfigAction, GlobalArgs, RulesAction};
 use context::Context;
-use elasticctl_core::Config;
+use elasticctl_api::rules::RuleFilter;
+use elasticctl_core::{Config, Error, ErrorKind};
 use serde_json::json;
 
 #[tokio::main]
@@ -38,6 +40,48 @@ async fn main() {
         Command::Info => match Context::build(&args.global) {
             Ok(ctx) => cmd::info::run(&ctx).await,
             Err(e) => Err(e),
+        },
+        Command::Rules { action } => match action {
+            RulesAction::List {
+                enabled,
+                disabled,
+                rule_type,
+                severity,
+                tag,
+                filter,
+            } => {
+                if *enabled && *disabled {
+                    Err(Error::new(
+                        ErrorKind::Error,
+                        "--enabled and --disabled are mutually exclusive",
+                    ))
+                } else {
+                    let f = RuleFilter {
+                        enabled: if *enabled {
+                            Some(true)
+                        } else if *disabled {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                        rule_type: rule_type.clone(),
+                        severity: severity.clone(),
+                        tag: tag.clone(),
+                        query: filter.clone(),
+                    };
+                    match Context::build(&args.global) {
+                        Ok(ctx) => cmd::rules::list(&ctx, &f).await,
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            RulesAction::Get { selector } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::rules::get(&ctx, selector).await,
+                Err(e) => Err(e),
+            },
+            // Local only: no Context is built, so this path cannot reach a
+            // credential check, transport, or capability probe.
+            RulesAction::Validate { path } => cmd::rules::validate(path),
         },
     };
 

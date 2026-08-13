@@ -112,6 +112,38 @@ pub enum Command {
     Doctor,
     /// Show stack version, flavor, license tier, and spaces
     Info,
+    /// Manage detection rules
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RulesAction {
+    /// List detection rules
+    List {
+        #[arg(long)]
+        enabled: bool,
+        #[arg(long)]
+        disabled: bool,
+        #[arg(long = "type")]
+        rule_type: Option<String>,
+        #[arg(long)]
+        severity: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        /// Raw KQL, combined with the other filters
+        #[arg(long)]
+        filter: Option<String>,
+    },
+    /// Show one rule by rule_id or name
+    Get { selector: String },
+    /// Check a rule file without contacting a server
+    Validate {
+        #[arg(long)]
+        path: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

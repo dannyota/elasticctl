@@ -375,6 +375,7 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]
