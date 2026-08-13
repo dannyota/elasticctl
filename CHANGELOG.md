@@ -42,8 +42,9 @@ changes: every new flag has a default that preserves the previous behaviour.
 - A `rule_id` that is present but not a string is rejected when the rule is
   constructed, and an NDJSON decode error names the line.
 - Userinfo in a profile's `kibana_url` or `es_url` is stripped at resolution
-  and never written to the config file, so a hand-written
-  `https://user:pass@host` cannot reach the guard banner or a `--debug` line.
+  and never written to the config file, so a hand-written URL that embeds
+  credentials in its authority cannot reach the guard banner or a `--debug`
+  line.
 
 ### Documented
 

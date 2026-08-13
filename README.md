@@ -142,6 +142,19 @@ Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
 To build only the host target locally: `dist build --artifacts=host`.
 
+### Never write a credential-shaped URL in the changelog
+
+cargo-dist embeds the changelog entry in the plan manifest, and the workflow
+passes that manifest between jobs as a job output. The GitHub runner masks
+anything resembling a credential in a URL — the literal `user:password@host`
+form — and once an output contains masked text the runner **drops the whole
+output** with `Skip output 'val' since it may contain secret`. The build matrix
+is computed from that output, so every build job silently skips and the release
+publishes a manifest and nothing else, while reporting success.
+
+Describe such a URL in prose instead. If a release ever produces only
+`dist-manifest.json`, look for that warning in the `plan` job first.
+
 ### When a release candidate is worth it
 
 Tag an `-rc.N` first only when the build matrix is genuinely unproven — it has
