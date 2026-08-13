@@ -29,15 +29,17 @@ conflicts: the user's current instruction, then the spec, then this file.
 
 ## Development workflow
 
-Design first: the brief is the product of the design. Design and review run
-on the strongest model tier (Fable or Opus); implementation runs on Sonnet;
-pure transcription and single-file mechanical fixes on Haiku. A well-split
-task never needs a stronger model — if a task seems to, the split is wrong,
-not the tier. When unsure, dispatch Sonnet and escalate on its report. Set
-the model explicitly on every dispatch — omitted, it silently inherits the
-session's tier. Fable and Opus agents decide, split, and review; they never
-implement — every dispatch to one states this restriction in the brief
-itself, never left to inference.
+Design first: the brief is the product of the design. Design runs on Opus;
+implementation runs on Sonnet; pure transcription and single-file mechanical
+fixes on Haiku. Review tier scales with the cost of being wrong:
+invariant-bearing work — mutation paths, credential handling, release
+workflows — gets adversarial review on Opus; ordinary code gets its tests,
+the gates, and a Sonnet review. A well-split task never needs a stronger
+model — if a task seems to, the split is wrong, not the tier. When unsure,
+dispatch Sonnet and escalate on its report. Set the model explicitly on
+every dispatch — omitted, it silently inherits the session's tier. Opus
+agents decide, split, and review; they never implement — every dispatch to
+one states this restriction in the brief itself, never left to inference.
 
 Parallelism is earned by the design, not the deadline: when the plan pins
 each task's files and interfaces, tasks that share no files can run as
@@ -45,9 +47,7 @@ parallel implementers. Agents own named files, never directories — a slice
 needing a test alongside another's creates a new file rather than editing a
 shared one. One directive, one agent: never fold new work into a running
 agent just because it owns the files. Every task is reviewed before the next
-builds on it, and proof scales with the cost of being wrong: mutation paths
-and credential handling get adversarial review; ordinary code gets its tests
-and the gates.
+builds on it.
 
 ## Architecture rules
 
