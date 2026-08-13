@@ -5,6 +5,11 @@ use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, RuleFilter};
 use elasticctl_core::{Error, ErrorKind, Result};
 
+/// Stands in for a rule's `rule_id` wherever one must be displayed but
+/// cannot be read (e.g. a server response with a non-string `rule_id`).
+/// Shared with `cmd::rules::summarize`, which has the same masking risk.
+pub(crate) const UNREADABLE_RULE_ID: &str = "<unreadable rule_id>";
+
 /// Exact-match only. A substring match would silently target the wrong
 /// detection when two rules share a prefix.
 pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
@@ -17,7 +22,13 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
             format!("No rule named '{name}'"),
         )),
         _ => {
-            let ids: Vec<&str> = matches.iter().filter_map(|r| r.rule_id().ok()).collect();
+            // Every candidate must appear, even one with an unreadable
+            // rule_id: dropping it would make the count and the list
+            // disagree, leaving the operator unable to act on either.
+            let ids: Vec<&str> = matches
+                .iter()
+                .map(|r| r.rule_id().unwrap_or(UNREADABLE_RULE_ID))
+                .collect();
             Err(Error::new(
                 ErrorKind::Conflict,
                 format!(
@@ -83,5 +94,24 @@ mod tests {
     fn name_matching_is_exact_not_substring() {
         let err = pick_by_name(&[rule("a", "Alpha Rule")], "Alpha").unwrap_err();
         assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_conflict_still_names_every_candidate_when_one_rule_id_is_unreadable() {
+        let readable = rule("a", "Same");
+        // Constructible because `Rule::from_value` only checks that rule_id
+        // is present, not that it is a string.
+        let unreadable = Rule::from_value(json!({"rule_id": 123, "name": "Same"})).unwrap();
+        let found = vec![readable, unreadable];
+
+        let err = pick_by_name(&found, "Same").unwrap_err();
+
+        assert_eq!(err.kind, elasticctl_core::ErrorKind::Conflict);
+        assert!(err.message.contains("2 rules"), "{}", err.message);
+        assert!(
+            err.message.contains('a') && err.message.contains(UNREADABLE_RULE_ID),
+            "the count claims 2 candidates, so both must be listed: {}",
+            err.message
+        );
     }
 }

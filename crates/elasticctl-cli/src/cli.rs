@@ -137,7 +137,9 @@ pub enum RulesAction {
         #[arg(long)]
         filter: Option<String>,
     },
-    /// Show one rule by rule_id or name
+    /// Show one rule by rule_id or name. rule_id is tried first: if the
+    /// selector happens to be both a valid rule_id and a different rule's
+    /// name, the rule_id match wins.
     Get { selector: String },
     /// Check a rule file without contacting a server
     Validate {

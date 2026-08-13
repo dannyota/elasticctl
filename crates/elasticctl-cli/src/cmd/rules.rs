@@ -12,9 +12,14 @@ use std::path::Path;
 
 /// The summary shape shown by `rules list`. Full rule bodies are available
 /// through `rules get` and `rules export`.
+///
+/// A rule with an unreadable `rule_id` is a server-side anomaly, not
+/// something the operator can act on the way they can a bad local file — so
+/// it is flagged visibly (`resolve::UNREADABLE_RULE_ID`) rather than either
+/// hidden behind a blank string or failing the whole listing over one row.
 fn summarize(r: &Rule) -> Value {
     json!({
-        "rule_id": r.rule_id().unwrap_or(""),
+        "rule_id": r.rule_id().unwrap_or(resolve::UNREADABLE_RULE_ID),
         "name": r.name(),
         "type": r.rule_type(),
         "enabled": r.enabled(),
@@ -43,6 +48,14 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
 }
 
 /// Local only. Never contacts a server, so it works offline and in CI.
+///
+/// `codec::decode_yaml`/`decode_ndjson` only reject a rule that is missing
+/// its `rule_id` *key* — `Rule::from_value` does not check that the value is
+/// a string, so a hand-editing slip like an unquoted `rule_id: 123` decodes
+/// without error. `rule_id()` is what actually catches that, so every rule
+/// is re-checked here rather than trusting decode success to mean "usable".
+/// Every rule is checked, not just the first bad one, so a mixed file names
+/// every failing index at once instead of stopping at the first.
 pub fn validate(path: &Path) -> Result<Value> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
@@ -53,24 +66,39 @@ pub fn validate(path: &Path) -> Result<Value> {
     };
 
     let defaults = server_defaults();
-    let reports: Vec<Value> = rules
-        .iter()
-        .map(|r| {
-            // Show what a sparse file becomes, so the operator is not
-            // surprised by fields they never wrote.
-            let mut applied: Vec<&String> = defaults
-                .keys()
-                .filter(|k| !r.as_map().contains_key(*k))
-                .collect();
-            applied.sort();
-            json!({
-                "rule_id": r.rule_id().unwrap_or(""),
-                "name": r.name(),
-                "type": r.rule_type(),
-                "defaults_applied": applied,
-            })
-        })
-        .collect();
+    let mut reports = Vec::with_capacity(rules.len());
+    let mut failures = Vec::new();
+
+    for (i, r) in rules.iter().enumerate() {
+        match r.rule_id() {
+            Ok(rule_id) => {
+                // Show what a sparse file becomes, so the operator is not
+                // surprised by fields they never wrote.
+                let mut applied: Vec<&String> = defaults
+                    .keys()
+                    .filter(|k| !r.as_map().contains_key(*k))
+                    .collect();
+                applied.sort();
+                reports.push(json!({
+                    "rule_id": rule_id,
+                    "name": r.name(),
+                    "type": r.rule_type(),
+                    "defaults_applied": applied,
+                }));
+            }
+            // Do not emit an empty-string rule_id for this entry: a blank
+            // identity next to "valid": true is exactly the false clean
+            // bill of health this check exists to prevent.
+            Err(e) => failures.push(format!("rule at index {i}: {}", e.message)),
+        }
+    }
+
+    if !failures.is_empty() {
+        // One bad rule invalidates the whole file — reported the same way a
+        // decode failure already is: a single classified error, not a
+        // partial report with "valid": false buried in a success payload.
+        return Err(Error::new(ErrorKind::Error, failures.join("; ")));
+    }
 
     Ok(json!({"valid": true, "count": rules.len(), "rules": reports}))
 }

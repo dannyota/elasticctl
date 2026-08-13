@@ -201,3 +201,81 @@ async fn rules_get_of_an_ambiguous_name_is_a_conflict_naming_every_candidate() {
     let msg = v["error"]["message"].as_str().unwrap();
     assert!(msg.contains('a') && msg.contains('b'), "{msg}");
 }
+
+/// The rule_id lookup can fail for reasons other than "no such rule" (an
+/// expired credential, a revoked key). Only a 404 should trigger the
+/// fall-back to a name search; any other failure must propagate as-is, not
+/// be swallowed into a misleading "no rule named X".
+#[tokio::test]
+async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "abc"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "unauthorized"})))
+        .mount(&server)
+        .await;
+    // No mock for _find: if the 401 were misclassified as not_found and the
+    // code fell back to a name search, this test would fail with a
+    // connection/mock-mismatch error rather than a clean "auth" assertion,
+    // making a regression here obvious rather than silently passing.
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), &server.uri());
+    let out = bin()
+        .args(["rules", "get", "abc", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stderr).expect("error envelope on stderr");
+    assert_eq!(v["error"]["kind"], "auth");
+}
+
+/// `to_rule_id` tries the selector as a rule_id first. Pin that precedence:
+/// when a selector is simultaneously a valid rule_id for one rule and the
+/// exact display name of a different rule, the rule_id match must win.
+#[tokio::test]
+async fn rules_get_prefers_a_direct_rule_id_hit_over_a_colliding_display_name() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "dup"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("dup", "Rule A")))
+        .mount(&server)
+        .await;
+    // A rule whose *name* collides with the other rule's rule_id. If the
+    // implementation ever preferred a name search, this decoy would be
+    // returned instead — and the `.expect(0)` below would also fail the
+    // test outright, since the direct hit must mean this is never queried.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 100, "total": 1, "data": [rule_json("b", "dup")]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), &server.uri());
+    let out = bin()
+        .args(["rules", "get", "dup", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["rule_id"], "dup");
+    assert_eq!(
+        v["name"], "Rule A",
+        "the direct rule_id hit must win over the colliding name: {v}"
+    );
+}

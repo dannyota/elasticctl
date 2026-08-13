@@ -118,3 +118,90 @@ fn validate_of_a_missing_file_is_a_clean_error_not_a_panic() {
     assert_eq!(out.status.code(), Some(1));
     assert!(serde_json::from_slice::<serde_json::Value>(&out.stderr).is_ok());
 }
+
+/// `Rule::from_value` only checks that `rule_id` is present, not that it is
+/// a string, so an unquoted numeric id — a plausible hand-editing slip —
+/// decodes without error. `validate` must still catch it: a blank identity
+/// behind "valid": true would be a false clean bill of health.
+#[test]
+fn validate_reports_a_rule_whose_rule_id_is_not_a_string() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("numeric_id.yaml");
+    fs::write(&path, "- rule_id: 123\n  name: A rule\n  type: query\n").unwrap();
+
+    let out = assert_cmd::Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "validate", "--json", "--path"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert!(v["error"]["message"].as_str().unwrap().contains("rule_id"));
+}
+
+#[test]
+fn validate_of_a_mixed_file_names_the_index_of_the_bad_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed.yaml");
+    fs::write(
+        &path,
+        "- rule_id: good\n  name: Good rule\n  type: query\n\
+         - rule_id: 123\n  name: Bad rule\n  type: query\n",
+    )
+    .unwrap();
+
+    let out = assert_cmd::Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "validate", "--json", "--path"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("index 1"), "must name the bad index: {msg}");
+    assert!(msg.contains("rule_id"), "{msg}");
+}
+
+/// `validate` must work with a profile that carries no credential at all —
+/// it is a local, offline check and must never require one.
+#[test]
+fn validate_succeeds_against_a_credential_less_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    fs::write(
+        &config,
+        "current = \"nocreds\"\n\n\
+         [profiles.nocreds]\n\
+         kibana_url = \"https://kb.example.com\"\n\
+         space = \"default\"\n\
+         verify = true\n\
+         timeout_secs = 30\n",
+    )
+    .unwrap();
+
+    let rule_path = dir.path().join("rules.yaml");
+    fs::write(
+        &rule_path,
+        "- rule_id: abc\n  name: A rule\n  type: query\n",
+    )
+    .unwrap();
+
+    let out = assert_cmd::Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "validate", "--json", "--config"])
+        .arg(&config)
+        .args(["--path"])
+        .arg(&rule_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["valid"], true);
+}
