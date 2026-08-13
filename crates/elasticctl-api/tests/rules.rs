@@ -1,6 +1,6 @@
 use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter};
-use elasticctl_core::{Profile, Transport};
+use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -104,42 +104,94 @@ async fn find_page_returns_rules_and_the_total() {
     assert_eq!(total, 2);
 }
 
+/// The corpus is read in one request at the result window, not paged. The
+/// `.expect(1)` is the assertion: a second request would mean the page walk
+/// came back.
 #[tokio::test]
-async fn find_all_pages_until_the_total_is_reached() {
+async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param("page", "1"))
+        .and(query_param("per_page", "10000"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 2, "total": 3, "data": [rule_json("a"), rule_json("b")]
+            "page": 1, "perPage": 10000, "total": 3,
+            "data": [rule_json("a"), rule_json("b"), rule_json("c")]
         })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/detection_engine/rules/_find"))
-        .and(query_param("page", "2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 2, "perPage": 2, "total": 3, "data": [rule_json("c")]
-        })))
+        .expect(1)
         .mount(&server)
         .await;
 
     let all = rules::find_all(&transport(&server), &RuleFilter::default())
         .await
         .unwrap();
-    assert_eq!(all.len(), 3, "every page must be collected");
+    assert_eq!(all.len(), 3);
 }
 
+/// A corpus past the window cannot be read by any page size, because the limit
+/// is on `from + size`. Returning the first 10,000 as if they were the corpus
+/// would make `state diff` call every unread rule locally added.
 #[tokio::test]
-async fn find_all_stops_on_an_empty_page_rather_than_looping() {
-    // Guards against an infinite loop if `total` is larger than what is served.
+async fn find_all_refuses_a_corpus_larger_than_the_result_window() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 20, "total": 999, "data": []
+            "page": 1, "perPage": 10000, "total": 10001, "data": [rule_json("a")]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = rules::find_all(&transport(&server), &RuleFilter::default())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unsupported);
+    assert!(
+        err.message.contains("10001") && err.message.contains("10000"),
+        "the error must name both the corpus size and the limit: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("rules export"),
+        "the error must point at the command that can read it: {}",
+        err.message
+    );
+}
+
+/// A server that counts more rules than it serves has contradicted itself.
+/// Previously this returned a short list, which a caller could not tell apart
+/// from rules having been deleted.
+#[tokio::test]
+async fn find_all_refuses_a_short_read() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 999, "data": []
         })))
         .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = rules::find_all(&transport(&server), &RuleFilter::default())
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("999"),
+        "the error must name the count the server claimed: {}",
+        err.message
+    );
+}
+
+/// An empty space is empty, not a short read.
+#[tokio::test]
+async fn find_all_accepts_an_honestly_empty_corpus() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 0, "data": []
+        })))
         .mount(&server)
         .await;
 

@@ -6,13 +6,22 @@
 use crate::codec;
 use crate::model::{ExportSummary, Rule};
 use crate::normalize;
-use elasticctl_core::{Result, Transport, urlencode};
+use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::{Value, json};
 
 const BASE: &str = "/api/detection_engine/rules";
-const DEFAULT_PAGE_SIZE: u32 = 100;
-/// Backstop against a server that reports a total it never serves.
-const MAX_PAGES: u32 = 1000;
+
+/// Elasticsearch's result window. `_find` is a search underneath, so
+/// `from + size` must not exceed this: 10001 comes back as a 400 naming the
+/// window.
+///
+/// It bounds `per_page` and, through the sum, the largest corpus `_find` can
+/// return at all — paging smaller does not evade a limit on `from + size`.
+/// Reading at the window is therefore both the fastest way to read a corpus
+/// and the only page size that reads as much of one as exists: measured
+/// against 2,066 rules, one request costs 2.4 s where 21 pages of 100 cost
+/// 8.4-11 s.
+const RESULT_WINDOW: u32 = 10_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct RuleFilter {
@@ -106,25 +115,42 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     Ok((rules, total))
 }
 
+/// Every rule matching the filter, in one request.
+///
+/// Two ways this can come up short, and both are refused rather than
+/// returned. A corpus larger than the result window cannot be read through
+/// `_find` at all, and a server that serves fewer rules than it counted has
+/// contradicted itself. Returning a partial corpus as though it were the whole
+/// one is the worst available outcome: `state diff` would report every unread
+/// rule as locally added, and `state pull` would write a mirror missing them,
+/// both silently.
 pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
-    let mut all = Vec::new();
-    let mut page = 1;
+    let (rules, total) = find_page(t, filter, 1, RESULT_WINDOW).await?;
 
-    loop {
-        let (rules, total) = find_page(t, filter, page, DEFAULT_PAGE_SIZE).await?;
-        // Stop on an empty page even if `total` claims more, so a server that
-        // over-reports cannot spin this loop forever.
-        if rules.is_empty() {
-            break;
-        }
-        all.extend(rules);
-        if all.len() as u64 >= total || page >= MAX_PAGES {
-            break;
-        }
-        page += 1;
+    if total > u64::from(RESULT_WINDOW) {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "{total} rules match, more than the {RESULT_WINDOW} a single search can \
+                 return. Narrow the selection with a filter or a tag, or use \
+                 `rules export`, which streams rather than searching."
+            ),
+        ));
     }
 
-    Ok(all)
+    if (rules.len() as u64) < total {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!(
+                "the server counted {total} rules and returned {}. Refusing a partial \
+                 corpus: a short read is indistinguishable from rules having been \
+                 deleted.",
+                rules.len()
+            ),
+        ));
+    }
+
+    Ok(rules)
 }
 
 pub async fn get(t: &Transport, rule_id: &str) -> Result<Rule> {
