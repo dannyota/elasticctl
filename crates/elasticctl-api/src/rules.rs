@@ -153,6 +153,32 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
+/// How many `rule_id`s go into one filtered `_find`.
+///
+/// A KQL disjunction of every selected id would build a URL that grows with
+/// the selection, and a `--tag` can select thousands. Chunking keeps each URL
+/// well inside any practical limit; the chunks are cheap because each is a
+/// server-side filter rather than a corpus read.
+const ID_CHUNK: usize = 50;
+
+/// The rules carrying exactly these `rule_id`s.
+///
+/// A selected id the stack does not have simply does not come back. That is
+/// not an error here — for `state push` it is precisely the locally-added rule
+/// the run exists to create.
+pub async fn find_by_rule_ids(t: &Transport, rule_ids: &[String]) -> Result<Vec<Rule>> {
+    let mut found = Vec::with_capacity(rule_ids.len());
+    for chunk in rule_ids.chunks(ID_CHUNK) {
+        let filter = RuleFilter {
+            query: Some(rule_id_query(chunk)),
+            ..Default::default()
+        };
+        let (rules, _) = find_page(t, &filter, 1, RESULT_WINDOW).await?;
+        found.extend(rules);
+    }
+    Ok(found)
+}
+
 pub async fn get(t: &Transport, rule_id: &str) -> Result<Rule> {
     let body = t
         .get(&format!("{BASE}?rule_id={}", urlencode(rule_id)))

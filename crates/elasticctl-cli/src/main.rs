@@ -147,19 +147,35 @@ async fn main() {
             },
         },
         Command::State { action } => match action {
-            StateAction::Pull { dir, format_file } => match parse_file_format(format_file) {
+            StateAction::Pull {
+                dir,
+                format_file,
+                selectors,
+                tag,
+            } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
-                    Ok(ctx) => cmd::state::pull(&ctx, dir, format).await,
+                    Ok(ctx) => cmd::state::pull(&ctx, dir, format, selectors, tag.as_deref()).await,
                     Err(e) => Err(e),
                 },
                 Err(e) => Err(e),
             },
-            StateAction::Diff { dir } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::state::diff(&ctx, dir).await,
+            StateAction::Diff {
+                dir,
+                selectors,
+                tag,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::state::diff(&ctx, dir, selectors, tag.as_deref()).await,
                 Err(e) => Err(e),
             },
-            StateAction::Push { dir, report } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::state::push(&ctx, dir, report.as_deref()).await,
+            StateAction::Push {
+                dir,
+                report,
+                selectors,
+                tag,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::state::push(&ctx, dir, report.as_deref(), selectors, tag.as_deref()).await
+                }
                 Err(e) => Err(e),
             },
         },

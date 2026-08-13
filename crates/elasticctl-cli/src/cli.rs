@@ -203,25 +203,43 @@ pub enum RulesAction {
 
 #[derive(Debug, Subcommand)]
 pub enum StateAction {
-    /// Write live rules to a directory
+    /// Write live rules to a directory. Pulls every rule unless selectors or
+    /// --tag narrow it.
     Pull {
+        /// Rule ids or names to pull. Omit to pull every rule.
+        selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
         #[arg(long = "format-file", default_value = "ndjson")]
         format_file: String,
+        /// Pull every rule carrying this tag, in addition to any selectors
+        #[arg(long)]
+        tag: Option<String>,
     },
-    /// Show field-level drift between the directory and the stack
+    /// Show field-level drift between the directory and the stack. Compares
+    /// every rule unless selectors or --tag narrow it.
     Diff {
+        /// Rule ids or names to compare. Omit to compare every rule.
+        selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
+        /// Compare every rule carrying this tag, in addition to any selectors
+        #[arg(long)]
+        tag: Option<String>,
     },
-    /// Apply the directory's rules to the stack
+    /// Apply the directory's rules to the stack. Applies every rule unless
+    /// selectors or --tag narrow it.
     Push {
+        /// Rule ids or names to apply. Omit to apply every rule.
+        selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
         /// Write a change-evidence report
         #[arg(long)]
         report: Option<std::path::PathBuf>,
+        /// Apply every rule carrying this tag, in addition to any selectors
+        #[arg(long)]
+        tag: Option<String>,
     },
 }
 

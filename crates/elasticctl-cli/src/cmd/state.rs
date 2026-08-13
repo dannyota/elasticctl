@@ -8,6 +8,7 @@ use elasticctl_api::model::Rule;
 use elasticctl_api::normalize;
 use elasticctl_api::report::{ChangeReport, ReportEntry};
 use elasticctl_api::rules as api;
+use elasticctl_api::selection;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -79,10 +80,91 @@ fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
-pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value> {
-    ctx.require_credential()?;
+/// The rules a scoped run acts on, and what it took to narrow them.
+///
+/// `None` in `rule_ids` means no selector was given and the command acts on
+/// the whole space, which is the default and the pre-0.1.2 behaviour.
+struct Scope {
+    rule_ids: Option<Vec<String>>,
+    local_total: usize,
+}
+
+impl Scope {
+    fn is_scoped(&self) -> bool {
+        self.rule_ids.is_some()
+    }
+
+    fn selected(&self) -> usize {
+        self.rule_ids.as_ref().map(Vec::len).unwrap_or(0)
+    }
+
+    /// Keep only the rules the scope names. Unscoped, everything survives.
+    fn narrow(&self, rules: Vec<Rule>) -> Vec<Rule> {
+        match &self.rule_ids {
+            None => rules,
+            Some(ids) => rules
+                .into_iter()
+                .filter(|r| r.rule_id().is_ok_and(|id| ids.iter().any(|s| s == id)))
+                .collect(),
+        }
+    }
+
+    /// The remote side, read as narrowly as the scope allows. A scoped run is
+    /// one filtered `_find` per chunk of ids rather than a corpus read, which
+    /// is the point of scoping.
+    async fn remote(&self, ctx: &Context) -> Result<Vec<Rule>> {
+        let transport = ctx.transport().await?;
+        match &self.rule_ids {
+            None => api::find_all(transport, &Default::default()).await,
+            Some(ids) => api::find_by_rule_ids(transport, ids).await,
+        }
+    }
+
+    /// A phrase for the guard banner and nothing when unscoped, so an
+    /// unscoped apply reads exactly as it did before.
+    fn describe(&self) -> String {
+        match &self.rule_ids {
+            None => String::new(),
+            Some(ids) => format!(
+                " (selection: {} of {} local rules)",
+                ids.len(),
+                self.local_total
+            ),
+        }
+    }
+}
+
+/// Resolve selectors against the local rules first, then the stack.
+///
+/// `local` is empty for `pull`, which reads from the stack and whose selectors
+/// therefore name stack rules.
+async fn scope_of(
+    ctx: &Context,
+    selectors: &[String],
+    tag: Option<&str>,
+    local: &[Rule],
+    noun: &str,
+) -> Result<Scope> {
     let transport = ctx.transport().await?;
-    let mut remote = api::find_all(transport, &Default::default()).await?;
+    let rule_ids = selection::resolve(transport, selectors, tag, local, noun).await?;
+    Ok(Scope {
+        rule_ids,
+        local_total: local.len(),
+    })
+}
+
+pub async fn pull(
+    ctx: &Context,
+    dir: &Path,
+    format: FileFormat,
+    selectors: &[String],
+    tag: Option<&str>,
+) -> Result<Value> {
+    ctx.require_credential()?;
+    // Pull reads from the stack, so a selector names a stack rule. There is no
+    // local side to prefer, and the directory may not exist yet.
+    let scope = scope_of(ctx, selectors, tag, &[], "pull").await?;
+    let mut remote = scope.remote(ctx).await?;
     // Server order is not stable across calls; a collision report and the
     // write order both have to be.
     normalize::sort_rules(&mut remote);
@@ -155,14 +237,24 @@ pub async fn pull(ctx: &Context, dir: &Path, format: FileFormat) -> Result<Value
         })?;
     }
 
-    Ok(json!({"pulled": planned.len(), "dir": target.display().to_string()}))
+    let mut out = json!({"pulled": planned.len(), "dir": target.display().to_string()});
+    if scope.is_scoped() {
+        out["selected"] = json!(scope.selected());
+    }
+    Ok(out)
 }
 
-pub async fn diff(ctx: &Context, dir: &Path) -> Result<Value> {
+pub async fn diff(
+    ctx: &Context,
+    dir: &Path,
+    selectors: &[String],
+    tag: Option<&str>,
+) -> Result<Value> {
     ctx.require_credential()?;
-    let local = read_local(dir)?;
-    let transport = ctx.transport().await?;
-    let remote = api::find_all(transport, &Default::default()).await?;
+    let local_all = read_local(dir)?;
+    let scope = scope_of(ctx, selectors, tag, &local_all, "compare").await?;
+    let local = scope.narrow(local_all);
+    let remote = scope.remote(ctx).await?;
     let drift = Drift::compute(&local, &remote)?;
 
     // Unchanged rules are omitted: a diff should show what differs.
@@ -172,19 +264,34 @@ pub async fn diff(ctx: &Context, dir: &Path) -> Result<Value> {
         .filter(|c| !matches!(c, Change::Unchanged { .. }))
         .collect();
 
-    Ok(json!({
+    let mut out = json!({
         "clean": drift.is_clean(),
         "local": local.len(),
         "remote": remote.len(),
         "changes": changes,
-    }))
+    });
+    if scope.is_scoped() {
+        out["selected"] = json!(scope.selected());
+        out["local_total"] = json!(scope.local_total);
+    }
+    Ok(out)
 }
 
-pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Result<Value> {
+pub async fn push(
+    ctx: &Context,
+    dir: &Path,
+    report_path: Option<&Path>,
+    selectors: &[String],
+    tag: Option<&str>,
+) -> Result<Value> {
     ctx.require_credential()?;
-    let local = read_local(dir)?;
+    let local_all = read_local(dir)?;
+    // Local-first resolution: a rule that exists only on disk has no remote id
+    // to be found by, and creating it is the thing a scoped push is for.
+    let scope = scope_of(ctx, selectors, tag, &local_all, "apply").await?;
+    let local = scope.narrow(local_all);
     let transport = ctx.transport().await?;
-    let remote = api::find_all(transport, &Default::default()).await?;
+    let remote = scope.remote(ctx).await?;
     let drift = Drift::compute(&local, &remote)?;
 
     let by_id = |id: &str| local.iter().find(|r| r.rule_id().ok() == Some(id)).cloned();
@@ -233,11 +340,14 @@ pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Resu
         }
     }
 
+    // The selection is named in the banner because a scoped apply that reads
+    // identically to a full one defeats the point of showing a banner at all.
     let preview = Preview {
         action: format!(
-            "Push {} rule change(s) from {}",
+            "Push {} rule change(s) from {}{}",
             actionable.len(),
-            dir.display()
+            dir.display(),
+            scope.describe()
         ),
         details,
     };
@@ -325,14 +435,19 @@ pub async fn push(ctx: &Context, dir: &Path, report_path: Option<&Path>) -> Resu
 
     let (created, updated, skipped, failed) = report.counts();
     let pending = report.pending();
-    Ok(json!({
+    let mut out = json!({
         "applied": applying,
         "created": created,
         "updated": updated,
         "skipped_remote_only": skipped,
         "failed": failed,
         "pending": pending,
-    }))
+    });
+    if scope.is_scoped() {
+        out["selected"] = json!(scope.selected());
+        out["local_total"] = json!(scope.local_total);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

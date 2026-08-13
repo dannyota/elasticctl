@@ -324,9 +324,14 @@ resolve by guessing.
 `RemoteOnly` keeps its meaning inside a selection — `--tag prod` can select a
 remote rule with no local file — and `push` still never deletes it.
 
-Scoped runs report `selected` and `local_total`, and the guard banner names the
-selection. A scoped apply that looked identical to a full one would defeat the
-purpose of the banner.
+Scoped runs report what narrowed them, and unscoped runs report nothing new —
+an invocation without selectors produces the output it produced before. `diff`
+and `push` report `selected` alongside `local_total`, so a scoped run cannot be
+mistaken for a clean tree. `pull` reports `selected` only: it reads from the
+stack and has no local set to count against.
+
+The guard banner names the selection. A scoped apply that looked identical to a
+full one would defeat the purpose of the banner.
 
 ## 6. Contracts
 
