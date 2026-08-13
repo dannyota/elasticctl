@@ -17,13 +17,13 @@ source of truth for scope, architecture, and verified API behaviour. When code
 and spec disagree, the spec wins, and the fix lands in the spec first — never
 silently improve. Docs are the contract: a change that alters behaviour
 updates the spec in the same commit, and a change that closes a backlog item
-removes it from `docs/plans/v0.1.1-backlog.md`. Precedence when guidance
+removes it from the current backlog. Precedence when guidance
 conflicts: the user's current instruction, then the spec, then this file.
 
 | Task | Read first |
 | --- | --- |
 | Any behaviour change | `docs/specs/elasticctl-design.md` |
-| What to work on next | `docs/plans/v0.1.1-backlog.md` |
+| What to work on next | the newest `docs/plans/*-backlog.md`, else the newest plan |
 | Releasing | `README.md` "Releasing" |
 | Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
 
