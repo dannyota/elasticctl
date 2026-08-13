@@ -14,23 +14,29 @@ pub fn exit_code_for(_err: &Error) -> i32 {
 
 /// A command can succeed at the process level — it built a context, resolved
 /// every selector, sent every request — while still reporting a partial
-/// failure inside its own payload (e.g. `rules delete` continuing past a
-/// per-rule error to report every rule's fate). That must not exit 0, or a
-/// script checking only the exit code would miss it.
+/// failure inside its own payload. That must not exit 0, or a script
+/// checking only the exit code would miss it. Two payload shapes carry that
+/// signal:
 ///
-/// The convention: an object payload with a non-empty `failed` *array* means
-/// exit 1. A `failed` field that is a count rather than a list (e.g. a bulk
-/// action's summary) does not trigger this — that shape already reports its
-/// own outcome in `succeeded`/`failed`/`skipped` counts, not in a per-item
-/// list this convention is meant to guard.
+/// - a per-item report (e.g. `rules delete` continuing past a per-rule error
+///   to name every rule's fate): `failed` is a non-empty *array*.
+/// - a bulk action's summary (e.g. `rules enable`/`disable`'s
+///   `bulk_by_rule_ids` outcome): `failed` is a *count* greater than zero.
 ///
-/// One helper, so every later mutating command that adopts this per-item
-/// `deleted`/`failed` shape inherits the same exit-code rule for free.
+/// An absent `failed` field, an empty array, or a zero count all mean exit
+/// 0. `skipped` never factors in here: a skipped rule is one the server left
+/// alone because it was already in the target state, which is not a
+/// failure to report as one.
+///
+/// One helper, so every later mutating command that adopts either shape
+/// inherits the same exit-code rule for free.
 pub fn exit_code_for_value(value: &Value) -> i32 {
-    match value.get("failed").and_then(Value::as_array) {
-        Some(failed) if !failed.is_empty() => 1,
-        _ => 0,
-    }
+    let is_failure = match value.get("failed") {
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Number(n)) => n.as_u64().is_some_and(|n| n > 0),
+        _ => false,
+    };
+    if is_failure { 1 } else { 0 }
 }
 
 /// Keep only the named keys, in the order named. An absent key is skipped
@@ -358,11 +364,17 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_for_value_ignores_a_failed_count_that_is_not_a_list() {
+    fn exit_code_for_value_is_one_when_failed_is_a_positive_count() {
         // A bulk action's summary reports `failed` as a count, not a
-        // per-item list — that shape already carries its own outcome and
-        // must not trip this convention.
-        let v = json!({"applied": true, "succeeded": 0, "failed": 1, "total": 1});
+        // per-item list — that shape must trip this convention just as
+        // much as a non-empty per-item list does.
+        let v = json!({"applied": true, "succeeded": 0, "failed": 2, "total": 2});
+        assert_eq!(exit_code_for_value(&v), 1);
+    }
+
+    #[test]
+    fn exit_code_for_value_is_zero_when_failed_is_a_zero_count() {
+        let v = json!({"applied": true, "succeeded": 1, "failed": 0, "total": 1});
         assert_eq!(exit_code_for_value(&v), 0);
     }
 
