@@ -114,6 +114,44 @@ async fn yes_applies_the_bulk_action_and_reports_the_outcome() {
     assert_eq!(v["succeeded"], 1);
 }
 
+/// `set_enabled` serves both `enable` and `disable` from one `enabled` flag,
+/// but the guard path string differs between them — and the assert is live,
+/// not `cfg(test)`, so a wrong path on the enable arm would panic a real user
+/// running `rules enable`. The disable apply test cannot catch that typo, so
+/// enable is driven through the same apply path here.
+#[tokio::test]
+async fn yes_enables_a_rule_through_the_same_apply_path_as_disable() {
+    let server = server_with_one_rule().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_bulk_action"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "attributes": {"summary": {"succeeded": 1, "failed": 0, "skipped": 0, "total": 1}}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "enable", "abc", "--yes", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.starts_with("Applying:"), "{err}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["succeeded"], 1);
+}
+
 /// A bulk action's summary reports `failed` as a count, not a per-item list,
 /// but a positive count is exactly as much a partial failure as a non-empty
 /// `deleted`'s `failed` list — the exit code must reflect it. The operator
