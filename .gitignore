@@ -33,6 +33,9 @@ lab/.env
 PLAN.md
 scratch/
 
+# Fetched sample corpora — the harness downloads these on demand
+samples/out/
+
 # OS
 .DS_Store
 Thumbs.db
