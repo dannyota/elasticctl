@@ -125,18 +125,15 @@ details.
 
 ## Development
 
-Requires a stable Rust toolchain.
-
 ```bash
 git clone https://github.com/dannyota/elasticctl
 cd elasticctl
-cp .env.example .env    # fill in your Elastic endpoints and API key
 cargo test
 ```
 
-`.env` is gitignored. Never commit credentials.
-
-Maintainers cutting a release: [`docs/releasing.md`](docs/releasing.md).
+Setup, the gates a pull request must pass, and the rules review holds you to:
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Cutting a release:
+[`docs/releasing.md`](docs/releasing.md).
 
 ## License
 
