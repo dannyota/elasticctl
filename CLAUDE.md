@@ -34,12 +34,10 @@ on the strongest model tier (Fable or Opus); implementation runs on Sonnet;
 pure transcription and single-file mechanical fixes on Haiku. A well-split
 task never needs a stronger model — if a task seems to, the split is wrong,
 not the tier. When unsure, dispatch Sonnet and escalate on its report. Set
-the model explicitly on every agent dispatch — an omitted model silently
-inherits the session's tier.
-
-Fable and Opus agents decide, split, and review; they never implement. Every
-dispatch to one states this restriction in the brief itself — never left to
-inference.
+the model explicitly on every dispatch — omitted, it silently inherits the
+session's tier. Fable and Opus agents decide, split, and review; they never
+implement — every dispatch to one states this restriction in the brief
+itself, never left to inference.
 
 Parallelism is earned by the design, not the deadline: when the plan pins
 each task's files and interfaces, tasks that share no files can run as
@@ -67,6 +65,8 @@ elasticctl-cli  →  elasticctl-api  →  elasticctl-core
   value, pass the value, not the parsed arg struct.
 - Flavor differences are handled at runtime through the capability probe, not
   by compile-time traits or per-flavor modules.
+- `xtask` may depend on `-api` and `-core`, never on the CLI crate, and ships
+  nothing — it is the dev-tool crate (`publish = false`).
 
 ## Safety contracts
 
