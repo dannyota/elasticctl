@@ -372,3 +372,62 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    /// Every epoch-day input was independently computed with
+    /// `date -u -d '<date>' +%s`, divided by 86400. A wrong-but-plausible
+    /// sign flip in `div_euclid`/`rem_euclid` or an off-by-one in the
+    /// `era`/`yoe`/`doy` arithmetic would otherwise pass the whole suite
+    /// silently — the only symptom would be `timeframeEnd` quietly shifting
+    /// the window a preview evaluates over.
+    #[test]
+    fn civil_from_days_matches_independently_computed_epoch_days() {
+        let cases = [
+            (0, (1970, 1, 1), "epoch"),
+            (19782, (2024, 2, 29), "leap day"),
+            (11017, (2000, 3, 1), "century leap year (2000 % 400 == 0)"),
+            (20818, (2026, 12, 31), "year end"),
+            (20819, (2027, 1, 1), "year rollover"),
+            // 2100 is divisible by 100 but not 400, so it is not a leap
+            // year: day 47540 is 2100-02-28, and 2100-03-01 is 47541, not
+            // 47540. (Verified with `date -u -d 2100-03-01 +%s`; a table
+            // supplied during review had this one off by a day.)
+            (47541, (2100, 3, 1), "century non-leap (2100 % 400 != 0)"),
+            (
+                47540,
+                (2100, 2, 28),
+                "day before the century non-leap rollover",
+            ),
+        ];
+
+        for (day, expected, label) in cases {
+            assert_eq!(civil_from_days(day), expected, "{label}: day {day}");
+        }
+    }
+
+    /// The API rejects any `timeframeEnd` that is not exactly this shape, so
+    /// the format string itself — not just the underlying instant — is
+    /// pinned here.
+    #[test]
+    fn now_rfc3339_matches_the_shape_the_api_requires() {
+        let s = now_rfc3339();
+        let bytes = s.as_bytes();
+
+        assert_eq!(s.len(), 24, "{s}");
+        assert!(bytes[4] == b'-' && bytes[7] == b'-', "{s}");
+        assert_eq!(bytes[10], b'T', "{s}");
+        assert!(bytes[13] == b':' && bytes[16] == b':', "{s}");
+        assert_eq!(bytes[19], b'.', "{s}");
+        assert_eq!(&s[20..], "000Z", "{s}");
+        assert!(
+            s[..19]
+                .chars()
+                .enumerate()
+                .all(|(i, c)| { matches!(i, 4 | 7 | 10 | 13 | 16) || c.is_ascii_digit() }),
+            "every non-separator position must be a digit: {s}"
+        );
+    }
+}
