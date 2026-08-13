@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.2 — unreleased
+
+Finishes the detection-rules vertical. No breaking changes: every command
+without selectors behaves exactly as it did in 0.1.1, output fields included.
+
+### Added
+
+- `state pull`, `diff`, and `push` take the positional selectors and `--tag`
+  that `rules export` already took. A selection narrows both the local and the
+  remote side before drift is computed, so the remote read becomes one
+  `rule_id`-filtered `_find` rather than a corpus read. Measured against 2,066
+  rules, a scoped `diff` costs 0.50 s where an unscoped one costs 3.65 s.
+  `diff` and `push` report `selected` and `local_total`; `pull` reports
+  `selected`. The `push` guard banner names the selection, so a scoped apply
+  cannot read as a full one.
+- Selectors on `diff` and `push` resolve against the local directory first, so
+  a rule that exists only on disk can be selected by name before it exists on
+  the stack. An ambiguous local name is refused naming both `rule_id`s.
+
+### Changed
+
+- The rule corpus is read in one request instead of paged. `_find` is a search
+  underneath, so `from + size` is bounded by Elasticsearch's 10,000 result
+  window; reading at the window is both the fastest way to read a corpus and
+  the only page size that reads as much of one as exists. A pull of 2,066 rules
+  is now 1 request where it was 21.
+- Elastic Cloud Hosted is detected from the `x-found-handling-cluster` header
+  the Cloud edge proxy injects, rather than by matching the hostname against
+  known Cloud suffixes. Hosted reports `build_flavor: "traditional"`, identical
+  to a self-managed stack, so the status body could never separate them.
+  Hostname matching remains as a fallback for a deployment behind a proxy that
+  strips the header.
+
+### Fixed
+
+- `ELASTICCTL_ES_URL` is read from the environment. It was documented and read
+  by the fixture recorder but ignored by the CLI, so overriding the Kibana host
+  left the Elasticsearch host pointing at the saved profile's — addressing two
+  deployments at once and sending the overridden credential to the host the
+  operator had not named. Overriding `kibana_url` alone now clears `es_url`
+  rather than inheriting it.
+- A corpus larger than the result window is refused naming the limit, and a
+  server that returns fewer rules than it counted is refused as a short read.
+  Both previously produced a partial corpus indistinguishable from rules having
+  been deleted, which would make `state diff` report every unread rule as
+  locally added.
+
+### Documented
+
+- Elastic Cloud Hosted has a recorded fixture set (`ech-9.5.1`), making all
+  three deployment flavors tested rather than two.
+- Every API key type carries the `essu_` prefix. The claim that provisioning
+  keys carry `essa_` was wrong; only the authenticate realm distinguishes them.
+
 ## 0.1.1 — 2026-08-13
 
 Improvements and fixes inside the existing command surface. No breaking
