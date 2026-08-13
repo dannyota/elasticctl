@@ -19,7 +19,7 @@ file.
 | --- | --- |
 | Any behavior change | `docs/specs/elasticctl-design.md` |
 | What to work on next | the newest `docs/plans/*-backlog.md`, else the newest plan |
-| Releasing | `README.md` "Releasing" |
+| Releasing | `docs/releasing.md` |
 | Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
 
 ## Development workflow
@@ -204,7 +204,7 @@ its target list changed. Check the last release's assets first. A complete list
 means a candidate proves nothing. Since 0.1.3 a candidate can also be
 *published* — pre-release versions are ignored by `^0.1` and by
 `cargo install` — which is worth doing when a release changes packaging rather
-than targets. README "Releasing" explains why.
+than targets. `docs/releasing.md` explains why.
 
 ## Git
 
