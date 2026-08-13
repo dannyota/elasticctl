@@ -12,10 +12,21 @@ pub fn completion(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-/// Commands that change remote state. Kept as an explicit list rather than
-/// inferred, so adding a mutating command without declaring it here shows up
-/// as a failing test rather than as an unguarded mutation.
-const MUTATING: [&str; 6] = ["enable", "disable", "delete", "import", "push", "init"];
+/// Commands that change state — remote for the `rules`/`state` mutations,
+/// the local config file for `config init`. Keyed on the full command path
+/// (`rules delete`, `state push`, ...), never the bare leaf name, so a future
+/// non-mutating `delete` or `import` under another group is not silently
+/// mislabeled. Kept as an explicit list rather than inferred, so adding a
+/// mutating command without declaring it here fails the exhaustive test in
+/// this module rather than shipping an unguarded mutation.
+const MUTATING: [&str; 6] = [
+    "rules enable",
+    "rules disable",
+    "rules delete",
+    "rules import",
+    "state push",
+    "config init",
+];
 
 fn arg(a: &clap::Arg) -> Value {
     json!({
@@ -26,18 +37,27 @@ fn arg(a: &clap::Arg) -> Value {
     })
 }
 
-fn describe(cmd: &clap::Command) -> Value {
+/// `path` is the full, space-joined command path of `cmd` (`rules`,
+/// `rules delete`, ...), accumulated while recursing so `mutates` is keyed on
+/// where the command lives, not just its leaf name.
+fn describe(cmd: &clap::Command, path: &str) -> Value {
     let args: Vec<Value> = cmd
         .get_arguments()
         .filter(|a| !a.is_hide_set())
         .map(arg)
         .collect();
-    let subcommands: Vec<Value> = cmd.get_subcommands().map(describe).collect();
+    let subcommands: Vec<Value> = cmd
+        .get_subcommands()
+        .map(|sub| {
+            let sub_path = format!("{path} {}", sub.get_name());
+            describe(sub, &sub_path)
+        })
+        .collect();
 
     json!({
         "name": cmd.get_name(),
         "about": cmd.get_about().map(|a| a.to_string()),
-        "mutates": MUTATING.contains(&cmd.get_name()),
+        "mutates": MUTATING.contains(&path),
         "args": args,
         "subcommands": subcommands,
     })
@@ -55,11 +75,15 @@ pub fn command_tree() -> Result<Value> {
         .filter(|a| !a.is_hide_set())
         .map(arg)
         .collect();
+    let commands: Vec<Value> = cmd
+        .get_subcommands()
+        .map(|sub| describe(sub, sub.get_name()))
+        .collect();
     Ok(json!({
         "name": "elasticctl",
         "version": env!("CARGO_PKG_VERSION"),
         "global_args": global_args,
-        "commands": cmd.get_subcommands().map(describe).collect::<Vec<_>>(),
+        "commands": commands,
     }))
 }
 
@@ -85,5 +109,59 @@ mod tests {
                 "global_args must list {expected}: {names:?}"
             );
         }
+    }
+
+    /// Collect the full paths of every node in the tree marked `mutates: true`.
+    fn mutating_paths(value: &Value, path: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        if value["mutates"] == true {
+            found.push(path.to_string());
+        }
+        for sub in value["subcommands"]
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+        {
+            let name = sub["name"].as_str().unwrap();
+            let sub_path = if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path} {name}")
+            };
+            found.extend(mutating_paths(sub, &sub_path));
+        }
+        found
+    }
+
+    /// The whole point of the explicit `MUTATING` list is that a reviewer can
+    /// read the mutating surface at a glance — so it must stay exactly right.
+    /// This walks the tree and pins the set of `mutates: true` paths to the
+    /// six declared commands, failing if a seventh appears (a new mutating
+    /// command nobody reviewed) or one of the six disappears (a rename or
+    /// removal that broke a declared contract). The expected set is written
+    /// out here rather than read back from `MUTATING`, so the test is an
+    /// independent contract, not a tautology.
+    #[test]
+    fn the_mutating_set_is_exactly_the_six_declared_paths() {
+        let tree = command_tree().unwrap();
+        let mut actual: Vec<String> = tree["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| mutating_paths(c, c["name"].as_str().unwrap()))
+            .collect();
+        actual.sort();
+
+        let mut expected = [
+            "rules enable",
+            "rules disable",
+            "rules delete",
+            "rules import",
+            "state push",
+            "config init",
+        ];
+        expected.sort();
+
+        assert_eq!(actual, expected, "the set of mutating commands drifted");
     }
 }

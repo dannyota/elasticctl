@@ -168,8 +168,12 @@ async fn main() {
         Ok(value) => {
             // completion already streamed its script to stdout; the Null
             // placeholder is never rendered, or it would land on top of the
-            // script and corrupt it.
+            // script and corrupt it. Flush explicitly before exiting: the
+            // generated script only happens to end in a newline, and
+            // `std::process::exit` never runs `stdout`'s destructor.
             if matches!(&args.command, Command::Completion { .. }) {
+                use std::io::Write;
+                std::io::stdout().flush().ok();
                 std::process::exit(0);
             }
             // `rules export --out <path>` already wrote the canonical file
