@@ -778,9 +778,20 @@ deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
 Publishing was deferred through 0.1.2 because a crates.io version is forever
 while a tag costs nothing. Publishing `elasticctl-core` and `elasticctl-api`
 would also make their Rust APIs a contract while those boundaries still moved.
-From 0.1.3, a release publishes to crates.io as well as tagging.
+0.1.3 claimed the three names and proved the path.
 
-The deferral is dropped because its central cost is already accounted for.
+**Publishing is not part of a release.** A release ends at the tag and the
+GitHub Release binaries. Putting a version on crates.io is a separate step
+needing the owner's explicit approval for that version, and approval never
+carries forward from a previous one. The reason is the asymmetry rather than
+any doubt about the crates: a withheld version can still be published
+tomorrow, while a published one can only be yanked — hidden from resolution,
+never removed. Where one direction is recoverable and the other is not, the
+default belongs on the recoverable side and the irreversible step is taken
+deliberately, per version.
+
+The original deferral is nonetheless dropped, because its central cost is
+already accounted for.
 Under Cargo's `0.x` rules, the minor position is the breaking position, so
 `0.1.x` → `0.2.0` is a break a consumer must opt into. Section 11 already
 bumps the minor for every new capability area. The crate boundaries can move as

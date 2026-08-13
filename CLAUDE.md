@@ -195,9 +195,17 @@ crate-by-crate. A partial failure strands crates on crates.io, where versions
 can be yanked but not deleted. cargo-dist installs as `dist`; `cargo dist` does
 not resolve. `dist build --artifacts=host` builds only the host target.
 
-Tag before publishing. The tag and the GitHub Release are deletable; a
-crates.io version is not, so the irreversible step runs last and only after the
-matrix has produced a complete asset list.
+**A release does not publish to crates.io.** The default release is the tag and
+the GitHub Release binaries, and it stops there. Publishing needs the owner's
+explicit approval for that specific release — a standing "we publish now" from
+0.1.3 is not it, and neither is approval given for a previous version. Never
+run `cargo publish` as a step in a release you were asked to cut. Ask, and
+release the rest meanwhile; a version can follow onto crates.io later, but it
+cannot be taken back.
+
+When approval is given, tag first and publish last. The tag and the GitHub
+Release are deletable; a crates.io version is not, so the irreversible step
+runs only after the matrix has produced a complete asset list.
 
 Cut an `-rc.N` tag only when the build matrix is unproven: it has never run, or
 its target list changed. Check the last release's assets first. A complete list

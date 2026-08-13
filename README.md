@@ -31,6 +31,9 @@ Requires the stable Rust toolchain.
 cargo install elasticctl
 ```
 
+Not every release reaches crates.io, so this can be a version behind. GitHub
+Releases below always carries the newest.
+
 ### From GitHub Releases
 
 Each release ships prebuilt binaries for Linux (glibc and musl), macOS

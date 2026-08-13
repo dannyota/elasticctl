@@ -2,17 +2,24 @@
 
 Maintainer procedure. Users do not need this; see the README to install.
 
-Releases publish the three crates to crates.io and cross-platform binaries to
-GitHub Releases. `cargo publish --workspace` packages and verifies all three
-crates before uploading any. A verification failure therefore cannot strand a
-published crate with an unpublished dependency. (`elasticctl-api` depends on
-`elasticctl-core`, and `elasticctl` depends on both; `xtask` is not published.)
+A release builds cross-platform binaries and publishes a GitHub Release. It
+does **not** publish to crates.io.
 
-Releases through 0.1.2 were tagged without publishing. From 0.1.3, the tag
-builds GitHub Release binaries and the workspace publishes to crates.io.
-Publish all three crates together or none. The binary depends on both libraries
-by version, so publishing it alone leaves `cargo install elasticctl` unable to
-resolve.
+Publishing to crates.io is a separate, opt-in step that needs the owner's
+explicit approval for that specific version. Approval does not carry forward:
+0.1.3 being on crates.io is not permission to put 0.1.4 there. The asymmetry is
+the reason — a tag and a GitHub Release can be deleted, while a crates.io
+version can only be yanked, which hides it from resolution without removing it.
+A version withheld today can be published tomorrow; one published today cannot
+be withdrawn.
+
+When approval is given, publish all three crates together or none.
+`cargo publish --workspace` packages and verifies all three before uploading
+any, so a verification failure cannot strand a published crate with an
+unpublished dependency. The binary depends on both libraries by version, so
+publishing it alone leaves `cargo install elasticctl` unable to resolve.
+(`elasticctl-api` depends on `elasticctl-core`, and `elasticctl` on both;
+`xtask` is not published.)
 
 1. Bump the version in `Cargo.toml` in two places: `[workspace.package] version`
    and the `version` fields of `elasticctl-core` and `elasticctl-api` in
@@ -24,8 +31,15 @@ resolve.
 4. `git tag vX.Y.Z && git push --tags`. The tag triggers
    `.github/workflows/release.yml`, which builds the binary matrix and publishes
    the GitHub Release.
-5. Confirm the release carries a complete asset list.
-6. `cargo publish --workspace`, from the tagged commit.
+5. Confirm the release carries a complete asset list. **The release ends here.**
+6. Only with the owner's explicit approval for this version:
+   `cargo publish --workspace`, from the tagged commit.
+
+Step 3 stays in the default path even though step 6 usually does not run. The
+dry run costs one build and catches packaging errors — a missing `include`, a
+path dependency without a version — while they are still free to fix. Finding
+them later, on the day publishing is approved, means fixing them against a
+version already tagged and released.
 
 Publish last, because it is the only step that cannot be undone. A tag and a
 GitHub Release can be deleted; a crates.io version can only be yanked. Running
