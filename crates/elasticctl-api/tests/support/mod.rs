@@ -7,7 +7,7 @@
 use elasticctl_core::{Profile, Transport};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const RULES: &str = "/api/detection_engine/rules";
 const RULES_FIND: &str = "/api/detection_engine/rules/_find";
@@ -181,5 +181,111 @@ impl MockStack {
         }
 
         stack
+    }
+
+    /// A stack pre-seeded with `n` exception-list containers named `l0..l{n-1}`,
+    /// plus a `?list_id=` lookup for each so `resolve_ids` and `get_list` work.
+    pub async fn with_exception_lists(n: usize) -> MockStack {
+        let stack = Self::new().await;
+        let data: Vec<Value> = (0..n).map(list_json).collect();
+
+        Mock::given(method("GET"))
+            .and(path("/api/exception_lists/_find"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": data,
+                "page": 1,
+                "per_page": n,
+                "total": n
+            })))
+            .mount(&stack.server)
+            .await;
+
+        for i in 0..n {
+            let list = list_json(i);
+            Mock::given(method("GET"))
+                .and(path("/api/exception_lists"))
+                .and(query_param("list_id", format!("l{i}")))
+                .and(query_param("namespace_type", "single"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list))
+                .mount(&stack.server)
+                .await;
+        }
+
+        stack
+    }
+
+    /// A stack pre-seeded with `n` items in container `l` (single namespace).
+    /// The `_find` route pages: its `page_size` caps below `n`, so a caller
+    /// that reads only the first page silently loses items.
+    pub async fn with_exception_items(n: usize) -> MockStack {
+        let stack = Self::new().await;
+        let items: Vec<Value> = (0..n).map(item_json).collect();
+        let page_size = 100;
+
+        Mock::given(method("GET"))
+            .and(path("/api/exception_lists/items/_find"))
+            .respond_with(PagedItems { items, page_size })
+            .mount(&stack.server)
+            .await;
+
+        stack
+    }
+}
+
+fn list_json(i: usize) -> Value {
+    json!({
+        "id": format!("id-l{i}"),
+        "list_id": format!("l{i}"),
+        "type": "detection",
+        "name": format!("list l{i}"),
+        "description": "sample",
+        "immutable": false,
+        "namespace_type": "single",
+        "os_types": [],
+        "tags": ["sample"]
+    })
+}
+
+fn item_json(i: usize) -> Value {
+    json!({
+        "id": format!("id-i{i}"),
+        "item_id": format!("i{i}"),
+        "list_id": "l",
+        "type": "simple",
+        "name": format!("item {i}"),
+        "namespace_type": "single",
+        "entries": []
+    })
+}
+
+/// Serves `total` items across pages of `page_size`, honouring the `page` query
+/// parameter so callers that stop after one page come up short.
+struct PagedItems {
+    items: Vec<Value>,
+    page_size: usize,
+}
+
+impl Respond for PagedItems {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let page: usize = request
+            .url
+            .query_pairs()
+            .find_map(|(k, v)| (k.as_ref() == "page").then(|| v.into_owned()))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let start = page.saturating_sub(1) * self.page_size;
+        let data: Vec<Value> = self
+            .items
+            .iter()
+            .skip(start)
+            .take(self.page_size)
+            .cloned()
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({
+            "data": data,
+            "page": page,
+            "per_page": self.page_size,
+            "total": self.items.len()
+        }))
     }
 }

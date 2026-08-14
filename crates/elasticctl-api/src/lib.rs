@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod diff;
+pub mod exceptions;
 pub mod health;
 pub mod model;
 pub mod normalize;
@@ -14,6 +15,7 @@ pub mod state;
 
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
+pub use exceptions::ListFilter;
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
