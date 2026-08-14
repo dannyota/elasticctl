@@ -154,18 +154,15 @@ impl MockStack {
             .collect()
     }
 
-    /// A stack pre-seeded with `rules`: the `_find` corpus and a `rule_id`
-    /// lookup for each rule.
+    /// A stack pre-seeded with `rules`: the `_find` corpus (honouring the
+    /// `filter` query parameter) and a `rule_id` lookup for each rule.
     pub async fn with_rules(rules: Vec<Value>) -> MockStack {
         let stack = Self::new().await;
-        let total = rules.len();
         let data = rules.clone();
 
         Mock::given(method("GET"))
             .and(path(RULES_FIND))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "page": 1, "perPage": 10000, "total": total, "data": data
-            })))
+            .respond_with(FilteredRules { rules: data })
             .mount(&stack.server)
             .await;
 
@@ -282,6 +279,115 @@ impl MockStack {
 
         stack
     }
+}
+
+/// Serve the seeded rule corpus, honouring the `filter` query parameter.
+///
+/// The production client emits a small KQL subset: top-level clauses joined by
+/// ` AND `, a raw `ruleId` disjunction joined by ` OR `, and a handful of field
+/// clauses. This matcher implements exactly that subset so a `--source` test
+/// asserts the real split rather than passing against a mock that ignores the
+/// filter.
+struct FilteredRules {
+    rules: Vec<Value>,
+}
+
+impl Respond for FilteredRules {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let filter = request
+            .url
+            .query_pairs()
+            .find_map(|(k, v)| (k.as_ref() == "filter").then(|| v.into_owned()));
+        let data: Vec<Value> = match filter.as_deref() {
+            None => self.rules.clone(),
+            Some(filter) => self
+                .rules
+                .iter()
+                .filter(|rule| matches_filter(rule, filter))
+                .cloned()
+                .collect(),
+        };
+        ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": data.len(), "data": data
+        }))
+    }
+}
+
+fn matches_filter(rule: &Value, filter: &str) -> bool {
+    filter
+        .split(" AND ")
+        .all(|and| matches_and_clause(rule, and))
+}
+
+fn matches_and_clause(rule: &Value, clause: &str) -> bool {
+    clause
+        .split(" OR ")
+        .any(|sub| matches_simple(rule, sub.trim()))
+}
+
+fn matches_simple(rule: &Value, sub: &str) -> bool {
+    let Some((field, value)) = sub.split_once(':') else {
+        return false;
+    };
+    let field = field.trim();
+    let value = value.trim();
+
+    match field {
+        // A rule without `immutable` reads as its server default, `false`: it
+        // is a custom rule, so it matches `immutable: false` and not `true`.
+        "alert.attributes.params.immutable" => {
+            let is_prebuilt = rule.get("immutable").and_then(Value::as_bool) == Some(true);
+            if value == "true" {
+                is_prebuilt
+            } else {
+                !is_prebuilt
+            }
+        }
+        "alert.attributes.params.ruleSource.isCustomized" => rule
+            .get("rule_source")
+            .and_then(Value::as_object)
+            .and_then(|rs| rs.get("is_customized"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "alert.attributes.params.ruleId" => {
+            rule.get("rule_id").and_then(Value::as_str) == Some(kql_unquote(value).as_str())
+        }
+        "alert.attributes.params.type" => {
+            rule.get("type").and_then(Value::as_str) == Some(kql_unquote(value).as_str())
+        }
+        "alert.attributes.params.severity" => {
+            rule.get("severity").and_then(Value::as_str) == Some(kql_unquote(value).as_str())
+        }
+        "alert.attributes.enabled" => {
+            let enabled = rule
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if value == "true" { enabled } else { !enabled }
+        }
+        "alert.attributes.name" => {
+            rule.get("name").and_then(Value::as_str) == Some(kql_unquote(value).as_str())
+        }
+        "alert.attributes.tags" => rule
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|tags| {
+                tags.iter()
+                    .any(|t| t.as_str() == Some(kql_unquote(value).as_str()))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Strip the surrounding quotes (and the two escapes `kql_escape` adds) from a
+/// KQL literal. Test values are simple, so a full unparser is not needed.
+fn kql_unquote(s: &str) -> String {
+    let inner = s
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s);
+    inner.replace("\\\"", "\"").replace("\\\\", "\\")
 }
 
 fn list_json(i: usize) -> Value {

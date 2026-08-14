@@ -3,16 +3,10 @@ source: crates/elasticctl-cli/tests/snapshots_render.rs
 expression: rendered
 ---
 {
-  "clean": false,
+  "clean": true,
   "local": 1,
-  "remote": 2,
-  "changes": [
-    {
-      "change": "remote_only",
-      "rule_id": "elasticctl-sample-b",
-      "name": "elasticctl sample B"
-    }
-  ],
+  "remote": 1,
+  "changes": [],
   "exceptions": {
     "local": 0,
     "remote": 0,
