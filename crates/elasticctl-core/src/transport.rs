@@ -117,8 +117,9 @@ impl Transport {
 
     /// Log one request or response line to stderr.
     ///
-    /// Logs include only the method, URL, and status. They exclude
-    /// authorization headers, bodies, and query-string credentials.
+    /// Logs include the method, complete URL, and status. They exclude
+    /// authorization headers and bodies. Callers must not put credentials in
+    /// query strings.
     fn debug_log(&self, method: &Method, url: &str, status: u16, attempt: u32) {
         if !self.debug {
             return;

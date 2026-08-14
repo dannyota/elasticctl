@@ -39,8 +39,8 @@ if hits=$(grep -rnE '://[^/"[:space:]]+:[^/@"[:space:]]+@' "$DIR" 2>/dev/null); 
   report "userinfo in a URL" "$hits"
 fi
 
-# An operator's identity. Scrubbing replaces these with REDACTED; a bare address
-# or populated identity field means scrubbing failed.
+# The scrubber redacts values under identity keys. This check catches email
+# addresses elsewhere, including escaped values.
 if hits=$(grep -rnE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$DIR" 2>/dev/null | grep -v 'example\.\(com\|invalid\)'); then
   report "an email address in a fixture" "$hits"
 fi

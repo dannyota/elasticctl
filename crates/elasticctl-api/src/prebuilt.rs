@@ -1,9 +1,9 @@
 //! Prebuilt-rule status and installation (spec 4.6).
 //!
 //! `status` reads the public prepackaged status route and adds the customized
-//! count from one filtered `_find`. `install` is one verb because the route is
-//! one call: `PUT .../rules/prepackaged` installs missing rules and updates
-//! outdated ones indivisibly, and takes no selection.
+//! count from one filtered `_find`. `install` is one verb because
+//! `PUT .../rules/prepackaged` installs missing rules and updates outdated ones
+//! in one request. The route takes no selection.
 
 use crate::ops::MutationPlan;
 use crate::rules::{self, RuleFilter, RuleSource};

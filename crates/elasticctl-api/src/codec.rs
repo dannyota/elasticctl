@@ -110,8 +110,8 @@ pub fn decode_bundle(body: &str) -> Result<Bundle> {
     Ok(out)
 }
 
-/// Encode a bundle as NDJSON: rules, then lists, then items, no trailer. The
-/// order matches the server's export and what `_import` expects.
+/// Encode a bundle as NDJSON in import order: rules, then lists, then items,
+/// with no trailer.
 pub fn encode_bundle(bundle: &Bundle) -> Result<String> {
     let mut out = String::new();
     for r in &bundle.rules {
@@ -345,8 +345,7 @@ mod tests {
         assert_eq!(b.summary.as_ref().unwrap().exported_exception_list_count, 1);
     }
 
-    /// The bug this task closes. 0.1.3 answers "line 2: a rule must have a
-    /// rule_id" for every rule that carries an exception list.
+    /// A rule with an exception list must decode as a rule.
     #[test]
     fn a_bundle_no_longer_fails_as_a_rule_list() {
         assert!(

@@ -19,13 +19,12 @@ const BASE: &str = "/api/detection_engine/rules";
 /// 2.4 seconds; 21 pages of 100 took 8.4–11 seconds.
 const RESULT_WINDOW: u32 = 10_000;
 
-/// Which rules a rule operation acts on, by who authored them.
+/// Which rules an operation acts on, grouped by source.
 ///
-/// The server-side split is `alert.attributes.params.immutable`, measured to
-/// agree exactly with `params.ruleSource.type` (2,066 prebuilt / 0 custom on
-/// Serverless 9.6.0). `immutable` is used because it exists on every version in
-/// the support window; `customized` narrows the prebuilt set to rules edited on
-/// the stack. Spec 5.5.
+/// The server-side split filters on `alert.attributes.params.immutable`. On
+/// Serverless 9.6.0, it agreed exactly with `params.ruleSource.type` (2,066
+/// prebuilt / 0 custom). Its presence on older versions is unmeasured.
+/// `customized` narrows the prebuilt set to rules edited on the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleSource {

@@ -11,8 +11,8 @@
 *.pem
 *.p12
 credentials.json
-# Ignore the local root config, but keep `.cargo/config.toml`: it holds the
-# `xtask` alias.
+# Ignore the local `/config.toml` at the repository root. The committed
+# `.cargo/config.toml` holds the `xtask` alias and remains tracked.
 /config.toml
 .elasticctl/
 

@@ -17,8 +17,8 @@ v0.1 delivers the foundation layer and one vertical: **detection rules as
 code**.
 
 v0.2 completes that vertical. It adds exception lists as managed objects,
-prebuilt rule status and installation, and a way to scope every rule operation
-to custom, customized, or prebuilt rules. It also closes section 3's layering
+prebuilt rule status and installation, and `--source` scoping for `rules list`,
+`rules export`, and the state commands. It also closes section 3's layering
 debt by moving all command orchestration into `-api`.
 
 Out of scope (additive later): alert triage, cases, Fleet and agent policies,
@@ -48,17 +48,18 @@ nothing structurally prevents `clap` types leaking into command logic. That
 leak makes a later MCP addition expensive.
 
 **TOML one-file-per-rule** (Elastic's own `detection-rules` convention) was
-considered and set aside in favour of NDJSON for round-trip fidelity, with
+considered and set aside in favor of NDJSON for round-trip fidelity, with
 YAML covering human review.
 
 ## 3. Architecture
 
-**Command functions return typed values; a separate render layer turns them
-into text.** splunkctl generates MCP tools by reflecting over its Click tree.
-Its callbacks print through `click.echo`, and the MCP runner captures stdout.
-Rust commands that print directly would leave an MCP server only a string to
-parse again. Typed values let a future MCP crate call the same functions and
-serialize the same structs.
+**API orchestration returns typed values; CLI adapters handle command context
+and mutation guards, then serialize values for the renderer.** splunkctl
+generates MCP tools by reflecting over its Click tree. Its callbacks print
+through `click.echo`, and the MCP runner captures stdout. Rust commands that
+print directly would leave an MCP server only a string to parse again. Typed
+values let a future MCP crate call the same API functions and serialize the
+same structs.
 
 ```
 elasticctl/
@@ -77,8 +78,9 @@ Dependency direction is strictly one way: `cli` → `api` → `core`. A future
 `elasticctl-mcp` depends on `api` and `core`, never on `cli`.
 
 That direction only pays off if the logic worth reusing sits below the line.
-**Command orchestration belongs in `-api`, returning typed structs; `cli/cmd/`
-parses arguments, calls one API function, and hands the result to render.**
+**API orchestration belongs in `-api` and returns typed values. `cli/cmd/`
+adapters handle command context and mutation guards, then serialize values for
+the renderer.**
 Measured on 2026-08-14, v0.1 does not meet this: 1,528 lines of orchestration
 live in `cli/src/cmd/`, and 18 of 23 command functions return
 `serde_json::Value` rather than a struct. `Drift::compute` is correctly in
@@ -130,8 +132,9 @@ Does not know about detection rules.
   5xx only, never on 4xx.
   Under `--debug` it logs one line before each request is sent and one on every
   outcome, including timeout and connection errors. Those are the cases an
-  operator uses `--debug` to diagnose. It logs method, URL, and status only;
-  it never logs a header or body.
+  operator uses `--debug` to diagnose. It logs the method, complete URL, and
+  status; it never logs a header or body. URL query strings must not contain
+  credentials.
   Response headers are captured and returned alongside the body, because the
   deployment flavor is not derivable from any response body — see
   `capabilities` below. They are carried, never logged: `--debug` still prints
@@ -182,7 +185,7 @@ Does not know about detection rules.
 - **`rules_ops`** — the command orchestration above those wrappers. It is a
   separate module from `rules` so that neither file has to be read whole to
   change the other; the endpoints are a stable surface and the orchestration
-  is where behaviour moves.
+  is where behavior moves.
 - **`ops`** — the plan and report types that more than one vertical genuinely
   shares. A type earns a place here by having a second consumer, in the commit
   that adds it; a shape guessed in advance of one belongs to the vertical that
@@ -199,9 +202,9 @@ Does not know about detection rules.
 
 ### 3.3 elasticctl-cli
 
-`clap` v4 derive. Command functions call `api` and return typed values;
-`render` produces table, json, yaml, csv, or jsonl. `guard` implements the
-dry-run contract.
+`clap` v4 derive. CLI adapters call API orchestration, handle context and
+mutation guards, and serialize typed values for `render`. `render` produces
+table, json, yaml, csv, or jsonl. `guard` implements the dry-run contract.
 
 ## 4. Command surface
 
@@ -538,7 +541,7 @@ A scoped run reconciles items the same way, including in a container shared with
 rules outside the scope. That is sound for the same reason the deletion itself
 is: `pull` writes a container's items in full whenever it writes the container
 at all, and the item read is scoped by `list_id`, never by rule. So a mirror
-produced by `state pull --rules r1` holds the complete item set of every
+produced by `state pull r1 --dir config/` holds the complete item set of every
 container `r1` references, even one that `r2` also references. The local set is
 never a partial view, so an item missing from it is still an instruction.
 
@@ -572,14 +575,14 @@ and the state commands.
 | `all` | none |
 
 `immutable` carries the custom/prebuilt split rather than
-`params.ruleSource.type` because it exists on every version in the support
-window. Both were measured to agree exactly: 2,066 prebuilt and 0 custom under
-either field.
+`params.ruleSource.type` because it is present in the measured fixtures. On
+Serverless 9.6.0, the fields agreed exactly: 2,066 prebuilt and 0 custom. Its
+presence on versions older than 9.5.1 is unmeasured.
 
 The state commands default to `custom`; `rules list` and `rules export` default
 to `all`. The defaults differ because the commands differ. A mirror should hold
 what the operator authored, and `state pull` writing 2,066 Elastic-owned rules
-into a repository is the behaviour 0.2 removes. A query command that hid 2,066
+into a repository is the behavior 0.2 removes. A query command that hid 2,066
 rules demonstrably present on the stack would be lying instead.
 
 Section 5.2's exhaustiveness check extends: custom and prebuilt must sum to the
@@ -603,7 +606,7 @@ and `state push` do not, because an empty scope there is reported through
 
 ### 6.1 Safety
 
-Every mutation previews before it applies.
+Every remote mutation previews before it applies.
 
 ```
 $ elasticctl --profile prod rules disable 'Suspicious PowerShell'
@@ -737,7 +740,8 @@ Consequences:
   rules should learn it from `doctor`, not from a 400 in the middle of a push.
 
 **Resolved.** A project-scoped key created inside Kibana authenticates through
-realm `_es_api_key` rather than `_cloud_api_key`, and every mutation path works.
+realm `_es_api_key` rather than `_cloud_api_key`, and every remote mutation
+path works.
 End-to-end verification created a disabled rule, patched it to `enabled: true`
 by `rule_id` (200, `enabled: true`), disabled it through `_bulk_action`
 (`succeeded: 1`, `enabled: false`), then deleted it.
@@ -953,8 +957,8 @@ overwrite the self-managed set. `ELASTICCTL_FIXTURE_FLAVOR` overrides the
 derived name and tags fixtures at record time. Tagging them afterwards would
 require editing recorded fixtures, which is never allowed.
 
-CI runs unit and fixture tiers on every push; the live tier runs on a schedule
-and before releases.
+CI runs unit and fixture tiers on pushes to `master`, pull requests, the weekly
+schedule, and manual runs. The live tier is opt-in; run it before releases.
 
 ### 8.1 Sample corpora
 
@@ -1080,7 +1084,7 @@ failures.
 0.2 breaks two things under this list. The state commands default to
 `--source custom` instead of the whole space, and the `diff` report gains an
 `exceptions` block whose presence narrows what `clean` asserts. Both are named
-in the changelog beside the flag that restores the previous behaviour. The
+in the changelog beside the flag that restores the previous behavior. The
 mirror layout also grows a directory, but an 0.1 mirror still round-trips: a
 tree with no `exceptions/` describes a corpus with no exception lists, which is
 what it was.

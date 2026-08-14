@@ -42,7 +42,7 @@ async fn delete_with_a_selector_that_matches_nothing_is_refused() {
     );
 }
 
-/// Every mutation previews first. Spec 6.1.
+/// Every exception mutation previews first. Spec 6.1.
 #[tokio::test]
 async fn delete_without_yes_previews_and_changes_nothing() {
     let stack = mock_exception_lists(1).await;

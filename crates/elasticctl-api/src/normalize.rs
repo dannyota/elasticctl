@@ -43,9 +43,9 @@ pub fn fill_defaults(rule: &mut Rule) {
 
 /// Recursively sort object keys for deterministic output.
 ///
-/// `serde_json::Map` currently uses `BTreeMap`, but `preserve_order` makes it
-/// retain insertion order. Rebuild the map so output order does not depend on
-/// a transitive feature.
+/// `serde_json::Map` uses `BTreeMap` by default. This workspace enables
+/// `preserve_order`, which retains insertion order, so rebuild the map to make
+/// the output order explicit.
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(m) => {

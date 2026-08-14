@@ -239,7 +239,6 @@ mod tests {
         assert_eq!(fields[0].after, json!("hello"));
     }
 
-    // The property Task 7 exists to guarantee, asserted end to end.
     #[test]
     fn volatile_fields_never_produce_drift() {
         let mut remote = rule("x", "X", 21);

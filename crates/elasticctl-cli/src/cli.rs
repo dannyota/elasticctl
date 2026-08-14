@@ -237,7 +237,7 @@ pub enum PrebuiltAction {
 
 #[derive(Debug, Subcommand)]
 pub enum ExceptionsAction {
-    /// List exception list containers.
+    /// List exception list containers
     List {
         #[arg(long = "type")]
         list_type: Option<String>,
@@ -246,22 +246,22 @@ pub enum ExceptionsAction {
         #[arg(long, value_parser = ["single", "agnostic"])]
         namespace: Option<String>,
     },
-    /// Show one container and its items.
+    /// Show one container and its items
     Get {
         list_id: String,
         #[arg(long, value_parser = ["single", "agnostic"])]
         namespace: Option<String>,
     },
-    /// Check a file without contacting the server.
+    /// Check a file without contacting the server
     Validate {
         #[arg(long)]
         path: PathBuf,
     },
-    /// Export containers and their items.
+    /// Export containers and their items
     Export {
-        /// List ids to export. Omit to export every list.
+        /// `list_id` values to export. Omit to export every list
         list_ids: Vec<String>,
-        /// Export every list carrying this tag, in addition to any selectors.
+        /// Export every list carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
         #[arg(long, value_parser = ["single", "agnostic"])]
@@ -271,7 +271,7 @@ pub enum ExceptionsAction {
         #[arg(long = "format-file", default_value = "ndjson")]
         format_file: String,
     },
-    /// Import containers and items from a file.
+    /// Import containers and items from a file
     Import {
         #[arg(long)]
         path: PathBuf,
@@ -282,7 +282,7 @@ pub enum ExceptionsAction {
         #[arg(long, conflicts_with = "overwrite")]
         skip_existing: bool,
     },
-    /// Delete containers and their items.
+    /// Delete containers and their items
     Delete {
         list_ids: Vec<String>,
         #[arg(long, value_parser = ["single", "agnostic"])]

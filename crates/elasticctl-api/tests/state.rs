@@ -1189,8 +1189,8 @@ async fn a_modified_item_is_updated() {
     );
 }
 
-/// Task 11's refusal: a rule referencing a list that 404s cannot be pulled, or
-/// the mirror would silently miss the list and only surface it at apply time.
+/// A pull must refuse a missing referenced list before writing a partial
+/// mirror.
 #[tokio::test]
 async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
     let stack = MockStack::with_rules(vec![json!({
@@ -1351,7 +1351,7 @@ async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
 }
 
 /// A corpus split by source: `custom` rules carry `immutable: false`, `prebuilt`
-/// carry `immutable: true`. The mock's `_find` honours the filter, so a scoped
+/// carry `immutable: true`. The mock's `_find` honors the filter, so a scoped
 /// read returns only the matching slice.
 async fn mock_mixed_corpus(custom: usize, prebuilt: usize) -> MockStack {
     let mut rules = Vec::with_capacity(custom + prebuilt);

@@ -152,9 +152,8 @@ async fn find_items_reads_every_page() {
     assert_eq!(items.len(), 250, "a short read is a silent data loss");
 }
 
-/// The map distinguishes "exists here with this id" from "does not exist here";
-/// Tasks 11 and 12 rely on that distinction, so an absent key is absent rather
-/// than mapped to a placeholder.
+/// Missing keys stay absent so callers can distinguish them from live keys
+/// mapped to ids.
 #[tokio::test]
 async fn resolve_ids_maps_live_keys_to_ids_and_omits_absent_keys() {
     let stack = mock_exception_lists(1).await; // only l0 exists

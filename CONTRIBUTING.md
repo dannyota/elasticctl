@@ -14,11 +14,11 @@ cargo test
 `cargo test` needs no stack and no credentials. `.env` only matters for the
 live suite and for recording fixtures.
 
-## Read the spec before changing behaviour
+## Read the spec before changing behavior
 
 `docs/specs/elasticctl-design.md` is the source of truth for scope,
-architecture, and verified API behaviour. When code and spec disagree, the spec
-wins and the fix lands in the spec first. A change that alters behaviour
+architecture, and verified API behavior. When code and spec disagree, the spec
+wins and the fix lands in the spec first. A change that alters behavior
 updates the spec in the same commit — docs here are the contract, not a
 description written afterwards.
 
@@ -61,16 +61,19 @@ repository. Scrub identity (`username`, `full_name`, `email`, `created_by`,
 The reasoning is in the spec, sections 3 and 6. The rules themselves:
 
 - Dependency direction is one way: `cli` → `api` → `core`.
-- Command functions return typed values and never print. Rendering belongs to
-  `elasticctl-cli::render`.
-- Orchestration belongs in `-api`; `cli/cmd/` parses arguments and renders.
+- API command orchestration returns typed values and never prints. CLI adapters
+  resolve context, apply mutation guards, and serialize values for rendering.
 - `clap` types never appear in `-api` or `-core`.
-- Every mutation is a dry run until `--yes`, and both preview and apply name
-  the profile, host, and space.
-- `state push` never deletes a remote rule. Deletion is only `rules delete`.
+- Every remote mutation is a dry run until `--yes`, and both preview and apply
+  name the profile, host, and space.
+- `state push` never deletes a remote rule or exception-list container. It
+  deletes an exception item only when that item is absent from a complete local
+  mirror of a container present on both sides.
 - Rule identity is always `rule_id` — never the display name, never the
   saved-object `id`.
-- Secrets are redacted everywhere, including `--debug` HTTP logs.
+- Exception-list identity is `list_id` + `namespace_type`.
+- Never put credentials in URLs. Debug logs complete URLs, but exclude
+  authorization headers and bodies.
 
 ## Credentials
 

@@ -36,7 +36,7 @@ async fn mock_prebuilt_install() -> MockStack {
 }
 
 /// The `customized` count is read from a filtered `_find`. This assertion does
-/// not depend on the mock honouring that filter: `MockStack`'s `_find` serves
+/// not depend on the mock honoring that filter: `MockStack`'s `_find` serves
 /// whatever `customized` it was seeded with, for any query.
 #[tokio::test]
 async fn status_maps_the_measured_body() {

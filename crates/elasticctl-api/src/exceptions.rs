@@ -443,8 +443,8 @@ pub async fn get_op(t: &Transport, list_id: &str, namespace: Option<&str>) -> Re
 
 /// Parse and validate a local file without contacting a server.
 ///
-/// Exception bundles are NDJSON; YAML has no form that can carry containers and
-/// items (spec 6.2), so a YAML path is refused rather than half-decoded.
+/// Exception bundles use NDJSON. YAML bundle input is unsupported, so YAML
+/// paths are refused rather than half-decoded.
 pub fn validate_op(path: &Path) -> Result<Bundle> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
@@ -463,8 +463,7 @@ pub fn validate_op(path: &Path) -> Result<Bundle> {
 /// Export the selected containers and their items.
 ///
 /// The body is the raw `_export` concatenation, which `_import` accepts
-/// verbatim (spec 7.7). YAML is refused: there is no YAML form of a bundle that
-/// carries only exception objects.
+/// verbatim. YAML bundle export is unsupported.
 pub async fn export_op(
     t: &Transport,
     list_ids: &[String],

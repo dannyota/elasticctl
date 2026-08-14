@@ -154,7 +154,7 @@ impl MockStack {
             .collect()
     }
 
-    /// A stack pre-seeded with `rules`: the `_find` corpus (honouring the
+    /// A stack pre-seeded with `rules`: the `_find` corpus (honoring the
     /// `filter` query parameter) and a `rule_id` lookup for each rule.
     pub async fn with_rules(rules: Vec<Value>) -> MockStack {
         let stack = Self::new().await;
@@ -242,7 +242,7 @@ impl MockStack {
     /// A stack whose prepackaged `_status` route returns `status` and whose
     /// `_find` route reports `customized` customized rules. The `_find` mock
     /// ignores query filters and serves whatever it is seeded with, so a test
-    /// must not depend on it honouring the customized filter.
+    /// must not depend on it honoring the customized filter.
     pub async fn with_prebuilt_status(status: Value, customized: u64) -> MockStack {
         let stack = Self::new().await;
 
@@ -316,7 +316,7 @@ impl MockStack {
     }
 }
 
-/// Serve the seeded rule corpus, honouring the `filter` query parameter.
+/// Serve the seeded rule corpus, honoring the `filter` query parameter.
 ///
 /// The production client emits a small KQL subset: top-level clauses joined by
 /// ` AND `, a raw `ruleId` disjunction joined by ` OR `, and a handful of field
@@ -528,7 +528,7 @@ async fn mount_items(server: &MockServer, list_id: &str, namespace: &str, items:
 /// does not reference, so `pull` must mirror only the referenced list.
 pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
     // A real create returns the live pointer in the rule, so the mock carries it
-    // too; otherwise the Task 12 dangling check would flag a clean pull.
+    // too; otherwise the dangling-pointer check would flag a clean pull.
     let rule = json!({
         "rule_id": "r",
         "name": "R",
@@ -895,7 +895,7 @@ pub async fn mock_stack_with_failing_item_create() -> MockStack {
     stack
 }
 
-/// Serves `total` items across pages of `page_size`, honouring the `page` query
+/// Serves `total` items across pages of `page_size`, honoring the `page` query
 /// parameter so callers that stop after one page come up short.
 struct PagedItems {
     items: Vec<Value>,

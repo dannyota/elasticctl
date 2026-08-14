@@ -1,8 +1,8 @@
-//! Rendered output is a contract. These snapshots exist so the 0.2 retrofit
-//! can prove it did not change anything a user sees.
+//! Rendered output is a contract. The original baselines were committed before
+//! the 0.2 retrofit, so they guarded the move into `-api`.
 //!
-//! If a snapshot fails, the retrofit changed output. Fix the code. Do not
-//! accept the new snapshot unless the spec changed in the same commit.
+//! If a snapshot fails, rendered output changed. Fix the code. Do not accept
+//! the new snapshot unless the spec changed in the same commit.
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
@@ -43,7 +43,7 @@ fn sample_rules() -> Vec<Value> {
     ]
 }
 
-/// Every command that renders a report, in every format that reaches render.
+/// Representative report-rendering commands and formats.
 /// `rules export` without `--out` is excluded on purpose: its stdout is the
 /// rule file, not a report (spec 6.2), and `tests/rules_io.rs` covers it.
 const CASES: &[(&str, &[&str])] = &[
@@ -153,9 +153,7 @@ async fn rendered_output_is_stable() {
     }
 }
 
-/// Without this, every "issued no write" assertion in later tasks could pass
-/// by recording nothing at all. It must show the recorder sees writes and
-/// ignores reads.
+/// Verify that the request recorder observes writes and ignores reads.
 #[tokio::test]
 async fn the_harness_records_a_write_and_ignores_a_read() {
     let stack = MockStack::with_rules(vec![]).await;

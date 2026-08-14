@@ -21,14 +21,14 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
 (`elasticctl-api` depends on `elasticctl-core`, and `elasticctl` on both;
 `xtask` is not published.)
 
-1. Bump the version in `Cargo.toml` in two places: `[workspace.package] version`
-   and the `version` fields of `elasticctl-core` and `elasticctl-api` in
-   `[workspace.dependencies]`. Bumping only `[workspace.package] version` leaves
-   stale `0.1.0` requirements in the dependency metadata.
+1. Bump the version in `Cargo.toml`: `[workspace.package] version` and the
+   `version` fields for `elasticctl-core` and `elasticctl-api` in
+   `[workspace.dependencies]`. Bumping only `[workspace.package] version`
+   leaves stale `0.1.0` requirements in the dependency metadata.
 2. Add a dated entry to `CHANGELOG.md`.
-3. `cargo publish --workspace --dry-run` — confirm all three package and
-   verify-compile.
-4. `git tag vX.Y.Z && git push --tags`. The tag triggers
+3. `cargo publish --workspace --dry-run` — confirm all three packages compile
+   and pass Cargo's publish checks.
+4. `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers
    `.github/workflows/release.yml`, which builds the binary matrix and publishes
    the GitHub Release.
 5. Confirm the release carries a complete asset list. **The release ends here.**
@@ -91,4 +91,3 @@ When a release changes packaging rather than the target list, `cargo publish`
 a `-rc.N` first: pre-release versions are ignored by a `^0.1` requirement and
 by `cargo install` unless asked for by name, so it is a real rehearsal rather
 than a permanent mistake.
-

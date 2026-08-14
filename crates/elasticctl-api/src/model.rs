@@ -8,8 +8,7 @@ use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// Server-owned fields that change on every write or execution. They are
-/// stripped before diffing to avoid false drift.
+/// Server-owned rule fields excluded from comparison to avoid false drift.
 pub const VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "created_at",
@@ -158,8 +157,8 @@ pub struct ExportSummary {
     pub missing_exception_list_items: Vec<Value>,
 }
 
-/// Server-owned fields an exception list container changes on every write.
-/// Stripped before diffing, like `VOLATILE_FIELDS` is for rules.
+/// Server-owned exception-list fields excluded from comparison to avoid false
+/// drift.
 pub const LIST_VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "_version",
@@ -171,7 +170,8 @@ pub const LIST_VOLATILE_FIELDS: [&str; 8] = [
     "updated_by",
 ];
 
-/// The container set less `version`: a measured item carries `_version` but no
+/// Server-owned exception-item fields excluded from comparison. This is the
+/// container set less `version`: a measured item carries `_version` but no
 /// `version`.
 pub const ITEM_VOLATILE_FIELDS: [&str; 7] = [
     "id",

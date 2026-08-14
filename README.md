@@ -8,8 +8,9 @@ Cloud Serverless projects. It is a sibling to
 [splunkctl](https://github.com/dannyota/splunkctl) and shares its operating
 contracts:
 
-- **Every mutation is a dry run by default.** Nothing changes until you pass
-  `--yes`, and every preview names the profile, host, and space it would touch.
+- **Remote mutations are dry runs by default.** Nothing is applied until you
+  pass `--yes`, and every preview names the profile, host, and space it would
+  touch.
 - **Configuration as code.** Pull live rules, review structured drift, push
   approved changes with a change-evidence report. Push never deletes remote
   rules.
@@ -32,7 +33,7 @@ cargo install elasticctl
 ```
 
 Not every release reaches crates.io, so this can be a version behind. GitHub
-Releases below always carries the newest.
+Releases always carry the newest version.
 
 ### From GitHub Releases
 
@@ -81,11 +82,14 @@ elasticctl state diff --dir state   # field-level drift, no changes made
 elasticctl state push --dir state   # preview; add --yes to apply
 ```
 
-`push` and every other mutation preview by default and apply only with `--yes`.
+`push` and every other remote mutation preview by default and apply only with
+`--yes`.
 
-All three take the same positional selectors and `--tag` as `rules export`.
-A selection narrows both sides before drift is computed. A scoped run reads one
-filtered query instead of the whole corpus:
+All state commands accept positional selectors, `--tag`, and
+`--source custom|customized|prebuilt|all`. `--source` defaults to `custom`;
+`--source all` includes the full rule corpus. `--source` limits an unselected
+state command to matching rules. Selectors and `--tag` first resolve rule IDs,
+then read those rules:
 
 ```bash
 elasticctl state diff --dir state my-rule-id      # one rule
@@ -113,10 +117,16 @@ elasticctl config init | list | show | test
 elasticctl doctor
 elasticctl info
 
-elasticctl rules list | get | validate | enable | disable | delete
-elasticctl rules export [<selector>...] [--tag TAG] | import [--skip-existing] | preview [--sample N]
+elasticctl rules list [--source custom|customized|prebuilt|all]
+  | get | validate | enable | disable | delete
+elasticctl rules export [<selector>...] [--tag TAG] [--source custom|customized|prebuilt|all]
+  | import [--skip-existing] | preview [--sample N]
+elasticctl rules prebuilt status|install
 
-elasticctl state pull | diff | push  [<selector>...] [--tag TAG] --dir DIR
+elasticctl exceptions list | get | validate | export | import | delete
+
+elasticctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
+  [--source custom|customized|prebuilt|all]
 
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands

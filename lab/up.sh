@@ -6,8 +6,8 @@ ES=http://localhost:9200
 KB=http://localhost:5601
 AUTH='elastic:elasticctl-lab'
 
-# Use the first working Compose provider. Locally this is usually Podman,
-# while GitHub runners use Docker even when Podman is installed.
+# Select the first available Compose CLI with a version probe; this does not
+# verify daemon reachability.
 if docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif podman compose version >/dev/null 2>&1; then
@@ -36,7 +36,7 @@ if [ "$es_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Set the kibana_system password before Kibana starts using it.
+# Reset the kibana_system password before waiting for Kibana readiness.
 curl -sf -u "$AUTH" -X POST "$ES/_security/user/kibana_system/_password" \
   -H 'Content-Type: application/json' \
   -d '{"password":"elasticctl-lab-kibana"}' >/dev/null

@@ -54,7 +54,7 @@ pub struct ImportPlan {
 }
 
 /// The upload half of an import, before the caller adds the plan's totals.
-/// Shared by the rules and exceptions verticals: both normalise Kibana's
+/// Shared by the rules and exceptions verticals: both normalize Kibana's
 /// import response to a succeeded count and an errors array.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ImportReport {
