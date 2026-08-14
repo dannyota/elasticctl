@@ -59,8 +59,9 @@ pub struct PrebuiltInstallOutcome {
 
 pub async fn status(t: &Transport) -> Result<PrebuiltStatus> {
     let body = t.get(PREPACKAGED_STATUS).await?;
-    let customized = customized_count(t).await?;
-    decode_status(body, customized)
+    let mut status = decode_status(body, 0)?;
+    status.customized = customized_count(t).await?;
+    Ok(status)
 }
 
 fn decode_status(body: Value, customized: u64) -> Result<PrebuiltStatus> {

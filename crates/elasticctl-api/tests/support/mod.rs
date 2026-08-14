@@ -290,6 +290,27 @@ impl MockStack {
         stack
     }
 
+    /// A stack whose prepackaged `_status` response is `status` and whose
+    /// dependent customized-rule `_find` request fails.
+    pub async fn with_prebuilt_status_and_failing_find(status: Value) -> MockStack {
+        let stack = Self::new().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(status))
+            .mount(&stack.server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(RULES_FIND))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "customized count must not mask a malformed status"
+            })))
+            .mount(&stack.server)
+            .await;
+
+        stack
+    }
+
     /// A stack whose prepackaged `_status`, `_find`, and install routes return
     /// `status`, `customized`, and `response` respectively.
     pub async fn with_prebuilt_install(

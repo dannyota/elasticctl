@@ -93,6 +93,30 @@ async fn status_rejects_each_missing_or_non_numeric_measured_counter() {
     }
 }
 
+#[tokio::test]
+async fn malformed_status_wins_over_the_dependent_customized_count_request() {
+    let mut malformed: serde_json::Value = serde_json::from_str(STATUS_BODY).unwrap();
+    malformed.as_object_mut().unwrap().remove("rules_installed");
+    let stack = MockStack::with_prebuilt_status_and_failing_find(malformed).await;
+
+    let err = prebuilt::status(stack.transport()).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
+    assert!(
+        err.message
+            .contains("/api/detection_engine/rules/prepackaged/_status")
+            && err.message.contains("rules_installed"),
+        "{err}"
+    );
+
+    let requests = stack.requests().await;
+    assert_eq!(requests.len(), 1, "{requests:#?}");
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(
+        requests[0].path,
+        "/api/detection_engine/rules/prepackaged/_status"
+    );
+}
+
 /// Spec 4.6: the preview is client-computed because the route has no dry_run.
 #[tokio::test]
 async fn the_install_preview_names_both_counts_and_writes_nothing() {
