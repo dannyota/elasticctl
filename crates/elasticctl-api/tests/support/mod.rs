@@ -279,6 +279,41 @@ impl MockStack {
 
         stack
     }
+
+    /// A stack whose value-list data streams are absent: `GET /api/lists/index`
+    /// answers 404, the route's way of saying "not bootstrapped" (fact 21).
+    /// Built on an empty rule corpus so both `doctor` and `state push` have a
+    /// working `_find`.
+    pub async fn with_value_lists_absent() -> MockStack {
+        let stack = Self::with_rules(vec![]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/lists/index"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_json(json!({
+                    "statusCode": 404,
+                    "error": "Not Found",
+                    "message": "data stream .lists-default and data stream .items-default does not exist"
+                })),
+            )
+            .mount(&stack.server)
+            .await;
+        stack
+    }
+
+    /// A stack whose value-list data streams are bootstrapped, so
+    /// `GET /api/lists/index` reports both indexes present.
+    pub async fn with_value_lists_bootstrapped() -> MockStack {
+        let stack = Self::with_rules(vec![]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/lists/index"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "list_index": true,
+                "list_item_index": true
+            })))
+            .mount(&stack.server)
+            .await;
+        stack
+    }
 }
 
 /// Serve the seeded rule corpus, honouring the `filter` query parameter.

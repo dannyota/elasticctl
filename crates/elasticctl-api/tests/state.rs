@@ -868,6 +868,98 @@ fn mirror_with_list_items(list_id: &str, item_ids: &[&str]) -> tempfile::TempDir
     dir
 }
 
+/// A local mirror whose exception item references a value list, the entry type
+/// that requires the value-list data streams (spec 7.7). The value list id is
+/// caller-supplied and stable, so it round-trips without resolution.
+fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        &format!(
+            "{}\n",
+            json!({
+                "rule_id": "r", "name": "R", "type": "query",
+                "exceptions_list": [{
+                    "list_id": "detect", "type": "detection", "namespace_type": "single"
+                }]
+            })
+        ),
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    std::fs::write(
+        exceptions.join("detect.ndjson"),
+        format!(
+            "{}\n",
+            json!({
+                "list_id": "detect", "type": "detection", "name": "detect",
+                "namespace_type": "single",
+                "items": [{
+                    "item_id": "i1", "list_id": "detect", "type": "simple",
+                    "name": "item i1", "namespace_type": "single",
+                    "entries": [{
+                        "field": "source.ip", "operator": "included", "type": "list",
+                        "list": {"id": value_list_id, "type": "ip"}
+                    }]
+                }]
+            })
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// An absent value list is reported, never silently pushed (spec 7.7).
+#[tokio::test]
+async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
+    let stack = MockStack::with_value_lists_absent().await;
+    let dir = mirror_with_item_referencing_value_list("ip-allowlist");
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        plan.preview_details
+            .iter()
+            .any(|d| d.contains("ip-allowlist")),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
+/// The check must actually query the stack: when the data streams exist, the
+/// line is absent, so a bootstrapped stack is not reported as broken.
+#[tokio::test]
+async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
+    let stack = MockStack::with_value_lists_bootstrapped().await;
+    let dir = mirror_with_item_referencing_value_list("ip-allowlist");
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !plan
+            .preview_details
+            .iter()
+            .any(|d| d.contains("ip-allowlist")),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
 /// Spec 5.4. The single delete path in the tool's state engine.
 #[tokio::test]
 async fn an_item_absent_locally_is_deleted() {

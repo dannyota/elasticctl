@@ -130,6 +130,29 @@ async fn identity(t: &Transport) -> Result<(String, String)> {
     Ok((username, realm))
 }
 
+/// The value-list data streams (`/api/lists/index`) bootstrapping check.
+///
+/// A 404 is the absent case, not an error (spec 7.7): the route answering 404
+/// is how it says the data streams do not exist, and an exception entry of
+/// type `list` cannot work until they are created. Absence is a warning, not a
+/// failure — a stack with no value-list-backed exceptions never needs them.
+async fn value_list_index_check(t: &Transport) -> DoctorCheck {
+    match crate::exceptions::value_lists_bootstrapped(t).await {
+        Ok(true) => check(
+            "value_list_index",
+            Status::Ok,
+            "value-list data streams are bootstrapped",
+        ),
+        Ok(false) => check(
+            "value_list_index",
+            Status::Warn,
+            "value-list data streams are not bootstrapped; an exception entry of type \
+             'list' cannot work until POST /api/lists/index runs",
+        ),
+        Err(e) => check("value_list_index", Status::Fail, e.message),
+    }
+}
+
 /// Run the stack-reading checks.
 ///
 /// The connectivity check gates the rest: without a capability probe there is
@@ -173,6 +196,8 @@ pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
             )),
             Err(e) => checks.push(check("rules_access", Status::Fail, e.message)),
         }
+
+        checks.push(value_list_index_check(t).await);
     }
 
     Ok(DoctorReport::from_checks(checks))

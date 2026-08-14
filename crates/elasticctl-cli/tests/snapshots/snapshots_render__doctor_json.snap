@@ -33,6 +33,11 @@ expression: rendered
       "check": "rules_access",
       "status": "ok",
       "message": "2 rules visible"
+    },
+    {
+      "check": "value_list_index",
+      "status": "warn",
+      "message": "value-list data streams are not bootstrapped; an exception entry of type 'list' cannot work until POST /api/lists/index runs"
     }
   ],
   "ok": true

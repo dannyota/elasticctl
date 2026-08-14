@@ -137,6 +137,22 @@ pub async fn find_items(t: &Transport, key: &ListKey) -> Result<Vec<ExceptionIte
     values.into_iter().map(ExceptionItem::from_value).collect()
 }
 
+/// Whether the value-list data streams (`.lists-default`, `.items-default`)
+/// are bootstrapped.
+///
+/// `GET /api/lists/index` answers 404 when they are not, so a 404 is the
+/// absent case rather than an error (spec 7.7). Only a status outside the
+/// success range other than 404 is returned as an error. `pub(crate)` because
+/// it is shared by `doctor` and the push preview, not part of the public API.
+pub(crate) async fn value_lists_bootstrapped(t: &Transport) -> Result<bool> {
+    match t.get("/api/lists/index").await {
+        Ok(body) => Ok(body["list_index"].as_bool().unwrap_or(false)
+            && body["list_item_index"].as_bool().unwrap_or(false)),
+        Err(e) if e.kind == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Map each key to the live container `id` on this stack. A key with no live
 /// container is absent from the map rather than mapped to a placeholder, so
 /// callers distinguish "exists here with this id" from "does not exist here".

@@ -4,7 +4,7 @@ use super::diff::{ItemOp, ListOp};
 use super::reports::{DanglingPointer, Mirror, PushReport, StackIdentity};
 use crate::diff::{Change, Drift};
 use crate::exceptions;
-use crate::model::{ListKey, Rule};
+use crate::model::{ExceptionItem, ListKey, Rule};
 use crate::normalize;
 use crate::report::{ChangeReport, ReportEntry};
 use crate::rules as api;
@@ -58,6 +58,9 @@ pub async fn plan_push(
         lists,
         items,
     } = super::mirror::read_mirror(dir)?;
+    // Captured before `items` moves into `exception_plan`: the value-list
+    // report reads only the entries, and needs them regardless of the plan.
+    let value_lists = value_list_refs(&items);
     // Resolve locally first because disk-only rules have no remote ID and may
     // be created by a scoped push.
     let scope = super::scope_of(t, selectors, tag, source, &local_all, "apply").await?;
@@ -154,6 +157,20 @@ pub async fn plan_push(
             .map(|r| r.name().to_string())
             .unwrap_or_default();
         preview_details.push(format!("{}  {}  update (pointer)", dangling.rule_id, name));
+    }
+
+    // A value list is data, not configuration, and its content is not managed
+    // here (spec 7.7), but a referenced value list that cannot exist must be
+    // reported, never silently pushed. Absence is judged on the data streams:
+    // when they are not bootstrapped, no value list can exist. The `?` refuses
+    // on any failure that is not a clean "absent" 404, so an unverifiable
+    // reference is a failure rather than a silent omission.
+    if !value_lists.is_empty() && !exceptions::value_lists_bootstrapped(t).await? {
+        for id in &value_lists {
+            preview_details.push(format!(
+                "value list \"{id}\" is absent; run POST /api/lists/index to bootstrap the data streams"
+            ));
+        }
     }
 
     let mut entries: Vec<ReportEntry> = Vec::new();
@@ -571,4 +588,35 @@ fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<
         }
     }
     Ok(())
+}
+
+/// The value-list ids an exception item's entries reference.
+///
+/// A `list` entry references a value list through `list.id`, a caller-supplied
+/// id that is stable across stacks (spec 7.7). A `BTreeSet` keeps the preview
+/// order deterministic.
+fn value_list_refs(items: &[ExceptionItem]) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for item in items {
+        let Some(entries) = item.as_map().get("entries").and_then(Value::as_array) else {
+            continue;
+        };
+        for entry in entries {
+            let Some(obj) = entry.as_object() else {
+                continue;
+            };
+            if obj.get("type").and_then(Value::as_str) != Some("list") {
+                continue;
+            }
+            if let Some(id) = obj
+                .get("list")
+                .and_then(Value::as_object)
+                .and_then(|l| l.get("id"))
+                .and_then(Value::as_str)
+            {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    ids
 }
