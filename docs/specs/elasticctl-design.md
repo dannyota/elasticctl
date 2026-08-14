@@ -183,10 +183,13 @@ Does not know about detection rules.
   separate module from `rules` so that neither file has to be read whole to
   change the other; the endpoints are a stable surface and the orchestration
   is where behaviour moves.
-- **`ops`** — the report and plan types every vertical's orchestration shares:
-  `MutationPlan`, `MutationOutcome`, `ExportOutcome`, `ImportOutcome`. Defining
-  them once is what lets `rules`, `exceptions`, and `prebuilt` present one
-  shape to `render` instead of three that nearly agree.
+- **`ops`** — the plan and report types that more than one vertical genuinely
+  shares. A type earns a place here by having a second consumer, in the commit
+  that adds it; a shape guessed in advance of one belongs to the vertical that
+  needs it. Measured on 2026-08-14, `MutationPlan` and `ExportOutcome` are
+  shared and the per-command outcome shapes are not: enable, disable, delete,
+  and import each report different counts and different array-valued fields,
+  and flattening them into one struct would change output.
 - **`exceptions`** — exception list containers and items, shaped like `rules`:
   typed wrappers, orchestration, no printing.
 - **`prebuilt`** — prebuilt rule status and installation.
