@@ -1,4 +1,4 @@
-//! The canonical rule representation.
+//! The rule, exception-list, and exception-item representations.
 //!
 //! A measured create response has 36 fields, which vary by rule type and
 //! Elastic version. A JSON map preserves unknown fields; a fixed struct would
@@ -597,11 +597,22 @@ mod tests {
     }
 
     #[test]
-    fn item_volatile_fields_are_the_list_set_without_version() {
+    fn item_volatile_fields_match_the_measured_set() {
         // Measured: an item carries `_version` but no `version`.
-        assert!(!ITEM_VOLATILE_FIELDS.contains(&"version"));
-        assert!(ITEM_VOLATILE_FIELDS.contains(&"_version"));
-        assert_eq!(ITEM_VOLATILE_FIELDS.len(), LIST_VOLATILE_FIELDS.len() - 1);
+        let mut got = ITEM_VOLATILE_FIELDS.to_vec();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            [
+                "_version",
+                "created_at",
+                "created_by",
+                "id",
+                "tie_breaker_id",
+                "updated_at",
+                "updated_by"
+            ]
+        );
     }
 
     #[test]
