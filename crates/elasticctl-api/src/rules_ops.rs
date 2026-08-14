@@ -281,9 +281,11 @@ pub async fn export_rules(
 ///
 /// With `--skip-existing`, check existing rule IDs before the preview so it
 /// shows only rules that would import. That query is a read, so it belongs
-/// here and does not violate the no-write rule.
+/// here and does not violate the no-write rule. The transport is `None` unless
+/// `skip_existing` is set, so a dry run that only reads the file never needs
+/// one.
 pub async fn plan_import(
-    t: &Transport,
+    t: Option<&Transport>,
     path: &Path,
     overwrite: bool,
     skip_existing: bool,
@@ -301,6 +303,9 @@ pub async fn plan_import(
     let mut to_upload = rules;
 
     if skip_existing {
+        let t = t.ok_or_else(|| {
+            Error::new(ErrorKind::Error, "import --skip-existing needs a transport")
+        })?;
         let ids: Vec<String> = to_upload
             .iter()
             .filter_map(|r| r.rule_id().ok().map(str::to_owned))

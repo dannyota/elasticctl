@@ -119,15 +119,9 @@ pub async fn export(
             }))
         }
         // Spec 6.2: without `--out`, stdout is the rule file, verbatim under
-        // every `--format`. The body is not a report, so it must not go
-        // through `render::emit`. Return only the failure signal for the exit
-        // code; `main` must not render it.
-        None => {
-            use std::io::Write;
-            print!("{}", outcome.body);
-            std::io::stdout().flush().ok();
-            Ok(json!({"failed": outcome.missing}))
-        }
+        // every `--format`. The body is not a report, so return it for `main`
+        // to write directly rather than routing it through `render::emit`.
+        None => Ok(json!({"text": outcome.body, "failed": outcome.missing})),
     }
 }
 
@@ -137,8 +131,15 @@ pub async fn import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
-    ctx.require_credential()?;
-    let t = ctx.transport().await?;
+    // A dry run that only reads the file must not require a credential. Build
+    // the transport only for the --skip-existing read; the file itself is read
+    // in `plan_import` before any server call.
+    let t = if skip_existing {
+        ctx.require_credential()?;
+        Some(ctx.transport().await?)
+    } else {
+        None
+    };
     let plan = rules_ops::plan_import(t, path, overwrite, skip_existing).await?;
 
     let preview = Preview {
@@ -155,6 +156,10 @@ pub async fn import(
         }));
     }
 
+    // The upload always reaches the server, so require the credential here, as
+    // 0.1.3 did.
+    ctx.require_credential()?;
+    let t = ctx.transport().await?;
     let report = rules_ops::apply_import(t, &plan.ndjson, overwrite).await?;
     Ok(json!({
         "applied": true,

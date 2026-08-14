@@ -938,3 +938,83 @@ async fn the_default_import_still_reports_a_conflict_as_a_failure() {
     assert_eq!(v["failed"][0]["rule_id"], "a");
     assert!(v["skipped"].as_array().unwrap().is_empty());
 }
+
+/// A dry-run import without `--skip-existing` only reads the file, so it must
+/// not require a credential. 0.1.3 printed its preview against an unconfigured
+/// profile; the move must not have turned that into a credential error.
+#[tokio::test]
+async fn import_dry_run_against_a_credential_less_profile_still_previews() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "current = \"nocreds\"\n\n\
+         [profiles.nocreds]\n\
+         kibana_url = \"https://kb.example.com\"\n\
+         space = \"default\"\n\
+         verify = true\n\
+         timeout_secs = 30\n",
+    )
+    .unwrap();
+    let src = dir.path().join("in.ndjson");
+    std::fs::write(
+        &src,
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "import", "--json", "--config"])
+        .arg(&config)
+        .arg("--path")
+        .arg(&src)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("[DRY RUN]"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["applied"], false);
+}
+
+/// A missing file must report the file error before a missing credential, as
+/// 0.1.3 did.
+#[tokio::test]
+async fn import_of_a_missing_file_reports_the_file_error_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "current = \"nocreds\"\n\n\
+         [profiles.nocreds]\n\
+         kibana_url = \"https://kb.example.com\"\n\
+         space = \"default\"\n\
+         verify = true\n\
+         timeout_secs = 30\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["rules", "import", "--json", "--config"])
+        .arg(&config)
+        .arg("--path")
+        .arg(dir.path().join("missing.ndjson"))
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("missing.ndjson"), "{msg}");
+    assert!(!msg.contains("credential"), "{msg}");
+}

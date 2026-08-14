@@ -204,17 +204,19 @@ async fn main() {
                 std::io::stdout().flush().ok();
                 std::process::exit(0);
             }
-            // Export content is raw file text, not a report. `cmd::rules::export`
-            // already wrote it unchanged so `--format` and `--json` cannot
-            // re-encode it; the returned value carries only the failure signal
-            // for the exit code and must not be rendered.
+            // Export content is raw file text, not a report. Write it unchanged
+            // so `--format` and `--json` cannot re-encode it. `failed` sets
+            // the exit code but is not printed with the file.
             let export_to_stdout = matches!(
                 &args.command,
                 Command::Rules {
                     action: RulesAction::Export { .. }
                 }
             ) && args.global.out.is_none();
-            if export_to_stdout {
+            if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
+                use std::io::Write;
+                print!("{text}");
+                std::io::stdout().flush().ok();
                 std::process::exit(render::exit_code_for_value(&value));
             }
             // Export already wrote the file. Render its confirmation to stdout
