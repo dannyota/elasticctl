@@ -12,7 +12,8 @@ pub struct ReportEntry {
     pub rule_id: String,
     pub name: String,
     /// `create`, `update`, or `skipped_remote_only` for rules; `create_list`,
-    /// `update_list`, or `create_item` for exception writes.
+    /// `update_list`, `create_item`, `update_item`, or `delete_item` for
+    /// exception writes.
     pub action: String,
     pub before: Option<Value>,
     pub after: Option<Value>,

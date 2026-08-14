@@ -171,10 +171,16 @@ fn decode_list_file(body: &str, format: Format) -> Result<ExceptionList> {
         Format::Yaml => serde_yaml_ng::from_str(body)
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing exception list: {e}")))?,
         Format::Ndjson => {
-            let line = body
-                .lines()
-                .find(|l| !l.trim().is_empty())
+            let mut lines = body.lines().filter(|line| !line.trim().is_empty());
+            let line = lines
+                .next()
                 .ok_or_else(|| Error::new(ErrorKind::Error, "empty exception list file"))?;
+            if lines.next().is_some() {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception mirror file must contain exactly one nonblank NDJSON object",
+                ));
+            }
             serde_json::from_str(line.trim())
                 .map_err(|e| Error::new(ErrorKind::Error, format!("parsing exception list: {e}")))?
         }
@@ -185,8 +191,15 @@ fn decode_list_file(body: &str, format: Format) -> Result<ExceptionList> {
 /// Split a container's `items` array into items, removing it from the container
 /// so container drift compares containers, not their items.
 fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
-    let Some(Value::Array(items)) = list.as_map_mut().remove("items") else {
-        return Ok(Vec::new());
+    let items = match list.as_map_mut().remove("items") {
+        None => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => {
+            return Err(Error::new(
+                ErrorKind::Error,
+                "exception list field items must be an array",
+            ));
+        }
     };
     let list_id = list.list_id()?.to_string();
     let namespace = list.namespace_type().to_string();

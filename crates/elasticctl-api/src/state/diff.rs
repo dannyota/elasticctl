@@ -18,7 +18,10 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub(crate) enum ListOp {
     Create(ExceptionList),
-    Update(ExceptionList),
+    Update {
+        before: ExceptionList,
+        after: ExceptionList,
+    },
 }
 
 /// An item write `push` will perform, in apply order.
@@ -31,10 +34,12 @@ pub(crate) enum ListOp {
 #[derive(Debug, Clone)]
 pub(crate) enum ItemOp {
     Create(ExceptionItem),
-    Update(ExceptionItem),
+    Update {
+        before: ExceptionItem,
+        after: ExceptionItem,
+    },
     Remove {
-        list_id: String,
-        item_id: String,
+        before: ExceptionItem,
         namespace_type: String,
     },
 }
@@ -190,7 +195,10 @@ fn list_drift(
                         name: local_list.name().to_string(),
                         fields,
                     });
-                    ops.push(ListOp::Update(local_list.clone()));
+                    ops.push(ListOp::Update {
+                        before: remote_list.clone(),
+                        after: local_list.clone(),
+                    });
                 }
             }
             (None, None) => unreachable!("a key came from one of the two maps"),
@@ -309,14 +317,13 @@ fn item_reconciliation(
                     });
                     ops.push(ItemOp::Create(l.clone()));
                 }
-                (None, Some(_)) => {
+                (None, Some(remote_item)) => {
                     changes.push(ListChange::ItemRemoved {
                         list_id: key.list_id.clone(),
                         item_id: item_id.clone(),
                     });
                     ops.push(ItemOp::Remove {
-                        list_id: key.list_id.clone(),
-                        item_id: item_id.clone(),
+                        before: normalize::canonical_item(remote_item),
                         namespace_type: key.namespace_type.clone(),
                     });
                 }
@@ -330,7 +337,10 @@ fn item_reconciliation(
                             item_id: item_id.clone(),
                             fields,
                         });
-                        ops.push(ItemOp::Update(l.clone()));
+                        ops.push(ItemOp::Update {
+                            before: remote_canon,
+                            after: l.clone(),
+                        });
                     }
                 }
                 (None, None) => unreachable!("an item id came from one of the two maps"),

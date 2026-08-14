@@ -623,6 +623,15 @@ async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
         applied.summary.pending, 1,
         "the rule was never written after the item failure"
     );
+    let created_list = applied
+        .report
+        .entries
+        .iter()
+        .find(|entry| entry.action == "create_list")
+        .expect("the successful container write is recorded before the item failure");
+    assert!(created_list.applied);
+    assert!(created_list.error.is_none());
+    assert!(created_list.after.is_some());
     assert!(
         applied
             .report
@@ -1166,9 +1175,91 @@ async fn an_item_absent_locally_is_deleted() {
         plan.preview_details
     );
 
-    state::apply_push(stack.transport(), plan).await.unwrap();
+    let applied = state::apply_push(stack.transport(), plan).await.unwrap();
     let deletes = stack.deleted_item_ids().await;
     assert_eq!(deletes, vec!["drop"], "only the absent item is deleted");
+    let entry = applied
+        .report
+        .entries
+        .iter()
+        .find(|entry| entry.action == "delete_item")
+        .expect("the successful item deletion is recorded");
+    assert_eq!(entry.rule_id, "drop");
+    assert!(entry.applied);
+    assert!(entry.before.is_some());
+    assert!(entry.after.is_none());
+    assert!(entry.error.is_none());
+}
+
+#[tokio::test]
+async fn push_refuses_a_non_array_items_field_before_any_item_delete() {
+    let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
+    let dir = mirror_with_list_items("l", &[]);
+    std::fs::write(
+        dir.path().join("exceptions/l.ndjson"),
+        format!(
+            "{}\n",
+            json!({
+                "list_id": "l", "type": "detection", "name": "list l",
+                "namespace_type": "single", "items": {"unexpected": true}
+            })
+        ),
+    )
+    .unwrap();
+
+    let error = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(error.message.contains("items"), "{}", error.message);
+    assert!(error.message.contains("array"), "{}", error.message);
+    assert!(stack.deleted_item_ids().await.is_empty());
+    assert!(stack.write_requests().await.is_empty());
+}
+
+#[tokio::test]
+async fn push_refuses_a_multi_record_exception_file_before_any_item_delete() {
+    let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
+    let dir = mirror_with_list_items("l", &[]);
+    std::fs::write(
+        dir.path().join("exceptions/l.ndjson"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "list_id": "l", "type": "detection", "name": "list l",
+                "namespace_type": "single", "items": []
+            }),
+            json!({
+                "item_id": "ignored", "list_id": "l", "type": "simple",
+                "namespace_type": "single", "entries": []
+            })
+        ),
+    )
+    .unwrap();
+
+    let error = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(error.message.contains("one"), "{}", error.message);
+    assert!(stack.deleted_item_ids().await.is_empty());
+    assert!(stack.write_requests().await.is_empty());
 }
 
 /// The asymmetry must hold in the same run: items reconcile, containers do not.
@@ -1315,6 +1406,24 @@ async fn an_item_added_to_an_existing_container_is_created() {
             .contains(&"POST /api/exception_lists/items".to_string()),
         "the create is issued"
     );
+    let exception_entries: Vec<_> = applied
+        .report
+        .entries
+        .iter()
+        .filter(|entry| entry.action.ends_with("_item"))
+        .collect();
+    assert_eq!(
+        exception_entries.len(),
+        1,
+        "the exception-only write is evidenced"
+    );
+    let entry = exception_entries[0];
+    assert_eq!(entry.action, "create_item");
+    assert_eq!(entry.rule_id, "new");
+    assert!(entry.applied);
+    assert!(entry.before.is_none());
+    assert!(entry.after.is_some());
+    assert!(entry.error.is_none());
 }
 
 /// Spec 5.4: a modified item is updated, not left to drift.
@@ -1369,6 +1478,17 @@ async fn a_modified_item_is_updated() {
             .contains(&"PUT /api/exception_lists/items".to_string()),
         "a differing item is updated"
     );
+    let entry = applied
+        .report
+        .entries
+        .iter()
+        .find(|entry| entry.action == "update_item")
+        .expect("the successful item update is recorded");
+    assert_eq!(entry.rule_id, "keep");
+    assert!(entry.applied);
+    assert!(entry.before.is_some());
+    assert!(entry.after.is_some());
+    assert!(entry.error.is_none());
 }
 
 /// A pull must refuse a missing referenced list before writing a partial

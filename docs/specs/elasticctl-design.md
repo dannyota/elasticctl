@@ -397,6 +397,12 @@ the tool whose preview is client-computed, and the banner names both counts.
 - **`push`** — read local, compute the diff, apply each change through the
   guard, then write a change-evidence report of per-rule before and after
   values plus an applied flag, suitable for attaching to a change ticket.
+  The same report records every exception mutation with `create_list`,
+  `update_list`, `create_item`, `update_item`, or `delete_item`. For those
+  entries the existing `rule_id` field carries the stable `list_id` or
+  `item_id`; `name` carries the list name or the item's parent `list_id`.
+  Successful creates have no `before`, deletes have no `after`, and successful
+  updates carry both. A failed write has no `after`.
   Its report path is preflighted and recoverably replaceable before the first
   remote apply, so an unwritable report cannot leave an unreported mutation.
 
@@ -567,6 +573,12 @@ selectors — so an item present remotely and absent locally *is* an instruction
 in the way a removed entry in a rule's `tags` array is. Removing an exception
 is how a detection is un-suppressed. A mirror that cannot express it cannot
 converge.
+
+That deletion contract requires a complete, readable local item set. An
+exception file may contain one NDJSON object. An omitted `items` field means an
+empty hand-authored set, but a present `items` field must be an array. Multiple
+objects or a non-array value are refused before remote reconciliation, so
+malformed input cannot widen into item deletion.
 
 `diff` gains an `exceptions` block mirroring the rules block, and `clean` is
 true only when both are.
@@ -965,8 +977,10 @@ Same project, same date.
 | Live | `ELASTICCTL_LIVE=1 cargo test -- --ignored` | Real stack. The conformance check that catches API drift |
 
 Fixtures are **recorded, not hand-written**. `cargo xtask record` drives a live
-stack, dumps the real exchanges, and scrubs credentials. Each fixture records
-its deployment flavor and stack version so drift is visible.
+stack, dumps the real exchanges, and scrubs credentials, URL userinfo, and the
+recording host in both configured-authority and normalized-default-port forms.
+Each fixture records its deployment flavor and stack version so drift is
+visible.
 
 The directory is `tests/fixtures/<flavor>-<version>`, where flavor is the
 *deployment* flavor, not the value a stack reports. Hosted and self-managed
@@ -1184,7 +1198,7 @@ against it risks baking Serverless assumptions into code that claims to support
 self-managed. The mitigation is fixture tagging by flavor and version,
 capability-gated divergent behavior, and recordings for each flavor.
 
-All three flavors now have 14 fixtures: `serverless-9.6.0`,
+All three flavors now have 28 fixtures: `serverless-9.6.0`,
 `traditional-9.5.1`, and `ech-9.5.1`. Coverage is even, so no flavor is least
 tested.
 

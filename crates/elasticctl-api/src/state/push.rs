@@ -119,8 +119,8 @@ pub async fn plan_push(
             ListOp::Create(list) => {
                 preview_details.push(format!("{}  {}  create", list.list_id()?, list.name()))
             }
-            ListOp::Update(list) => {
-                preview_details.push(format!("{}  {}  update", list.list_id()?, list.name()))
+            ListOp::Update { after, .. } => {
+                preview_details.push(format!("{}  {}  update", after.list_id()?, after.name()))
             }
         }
     }
@@ -129,12 +129,16 @@ pub async fn plan_push(
             ItemOp::Create(item) => {
                 preview_details.push(format!("{}  {}  create", item.item_id()?, item.list_id()?))
             }
-            ItemOp::Update(item) => {
-                preview_details.push(format!("{}  {}  update", item.item_id()?, item.list_id()?))
-            }
-            ItemOp::Remove {
-                list_id, item_id, ..
-            } => preview_details.push(format!("{item_id}  {list_id}  delete")),
+            ItemOp::Update { after, .. } => preview_details.push(format!(
+                "{}  {}  update",
+                after.item_id()?,
+                after.list_id()?
+            )),
+            ItemOp::Remove { before, .. } => preview_details.push(format!(
+                "{}  {}  delete",
+                before.item_id()?,
+                before.list_id()?
+            )),
         }
     }
     for change in &actionable {
@@ -327,6 +331,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     let mut resolved = exceptions::resolve_ids(t, &wanted).await?;
 
     let mut counts = ExceptionCounts::default();
+    let mut exception_entries = Vec::with_capacity(plan.list_ops.len() + plan.item_ops.len());
 
     // 1. Containers. A failure records the evidence and stops: the ordering
     // invariant means later writes depend on this one.
@@ -338,31 +343,58 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         resolved.insert(list.key()?, id.to_string());
                     }
                     counts.lists_created += 1;
+                    exception_entries.push(ReportEntry {
+                        rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
+                        name: list.name().to_string(),
+                        action: "create_list".into(),
+                        before: None,
+                        after: Some(normalize::canonical_list(&created).into_value()),
+                        applied: true,
+                        error: None,
+                    });
                     None
                 }
-                Err(e) => Some((
-                    list.list_id().unwrap_or("<unreadable>").to_string(),
-                    list.name().to_string(),
-                    "create_list",
-                    e.message,
-                )),
+                Err(e) => Some(ReportEntry {
+                    rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
+                    name: list.name().to_string(),
+                    action: "create_list".into(),
+                    before: None,
+                    after: None,
+                    applied: false,
+                    error: Some(e.message),
+                }),
             },
-            ListOp::Update(list) => match exceptions::update_list(t, list).await {
-                Ok(_) => {
+            ListOp::Update { before, after } => match exceptions::update_list(t, after).await {
+                Ok(applied) => {
                     counts.lists_updated += 1;
+                    exception_entries.push(ReportEntry {
+                        rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
+                        name: after.name().to_string(),
+                        action: "update_list".into(),
+                        before: Some(before.clone().into_value()),
+                        after: Some(normalize::canonical_list(&applied).into_value()),
+                        applied: true,
+                        error: None,
+                    });
                     None
                 }
-                Err(e) => Some((
-                    list.list_id().unwrap_or("<unreadable>").to_string(),
-                    list.name().to_string(),
-                    "update_list",
-                    e.message,
-                )),
+                Err(e) => Some(ReportEntry {
+                    rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
+                    name: after.name().to_string(),
+                    action: "update_list".into(),
+                    before: Some(before.clone().into_value()),
+                    after: None,
+                    applied: false,
+                    error: Some(e.message),
+                }),
             },
         };
-        if let Some((id, name, action, error)) = failure {
+        if let Some(failed_entry) = failure {
             return Ok(finish_after_exception_failure(
-                plan, id, name, action, error, counts,
+                plan,
+                exception_entries,
+                failed_entry,
+                counts,
             ));
         }
     }
@@ -373,50 +405,100 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     for op in &plan.item_ops {
         let failure = match op {
             ItemOp::Create(item) => match exceptions::create_item(t, item).await {
-                Ok(_) => {
+                Ok(applied) => {
                     counts.items_created += 1;
+                    exception_entries.push(ReportEntry {
+                        rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
+                        name: item.list_id().unwrap_or("<unreadable>").to_string(),
+                        action: "create_item".into(),
+                        before: None,
+                        after: Some(normalize::canonical_item(&applied).into_value()),
+                        applied: true,
+                        error: None,
+                    });
                     None
                 }
-                Err(e) => Some((
-                    item.item_id().unwrap_or("<unreadable>").to_string(),
-                    item.list_id().unwrap_or("<unreadable>").to_string(),
-                    "create_item",
-                    e.message,
-                )),
+                Err(e) => Some(ReportEntry {
+                    rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
+                    name: item.list_id().unwrap_or("<unreadable>").to_string(),
+                    action: "create_item".into(),
+                    before: None,
+                    after: None,
+                    applied: false,
+                    error: Some(e.message),
+                }),
             },
-            ItemOp::Update(item) => match exceptions::update_item(t, item).await {
-                Ok(_) => {
+            ItemOp::Update { before, after } => match exceptions::update_item(t, after).await {
+                Ok(applied) => {
                     counts.items_updated += 1;
+                    exception_entries.push(ReportEntry {
+                        rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
+                        name: after.list_id().unwrap_or("<unreadable>").to_string(),
+                        action: "update_item".into(),
+                        before: Some(before.clone().into_value()),
+                        after: Some(normalize::canonical_item(&applied).into_value()),
+                        applied: true,
+                        error: None,
+                    });
                     None
                 }
-                Err(e) => Some((
-                    item.item_id().unwrap_or("<unreadable>").to_string(),
-                    item.list_id().unwrap_or("<unreadable>").to_string(),
-                    "update_item",
-                    e.message,
-                )),
+                Err(e) => Some(ReportEntry {
+                    rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
+                    name: after.list_id().unwrap_or("<unreadable>").to_string(),
+                    action: "update_item".into(),
+                    before: Some(before.clone().into_value()),
+                    after: None,
+                    applied: false,
+                    error: Some(e.message),
+                }),
             },
             ItemOp::Remove {
-                list_id,
-                item_id,
+                before,
                 namespace_type,
-            } => match exceptions::delete_item(t, item_id, namespace_type).await {
+            } => match exceptions::delete_item(
+                t,
+                before.item_id().unwrap_or("<unreadable>"),
+                namespace_type,
+            )
+            .await
+            {
                 Ok(_) => {
                     counts.items_removed += 1;
+                    exception_entries.push(ReportEntry {
+                        rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
+                        name: before.list_id().unwrap_or("<unreadable>").to_string(),
+                        action: "delete_item".into(),
+                        before: Some(before.clone().into_value()),
+                        after: None,
+                        applied: true,
+                        error: None,
+                    });
                     None
                 }
-                Err(e) => Some((item_id.clone(), list_id.clone(), "delete_item", e.message)),
+                Err(e) => Some(ReportEntry {
+                    rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
+                    name: before.list_id().unwrap_or("<unreadable>").to_string(),
+                    action: "delete_item".into(),
+                    before: Some(before.clone().into_value()),
+                    after: None,
+                    applied: false,
+                    error: Some(e.message),
+                }),
             },
         };
-        if let Some((id, name, action, error)) = failure {
+        if let Some(failed_entry) = failure {
             return Ok(finish_after_exception_failure(
-                plan, id, name, action, error, counts,
+                plan,
+                exception_entries,
+                failed_entry,
+                counts,
             ));
         }
     }
 
     // 3. Rules, injecting the resolved pointer into each.
-    let mut entries = Vec::with_capacity(plan.report.entries.len());
+    let mut entries = exception_entries;
+    entries.reserve(plan.report.entries.len());
     for entry in plan.report.entries {
         if entry.action != "create" && entry.action != "update" {
             // `skipped_remote_only` entries pass through untouched.
@@ -506,21 +588,13 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
 /// failure.
 fn finish_after_exception_failure(
     mut plan: PushPlan,
-    id: String,
-    name: String,
-    action: &str,
-    error: String,
+    mut exception_entries: Vec<ReportEntry>,
+    failed_entry: ReportEntry,
     counts: ExceptionCounts,
 ) -> PushPlan {
-    plan.report.entries.push(ReportEntry {
-        rule_id: id,
-        name,
-        action: action.into(),
-        before: None,
-        after: None,
-        applied: false,
-        error: Some(error),
-    });
+    exception_entries.push(failed_entry);
+    exception_entries.append(&mut plan.report.entries);
+    plan.report.entries = exception_entries;
     plan.report.applied = true;
     let (selected, local_total, out_of_scope) = (
         plan.summary.selected,

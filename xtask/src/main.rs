@@ -92,16 +92,65 @@ fn recording_hosts() -> Vec<String> {
 /// never part of the transport URL. Removing only the host would leave those
 /// credentials in the public fixture.
 fn strip_url_userinfo(value: &str) -> String {
-    let Some(scheme_end) = value.find("://") else {
+    let mut scrubbed = String::with_capacity(value.len());
+    let mut remaining = value;
+
+    while let Some(scheme_end) = remaining.find("://") {
+        let authority_start = scheme_end + 3;
+        scrubbed.push_str(&remaining[..authority_start]);
+        remaining = &remaining[authority_start..];
+
+        let authority_end = remaining.find(['/', '?', '#']).unwrap_or(remaining.len());
+        let (authority, tail) = remaining.split_at(authority_end);
+        scrubbed.push_str(
+            authority
+                .rfind('@')
+                .map_or(authority, |index| &authority[index + 1..]),
+        );
+        remaining = tail;
+    }
+    scrubbed.push_str(remaining);
+    scrubbed
+}
+
+/// Replace a URL authority that omitted the configured default port.
+///
+/// A configured `https://host:443` can appear in a response as
+/// `https://host/...`, and `http://host:80` likewise loses `:80`. Do not
+/// derive a bare-host match for non-default ports: `host:9243` and `host` can
+/// identify different deployments.
+fn scrub_normalized_default_port_url(value: &str, authority: &str) -> String {
+    let Some((hostname, port)) = authority.rsplit_once(':') else {
         return value.to_string();
     };
-    let (scheme, rest) = value.split_at(scheme_end + 3);
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(authority_end);
-    match authority.rfind('@') {
-        Some(index) => format!("{scheme}{}{tail}", &authority[index + 1..]),
-        None => value.to_string(),
+    let scheme = match port {
+        "443" => "https",
+        "80" => "http",
+        _ => return value.to_string(),
+    };
+    if hostname.is_empty() {
+        return value.to_string();
     }
+
+    let needle = format!("{scheme}://{hostname}");
+    let replacement = format!("{scheme}://REDACTED.example.invalid");
+    let mut scrubbed = String::new();
+    let mut remaining = value;
+
+    while let Some(position) = remaining.find(&needle) {
+        let end = position + needle.len();
+        let tail = &remaining[end..];
+        if matches!(tail.chars().next(), None | Some('/' | '?' | '#')) {
+            scrubbed.push_str(&remaining[..position]);
+            scrubbed.push_str(&replacement);
+            remaining = tail;
+        } else {
+            scrubbed.push_str(&remaining[..end]);
+            remaining = tail;
+        }
+    }
+    scrubbed.push_str(remaining);
+    scrubbed
 }
 
 /// Replace the recording stack's hostname wherever it appears in a value.
@@ -117,6 +166,7 @@ fn scrub_hosts(v: &mut Value, hosts: &[String]) {
                 if s.contains(h.as_str()) {
                     *s = s.replace(h.as_str(), "REDACTED.example.invalid");
                 }
+                *s = scrub_normalized_default_port_url(s, h);
             }
         }
         Value::Object(m) => m.values_mut().for_each(|x| scrub_hosts(x, hosts)),
@@ -1372,6 +1422,47 @@ mod tests {
             value["url"],
             "https://REDACTED.example.invalid/app/rules?x=1#detail"
         );
+    }
+
+    #[test]
+    fn host_scrub_removes_userinfo_from_each_url_in_a_string() {
+        let mut value = json!({
+            "urls": "https://alice:secret@cluster.example:9243/a https://bob:hidden@cluster.example:9243/b"
+        });
+
+        scrub_hosts(&mut value, &["cluster.example:9243".to_string()]);
+
+        assert_eq!(
+            value["urls"],
+            "https://REDACTED.example.invalid/a https://REDACTED.example.invalid/b"
+        );
+    }
+
+    #[test]
+    fn host_scrub_matches_a_normalized_default_port_url() {
+        let mut value = json!({"url": "https://internal.example/app/rules"});
+
+        scrub_hosts(&mut value, &["internal.example:443".to_string()]);
+
+        assert_eq!(value["url"], "https://REDACTED.example.invalid/app/rules");
+    }
+
+    #[test]
+    fn host_scrub_matches_a_normalized_http_default_port_url() {
+        let mut value = json!({"url": "http://internal.example/app/rules"});
+
+        scrub_hosts(&mut value, &["internal.example:80".to_string()]);
+
+        assert_eq!(value["url"], "http://REDACTED.example.invalid/app/rules");
+    }
+
+    #[test]
+    fn host_scrub_does_not_normalize_a_nondefault_port() {
+        let mut value = json!({"url": "https://internal.example/app/rules"});
+
+        scrub_hosts(&mut value, &["internal.example:9243".to_string()]);
+
+        assert_eq!(value["url"], "https://internal.example/app/rules");
     }
 
     #[test]
