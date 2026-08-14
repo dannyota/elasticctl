@@ -23,11 +23,8 @@ pub use model::{
     server_defaults,
 };
 pub use normalize::{canonical, comparable, sort_rules};
-pub use ops::{ExportOutcome, MutationPlan};
+pub use ops::{DeleteOutcome, ExportOutcome, ImportReport, MutationPlan};
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
-pub use rules_ops::{
-    DeleteOutcome, ImportPlan, ImportReport, PreviewReport, RuleListReport, SetEnabledOutcome,
-    ValidateReport,
-};
+pub use rules_ops::{ImportPlan, PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
 pub use state::{DiffReport, PullReport, PushPlan, PushReport};

@@ -67,8 +67,10 @@ impl RuleFilter {
 ///
 /// A quote could otherwise close the literal and make the remaining value KQL,
 /// turning a scoped bulk action into an unscoped action. Escape backslashes
-/// first to avoid double-escaping inserted quote escapes.
-fn kql_escape(value: &str) -> String {
+/// first to avoid double-escaping inserted quote escapes. Shared with the
+/// exceptions vertical: the two filter builders must not diverge, because a
+/// divergence silently matches the wrong objects.
+pub(crate) fn kql_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 

@@ -7,7 +7,7 @@
 use crate::codec::{self, Format};
 use crate::model::{Rule, server_defaults};
 use crate::normalize;
-use crate::ops::{ExportOutcome, MutationPlan};
+use crate::ops::{DeleteOutcome, ExportOutcome, ImportReport, MutationPlan};
 use crate::rules::{self, BulkAction, RuleFilter};
 use crate::selection;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
@@ -34,15 +34,6 @@ pub struct SetEnabledOutcome {
     pub total: u64,
 }
 
-/// The report a `delete` apply renders.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct DeleteOutcome {
-    pub applied: bool,
-    pub deleted: Vec<Value>,
-    pub failed: Vec<Value>,
-    pub total: usize,
-}
-
 /// What `plan_import` computed and `apply_import` uploads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportPlan {
@@ -54,13 +45,6 @@ pub struct ImportPlan {
     pub total: usize,
     /// Rules the server already has, with `--skip-existing`.
     pub skipped: Vec<Value>,
-}
-
-/// The upload half of an import, before the caller adds the plan's totals.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ImportReport {
-    pub succeeded: Value,
-    pub failed: Value,
 }
 
 /// One rule's validation entry.

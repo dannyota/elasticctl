@@ -27,3 +27,23 @@ pub struct ExportOutcome {
     pub exported: u64,
     pub missing: Vec<Value>,
 }
+
+/// The report a `delete` apply renders. Shared by the rules and exceptions
+/// verticals: each reports the same applied/deleted/failed/total shape, only
+/// the per-object entries differ (`rule_id` versus `list_id`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeleteOutcome {
+    pub applied: bool,
+    pub deleted: Vec<Value>,
+    pub failed: Vec<Value>,
+    pub total: usize,
+}
+
+/// The upload half of an import, before the caller adds the plan's totals.
+/// Shared by the rules and exceptions verticals: both normalise Kibana's
+/// import response to a succeeded count and an errors array.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImportReport {
+    pub succeeded: Value,
+    pub failed: Value,
+}
