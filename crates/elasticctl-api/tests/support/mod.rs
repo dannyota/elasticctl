@@ -206,7 +206,18 @@ impl MockStack {
                 .and(path("/api/exception_lists"))
                 .and(query_param("list_id", format!("l{i}")))
                 .and(query_param("namespace_type", "single"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(list))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list.clone()))
+                .mount(&stack.server)
+                .await;
+            // The export route resolves `id` first, then posts by both the
+            // volatile `id` and the stable identity (fact E). Serve one list
+            // line so `exceptions export` produces an importable body.
+            Mock::given(method("POST"))
+                .and(path("/api/exception_lists/_export"))
+                .and(query_param("id", format!("id-l{i}")))
+                .and(query_param("list_id", format!("l{i}")))
+                .and(query_param("namespace_type", "single"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{list}\n")))
                 .mount(&stack.server)
                 .await;
         }
