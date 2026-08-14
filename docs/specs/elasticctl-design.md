@@ -612,6 +612,14 @@ Failures emit one JSON object on stderr:
 Kinds: `auth`, `permission`, `not_found`, `conflict`, `unsupported`, `http`,
 `connection`, `timeout`, `error`.
 
+`unsupported` covers any request the tool understands and deliberately refuses,
+not only a deployment flavor that lacks a capability. Section 3.1 introduces it
+for the flavor case because that is where it first appears, but a local output
+format that cannot represent a result — `rules export --format-file yaml` on a
+bundle carrying exception lists — is the same kind of answer: a definite refusal
+naming a remedy, rather than an unclassified failure. `error` is the bucket for
+failures the classifier could not place, which is a different thing.
+
 Exit codes: `0` success, `1` error, `2` usage.
 
 ## 7. Verified API facts
