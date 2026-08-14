@@ -65,6 +65,17 @@ const CASES: &[(&str, &[&str])] = &[
         "state_diff_json",
         &["state", "diff", "--dir", "FIXTURE_DIR", "--json"],
     ),
+    (
+        "state_diff_scoped_json",
+        &[
+            "state",
+            "diff",
+            "elasticctl-sample-a",
+            "--dir",
+            "FIXTURE_DIR",
+            "--json",
+        ],
+    ),
 ];
 
 /// The mock server binds an ephemeral port, which would change every run. Pin

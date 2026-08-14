@@ -530,3 +530,56 @@ fn push_summary(
         local_total,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_rule(dir: &Path, filename: &str, rule_id: &str) {
+        std::fs::write(
+            dir.join(filename),
+            format!("{{\"rule_id\":\"{rule_id}\",\"name\":\"{rule_id}\",\"type\":\"query\"}}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn is_rule_file_accepts_the_four_recognised_extensions_and_rejects_others() {
+        for ext in ["ndjson", "json", "yaml", "yml"] {
+            assert!(is_rule_file(Path::new(&format!("a.{ext}"))), "{ext}");
+        }
+        for ext in ["md", "txt", "DS_Store", "ndjson.bak"] {
+            assert!(!is_rule_file(Path::new(&format!("a.{ext}"))), "{ext}");
+        }
+        assert!(!is_rule_file(Path::new("noextension")));
+    }
+
+    // Rule directories commonly contain a README. Do not parse it as a rule
+    // or fail `diff` and `push`.
+    #[test]
+    fn read_local_skips_non_rule_files_and_reads_the_valid_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        write_rule(&rules, "a.ndjson", "a");
+        std::fs::write(rules.join("README.md"), "not a rule\n").unwrap();
+        std::fs::write(rules.join("notes.txt"), "also not a rule\n").unwrap();
+        std::fs::create_dir_all(rules.join(".hidden")).unwrap();
+
+        let found = read_local(dir.path()).unwrap();
+        assert_eq!(found.len(), 1, "only the .ndjson file should be read");
+        assert_eq!(found[0].rule_id().unwrap(), "a");
+    }
+
+    #[test]
+    fn read_local_returns_empty_for_a_directory_of_only_unrecognised_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(rules.join("README.md"), "not a rule\n").unwrap();
+        std::fs::write(rules.join("notes.txt"), "also not a rule\n").unwrap();
+
+        let found = read_local(dir.path()).unwrap();
+        assert!(found.is_empty());
+    }
+}

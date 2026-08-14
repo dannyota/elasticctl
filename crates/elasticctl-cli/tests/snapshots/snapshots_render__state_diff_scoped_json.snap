@@ -1,0 +1,18 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+{
+  "clean": false,
+  "local": 1,
+  "remote": 2,
+  "changes": [
+    {
+      "change": "remote_only",
+      "rule_id": "elasticctl-sample-b",
+      "name": "elasticctl sample B"
+    }
+  ],
+  "selected": 1,
+  "local_total": 2
+}
