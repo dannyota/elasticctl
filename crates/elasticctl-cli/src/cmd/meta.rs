@@ -115,10 +115,10 @@ mod tests {
     }
 
     /// Keep `MUTATING` exact and reviewable. This test pins `mutates: true` to
-    /// the six declared paths and fails on an unreviewed addition, rename, or
+    /// the declared paths and fails on an unreviewed addition, rename, or
     /// removal. It declares the expected paths independently of `MUTATING`.
     #[test]
-    fn the_mutating_set_is_exactly_the_six_declared_paths() {
+    fn the_mutating_set_is_exactly_the_declared_paths() {
         let tree = command_tree().unwrap();
         let mut actual: Vec<String> = tree["commands"]
             .as_array()
@@ -133,6 +133,8 @@ mod tests {
             "rules disable",
             "rules delete",
             "rules import",
+            "exceptions delete",
+            "exceptions import",
             "state push",
             "config init",
         ];

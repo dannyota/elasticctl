@@ -2,6 +2,7 @@
 
 pub mod config_cmd;
 pub mod doctor;
+pub mod exceptions;
 pub mod info;
 pub mod meta;
 pub mod rules;

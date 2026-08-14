@@ -117,6 +117,11 @@ pub enum Command {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// Manage exception lists
+    Exceptions {
+        #[command(subcommand)]
+        action: ExceptionsAction,
+    },
     /// Manage rules as code
     State {
         #[command(subcommand)]
@@ -199,6 +204,51 @@ pub enum RulesAction {
         #[arg(long, default_value = "0")]
         sample: u32,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExceptionsAction {
+    /// List exception list containers.
+    List {
+        #[arg(long = "type")]
+        list_type: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long, value_parser = ["single", "agnostic"])]
+        namespace: Option<String>,
+    },
+    /// Show one container and its items.
+    Get { list_id: String },
+    /// Check a file without contacting the server.
+    Validate {
+        #[arg(long)]
+        path: PathBuf,
+    },
+    /// Export containers and their items.
+    Export {
+        /// List ids to export. Omit to export every list.
+        list_ids: Vec<String>,
+        /// Export every list carrying this tag, in addition to any selectors.
+        #[arg(long)]
+        tag: Option<String>,
+        /// File format: ndjson or yaml. Distinct from the global --format,
+        /// which renders this command's own report, not the exported file.
+        #[arg(long = "format-file", default_value = "ndjson")]
+        format_file: String,
+    },
+    /// Import containers and items from a file.
+    Import {
+        #[arg(long)]
+        path: PathBuf,
+        /// Replace lists that already exist
+        #[arg(long)]
+        overwrite: bool,
+        /// Leave lists that already exist alone instead of failing on them
+        #[arg(long, conflicts_with = "overwrite")]
+        skip_existing: bool,
+    },
+    /// Delete containers and their items.
+    Delete { list_ids: Vec<String> },
 }
 
 #[derive(Debug, Subcommand)]
