@@ -12,11 +12,16 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The on-disk mirror layout under a state directory.
+/// The resolved deployment the change report records as its target.
 ///
-/// The `rules/` subdirectory holds one file per rule; see the private
-/// `rules_dir` helper.
-pub struct StateDirs;
+/// Plain values, not `Context` or clap types, so `-api` may take them directly.
+/// The caller builds this from its resolved profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackIdentity {
+    pub profile: String,
+    pub host: String,
+    pub space: String,
+}
 
 /// The report `pull` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -28,6 +33,10 @@ pub struct PullReport {
 }
 
 /// The report `diff` renders.
+///
+/// Field order is the serialized JSON key order and is contractual: the root
+/// `Cargo.toml` enables `serde_json`'s `preserve_order`, so reordering these
+/// fields would silently change rendered output.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DiffReport {
     pub clean: bool,
@@ -59,12 +68,15 @@ pub struct PushReport {
 ///
 /// The preview fields feed the caller's guard banner; `report` is the change
 /// ticket; `summary` is the JSON report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PushPlan {
     pub preview_action: String,
     pub preview_details: Vec<String>,
     pub report: ChangeReport,
     pub summary: PushReport,
+    /// The exact rules the preview described, resolved once at plan time so
+    /// `apply_push` never re-reads the mirror after the guard.
+    desired: BTreeMap<String, Rule>,
 }
 
 fn rules_dir(dir: &Path) -> PathBuf {
@@ -319,6 +331,7 @@ pub async fn plan_push(
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    identity: &StackIdentity,
 ) -> Result<PushPlan> {
     let local_all = read_local(dir)?;
     // Resolve locally first because disk-only rules have no remote ID and may
@@ -354,6 +367,7 @@ pub async fn plan_push(
         .collect();
 
     let mut entries: Vec<ReportEntry> = Vec::new();
+    let mut desired: BTreeMap<String, Rule> = BTreeMap::new();
 
     // Record remote-only rules before applying changes, including in dry runs.
     // `actionable()` excludes them because push never deletes remote rules.
@@ -381,17 +395,19 @@ pub async fn plan_push(
             _ => continue,
         };
 
-        let Some(desired) = by_id(&rule_id) else {
+        let Some(desired_rule) = by_id(&rule_id) else {
             continue;
         };
         let before = remote_by_id(&rule_id).map(|r| normalize::canonical(&r).into_value());
+
+        desired.insert(rule_id.clone(), desired_rule.clone());
 
         entries.push(ReportEntry {
             rule_id,
             name,
             action: action.into(),
             before,
-            after: Some(normalize::canonical(&desired).into_value()),
+            after: Some(normalize::canonical(&desired_rule).into_value()),
             applied: false,
             error: None,
         });
@@ -405,12 +421,10 @@ pub async fn plan_push(
         scope.describe()
     );
 
-    // Profile, host, and space are resolved by the caller, which holds the
-    // context; the transport carries only the connection.
     let report = ChangeReport {
-        profile: String::new(),
-        host: String::new(),
-        space: String::new(),
+        profile: identity.profile.clone(),
+        host: identity.host.clone(),
+        space: identity.space.clone(),
         applied: false,
         entries,
     };
@@ -425,22 +439,16 @@ pub async fn plan_push(
         preview_details,
         report,
         summary,
+        desired,
     })
 }
 
 /// Perform the mutations `plan_push` proposed.
 ///
 /// The caller runs this only after its guard approves; a caller that never
-/// calls it has performed a dry run by construction.
-pub async fn apply_push(t: &Transport, mut plan: PushPlan, dir: &Path) -> Result<PushPlan> {
-    let local_all = read_local(dir)?;
-    let by_id = |id: &str| {
-        local_all
-            .iter()
-            .find(|r| r.rule_id().ok() == Some(id))
-            .cloned()
-    };
-
+/// calls it has performed a dry run by construction. It reads only from the
+/// plan, never the mirror, so the preview and the apply cannot diverge.
+pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     let mut entries = Vec::with_capacity(plan.report.entries.len());
     for entry in plan.report.entries {
         if entry.action != "create" && entry.action != "update" {
@@ -449,7 +457,20 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan, dir: &Path) -> Result
             continue;
         }
 
-        let Some(desired) = by_id(&entry.rule_id) else {
+        let Some(desired) = plan.desired.get(&entry.rule_id) else {
+            // `plan_push` records a desired rule for every actionable change,
+            // so this is defensive. Record the inconsistency as a failure
+            // rather than dropping the planned mutation from the report.
+            let missing = entry.rule_id.clone();
+            entries.push(ReportEntry {
+                rule_id: entry.rule_id,
+                name: entry.name,
+                action: entry.action,
+                before: entry.before,
+                after: None,
+                applied: false,
+                error: Some(format!("the plan has no desired rule for \"{missing}\"")),
+            });
             continue;
         };
         let before = entry.before;
@@ -458,9 +479,9 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan, dir: &Path) -> Result
         // Continue after a per-rule failure so the report records every
         // outcome.
         let outcome = if is_create {
-            api::create(t, &desired).await
+            api::create(t, desired).await
         } else {
-            api::update(t, &desired).await
+            api::update(t, desired).await
         };
 
         match outcome {
