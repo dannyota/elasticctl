@@ -2,8 +2,8 @@
 //!
 //! Functions use stable `rule_id` values, not volatile server-side `id` values.
 
-use crate::codec;
-use crate::model::{ExportSummary, Rule};
+use crate::codec::{self, Bundle};
+use crate::model::Rule;
 use crate::normalize;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::{Value, json};
@@ -355,10 +355,11 @@ pub async fn bulk_by_rule_ids(
 ///
 /// `None` posts no body for a whole-space export. `Some(ids)` posts `objects`
 /// so a subset export transfers only the selected rules.
-pub async fn export(
-    t: &Transport,
-    rule_ids: Option<&[String]>,
-) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
+///
+/// The response is a bundle: rules, exception-list containers, exception items,
+/// and a trailer. `_export` appends the exception objects a rule references, so
+/// decoding them to rules only would drop that content.
+pub async fn export(t: &Transport, rule_ids: Option<&[String]>) -> Result<Bundle> {
     let body = rule_ids.map(|ids| {
         json!({
             "objects": ids
@@ -370,7 +371,7 @@ pub async fn export(
     let text = t
         .post_text(&format!("{BASE}/_export"), body.as_ref())
         .await?;
-    codec::decode_ndjson(&text)
+    codec::decode_bundle(&text)
 }
 
 /// IDs to check in one `_find`. This keeps large requests below proxy URL

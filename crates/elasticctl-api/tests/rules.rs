@@ -1,5 +1,6 @@
 use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter};
+use elasticctl_api::{Format, rules_ops};
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{
@@ -581,9 +582,9 @@ async fn export_separates_rules_from_the_trailer() {
         .mount(&server)
         .await;
 
-    let (rules, summary) = rules::export(&transport(&server), None).await.unwrap();
-    assert_eq!(rules.len(), 1);
-    assert_eq!(summary.unwrap().exported_rules_count, 1);
+    let bundle = rules::export(&transport(&server), None).await.unwrap();
+    assert_eq!(bundle.rules.len(), 1);
+    assert_eq!(bundle.summary.unwrap().exported_rules_count, 1);
 }
 
 #[tokio::test]
@@ -604,11 +605,11 @@ async fn a_scoped_export_sends_the_objects_body() {
         .await;
 
     let ids = vec!["a".to_string(), "b".to_string()];
-    let (rules, summary) = rules::export(&transport(&server), Some(&ids))
+    let bundle = rules::export(&transport(&server), Some(&ids))
         .await
         .unwrap();
-    assert_eq!(rules.len(), 1);
-    let summary = summary.unwrap();
+    assert_eq!(bundle.rules.len(), 1);
+    let summary = bundle.summary.unwrap();
     assert_eq!(summary.missing_rules_count, 1);
     assert_eq!(summary.missing_rules[0]["rule_id"], "b");
 }
@@ -632,6 +633,44 @@ async fn an_unscoped_export_sends_no_body() {
         requests[0].body.is_empty(),
         "an unscoped export must post no body: {:?}",
         String::from_utf8_lossy(&requests[0].body)
+    );
+}
+
+/// A rule that references an exception list exports a four-line bundle. The
+/// orchestration must re-encode the whole bundle; encoding rules only would
+/// silently drop the list and item (spec 5.2: silent truncation).
+#[tokio::test]
+async fn export_rules_carries_the_exception_bundle() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"r","name":"R","type":"query","exceptions_list":[{"id":"L","list_id":"l","type":"detection","namespace_type":"single"}]}"#,
+            "\n",
+            r#"{"id":"L","list_id":"l","type":"detection","name":"L","namespace_type":"single","tie_breaker_id":"t"}"#,
+            "\n",
+            r#"{"id":"I","item_id":"i","list_id":"l","type":"simple","name":"I","namespace_type":"single","entries":[]}"#,
+            "\n",
+            r#"{"exported_count":2,"exported_rules_count":1,"missing_rules":[],"missing_rules_count":0,"exported_exception_list_count":1,"exported_exception_list_item_count":1,"missing_exception_lists":[],"missing_exception_list_items":[]}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let outcome = rules_ops::export_rules(&transport(&server), &[], None, Format::Ndjson)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.exported, 1);
+    assert!(
+        outcome.body.contains("\"list_id\":\"l\""),
+        "the exception list must survive export: {}",
+        outcome.body
+    );
+    assert!(
+        outcome.body.contains("\"item_id\":\"i\""),
+        "the exception item must survive export: {}",
+        outcome.body
     );
 }
 

@@ -35,18 +35,20 @@ enum Line {
 
 /// Classify one NDJSON line from an export bundle.
 ///
-/// Order matters. An exception item carries both `item_id` and `list_id`, so
-/// the item test must precede the list test or every item is misfiled as a
-/// container. A trailer carries neither an id nor a `list_id`, and the two
-/// export routes emit different counters: rules export writes `exported_count`,
-/// exception export writes `exported_exception_list_count` and no
-/// `exported_count` (measured fact 7).
+/// Order matters. `rule_id` is tested first: a rule misfiled as an item would
+/// vanish from `decode_ndjson` silently, whereas an item misfiled as a rule is
+/// rejected loudly by `Rule::from_value` with a line number. An exception item
+/// carries both `item_id` and `list_id`, so the item test must precede the list
+/// test or every item is misfiled as a container. A trailer carries neither an
+/// id nor a `list_id`, and the two export routes emit different counters: rules
+/// export writes `exported_count`, exception export writes
+/// `exported_exception_list_count` and no `exported_count` (measured fact 7).
 fn classify(v: &Value) -> Option<Line> {
-    if v.get("item_id").is_some() {
-        return Some(Line::Item);
-    }
     if v.get("rule_id").is_some() {
         return Some(Line::Rule);
+    }
+    if v.get("item_id").is_some() {
+        return Some(Line::Item);
     }
     if v.get("list_id").is_some() {
         return Some(Line::List);
@@ -377,6 +379,9 @@ mod tests {
         let body = "{\"rule_id\":\"a\"}\n{\"mystery\":true}\n";
         let err = decode_bundle(body).unwrap_err();
         assert!(err.message.contains("line 2"), "{}", err.message);
+        assert!(err.message.contains("no rule_id"), "{}", err.message);
+        assert!(err.message.contains("no list_id"), "{}", err.message);
+        assert!(err.message.contains("no item_id"), "{}", err.message);
     }
 
     #[test]
@@ -384,5 +389,24 @@ mod tests {
         let (rules, summary) = decode_ndjson(BUNDLE).unwrap();
         assert_eq!(rules.len(), 1, "the wrapper keeps its old contract");
         assert_eq!(summary.unwrap().exported_count, 2);
+    }
+
+    /// `encode_bundle` writes rules, then lists, then items, and never the
+    /// trailer; `_import` rejects the trailer. The round-trip also proves the
+    /// two new newtypes keep their unknown fields, matching spec 3.2.
+    #[test]
+    fn encode_bundle_writes_rules_then_lists_then_items_and_no_trailer() {
+        let b = decode_bundle(BUNDLE).unwrap(); // 1 rule, 1 list, 1 item, trailer
+        let out = encode_bundle(&b).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "the trailer is never written back");
+        assert!(lines[0].contains("\"rule_id\""));
+        assert!(lines[1].contains("\"list_id\"") && !lines[1].contains("\"item_id\""));
+        assert!(lines[2].contains("\"item_id\""));
+
+        let back = decode_bundle(&out).unwrap();
+        assert_eq!(back.rules, b.rules, "rules round-trip");
+        assert_eq!(back.lists, b.lists, "lists round-trip");
+        assert_eq!(back.items, b.items, "items round-trip");
     }
 }

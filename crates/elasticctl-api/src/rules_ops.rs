@@ -256,24 +256,31 @@ pub async fn export_rules(
 ) -> Result<ExportOutcome> {
     // Export reads from the stack, so every selector names a server rule.
     let selection = selection::resolve(t, selectors, tag, &[], "export").await?;
-    let (mut rules, summary) = rules::export(t, selection.as_deref()).await?;
-    for r in &mut rules {
+    let mut bundle = rules::export(t, selection.as_deref()).await?;
+    for r in &mut bundle.rules {
         *r = normalize::canonical(r);
     }
-    normalize::sort_rules(&mut rules);
+    normalize::sort_rules(&mut bundle.rules);
 
     let body = match format {
-        Format::Yaml => codec::encode_yaml(&rules)?,
-        Format::Ndjson => codec::encode_ndjson(&rules)?,
+        // YAML carries rules only; the exception objects have no YAML form.
+        Format::Yaml => codec::encode_yaml(&bundle.rules)?,
+        // The bundle's lists and items must survive the export or importing
+        // the file elsewhere recreates a rule pointing at a missing list.
+        Format::Ndjson => codec::encode_bundle(&bundle)?,
     };
 
     // A requested but missing rule was deleted after selection. Report it in
     // `missing` so a short export has a nonzero exit code.
-    let missing = summary.map(|s| s.missing_rules).unwrap_or_default();
+    let missing = bundle
+        .summary
+        .as_ref()
+        .map(|s| s.missing_rules.clone())
+        .unwrap_or_default();
 
     Ok(ExportOutcome {
         body,
-        exported: rules.len() as u64,
+        exported: bundle.rules.len() as u64,
         missing,
     })
 }
