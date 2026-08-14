@@ -15,10 +15,10 @@ pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use model::{ExportSummary, Rule, VOLATILE_FIELDS, server_defaults};
 pub use normalize::{canonical, comparable, sort_rules};
-pub use ops::{ExportOutcome, ImportOutcome, MutationOutcome, MutationPlan};
+pub use ops::{ExportOutcome, MutationPlan};
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
 pub use rules_ops::{
-    DeleteOutcome, ImportPlan, ImportReport, PreviewResult, RuleListReport, SetEnabledOutcome,
+    DeleteOutcome, ImportPlan, ImportReport, PreviewReport, RuleListReport, SetEnabledOutcome,
 };
 pub use state::{DiffReport, PullReport, PushPlan, PushReport};

@@ -65,7 +65,7 @@ pub struct ImportReport {
 
 /// The report a preview renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct PreviewResult {
+pub struct PreviewReport {
     pub rule: String,
     pub preview_id: Option<String>,
     pub invocations: u32,
@@ -119,32 +119,37 @@ pub fn validate(path: &Path) -> Result<Vec<Rule>> {
     Ok(rules)
 }
 
-/// Resolve every selector before previewing so the preview is accurate and
-/// unresolved selectors fail before mutation.
+/// Resolve every selector to its rule ID and rule before previewing, so the
+/// preview is accurate and unresolved selectors fail before mutation.
+async fn resolve_targets(t: &Transport, selectors: &[String]) -> Result<Vec<(String, Rule)>> {
+    let mut out = Vec::with_capacity(selectors.len());
+    for s in selectors {
+        let rule_id = selection::to_rule_id(t, s).await?;
+        let rule = rules::get(t, &rule_id).await?;
+        out.push((rule_id, rule));
+    }
+    Ok(out)
+}
+
 pub async fn plan_set_enabled(
     t: &Transport,
     selectors: &[String],
     enable: bool,
 ) -> Result<MutationPlan> {
-    let mut targets = Vec::with_capacity(selectors.len());
-    let mut preview_details = Vec::with_capacity(selectors.len());
-    for s in selectors {
-        let rule_id = selection::to_rule_id(t, s).await?;
-        let rule = rules::get(t, &rule_id).await?;
-        let from = if rule.enabled() {
-            "enabled"
-        } else {
-            "disabled"
-        };
-        let to = if enable { "enabled" } else { "disabled" };
-        preview_details.push(format!("{rule_id}  {}  {from} -> {to}", rule.name()));
-        targets.push(rule_id);
-    }
+    let resolved = resolve_targets(t, selectors).await?;
+    let preview_details = resolved
+        .iter()
+        .map(|(id, r)| {
+            let from = if r.enabled() { "enabled" } else { "disabled" };
+            let to = if enable { "enabled" } else { "disabled" };
+            format!("{id}  {}  {from} -> {to}", r.name())
+        })
+        .collect();
     let verb = if enable { "Enable" } else { "Disable" };
     Ok(MutationPlan {
-        preview_action: format!("{verb} {} rule(s)", targets.len()),
+        preview_action: format!("{verb} {} rule(s)", resolved.len()),
         preview_details,
-        targets,
+        targets: resolved.into_iter().map(|(id, _)| id).collect(),
     })
 }
 
@@ -169,18 +174,15 @@ pub async fn apply_set_enabled(
 }
 
 pub async fn plan_delete(t: &Transport, selectors: &[String]) -> Result<MutationPlan> {
-    let mut targets = Vec::with_capacity(selectors.len());
-    let mut preview_details = Vec::with_capacity(selectors.len());
-    for s in selectors {
-        let rule_id = selection::to_rule_id(t, s).await?;
-        let rule = rules::get(t, &rule_id).await?;
-        preview_details.push(format!("{rule_id}  {}", rule.name()));
-        targets.push(rule_id);
-    }
+    let resolved = resolve_targets(t, selectors).await?;
+    let preview_details = resolved
+        .iter()
+        .map(|(id, r)| format!("{id}  {}", r.name()))
+        .collect();
     Ok(MutationPlan {
-        preview_action: format!("Delete {} rule(s)", targets.len()),
+        preview_action: format!("Delete {} rule(s)", resolved.len()),
         preview_details,
-        targets,
+        targets: resolved.into_iter().map(|(id, _)| id).collect(),
     })
 }
 
@@ -369,7 +371,7 @@ pub async fn preview_rule(
     invocations: u32,
     sample: u32,
     space: &str,
-) -> Result<PreviewResult> {
+) -> Result<PreviewReport> {
     // Preview posts to the server for both local and stack rules, so the
     // sample cap is enforced before any request is sent.
     if sample > MAX_SAMPLE {
@@ -417,7 +419,7 @@ pub async fn preview_rule(
         },
     };
 
-    Ok(PreviewResult {
+    Ok(PreviewReport {
         rule: rule.name().to_string(),
         preview_id: result.preview_id,
         invocations,
