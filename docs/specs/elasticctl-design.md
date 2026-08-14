@@ -130,6 +130,9 @@ Does not know about detection rules.
   on every non-GET request, `elastic-api-version` where required, and prefixes
   space-scoped paths as `/s/<space>/api/...`. Retries with backoff on 429 and
   5xx only, never on 4xx.
+  JSON, raw-export, multipart-import, and Elasticsearch responses share that
+  retry loop and timeout/connection classification. A body-read failure is
+  therefore classified the same way as a failure before the response headers.
   Under `--debug` it logs one line before each request is sent and one on every
   outcome, including timeout and connection errors. Those are the cases an
   operator uses `--debug` to diagnose. It logs the method, complete URL, and
@@ -140,8 +143,10 @@ Does not know about detection rules.
   `capabilities` below. They are carried, never logged: `--debug` still prints
   no header because headers carry credentials.
 - **`capabilities`** — one probe at connect time reading `GET /api/status`.
-  Yields `Capabilities { flavor, version }`. Commands consult it and return a
-  typed `Unsupported` error naming the flavor instead of a confusing 404.
+  Yields `Capabilities { flavor, version }`. Commands that call this probe
+  return a typed `Unsupported` error naming the flavor instead of a confusing
+  404. Other feature routes preserve the server's classified error in 0.2;
+  their typed capability handling is deferred to 0.2.1.
   Flavor is decided in this order, and the order is load-bearing:
 
   1. `version.build_flavor == "serverless"` → Serverless.
@@ -383,13 +388,17 @@ the tool whose preview is client-computed, and the banner names both counts.
   refused with `conflict`, naming **every** colliding pair at once, before the
   directory is created. Reporting one collision per run hides the next until a
   re-run. Writing files up to a collision leaves a mirror that is neither the
-  old state nor the new one.
+  old state nor the new one. The write is a recoverable local-file transaction:
+  a sibling lock and journal preserve or restore the prior tree if replacement
+  is interrupted.
 - **`diff`** — read local, fetch remote, normalize both, emit field-level
   drift. NDJSON lines are not readable by eye, so `diff` is the human view and
   `git diff` is the fidelity record.
 - **`push`** — read local, compute the diff, apply each change through the
   guard, then write a change-evidence report of per-rule before and after
   values plus an applied flag, suitable for attaching to a change ticket.
+  Its report path is preflighted and recoverably replaceable before the first
+  remote apply, so an unwritable report cannot leave an unreported mutation.
 
 `push` **never deletes remote rules.** A rule missing locally is not a delete
 instruction. Deletion is always the explicit `rules delete`.
@@ -593,14 +602,13 @@ A local file outside the active scope is reported as `out_of_scope`, naming the
 flag, not as `local_only`. A 0.1 mirror holding 2,066 prebuilt rules would
 otherwise read as catastrophic drift on the first `state diff` after upgrading.
 
-A `custom` or `prebuilt` scope that matches zero rules against a non-empty
-corpus is refused, naming the field it filtered on
-(`alert.attributes.params.immutable`). Whether that field exists on stacks
-older than 9.5.1 is unmeasured (fact H); if it is absent, the filter silently
-matches nothing, and a query would report "no custom rules" for a stack that
-simply lacks the field. The query commands and `state pull` refuse; `state diff`
-and `state push` do not, because an empty scope there is reported through
-`out_of_scope` instead.
+An empty `custom` or `prebuilt` source is valid when their totals together
+exhaust the corpus: then zero is a measured partition result, not a missing
+`immutable` field. If the totals do not exhaust the corpus, the source query is
+refused naming `alert.attributes.params.immutable`; an older stack could
+otherwise silently report "no custom rules" merely because it lacks that
+field. `state diff` and `state push` still express excluded local files as
+`out_of_scope`.
 
 ## 6. Contracts
 
@@ -684,8 +692,8 @@ Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
 
 A `query` rule created with 13 fields comes back with 36.
 
-**Volatile — strip before diffing (7):** `id`, `created_at`, `created_by`,
-`updated_at`, `updated_by`, `revision`, `version`.
+**Volatile — strip before diffing (8):** `id`, `created_at`, `created_by`,
+`updated_at`, `updated_by`, `revision`, `version`, `execution_summary`.
 
 Normalization descends into an exception item's `comments` array and strips the
 same class of field there. A comment's `id`, `created_at`, and `created_by` are
@@ -914,16 +922,25 @@ performs for the opposite reason, so the two share one code path — identity
 stays `list_id` plus `namespace_type` everywhere in this tool, and the `id` is
 fetched at the boundary where a route demands it.
 
-Because `rules import` re-resolves references itself, export and import are
-already a correct cross-stack promotion path once the decoder stops rejecting
-line 2. `state push` writes through the rules API directly and is the only path
-that must resolve `list_id` on its own.
+The export result trusts its trailer counts, not the keys resolved before the
+request. A container can disappear between resolution and export; only the
+server's `missing_exception_lists` and exported-count trailer describes what
+the export actually produced.
+
+`rules import` preserves the complete exported bundle and re-resolves each
+reference by `list_id`. Before upload it supplies a schema-valid placeholder
+for a known exception reference whose volatile `id` was stripped from disk;
+the server replaces that pointer with the target container's id. Export and
+import are therefore a correct cross-stack promotion path. `state push` writes
+through the rules API directly and is the only path that must resolve `list_id`
+on its own.
 
 Value lists are referenced from an exception entry by a caller-supplied `id`
 that is stable across stacks, so such an entry round-trips without resolution.
 Their *content* is data rather than configuration and is not managed here.
-`push` verifies that a referenced value list exists and reports it when it does
-not, and `doctor` reports whether the data streams are bootstrapped.
+When the data streams exist, `push` verifies each active referenced value-list
+`id` and reports every missing one; it does not rely on a coarser list-level
+lookup. `doctor` reports whether the data streams are bootstrapped.
 
 ### 7.8 Prebuilt rules, measured
 

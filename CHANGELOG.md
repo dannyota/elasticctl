@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.0 — 2026-08-14
+
+### Breaking
+
+- `state pull`, `state diff`, and `state push` now default to `--source custom`
+  and mirror only the rules you authored. A 0.1 mirror of Elastic's prebuilt
+  rules is reported as `out_of_scope` rather than as pending changes. Pass
+  `--source all` for the previous behavior.
+- `state diff` output gains an `exceptions` block, and `clean` is now true only
+  when the rules *and* the exception lists match.
+
+### Added
+
+- `exceptions list|get|validate|export|import|delete`.
+- `rules prebuilt status|install`.
+- `--source custom|customized|prebuilt|all` on `rules list`, `rules export`,
+  and the state commands.
+- `state pull` mirrors the exception lists your rules reference; `state push`
+  creates them before the rules that point at them.
+- `doctor` reports whether the value-list data streams exist.
+
+### Fixed
+
+- `rules export` failed with `line 2: a rule must have a rule_id` for every
+  rule carrying an exception list. Export bundles are now decoded in full.
+- A rule's `exceptions_list[].id` is a per-stack pointer and was written to
+  disk verbatim, so promoting a rule between stacks carried a pointer to an
+  object that did not exist there. It is now stripped on pull, re-resolved on
+  push, and a mismatch is reported by `state diff`.
+
 ## 0.1.3 — 2026-08-13
 
 Closes the remaining v0.1.x gaps. No breaking changes: every real corpus today

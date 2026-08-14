@@ -88,8 +88,9 @@ elasticctl state push --dir state   # preview; add --yes to apply
 All state commands accept positional selectors, `--tag`, and
 `--source custom|customized|prebuilt|all`. `--source` defaults to `custom`;
 `--source all` includes the full rule corpus. `--source` limits an unselected
-state command to matching rules. Selectors and `--tag` first resolve rule IDs,
-then read those rules:
+state command to matching rules. Positional selectors and `--tag` override
+that unselected source scope: they first resolve rule IDs, then read those
+rules:
 
 ```bash
 elasticctl state diff --dir state my-rule-id      # one rule
