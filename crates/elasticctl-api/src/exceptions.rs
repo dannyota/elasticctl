@@ -329,12 +329,15 @@ fn decode_exception_export(body: &str, key: &ListKey) -> Result<DecodedException
 
 fn add_missing_identity(value: &mut Value, key: &ListKey) {
     if let Some(object) = value.as_object_mut() {
-        object
-            .entry("list_id".to_string())
-            .or_insert_with(|| Value::String(key.list_id.clone()));
-        object
-            .entry("namespace_type".to_string())
-            .or_insert_with(|| Value::String(key.namespace_type.clone()));
+        if !object.get("list_id").is_some_and(Value::is_string) {
+            object.insert("list_id".to_string(), Value::String(key.list_id.clone()));
+        }
+        if !object.get("namespace_type").is_some_and(Value::is_string) {
+            object.insert(
+                "namespace_type".to_string(),
+                Value::String(key.namespace_type.clone()),
+            );
+        }
         return;
     }
 

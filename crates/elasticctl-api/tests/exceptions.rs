@@ -517,7 +517,7 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
 /// A list can disappear after selection and ID resolution. The trailer is the
 /// authoritative outcome, so its missing entry must keep the stable key.
 #[tokio::test]
-async fn export_reports_a_list_deleted_after_id_resolution() {
+async fn export_reports_a_list_deleted_after_id_resolution_with_a_malformed_identity() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
@@ -529,7 +529,7 @@ async fn export_reports_a_list_deleted_after_id_resolution() {
     Mock::given(method("POST"))
         .and(path("/api/exception_lists/_export"))
         .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
-            r#"{"exported_exception_list_count":0,"exported_exception_list_item_count":0,"missing_exception_lists":[{"reason":"deleted"}],"missing_exception_list_items":[]}"#,
+            r#"{"exported_exception_list_count":0,"exported_exception_list_item_count":0,"missing_exception_lists":[{"list_id":null,"namespace_type":7,"reason":"deleted"}],"missing_exception_list_items":[]}"#,
             "\n"
         )))
         .mount(&server)
