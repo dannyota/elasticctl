@@ -37,6 +37,10 @@ confidence-threshold = 0.9
 # dependency is a supply-chain risk because it accepts the next registry value.
 multiple-versions = "warn"
 wildcards = "deny"
+# The unpublished test-support crate is a path-only dev dependency. Keep
+# registry wildcards denied while allowing that internal workspace edge to
+# remain versionless so Cargo omits it from published manifests.
+allow-wildcard-paths = true
 
 [sources]
 # Allow only crates.io. A git or private-registry dependency requires an
