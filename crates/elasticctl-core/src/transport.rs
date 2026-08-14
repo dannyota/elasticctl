@@ -67,6 +67,10 @@ pub fn urlencode(s: &str) -> String {
 pub struct Transport {
     client: Client,
     base: String,
+    /// The Kibana URL exactly as configured, before trailing-slash
+    /// normalization. `doctor` reports it as the connectivity target and the
+    /// capability probe uses it for hostname-based flavor detection.
+    kibana_url: String,
     /// Elasticsearch host. Cloud deployments use a different host from
     /// Kibana; otherwise this uses the Kibana host.
     es_base: String,
@@ -92,6 +96,7 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Connection, format!("building HTTP client: {e}")))?;
 
         let base = profile.kibana_url.trim_end_matches('/').to_string();
+        let kibana_url = profile.kibana_url.clone();
         let es_base = profile
             .es_url
             .as_deref()
@@ -102,6 +107,7 @@ impl Transport {
         Ok(Transport {
             client,
             base,
+            kibana_url,
             es_base,
             space: profile.space.clone(),
             auth_header: credential.header_value(),
@@ -156,6 +162,11 @@ impl Transport {
         } else {
             format!("/s/{space}{path}")
         }
+    }
+
+    /// The Kibana URL this transport targets, exactly as configured.
+    pub fn kibana_url(&self) -> &str {
+        &self.kibana_url
     }
 
     fn url(&self, path: &str) -> String {

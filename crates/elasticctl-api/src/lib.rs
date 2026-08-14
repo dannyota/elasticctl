@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod diff;
+pub mod health;
 pub mod model;
 pub mod normalize;
 pub mod ops;
@@ -13,6 +14,7 @@ pub mod state;
 
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
+pub use health::{DoctorCheck, DoctorReport, InfoReport};
 pub use model::{ExportSummary, Rule, VOLATILE_FIELDS, server_defaults};
 pub use normalize::{canonical, comparable, sort_rules};
 pub use ops::{ExportOutcome, MutationPlan};
