@@ -674,6 +674,61 @@ async fn export_rules_carries_the_exception_bundle() {
     );
 }
 
+/// A YAML export of an exception-free selection still encodes the rules; the
+/// refusal path must not fire when there is nothing to represent.
+#[tokio::test]
+async fn export_rules_yaml_without_exceptions_still_encodes_rules() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"a","name":"A","type":"query"}"#,
+            "\n",
+            r#"{"exported_count":1,"exported_rules_count":1,"missing_rules_count":0}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let outcome = rules_ops::export_rules(&transport(&server), &[], None, Format::Yaml)
+        .await
+        .unwrap();
+
+    let rules = elasticctl_api::codec::decode_yaml(&outcome.body).unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].rule_id().unwrap(), "a");
+}
+
+/// A YAML export cannot represent exception lists or items, so a bundle is
+/// refused with the fix named, rather than silently truncated (spec 5.2).
+#[tokio::test]
+async fn export_rules_yaml_refuses_a_bundle_with_exceptions() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"rule_id":"r","name":"R","type":"query","exceptions_list":[{"id":"L","list_id":"l","type":"detection","namespace_type":"single"}]}"#,
+            "\n",
+            r#"{"id":"L","list_id":"l","type":"detection","name":"L","namespace_type":"single","tie_breaker_id":"t"}"#,
+            "\n",
+            r#"{"id":"I","item_id":"i","list_id":"l","type":"simple","name":"I","namespace_type":"single","entries":[]}"#,
+            "\n",
+            r#"{"exported_count":2,"exported_rules_count":1,"missing_rules":[],"missing_rules_count":0,"exported_exception_list_count":1,"exported_exception_list_item_count":1,"missing_exception_lists":[],"missing_exception_list_items":[]}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let err = rules_ops::export_rules(&transport(&server), &[], None, Format::Yaml)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Unsupported);
+    assert!(err.message.contains("ndjson"), "{}", err.message);
+    assert!(err.message.contains("1 exception list"), "{}", err.message);
+    assert!(err.message.contains("1 item"), "{}", err.message);
+}
+
 #[tokio::test]
 async fn existing_rule_ids_reports_only_the_ids_the_server_knows() {
     let server = MockServer::start().await;

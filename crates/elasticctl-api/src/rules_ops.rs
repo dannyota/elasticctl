@@ -263,8 +263,22 @@ pub async fn export_rules(
     normalize::sort_rules(&mut bundle.rules);
 
     let body = match format {
-        // YAML carries rules only; the exception objects have no YAML form.
-        Format::Yaml => codec::encode_yaml(&bundle.rules)?,
+        // YAML carries rules only. A bundle with exception objects has no YAML
+        // form, so refuse rather than silently drop them (spec 5.2).
+        Format::Yaml => {
+            if !bundle.lists.is_empty() || !bundle.items.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!(
+                        "this export carries {} exception list(s) and {} item(s), which the \
+                         YAML format cannot represent; re-run with --format-file ndjson",
+                        bundle.lists.len(),
+                        bundle.items.len()
+                    ),
+                ));
+            }
+            codec::encode_yaml(&bundle.rules)?
+        }
         // The bundle's lists and items must survive the export or importing
         // the file elsewhere recreates a rule pointing at a missing list.
         Format::Ndjson => codec::encode_bundle(&bundle)?,
