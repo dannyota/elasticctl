@@ -3,7 +3,7 @@
 use elasticctl_api::exceptions::{self, ListFilter};
 use elasticctl_api::model::{ExceptionItem, ExceptionList, ListKey};
 use elasticctl_api_test_support::MockStack;
-use elasticctl_core::{Profile, Transport};
+use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -64,6 +64,55 @@ async fn find_lists_reads_the_data_array_and_total() {
         .unwrap();
     assert_eq!(found.len(), 2);
     assert_eq!(found[0].list_id().unwrap(), "l0");
+}
+
+/// The empty-filter 400 (spec 7.7): `filter=` with no clauses is a KQL syntax
+/// error, so an unfiltered find omits the parameter entirely. A populated find
+/// sends the measured `exception-list.attributes.*` KQL.
+#[tokio::test]
+async fn find_lists_omits_an_empty_filter_and_sends_a_populated_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [], "page": 1, "per_page": 100, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    exceptions::find_lists(&t, &ListFilter::default())
+        .await
+        .unwrap();
+    exceptions::find_lists(
+        &t,
+        &ListFilter {
+            list_type: Some("detection".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let filters: Vec<Option<String>> = reqs
+        .iter()
+        .map(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k.as_ref() == "filter")
+                .map(|(_, v)| v.into_owned())
+        })
+        .collect();
+    assert_eq!(
+        filters[0], None,
+        "an unfiltered find must omit filter=, not send it empty"
+    );
+    assert_eq!(
+        filters[1].as_deref(),
+        Some("exception-list.attributes.type: \"detection\""),
+        "the populated filter uses the measured prefix and quotes the value"
+    );
 }
 
 /// A container that exists only in the `agnostic` namespace must not resolve
@@ -407,15 +456,15 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
     );
 }
 
-/// A key with no live container has nothing to export and is skipped rather
-/// than exported under a placeholder id.
+/// A key with no live container is refused, not silently dropped: a short
+/// export reported as a success is the failure spec 4.3 refuses.
 #[tokio::test]
-async fn export_lists_skips_a_key_without_a_live_container() {
+async fn export_lists_refuses_a_missing_key_and_names_it() {
     let server = MockServer::start().await;
     // No list mocks: get_list for "missing" answers 404, so nothing resolves.
     let t = transport(&server);
 
-    let out = exceptions::export_lists(
+    let err = exceptions::export_lists(
         &t,
         &[ListKey {
             list_id: "missing".into(),
@@ -423,12 +472,81 @@ async fn export_lists_skips_a_key_without_a_live_container() {
         }],
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    assert!(out.is_empty(), "nothing to export, no request to _export");
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert!(err.message.contains("missing"), "{}", err.message);
+}
+
+/// `[live, missing]` must refuse rather than return the live key's body: a
+/// partial success is the case most likely to slip through.
+#[tokio::test]
+async fn export_lists_refuses_a_partial_export() {
+    let server = MockServer::start().await;
+    // Only l0 resolves.
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let err = exceptions::export_lists(
+        &t,
+        &[
+            ListKey {
+                list_id: "l0".into(),
+                namespace_type: "single".into(),
+            },
+            ListKey {
+                list_id: "missing".into(),
+                namespace_type: "single".into(),
+            },
+        ],
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert!(
+        err.message.contains("missing") && !err.message.contains("l0"),
+        "the error names the missing key, not the live one: {}",
+        err.message
+    );
+    // Both resolve GETs ran, but no export POST was issued for the live key.
     let reqs = server.received_requests().await.unwrap();
-    assert_eq!(reqs.len(), 1, "only the resolving GET was issued");
-    assert_eq!(reqs[0].url.path(), "/api/exception_lists");
+    assert_eq!(reqs.len(), 2, "two resolve GETs, no export POST");
+    assert!(reqs.iter().all(|r| r.method.as_str() == "GET"));
+}
+
+/// Name every missing key at once, the way the mirror names every colliding
+/// filename pair: one refusal per run beats a re-run per missing key.
+#[tokio::test]
+async fn export_lists_names_every_missing_key() {
+    let server = MockServer::start().await;
+    let t = transport(&server);
+
+    let err = exceptions::export_lists(
+        &t,
+        &[
+            ListKey {
+                list_id: "a".into(),
+                namespace_type: "single".into(),
+            },
+            ListKey {
+                list_id: "b".into(),
+                namespace_type: "agnostic".into(),
+            },
+        ],
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert!(err.message.contains("a (single)"), "{}", err.message);
+    assert!(err.message.contains("b (agnostic)"), "{}", err.message);
 }
 
 #[tokio::test]

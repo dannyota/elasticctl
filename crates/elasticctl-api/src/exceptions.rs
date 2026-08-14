@@ -25,6 +25,36 @@ pub struct ListFilter {
     pub namespace: Option<String>,
 }
 
+impl ListFilter {
+    /// The KQL `filter` for this selection, or `None` when nothing filters.
+    ///
+    /// The list `_find` route filters over `exception-list.attributes.*` — the
+    /// saved-object type name, not the rules vertical's `alert.attributes.*`
+    /// (measured, spec 7.7). Values are quoted and escaped like `rules::to_kql`.
+    pub fn to_kql(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(ty) = &self.list_type {
+            parts.push(format!(
+                "exception-list.attributes.type: \"{}\"",
+                kql_escape(ty)
+            ));
+        }
+        if let Some(tag) = &self.tag {
+            parts.push(format!(
+                "exception-list.attributes.tags: \"{}\"",
+                kql_escape(tag)
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join(" AND "))
+    }
+}
+
+/// Escape a value for use inside a double-quoted KQL literal. Backslashes are
+/// escaped first so an inserted quote escape is not doubled.
+fn kql_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Decode the shared `{data, page, per_page, total}` envelope.
 fn decode_find(body: &Value) -> (Vec<Value>, u64) {
     let total = body["total"].as_u64().unwrap_or(0);
@@ -66,34 +96,22 @@ fn short_read(counted: u64, returned: usize) -> Error {
 }
 
 pub async fn find_lists(t: &Transport, f: &ListFilter) -> Result<Vec<ExceptionList>> {
+    let kql = f.to_kql();
     let values = find_paged(t, |page| {
         let mut path = format!("{BASE}/_find?page={page}&per_page={RESULT_WINDOW}");
         if let Some(ns) = &f.namespace {
             path.push_str(&format!("&namespace_type={}", urlencode(ns)));
         }
+        // An empty filter is a 400 (measured, spec 7.7), so it is omitted,
+        // never sent as `filter=`.
+        if let Some(k) = &kql {
+            path.push_str(&format!("&filter={}", urlencode(k)));
+        }
         path
     })
     .await?;
 
-    let lists = values
-        .into_iter()
-        .map(ExceptionList::from_value)
-        .collect::<Result<Vec<_>>>()?;
-    Ok(filter_lists(lists, f))
-}
-
-/// `type` and `tag` are filtered client-side. The list `_find` route's only
-/// measured query filter is `namespace_type`; the KQL field names a server-side
-/// filter for these two would need are not in the measured tables, so inventing
-/// them here would be guessing. Both are fields on the returned object.
-fn filter_lists(mut lists: Vec<ExceptionList>, f: &ListFilter) -> Vec<ExceptionList> {
-    if let Some(ty) = &f.list_type {
-        lists.retain(|l| l.list_type() == ty.as_str());
-    }
-    if let Some(tag) = &f.tag {
-        lists.retain(|l| l.tags().contains(&tag.as_str()));
-    }
-    lists
+    values.into_iter().map(ExceptionList::from_value).collect()
 }
 
 pub async fn get_list(t: &Transport, key: &ListKey) -> Result<ExceptionList> {
@@ -190,15 +208,29 @@ pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Resul
 /// The export route is the one path that refuses `list_id` alone (measured,
 /// fact E), so each key is resolved to its live container `id` first. Identity
 /// stays `list_id` plus `namespace_type` everywhere; the `id` is fetched only
-/// here, at the boundary that demands it. A key with no live container has
-/// nothing to export and is skipped.
+/// here, at the boundary that demands it. A key with no live container is
+/// refused rather than skipped: a silently dropped key is a short export
+/// reported as a success.
 pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<String> {
     let ids = resolve_ids(t, keys).await?;
+
+    // Name every missing key at once, the way the mirror names every colliding
+    // filename pair: one refusal per run beats a re-run per missing key.
+    let missing: Vec<String> = keys
+        .iter()
+        .filter(|k| !ids.contains_key(*k))
+        .map(|k| format!("{} ({})", k.list_id, k.namespace_type))
+        .collect();
+    if !missing.is_empty() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("exception list not found: {}", missing.join(", ")),
+        ));
+    }
+
     let mut out = String::new();
     for key in keys {
-        let Some(id) = ids.get(key) else {
-            continue;
-        };
+        let id = ids.get(key).expect("every key resolved before export");
         let path = format!(
             "{BASE}/_export?id={}&list_id={}&namespace_type={}&include_expired_exceptions=true",
             urlencode(id),
@@ -222,39 +254,57 @@ pub async fn import_lists(t: &Transport, ndjson: &str, overwrite: bool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    fn list(id: &str, list_type: &str, tags: &[&str]) -> ExceptionList {
-        ExceptionList::from_value(json!({
-            "list_id": id, "type": list_type, "tags": tags, "name": "L"
-        }))
-        .unwrap()
+    #[test]
+    fn to_kql_is_none_when_nothing_filters() {
+        assert_eq!(ListFilter::default().to_kql(), None);
     }
 
     #[test]
-    fn filter_lists_matches_type_exactly() {
-        let lists = vec![list("a", "detection", &[]), list("b", "endpoint", &[])];
+    fn to_kql_filters_type_over_the_measured_prefix() {
         let f = ListFilter {
             list_type: Some("detection".into()),
             ..Default::default()
         };
-        let out = filter_lists(lists, &f);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].list_id().unwrap(), "a");
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.type: \"detection\""
+        );
     }
 
     #[test]
-    fn filter_lists_matches_a_tag_anywhere_in_the_list() {
-        let lists = vec![
-            list("a", "detection", &["prod", "x"]),
-            list("b", "detection", &["dev"]),
-        ];
+    fn to_kql_filters_tags_over_the_measured_prefix() {
         let f = ListFilter {
-            tag: Some("prod".into()),
+            tag: Some("alpha".into()),
             ..Default::default()
         };
-        let out = filter_lists(lists, &f);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].list_id().unwrap(), "a");
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.tags: \"alpha\""
+        );
+    }
+
+    #[test]
+    fn to_kql_combines_clauses_with_and() {
+        let f = ListFilter {
+            list_type: Some("detection".into()),
+            tag: Some("alpha".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.type: \"detection\" AND \
+             exception-list.attributes.tags: \"alpha\""
+        );
+    }
+
+    #[test]
+    fn to_kql_escapes_a_quote_in_the_value() {
+        let f = ListFilter {
+            tag: Some("a\"b".into()),
+            ..Default::default()
+        };
+        let kql = f.to_kql().unwrap();
+        assert!(kql.contains("a\\\"b"), "{kql}");
     }
 }
