@@ -838,6 +838,25 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | Item delete | `DELETE /api/exception_lists/items?item_id=&namespace_type=` returns the deleted item and leaves its siblings alone |
 | Exception import | `POST /api/exception_lists/_import?overwrite=true` accepts an export file **including its trailer** and returns `{errors, success, success_count, success_exception_lists, success_count_exception_lists, success_exception_list_items, success_count_exception_list_items}` |
 | **Exception export needs `id`** | `POST /api/exception_lists/_export` **requires the `id` query parameter**. `list_id` and `namespace_type` alone are a 400: `id: Invalid input: expected string, received undefined` |
+| List find is filterable server-side | `GET /api/exception_lists/_find` accepts a KQL `filter` over `exception-list.attributes.<field>`. Measured against three sample lists: `type: detection` returned 2 of 3, `tags: alpha` returned 2 of 3, and a quoted `list_id` returned 1 |
+| An empty filter is a 400 | Passing `filter=` with an empty value fails with `KQLSyntaxError: Expected "(", NOT, field name, value, whitespace but ")" found`. The parameter must be **omitted** when there is nothing to filter on, never sent empty |
+| Multi-list export concatenates | Exporting two lists and joining the bodies gives six lines — list, item, trailer, list, item, trailer — with a trailer **per list**, interior to the file. `_import?overwrite=true` accepts it: `success_count: 4`, both containers and both items restored |
+
+The interior trailers matter to `decode_bundle`, which keeps the last trailer it
+sees. For a multi-list export that means `Bundle.summary` describes only the
+final list, and the earlier counts are lost. Nothing in 0.2 reads that summary
+for a multi-list export, so it is recorded rather than fixed — but a future
+caller that trusts `summary` to describe the whole file would be wrong, and the
+decoder should grow a `Vec<ExportSummary>` before anyone does.
+
+The prefix differs from the rules vertical, which filters on
+`alert.attributes.<field>`. Both are the saved-object type name, so neither is
+transferable to the other.
+
+The empty-filter 400 is worth stating because it fails in the direction that
+looks like working code: a caller that builds a filter string by joining
+clauses and always sends it works perfectly under every filter and breaks on the
+unfiltered case, which is the default path.
 
 That last row is the fourth place this API disagrees with itself about
 exception-list identity, and it points the opposite way from the rest. Rules
