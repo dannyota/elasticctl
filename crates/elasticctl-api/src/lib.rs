@@ -7,6 +7,7 @@ pub mod health;
 pub mod model;
 pub mod normalize;
 pub mod ops;
+pub mod prebuilt;
 pub mod report;
 pub mod rules;
 pub mod rules_ops;
@@ -24,6 +25,7 @@ pub use model::{
 };
 pub use normalize::{canonical, comparable, sort_rules};
 pub use ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
+pub use prebuilt::{PrebuiltInstallOutcome, PrebuiltStatus};
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
 pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};

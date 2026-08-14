@@ -204,6 +204,19 @@ pub enum RulesAction {
         #[arg(long, default_value = "0")]
         sample: u32,
     },
+    /// Report on and install Elastic's prebuilt rules
+    Prebuilt {
+        #[command(subcommand)]
+        action: PrebuiltAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PrebuiltAction {
+    /// Report installed, missing, outdated, and customized prebuilt rules
+    Status,
+    /// Install missing and update outdated prebuilt rules
+    Install,
 }
 
 #[derive(Debug, Subcommand)]

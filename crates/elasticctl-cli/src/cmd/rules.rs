@@ -7,6 +7,7 @@ use crate::guard::{self, Preview};
 use crate::resolve;
 use elasticctl_api::codec::Format as FileFormat;
 use elasticctl_api::model::Rule;
+use elasticctl_api::prebuilt;
 use elasticctl_api::rules::RuleFilter;
 use elasticctl_api::rules_ops;
 use elasticctl_core::{Error, ErrorKind, Result};
@@ -189,4 +190,31 @@ pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32)
     let t = ctx.transport().await?;
     let space = ctx.resolved.profile.space.clone();
     to_value(&rules_ops::preview_rule(t, source, invocations, sample, &space).await?)
+}
+
+pub async fn prebuilt_status(ctx: &Context) -> Result<Value> {
+    ctx.require_credential()?;
+    let t = ctx.transport().await?;
+    to_value(&prebuilt::status(t).await?)
+}
+
+pub async fn prebuilt_install(ctx: &Context) -> Result<Value> {
+    ctx.require_credential()?;
+    let t = ctx.transport().await?;
+    let (plan, status) = prebuilt::plan_install(t).await?;
+    let preview = Preview {
+        action: plan.preview_action.clone(),
+        details: plan.preview_details.clone(),
+    };
+    if guard::check(ctx, "rules prebuilt install", &preview) {
+        to_value(&prebuilt::apply_install(t).await?)
+    } else {
+        // The planned counts are named in the guard banner; the dry-run report
+        // records the total rules that would change, as the other guarded
+        // rules commands record their affected count.
+        Ok(json!({
+            "applied": false,
+            "total": status.not_installed + status.not_updated,
+        }))
+    }
 }
