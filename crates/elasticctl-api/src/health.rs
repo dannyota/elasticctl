@@ -11,6 +11,19 @@ use elasticctl_core::capabilities::{probe_license_tier, probe_spaces};
 use elasticctl_core::{Capabilities, Result, Transport};
 use serde::Serialize;
 
+/// The outcome of one `doctor` check.
+///
+/// Serialized lowercase (`ok`, `warn`, `fail`). `warn` passes the report but
+/// carries a caution, so it is distinct from `ok` even though both leave
+/// [`DoctorReport::ok`] true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Ok,
+    Warn,
+    Fail,
+}
+
 /// One `doctor` check.
 ///
 /// Field order is the serialized JSON key order and is contractual: the root
@@ -20,9 +33,8 @@ use serde::Serialize;
 pub struct DoctorCheck {
     #[serde(rename = "check")]
     pub name: String,
-    /// `ok` passes, `warn` passes with a caution, `fail` fails the report.
     #[serde(rename = "status")]
-    pub status: String,
+    pub status: Status,
     #[serde(rename = "message")]
     pub detail: String,
 }
@@ -32,6 +44,17 @@ pub struct DoctorCheck {
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
     pub ok: bool,
+}
+
+impl DoctorReport {
+    /// Build a report from its checks, deriving `ok` from them.
+    ///
+    /// This is the single place `ok` is derived, so a check with a misspelled
+    /// status cannot silently report a broken stack as healthy.
+    pub fn from_checks(checks: Vec<DoctorCheck>) -> DoctorReport {
+        let ok = checks.iter().all(|c| c.status != Status::Fail);
+        DoctorReport { checks, ok }
+    }
 }
 
 /// The stack-derived half of `info`'s report. The caller prepends the
@@ -45,10 +68,12 @@ pub struct InfoReport {
     pub spaces: Option<Vec<String>>,
 }
 
-fn check(name: &str, status: &str, message: impl Into<String>) -> DoctorCheck {
+/// Construct a check. Public so `-cli` builds its configuration checks with
+/// the same shape as the stack checks.
+pub fn check(name: &str, status: Status, message: impl Into<String>) -> DoctorCheck {
     DoctorCheck {
         name: name.into(),
-        status: status.into(),
+        status,
         detail: message.into(),
     }
 }
@@ -58,17 +83,21 @@ fn check(name: &str, status: &str, message: impl Into<String>) -> DoctorCheck {
 /// without claiming otherwise.
 fn key_scope_check(realm: &str) -> DoctorCheck {
     match realm {
-        "_es_api_key" => check("key_scope", "ok", "project-scoped Elasticsearch API key"),
+        "_es_api_key" => check(
+            "key_scope",
+            Status::Ok,
+            "project-scoped Elasticsearch API key",
+        ),
         "_cloud_api_key" => check(
             "key_scope",
-            "warn",
+            Status::Warn,
             "Organization-level API key: reads and deletes work, but enabling a \
              rule will fail. Create a project-scoped Elasticsearch API key in \
              Kibana under Management > API keys.",
         ),
         other => check(
             "key_scope",
-            "ok",
+            Status::Ok,
             format!("authenticated via the '{other}' realm, not an Elasticsearch API key"),
         ),
     }
@@ -113,14 +142,14 @@ pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
 
     let caps = Capabilities::probe(t, t.kibana_url()).await;
     match &caps {
-        Ok(_) => checks.push(check("connectivity", "ok", t.kibana_url())),
-        Err(e) => checks.push(check("connectivity", "fail", e.message.clone())),
+        Ok(_) => checks.push(check("connectivity", Status::Ok, t.kibana_url())),
+        Err(e) => checks.push(check("connectivity", Status::Fail, e.message.clone())),
     }
 
     if let Ok(c) = &caps {
         checks.push(check(
             "flavor",
-            "ok",
+            Status::Ok,
             format!("{} {}", c.flavor.as_str(), c.version),
         ));
 
@@ -128,26 +157,25 @@ pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
             Ok((username, realm)) => {
                 checks.push(check(
                     "auth",
-                    "ok",
+                    Status::Ok,
                     format!("{} via {realm}", short_identity(&username)),
                 ));
                 checks.push(key_scope_check(&realm));
             }
-            Err(e) => checks.push(check("auth", "fail", e.message)),
+            Err(e) => checks.push(check("auth", Status::Fail, e.message)),
         }
 
         match rules::find_page(t, &RuleFilter::default(), 1, 1).await {
             Ok((_, total)) => checks.push(check(
                 "rules_access",
-                "ok",
+                Status::Ok,
                 format!("{total} rules visible"),
             )),
-            Err(e) => checks.push(check("rules_access", "fail", e.message)),
+            Err(e) => checks.push(check("rules_access", Status::Fail, e.message)),
         }
     }
 
-    let ok = checks.iter().all(|c| c.status != "fail");
-    Ok(DoctorReport { checks, ok })
+    Ok(DoctorReport::from_checks(checks))
 }
 
 /// Probe the stack values only `info` reports.
@@ -173,23 +201,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_serializes_to_the_rendered_lowercase_strings() {
+        assert_eq!(
+            serde_json::to_value(Status::Ok).unwrap(),
+            serde_json::json!("ok")
+        );
+        assert_eq!(
+            serde_json::to_value(Status::Warn).unwrap(),
+            serde_json::json!("warn")
+        );
+        assert_eq!(
+            serde_json::to_value(Status::Fail).unwrap(),
+            serde_json::json!("fail")
+        );
+    }
+
+    #[test]
     fn key_scope_check_reports_ok_for_a_project_scoped_es_api_key() {
         let c = key_scope_check("_es_api_key");
-        assert_eq!(c.status, "ok");
+        assert_eq!(c.status, Status::Ok);
         assert!(c.detail.contains("project-scoped"));
     }
 
     #[test]
     fn key_scope_check_warns_for_an_organization_cloud_api_key() {
         let c = key_scope_check("_cloud_api_key");
-        assert_eq!(c.status, "warn");
+        assert_eq!(c.status, Status::Warn);
         assert!(c.detail.contains("Organization-level"));
     }
 
     #[test]
     fn key_scope_check_names_an_unrecognized_realm_rather_than_calling_it_an_api_key() {
         let c = key_scope_check("native");
-        assert_eq!(c.status, "ok");
+        assert_eq!(c.status, Status::Ok);
         assert!(
             c.detail.contains("native"),
             "message must name the realm: {}",
@@ -207,7 +251,7 @@ mod tests {
         // `identity()` returns "unknown" for an unexpected response. Do not
         // report that as an API key.
         let c = key_scope_check("unknown");
-        assert_eq!(c.status, "ok");
+        assert_eq!(c.status, Status::Ok);
         assert!(c.detail.contains("unknown"));
     }
 
@@ -241,7 +285,7 @@ mod tests {
 
     #[test]
     fn doctor_check_serializes_to_the_rendered_key_names() {
-        let c = check("config", "ok", "profile 'default'");
+        let c = check("config", Status::Ok, "profile 'default'");
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["check"], "config");
         assert_eq!(v["status"], "ok");
@@ -255,5 +299,18 @@ mod tests {
             ]),
             "key order is the rendered JSON order"
         );
+    }
+
+    #[test]
+    fn from_checks_derives_ok_from_the_checks() {
+        assert!(
+            DoctorReport::from_checks(vec![
+                check("connectivity", Status::Ok, "ok"),
+                check("key_scope", Status::Warn, "caution"),
+            ])
+            .ok,
+            "a warning must not fail the report"
+        );
+        assert!(!DoctorReport::from_checks(vec![check("config", Status::Fail, "fail")]).ok);
     }
 }
