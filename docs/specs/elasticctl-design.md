@@ -16,9 +16,13 @@ additive rather than a rewrite.
 v0.1 delivers the foundation layer and one vertical: **detection rules as
 code**.
 
-Out of scope for v0.1 (additive later): exceptions, prebuilt rule management,
-alert triage, cases, Fleet and agent policies, ad hoc search, and the MCP
-server.
+v0.2 completes that vertical. It adds exception lists as managed objects,
+prebuilt rule status and installation, and a way to scope every rule operation
+to custom, customized, or prebuilt rules. It also closes section 3's layering
+debt by moving all command orchestration into `-api`.
+
+Out of scope (additive later): alert triage, cases, Fleet and agent policies,
+ad hoc search, value-list content management, and the MCP server.
 
 ## 2. Decisions
 
@@ -81,10 +85,22 @@ live in `cli/src/cmd/`, and 18 of 23 command functions return
 `-api`; the code that resolves a selection, loads a directory, and builds a
 report is not.
 
-The rule applies to new work from 0.2. Retrofitting the rules vertical is
-deferred to the MCP phase, where it is one vertical rather than six. The cost
-of ignoring it is not a redesign — it is the same mechanical refactor, priced
-per capability area.
+0.2 closes this rather than deferring it, for every command an MCP server could
+call. Two stay in `-cli` on purpose: `meta` reflects over the `clap` tree and
+cannot leave the crate that defines it, and `config_cmd` manages the user's
+local profile file, which is a property of the operator's machine rather than
+of a stack. The state engine is rewritten in 0.2
+to carry exception lists, so `cmd/state.rs` is reworked regardless, and
+retrofitting a file while rewriting it costs less than doing either alone.
+`cmd/rules.rs` follows in the same release because the two share the selection
+and render paths, and splitting them would leave the render layer serving two
+shapes at once.
+
+The retrofit lands before any 0.2 feature, proven by snapshot tests showing
+byte-identical rendered output for every existing command. Built the other way
+round, each new command is written once against `serde_json::Value` and again
+against a struct. It is also independently shippable if the rest of 0.2 runs
+long.
 
 ### 3.1 elasticctl-core
 
@@ -160,9 +176,23 @@ Does not know about detection rules.
 - **`codec`** — NDJSON (canonical, import-ready) and YAML (`serde_yaml_ng`;
   `serde_yaml` is unmaintained) over the same `Rule`. Handles Kibana's trailing
   `{"exported_count":N,...}` summary object as a trailer, not a rule.
-- **`rules`** — typed endpoint wrappers returning
-  `elasticctl_core::Result<T>`. They never print. Later verticals (exceptions,
-  cases, fleet) add sibling modules without touching this one.
+- **`rules`** — typed endpoint wrappers returning `elasticctl_core::Result<T>`.
+  They never print. Later verticals (cases, fleet) add sibling modules without
+  touching this one.
+- **`rules_ops`** — the command orchestration above those wrappers. It is a
+  separate module from `rules` so that neither file has to be read whole to
+  change the other; the endpoints are a stable surface and the orchestration
+  is where behaviour moves.
+- **`ops`** — the report and plan types every vertical's orchestration shares:
+  `MutationPlan`, `MutationOutcome`, `ExportOutcome`, `ImportOutcome`. Defining
+  them once is what lets `rules`, `exceptions`, and `prebuilt` present one
+  shape to `render` instead of three that nearly agree.
+- **`exceptions`** — exception list containers and items, shaped like `rules`:
+  typed wrappers, orchestration, no printing.
+- **`prebuilt`** — prebuilt rule status and installation.
+- **`state`** — `pull`, `diff`, and `push` orchestration: selection resolution,
+  directory loading, apply ordering, and report construction. `cli/cmd/` calls
+  one function here per command.
 
 ### 3.3 elasticctl-cli
 
@@ -170,7 +200,9 @@ Does not know about detection rules.
 `render` produces table, json, yaml, csv, or jsonl. `guard` implements the
 dry-run contract.
 
-## 4. Command surface (v0.1)
+## 4. Command surface
+
+Lines marked `0.2` are added in that release; everything else ships in v0.1.
 
 ```
 elasticctl config init --from-env            Create a profile from ELASTICCTL_* vars
@@ -178,23 +210,37 @@ elasticctl config list | show | test         Inspect profiles; secrets always re
 elasticctl doctor                            Configuration, connectivity, flavor, auth, key scope, rule access
 elasticctl info                              Stack version, flavor, license tier, spaces
 
-elasticctl rules list                        --enabled/--disabled --type --severity --tag --filter
+elasticctl rules list                        --enabled/--disabled --type --severity --tag --filter --source
 elasticctl rules get <name|rule_id>
 elasticctl rules validate --path FILE        Local schema check, no server contact
 elasticctl rules enable  <name|rule_id>...   [guarded]
 elasticctl rules disable <name|rule_id>...   [guarded]
 elasticctl rules delete  <name|rule_id>...   [guarded]
-elasticctl rules export [<name|rule_id>...] [--tag TAG] [--out FILE] [--format-file ndjson|yaml]
+elasticctl rules export [<name|rule_id>...] [--tag TAG] [--source S] [--out FILE] [--format-file ndjson|yaml]
 elasticctl rules import --path FILE [--overwrite | --skip-existing]  [guarded]
 elasticctl rules preview <file|name|rule_id> [--invocations N] [--sample N]
+elasticctl rules prebuilt status             Installed, missing, outdated, customized             0.2
+elasticctl rules prebuilt install            Install missing and update outdated  [guarded]       0.2
 
-elasticctl state pull [<name|rule_id>...] [--tag TAG] --dir config/ [--format-file ndjson|yaml]
-elasticctl state diff [<name|rule_id>...] [--tag TAG] --dir config/  Field-level structured drift
-elasticctl state push [<name|rule_id>...] [--tag TAG] --dir config/ [--report FILE]  [guarded]
+elasticctl exceptions list                   --type --tag --namespace                             0.2
+elasticctl exceptions get <list_id>          Container and its items                              0.2
+elasticctl exceptions validate --path FILE   Local schema check, no server contact                0.2
+elasticctl exceptions export [<list_id>...] [--tag TAG] [--out FILE] [--format-file ndjson|yaml]  0.2
+elasticctl exceptions import --path FILE [--overwrite | --skip-existing]  [guarded]               0.2
+elasticctl exceptions delete <list_id>...    [guarded]                                            0.2
+
+elasticctl state pull [<name|rule_id>...] [--tag TAG] [--source S] --dir config/ [--format-file ndjson|yaml]
+elasticctl state diff [<name|rule_id>...] [--tag TAG] [--source S] --dir config/  Field-level structured drift
+elasticctl state push [<name|rule_id>...] [--tag TAG] [--source S] --dir config/ [--report FILE]  [guarded]
 
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands                          Machine-readable command tree
 ```
+
+`exceptions` has no `create` verb: authoring is `import --path` or `state
+push`, and a flag surface for arbitrary nested `entries` would be worse than a
+file. It has no `attach`/`detach` either, because attaching a list to a rule is
+a rule mutation and `state push` is how rule mutations are made.
 
 ### 4.1 Rule identity
 
@@ -261,10 +307,63 @@ never asked to change is not a failure.
 
 The default is unchanged: without either flag, a conflict is a reported failure.
 
+### 4.5 Exception list identity
+
+Identity is `list_id` plus `namespace_type`, never the saved-object `id`. The
+rule that governs rules governs lists, and here the API forces the point by
+disagreeing with itself. Measured 2026-08-14 against Serverless 9.6.0:
+
+| Path | Matches a list by |
+|---|---|
+| `POST /api/detection_engine/rules` | `id` — required, and any UUID is accepted unvalidated |
+| `POST .../rules/_export` | `list_id` — exported the correct list despite a zeroed `id` |
+| `POST .../rules/_import` | `list_id` — recreated the list and rewrote the rule's `id` to match |
+
+A rule's `exceptions_list[].id` is therefore a required pointer that two of the
+three paths ignore and nothing validates. A rule created with
+`"id": "00000000-0000-0000-0000-000000000000"` alongside a live `list_id` is
+accepted with a 200 and stores the dangling pointer.
+
+`normalize` strips it, so it can never surface as drift, and `push` resolves
+`list_id` against the target stack and injects the current `id`. Nothing else
+is safe: omitting the field is a 400, and carrying a pulled stack's `id` to
+another stack writes a pointer to an object that does not exist there. That is
+the dev-to-prod promotion this tool exists for.
+
+Because the server does not catch a dangling pointer, `diff` does. A rule whose
+stored `id` does not match the live container for its `list_id` is reported,
+and `push` repairs it.
+
+`namespace_type` is part of identity because `single` and `agnostic` are
+separate namespaces in which the same `list_id` may exist independently.
+
+### 4.6 Prebuilt rules
+
+`rules prebuilt status` reports installed, missing, outdated, and customized
+counts. The first three come from
+`GET /api/detection_engine/rules/prepackaged/_status`. The fourth costs one
+extra `_find` and is the reason the command earns its place: a prebuilt rule
+edited in the Kibana UI is invisible to a custom-scoped mirror, and an
+unrecorded edit to a detection is exactly what a detection engineer needs to
+see.
+
+`rules prebuilt install` installs every missing prebuilt rule and updates every
+outdated one. It is one verb because the route is one call:
+`PUT /api/detection_engine/rules/prepackaged` does both indivisibly and takes
+no selection. There is no per-rule prebuilt upgrade in this tool. The route
+offering one is `access: 'internal'`, and its sibling `status` route answers
+400 on Serverless 9.6.0 — the same ground on which section 5.2 rejects the
+internal search route.
+
+The preview is computed from `_status` rather than from a server dry run,
+because this route takes no `dry_run` parameter. It is the only guarded path in
+the tool whose preview is client-computed, and the banner names both counts.
+
 ## 5. State engine
 
-- **`pull`** — read the corpus through `_find`, map to `Rule`, normalize, write
-  the tree in the requested format. Filenames are planned for every rule before
+- **`pull`** — read the corpus through `_find`, map to `Rule`, normalize, fetch
+  the exception lists those rules reference, and write the tree in the requested
+  format. Filenames are planned for every object before
   the first file is written. A `rule_id` pair that sanitises to one filename is
   refused with `conflict`, naming **every** colliding pair at once, before the
   directory is created. Reporting one collision per run hides the next until a
@@ -366,8 +465,9 @@ agree or survive an upgrade.
 ### 5.3 Scoped state operations
 
 `pull`, `diff`, and `push` take the same positional selectors and `--tag`
-filter as `rules export`, described in 4.3. Given neither, they act on the
-whole space. This existing behavior remains the default.
+filter as `rules export`, described in 4.3. Given neither, they act on
+everything inside the active `--source` scope, which from 0.2 is the space's
+custom rules rather than the whole space. Section 5.5 covers that change.
 
 Selection narrows both sides before drift is computed, so the remote read
 becomes one `rule_id`-filtered `_find` instead of a corpus read. Resolution
@@ -395,6 +495,76 @@ it reads from the stack and has no local set to count against.
 
 The guard banner names the selection. A scoped apply that looked identical to a
 full one would defeat the purpose of the banner.
+
+### 5.4 Exceptions in the mirror
+
+The mirror covers the rules in scope plus exactly the exception lists those
+rules reference. A list nothing references is not part of a rules-as-code
+mirror; `exceptions export` covers it. That closure is what keeps `pull` and
+`push` symmetric: `push` manages the set `pull` wrote and never meets a list it
+was not told about.
+
+```
+config/
+  rules/<rule_id>.yaml
+  exceptions/<list_id>.yaml
+```
+
+A `rule_default` list belongs to exactly one rule and is written inline in that
+rule's file. Its own file would be an object whose only consumer is one rule
+and whose lifetime is that rule's.
+
+Filenames are planned for every rule and list before the first file is written,
+and collisions are refused naming every colliding pair at once — section 5's
+existing contract, extended to lists. A `single` and an `agnostic` list sharing
+a `list_id` collide on filename and are refused the same way.
+
+`push` applies in a fixed order: containers, then items, then rules. A rule is
+never written before the list it points at exists.
+
+**Containers and rules are never deleted. Items inside a mirrored container are
+reconciled exactly, deletes included.** The asymmetry follows from what is
+mirrored rather than from a softened contract. A rule or a list absent locally
+may simply never have been pulled, so its absence carries no instruction. A
+container's item set is always written in full — there are no item-level
+selectors — so an item present remotely and absent locally *is* an instruction,
+in the way a removed entry in a rule's `tags` array is. Removing an exception
+is how a detection is un-suppressed. A mirror that cannot express it cannot
+converge.
+
+`diff` gains an `exceptions` block mirroring the rules block, and `clean` is
+true only when both are.
+
+### 5.5 Scoping by rule source
+
+`--source custom|customized|prebuilt|all` scopes `rules list`, `rules export`,
+and the state commands.
+
+| Value | Server-side filter |
+|---|---|
+| `custom` | `alert.attributes.params.immutable: false` |
+| `prebuilt` | `alert.attributes.params.immutable: true` |
+| `customized` | `alert.attributes.params.ruleSource.isCustomized: true` |
+| `all` | none |
+
+`immutable` carries the custom/prebuilt split rather than
+`params.ruleSource.type` because it exists on every version in the support
+window. Both were measured to agree exactly: 2,066 prebuilt and 0 custom under
+either field.
+
+The state commands default to `custom`; `rules list` and `rules export` default
+to `all`. The defaults differ because the commands differ. A mirror should hold
+what the operator authored, and `state pull` writing 2,066 Elastic-owned rules
+into a repository is the behaviour 0.2 removes. A query command that hid 2,066
+rules demonstrably present on the stack would be lying instead.
+
+Section 5.2's exhaustiveness check extends: custom and prebuilt must sum to the
+corpus, and when `--source` is active a partitioned read checks its slices
+against the filtered total rather than the corpus total.
+
+A local file outside the active scope is reported as `out_of_scope`, naming the
+flag, not as `local_only`. A 0.1 mirror holding 2,066 prebuilt rules would
+otherwise read as catastrophic drift on the first `state diff` after upgrading.
 
 ## 6. Contracts
 
@@ -622,12 +792,57 @@ which proves nothing. The classification test requires the key on every fixture
 set, so a re-record that drops it fails instead of reverting this to an
 inference.
 
+### 7.7 Exceptions, measured
+
+Probed against the same Serverless 9.6.0 project on 2026-08-14. Every object
+was created, measured, and deleted, and the project was verified back to its
+baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
+
+| Fact | Detail |
+|---|---|
+| Rule export bundles exceptions | A scoped `_export` of one rule carrying a list returns four lines: the rule, the list container, the item, then the trailer |
+| The bundle breaks 0.1.3 | `rules export` answers `line 2: a rule must have a rule_id`. Every rule with an exception list fails to export |
+| Export resolves by `list_id` | A rule carrying a zeroed `id` and a live `list_id` exported the correct list, with `missing_exception_lists: []` |
+| Import re-resolves | Deleting both objects and importing the bundle recreated the list under a new `id` and rewrote the rule's `exceptions_list[].id` to match |
+| `id` is required on create | Omitting it is a 400: `exceptions_list.0.id: Invalid input: expected string, received undefined` |
+| A dangling `id` is accepted | A zeroed UUID beside a live `list_id` returns 200 and is stored verbatim |
+| The exception export trailer differs | `POST /api/exception_lists/_export` ends with `exported_exception_list_count` and carries no `exported_count`, so the rules trailer test does not match it |
+| Container volatile fields | `id`, `_version`, `tie_breaker_id`, `version`, `created_at`, `created_by`, `updated_at`, `updated_by` |
+| Item volatile fields | The same set less `version`, plus per-comment timestamps |
+| `created_by` on Serverless | A bare numeric user id. It is identity and must be scrubbed from fixtures |
+| Value-list data streams | `.lists-default` and `.items-default` do not exist by default. `POST /api/lists/index` creates them, `GET` reports `{list_index, list_item_index}`, `DELETE` removes them |
+| Summary route | `GET /api/exception_lists/summary` returns `{windows, linux, macos, total}` |
+
+Because `rules import` re-resolves references itself, export and import are
+already a correct cross-stack promotion path once the decoder stops rejecting
+line 2. `state push` writes through the rules API directly and is the only path
+that must resolve `list_id` on its own.
+
+Value lists are referenced from an exception entry by a caller-supplied `id`
+that is stable across stacks, so such an entry round-trips without resolution.
+Their *content* is data rather than configuration and is not managed here.
+`push` verifies that a referenced value list exists and reports it when it does
+not, and `doctor` reports whether the data streams are bootstrapped.
+
+### 7.8 Prebuilt rules, measured
+
+Same project, same date.
+
+| Fact | Detail |
+|---|---|
+| Public status route | `GET /api/detection_engine/rules/prepackaged/_status` returns 200 with `rules_installed: 2066`, `rules_custom_installed: 0`, `rules_not_installed: 0`, `rules_not_updated: 0`, and three timeline counters |
+| Public install route | `PUT /api/detection_engine/rules/prepackaged` returns 200 with `{rules_installed, rules_updated, timelines_installed, timelines_updated}`. It installs and updates in one call and takes no selection |
+| No `dry_run` | The route has no dry-run parameter, so the guard preview is computed from `_status` |
+| Internal routes unavailable | `/internal/detection_engine/prebuilt_rules/status` answers 400, `exists but is not available with the current configuration` |
+| Customization is filterable | `params.ruleSource.isCustomized` splits 0 / 2,066. A prebuilt rule carries `rule_source: {type, is_customized, customized_fields, has_base_version}` |
+| `immutable` agrees with `ruleSource.type` | 2,066 / 0 under either field |
+
 ## 8. Testing
 
 | Tier | Runs | Covers |
 |---|---|---|
 | Unit | Always, no I/O | Normalization, codecs, rule round-trip, config precedence, error classification |
-| Fixture | Always, offline | Full command paths against `wiremock` replaying recorded exchanges, plus `assert_cmd` and `insta` snapshots of rendered output |
+| Fixture | Always, offline | Full command paths against `wiremock` replaying recorded exchanges, plus `assert_cmd` and, from 0.2, `insta` snapshots of rendered output |
 | Live | `ELASTICCTL_LIVE=1 cargo test -- --ignored` | Real stack. The conformance check that catches API drift |
 
 Fixtures are **recorded, not hand-written**. `cargo xtask record` drives a live
@@ -721,14 +936,14 @@ a patch. A whole new command group is a minor.
 
 Manifests always carry three components: `version = "0.1.0"`, never `"0.1"`.
 
-Planned shape, order not yet fixed:
+Planned shape. 0.2 is fixed; the order after it is not:
 
 | Version | Capability area |
 |---|---|
 | `0.1` | Detection rules as code |
-| `0.2` | Search — ES\|QL and DSL |
-| `0.3` | Alert triage and cases |
-| `0.4` | Exceptions and prebuilt rule management |
+| `0.2` | Exceptions, prebuilt rules, and the `-api` retrofit |
+| `0.3` | Search — ES\|QL and DSL |
+| `0.4` | Alert triage and cases |
 | `0.5` | Dashboards and data views |
 | `0.6` | Fleet and agent policies |
 | `0.7` | MCP server — read-only tools over the existing verticals |
@@ -764,6 +979,14 @@ Breaking, requiring a minor bump:
 Additive, allowed in a patch release: new commands, new flags with defaults,
 new fields in JSON output, new error kinds for previously unclassified
 failures.
+
+0.2 breaks two things under this list. The state commands default to
+`--source custom` instead of the whole space, and the `diff` report gains an
+`exceptions` block whose presence narrows what `clean` asserts. Both are named
+in the changelog beside the flag that restores the previous behaviour. The
+mirror layout also grows a directory, but an 0.1 mirror still round-trips: a
+tree with no `exceptions/` describes a corpus with no exception lists, which is
+what it was.
 
 ### 11.2 Publishing
 
@@ -875,3 +1098,19 @@ round-trips every type exactly. They are read-only ground truth. A live test
 never mutates an untagged rule; every object it creates carries the
 `elasticctl-sample` marker, and a run ends by verifying that the project is
 back to that baseline.
+
+**A large retrofit shipped beside two new capability areas — mitigated by
+ordering.** 0.2 moves 1,528 lines of orchestration into `-api` in the same
+release that adds exceptions and prebuilt rules. The mitigation is sequence and
+evidence rather than care: the retrofit lands first as its own wave, and
+snapshot tests prove every existing command renders byte-identically before any
+0.2 feature is written. If the rest of 0.2 runs long, the retrofit ships alone.
+
+**A dangling exception pointer is silent — mitigated, not eliminated.** The
+server accepts `exceptions_list[].id` without validating it, and whether the
+detection engine matches exceptions on `id` or on `list_id` at run time is not
+measured. `diff` reports a mismatch and `push` repairs it, so a mirror
+converges on a correct pointer either way. What stays unknown is the blast
+radius of a wrong one: whether a rule holding a stale `id` applies its
+exceptions or silently ignores them. Measuring that needs a rule that fires, so
+it belongs to the live suite rather than to a fixture.

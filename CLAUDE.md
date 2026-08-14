@@ -56,9 +56,9 @@ elasticctl-cli  →  elasticctl-api  →  elasticctl-core
   parses arguments, calls one API function, hands the result to render. MCP
   cannot depend on `-cli`, so anything left in `cmd/` is unreachable from it.
   v0.1 does not meet this — 1,528 lines sit in `cmd/` and most functions return
-  `serde_json::Value` — and the rules vertical is retrofitted in the MCP phase.
-  The rule binds new work from 0.2, so each capability area pays for itself
-  once instead of six at the end.
+  `serde_json::Value`. 0.2 retrofits all of it, before any 0.2 feature is
+  written, with snapshot tests proving output is byte-identical first. Building
+  features on the old shape would write each one twice.
 - **`clap` types never appear in `-api` or `-core`.** If a command needs a
   value, pass the value, not the parsed arg struct.
 - Flavor differences are handled at runtime through the capability probe, not
@@ -70,10 +70,16 @@ elasticctl-cli  →  elasticctl-api  →  elasticctl-core
 
 - Every mutation is a dry run by default. `--yes` applies. Both the preview and
   the apply print a banner naming profile, host, and space.
-- **`state push` never deletes remote rules.** A rule missing locally is not a
-  delete instruction. Deletion is only ever the explicit `rules delete`.
+- **`state push` never deletes remote rules or exception list containers.** A
+  rule missing locally is not a delete instruction. Deletion is only ever the
+  explicit `rules delete` or `exceptions delete`. From 0.2, exception *items*
+  inside a mirrored container are the one exception: they reconcile exactly,
+  deletes included, because a container's item set is always written in full.
+  Spec 5.4 gives the reasoning.
 - Rule identity for state matching is **always `rule_id`** — never the display
-  name, never the volatile saved-object `id`.
+  name, never the volatile saved-object `id`. Exception list identity is
+  **always `list_id` plus `namespace_type`**; a rule's `exceptions_list[].id` is
+  stripped on pull and re-resolved on push. Spec 4.5.
 - Secrets are redacted in all output, including `--debug` HTTP logs.
 
 ## Credentials
