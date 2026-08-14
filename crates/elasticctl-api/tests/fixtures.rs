@@ -10,6 +10,23 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const V0_2_FIXTURES: [&str; 14] = [
+    "exception_lists_find.json",
+    "exception_list_get.json",
+    "exception_list_items_find.json",
+    "exception_list_create.json",
+    "exception_item_create.json",
+    "exception_list_export.json",
+    "exception_list_import.json",
+    "rules_export_bundle.json",
+    "rules_import_bundle.json",
+    "prebuilt_status.json",
+    "prebuilt_install.json",
+    "lists_index.json",
+    "rules_find_source_custom.json",
+    "rules_find_source_customized.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -76,7 +93,16 @@ fn rules_export_decodes_to_the_probe_rule_and_trailer() {
 
         let (rules, summary) = codec::decode_ndjson(ndjson).expect("decode export ndjson");
         let summary = summary.expect("export must carry the exported_count trailer");
-        assert_eq!(summary.exported_count, 1, "a scoped export holds one rule");
+        assert_eq!(
+            summary.exported_count, 3,
+            "the bundle total counts its rule, list, and item"
+        );
+        assert_eq!(
+            summary.exported_rules_count, 1,
+            "a scoped export holds one rule"
+        );
+        assert_eq!(summary.exported_exception_list_count, 1);
+        assert_eq!(summary.exported_exception_list_item_count, 1);
         assert_eq!(rules.len(), 1, "a scoped export holds one rule line");
         let probe = probe_rule(&rules);
         assert_eq!(probe.name(), "elasticctl fixture probe");
@@ -110,6 +136,253 @@ fn fixture_body(path: &Path) -> Value {
     let body = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
+}
+
+#[test]
+fn every_flavor_carries_every_v0_2_exchange() {
+    for set in fixture_sets() {
+        let missing: Vec<&str> = V0_2_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks v0.2 fixture exchange(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
+    }
+}
+
+#[test]
+fn exception_export_bundle_decodes_to_the_fixed_list_and_item() {
+    for set in fixture_sets() {
+        let value = fixture_body(&set.join("exception_list_export.json"));
+        let ndjson = value["response"]["ndjson"]
+            .as_str()
+            .expect("exception_list_export must carry response.ndjson as a string");
+        let bundle = codec::decode_bundle(ndjson).expect("decode exception export NDJSON");
+
+        assert!(
+            bundle.rules.is_empty(),
+            "{}: exception export has no rules",
+            set.display()
+        );
+        assert_eq!(
+            bundle.lists.len(),
+            1,
+            "{}: one scoped exception list",
+            set.display()
+        );
+        assert_eq!(
+            bundle.items.len(),
+            1,
+            "{}: one scoped exception item",
+            set.display()
+        );
+        assert_eq!(
+            bundle.lists[0].list_id().expect("list id"),
+            "elasticctl-sample-exceptions",
+            "{}: export must retain the fixed list id",
+            set.display()
+        );
+        assert_eq!(
+            bundle.items[0].item_id().expect("item id"),
+            "elasticctl-sample-exception-item",
+            "{}: export must retain the fixed item id",
+            set.display()
+        );
+        assert_eq!(
+            bundle.items[0].list_id().expect("item list id"),
+            "elasticctl-sample-exceptions",
+            "{}: item must point to the fixed list",
+            set.display()
+        );
+    }
+}
+
+#[test]
+fn rule_export_bundle_decodes_to_the_fixed_rule_list_and_item() {
+    for set in fixture_sets() {
+        let value = fixture_body(&set.join("rules_export_bundle.json"));
+        let ndjson = value["response"]["ndjson"]
+            .as_str()
+            .expect("rules_export_bundle must carry response.ndjson as a string");
+        let bundle = codec::decode_bundle(ndjson).expect("decode rule export NDJSON");
+
+        assert_eq!(bundle.rules.len(), 1, "{}: one scoped rule", set.display());
+        assert_eq!(
+            bundle.lists.len(),
+            1,
+            "{}: one referenced list",
+            set.display()
+        );
+        assert_eq!(
+            bundle.items.len(),
+            1,
+            "{}: one referenced item",
+            set.display()
+        );
+        assert_eq!(
+            bundle.rules[0].rule_id().expect("rule id"),
+            "elasticctl-fixture-probe",
+            "{}: export must retain the fixed rule id",
+            set.display()
+        );
+        assert_eq!(
+            bundle.lists[0].list_id().expect("list id"),
+            "elasticctl-sample-exceptions",
+            "{}: export must retain the fixed list id",
+            set.display()
+        );
+        assert_eq!(
+            bundle.items[0].item_id().expect("item id"),
+            "elasticctl-sample-exception-item",
+            "{}: export must retain the fixed item id",
+            set.display()
+        );
+    }
+}
+
+#[test]
+fn source_find_fixtures_keep_the_exact_scoped_kql() {
+    let expected = [
+        (
+            "rules_find_source_custom.json",
+            "alert.attributes.params.immutable: false AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\"",
+        ),
+        (
+            "rules_find_source_customized.json",
+            "alert.attributes.params.ruleSource.isCustomized: true AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\"",
+        ),
+    ];
+
+    for set in fixture_sets() {
+        for (file, filter) in expected {
+            let value = fixture_body(&set.join(file));
+            assert_eq!(
+                value["request"]["filter"].as_str(),
+                Some(filter),
+                "{} must retain the exact scoped source filter",
+                set.join(file).display()
+            );
+        }
+    }
+}
+
+#[test]
+fn lists_index_records_either_the_valid_result_or_classified_404() {
+    for set in fixture_sets() {
+        let value = fixture_body(&set.join("lists_index.json"));
+        match (value.get("response"), value.get("error")) {
+            (Some(response), None) => {
+                assert!(
+                    response["list_index"].is_boolean(),
+                    "{}: successful list index response needs list_index bool",
+                    set.display()
+                );
+                assert!(
+                    response["list_item_index"].is_boolean(),
+                    "{}: successful list index response needs list_item_index bool",
+                    set.display()
+                );
+            }
+            (None, Some(error)) => {
+                assert_eq!(
+                    error["kind"].as_str(),
+                    Some("not_found"),
+                    "{}: absent list indices must remain a classified 404",
+                    set.display()
+                );
+                assert_eq!(
+                    error["http_status"].as_u64(),
+                    Some(404),
+                    "{}: absent list indices must retain their HTTP status",
+                    set.display()
+                );
+            }
+            _ => panic!(
+                "{}: lists_index requires exactly one response or error envelope",
+                set.display()
+            ),
+        }
+    }
+}
+
+fn is_identity_key(key: &str) -> bool {
+    matches!(
+        key.rsplit('.').next().unwrap_or(key),
+        "created_by" | "updated_by" | "tie_breaker_id" | "_version"
+    )
+}
+
+fn assert_identity_value_redacted(value: &Value, context: &str) {
+    match value {
+        Value::Null => {}
+        Value::String(value) => assert_eq!(value, "REDACTED", "{context}"),
+        Value::Array(values) => {
+            for value in values {
+                assert_identity_value_redacted(value, context);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                assert_identity_value_redacted(value, context);
+            }
+        }
+        other => panic!("{context}: unredacted identity value {other}"),
+    }
+}
+
+fn assert_no_real_identity_values(value: &Value, context: &str) {
+    match value {
+        Value::Object(values) => {
+            for (key, value) in values {
+                let child_context = format!("{context}.{key}");
+                if is_identity_key(key) {
+                    assert_identity_value_redacted(value, &child_context);
+                } else if key == "ndjson" {
+                    let text = value.as_str().unwrap_or_else(|| {
+                        panic!("{child_context}: NDJSON response must be a string")
+                    });
+                    for (line, body) in text
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .enumerate()
+                    {
+                        let nested: Value = serde_json::from_str(body).unwrap_or_else(|error| {
+                            panic!("{child_context} line {} is not JSON: {error}", line + 1)
+                        });
+                        assert_no_real_identity_values(
+                            &nested,
+                            &format!("{child_context} line {}", line + 1),
+                        );
+                    }
+                } else {
+                    assert_no_real_identity_values(value, &child_context);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                assert_no_real_identity_values(value, &format!("{context}[{index}]"));
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn fixture_identity_and_version_fields_are_recursively_redacted() {
+    for set in fixture_sets() {
+        for entry in fs::read_dir(&set).expect("fixture set") {
+            let path = entry.expect("fixture set entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                assert_no_real_identity_values(&fixture_body(&path), &path.display().to_string());
+            }
+        }
+    }
 }
 
 #[test]

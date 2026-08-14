@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "lists_index",
+  "error": {
+    "kind": "not_found",
+    "message": "data stream .lists-default and data stream .items-default does not exist",
+    "http_status": 404
+  }
+}

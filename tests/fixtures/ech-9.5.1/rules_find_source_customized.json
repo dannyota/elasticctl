@@ -1,0 +1,14 @@
+{
+  "flavor": "ech",
+  "version": "9.5.1",
+  "operation": "rules_find_source_customized",
+  "request": {
+    "filter": "alert.attributes.params.ruleSource.isCustomized: true AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\""
+  },
+  "response": {
+    "page": 1,
+    "perPage": 2,
+    "total": 0,
+    "data": []
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "exception_lists_find",
+  "request": {
+    "filter": "exception-list.attributes.list_id: \"elasticctl-sample-exceptions\""
+  },
+  "response": {
+    "data": [
+      {
+        "id": "706cfaa8-96ea-4c82-a688-b9e4bdeda450",
+        "list_id": "elasticctl-sample-exceptions",
+        "type": "detection",
+        "name": "elasticctl sample exceptions",
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "immutable": false,
+        "namespace_type": "single",
+        "os_types": [],
+        "tags": [
+          "elasticctl",
+          "fixture"
+        ],
+        "version": 1,
+        "_version": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-08-14T18:17:21.109Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-08-14T18:17:21.109Z",
+        "updated_by": "REDACTED"
+      }
+    ],
+    "page": 1,
+    "per_page": 2,
+    "total": 1
+  }
+}

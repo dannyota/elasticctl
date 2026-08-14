@@ -1,0 +1,19 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "exception_list_import",
+  "request": {
+    "overwrite": true,
+    "list_id": "elasticctl-sample-exceptions",
+    "namespace_type": "single"
+  },
+  "response": {
+    "errors": [],
+    "success": true,
+    "success_count": 2,
+    "success_exception_lists": true,
+    "success_count_exception_lists": 1,
+    "success_exception_list_items": true,
+    "success_count_exception_list_items": 1
+  }
+}

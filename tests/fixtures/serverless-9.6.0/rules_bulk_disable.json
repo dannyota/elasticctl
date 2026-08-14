@@ -9,7 +9,7 @@
       "results": {
         "updated": [
           {
-            "id": "8acd1ab8-4cbb-45ea-bb29-832740508897",
+            "id": "af6258d9-8ab9-481d-812b-b3c0674a09f9",
             "rule_id": "elasticctl-fixture-probe",
             "name": "elasticctl fixture probe",
             "immutable": false,
@@ -18,9 +18,9 @@
             },
             "version": 1,
             "revision": 0,
-            "updated_at": "2026-08-13T15:15:19.516Z",
+            "updated_at": "2026-08-14T18:08:52.499Z",
             "updated_by": "REDACTED",
-            "created_at": "2026-08-13T15:15:15.966Z",
+            "created_at": "2026-08-14T18:08:48.556Z",
             "created_by": "REDACTED",
             "enabled": false,
             "interval": "5m",
@@ -44,7 +44,14 @@
             "severity_mapping": [],
             "output_index": "",
             "max_signals": 100,
-            "exceptions_list": [],
+            "exceptions_list": [
+              {
+                "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+                "list_id": "elasticctl-sample-exceptions",
+                "type": "detection",
+                "namespace_type": "single"
+              }
+            ],
             "actions": [],
             "type": "query",
             "language": "kuery",

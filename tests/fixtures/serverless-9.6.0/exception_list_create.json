@@ -1,0 +1,26 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "exception_list_create",
+  "response": {
+    "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+    "list_id": "elasticctl-sample-exceptions",
+    "type": "detection",
+    "name": "elasticctl sample exceptions",
+    "description": "Recorded by cargo xtask record. Safe to delete.",
+    "immutable": false,
+    "namespace_type": "single",
+    "os_types": [],
+    "tags": [
+      "elasticctl",
+      "fixture"
+    ],
+    "version": 1,
+    "_version": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_at": "2026-08-14T18:08:46.366Z",
+    "created_by": "REDACTED",
+    "updated_at": "2026-08-14T18:08:46.366Z",
+    "updated_by": "REDACTED"
+  }
+}

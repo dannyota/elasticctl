@@ -1,0 +1,67 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "rules_find_source_custom",
+  "request": {
+    "filter": "alert.attributes.params.immutable: false AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\""
+  },
+  "response": {
+    "page": 1,
+    "perPage": 2,
+    "total": 1,
+    "data": [
+      {
+        "id": "af6258d9-8ab9-481d-812b-b3c0674a09f9",
+        "rule_id": "elasticctl-fixture-probe",
+        "name": "elasticctl fixture probe",
+        "immutable": false,
+        "rule_source": {
+          "type": "internal"
+        },
+        "version": 1,
+        "revision": 0,
+        "updated_at": "2026-08-14T18:08:48.556Z",
+        "updated_by": "REDACTED",
+        "created_at": "2026-08-14T18:08:48.556Z",
+        "created_by": "REDACTED",
+        "enabled": false,
+        "interval": "5m",
+        "from": "now-6m",
+        "to": "now",
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "tags": [
+          "elasticctl",
+          "fixture"
+        ],
+        "author": [],
+        "threat": [],
+        "related_integrations": [],
+        "required_fields": [],
+        "setup": "",
+        "false_positives": [],
+        "references": [],
+        "risk_score": 21,
+        "risk_score_mapping": [],
+        "severity": "low",
+        "severity_mapping": [],
+        "output_index": "",
+        "max_signals": 100,
+        "exceptions_list": [
+          {
+            "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+            "list_id": "elasticctl-sample-exceptions",
+            "type": "detection",
+            "namespace_type": "single"
+          }
+        ],
+        "actions": [],
+        "type": "query",
+        "language": "kuery",
+        "index": [
+          "logs-*"
+        ],
+        "query": "*:*"
+      }
+    ]
+  }
+}

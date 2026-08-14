@@ -8,11 +8,28 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+const RULE_ID: &str = "elasticctl-fixture-probe";
+const LIST_ID: &str = "elasticctl-sample-exceptions";
+const ITEM_ID: &str = "elasticctl-sample-exception-item";
+const NAMESPACE_TYPE: &str = "single";
+const MARKER_TAGS: [&str; 2] = ["elasticctl", "fixture"];
+const SCRATCH_DOC_ID: &str = "elasticctl-sample-fixture";
+const SCRATCH_MARKER: &str = "elasticctl_fixture_marker";
+
+const SCRUB_FIELDS: &[&str] = &[
+    "username",
+    "full_name",
+    "email",
+    "created_by",
+    "updated_by",
+    "tie_breaker_id",
+    "_version",
+];
+
 /// Replace credentials and operator identity before writing a fixture. Recorded
 /// fixtures are committed to a public repository.
 ///
-/// Scrub identity fields (`username`, `full_name`, `email`, `created_by`, and
-/// `updated_by`) to preserve response *shape* without archiving the recorder.
+/// Scrub server-owned identity and version fields while preserving their shape.
 /// Keep these fields in the list even when they appear unused.
 fn scrub(v: &mut Value) {
     match v {
@@ -37,17 +54,20 @@ fn is_sensitive(key: &str) -> bool {
     let leaf = lower.rsplit('.').next().unwrap_or(&lower);
     lower.contains("api_key")
         || lower.contains("apikey")
-        || matches!(
-            leaf,
-            "authorization"
-                | "password"
-                | "encoded"
-                | "username"
-                | "full_name"
-                | "email"
-                | "created_by"
-                | "updated_by"
-        )
+        || matches!(leaf, "authorization" | "password" | "encoded")
+        || SCRUB_FIELDS.contains(&leaf)
+}
+
+/// Extract a recording authority without URL userinfo.
+///
+/// The transport removes userinfo before issuing a request. This helper uses
+/// the same final-`@` rule while preparing the fixture host scrubber, so a
+/// credential cannot survive in a recorded URL value.
+fn recording_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Return the recording stack's bare hostnames.
@@ -62,11 +82,7 @@ fn recording_hosts() -> Vec<String> {
     ]
     .iter()
     .filter_map(|k| std::env::var(k).ok())
-    .filter_map(|u| {
-        let rest = u.split("://").nth(1).unwrap_or(&u).to_string();
-        let host = rest.split(['/', '?', '#']).next().unwrap_or("").to_string();
-        (!host.is_empty()).then_some(host)
-    })
+    .filter_map(|url| recording_host(&url))
     .collect()
 }
 
@@ -114,7 +130,7 @@ fn redact(val: &mut Value) {
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
 /// response as an opaque string, so parse and reserialize each line before
 /// applying the same redaction used for parsed bodies.
-fn scrub_ndjson(text: &str) -> String {
+fn scrub_ndjson(text: &str, hosts: &[String]) -> String {
     let mut out = String::new();
     for line in text.lines() {
         let line = line.trim();
@@ -123,6 +139,7 @@ fn scrub_ndjson(text: &str) -> String {
         }
         let mut v: Value = serde_json::from_str(line).expect("export line is JSON");
         scrub(&mut v);
+        scrub_hosts(&mut v, hosts);
         out.push_str(&serde_json::to_string(&v).expect("encode scrubbed export line"));
         out.push('\n');
     }
@@ -149,7 +166,7 @@ fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default_timeout_secs);
-    let profile = elasticctl_core::Profile {
+    let mut profile = elasticctl_core::Profile {
         kibana_url: std::env::var("ELASTICCTL_KIBANA_URL").expect("ELASTICCTL_KIBANA_URL"),
         es_url: std::env::var("ELASTICCTL_ES_URL").ok(),
         api_key: Some(std::env::var("ELASTICCTL_API_KEY").expect("ELASTICCTL_API_KEY")),
@@ -159,85 +176,120 @@ fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
         verify: true,
         timeout_secs,
     };
+    profile.strip_userinfo();
     elasticctl_core::Transport::new(&profile).expect("transport")
 }
 
-fn write_fixture(dir: &PathBuf, name: &str, flavor: &str, version: &str, body: Value) {
-    write_fixture_inner(dir, name, flavor, version, body, None)
+struct RecordedFixture {
+    name: &'static str,
+    document: Value,
 }
 
-/// Like `write_fixture`, but also record which response headers were present.
-///
-/// Only the status fixture needs headers. Deployment flavor is not derivable
-/// from the response body, and the Hosted/self-managed header is required to
-/// test detection offline.
-///
-/// Redact header *values* instead of recording them. `x-found-handling-cluster`
-/// carries the deployment's cluster ID, while detection reads only presence.
-fn write_fixture_with_headers(
-    dir: &PathBuf,
-    name: &str,
-    flavor: &str,
-    version: &str,
-    body: Value,
-    headers: &BTreeMap<String, String>,
-) {
-    let redacted: BTreeMap<&str, &str> = headers.keys().map(|k| (k.as_str(), "REDACTED")).collect();
-    write_fixture_inner(dir, name, flavor, version, body, Some(json!(redacted)))
+struct Recording {
+    dir: PathBuf,
+    fixtures: Vec<RecordedFixture>,
 }
 
-fn write_fixture_inner(
-    dir: &PathBuf,
-    name: &str,
+/// Build one scrubbed response fixture. Fixture documents stay in memory until
+/// the recording session has cleaned every marker-owned object.
+fn response_fixture(
+    name: &'static str,
     flavor: &str,
     version: &str,
     mut body: Value,
-    headers: Option<Value>,
-) {
+    headers: Option<&BTreeMap<String, String>>,
+) -> RecordedFixture {
+    let hosts = recording_hosts();
     scrub(&mut body);
-    scrub_hosts(&mut body, &recording_hosts());
-    let mut doc =
+    scrub_hosts(&mut body, &hosts);
+    let mut document =
         json!({"flavor": flavor, "version": version, "operation": name, "response": body});
-    if let Some(h) = headers {
-        doc["headers"] = h;
+    if let Some(headers) = headers {
+        let redacted: BTreeMap<&str, &str> = headers
+            .keys()
+            .map(|key| (key.as_str(), "REDACTED"))
+            .collect();
+        document["headers"] = json!(redacted);
     }
-    std::fs::create_dir_all(dir).expect("create fixture dir");
-    let path = dir.join(format!("{name}.json"));
-    std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("encode"))
-        .expect("write fixture");
-    println!("wrote {}", path.display());
+    RecordedFixture { name, document }
 }
 
-/// Like `write_fixture`, but also records the request.
-///
-/// A response alone cannot prove which index and field were queried: an empty
-/// result and a wrong field name look identical.
-fn write_exchange(
-    dir: &PathBuf,
-    name: &str,
+/// Build one scrubbed request/response exchange. A response alone cannot prove
+/// which index and field were queried, so query-sensitive operations retain a
+/// scrubbed request alongside the response.
+fn exchange_fixture(
+    name: &'static str,
     flavor: &str,
     version: &str,
     mut request: Value,
     mut body: Value,
-) {
-    scrub(&mut body);
+) -> RecordedFixture {
     let hosts = recording_hosts();
-    // Sweep the request too: it contains the index, query, and possibly an
-    // absolute ES URL with the recording host.
+    scrub(&mut request);
+    scrub(&mut body);
     scrub_hosts(&mut request, &hosts);
     scrub_hosts(&mut body, &hosts);
-    let doc = json!({
-        "flavor": flavor,
-        "version": version,
-        "operation": name,
-        "request": request,
-        "response": body,
-    });
-    std::fs::create_dir_all(dir).expect("create fixture dir");
-    let path = dir.join(format!("{name}.json"));
-    std::fs::write(&path, serde_json::to_string_pretty(&doc).expect("encode"))
-        .expect("write fixture");
-    println!("wrote {}", path.display());
+    RecordedFixture {
+        name,
+        document: json!({
+            "flavor": flavor,
+            "version": version,
+            "operation": name,
+            "request": request,
+            "response": body,
+        }),
+    }
+}
+
+/// Record a classified endpoint error without inventing a success body.
+fn error_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    error: elasticctl_core::Error,
+) -> RecordedFixture {
+    let hosts = recording_hosts();
+    let mut envelope = error.to_envelope()["error"].clone();
+    scrub(&mut envelope);
+    scrub_hosts(&mut envelope, &hosts);
+    RecordedFixture {
+        name,
+        document: json!({
+            "flavor": flavor,
+            "version": version,
+            "operation": name,
+            "error": envelope,
+        }),
+    }
+}
+
+fn write_recording(recording: Recording) -> elasticctl_core::Result<()> {
+    std::fs::create_dir_all(&recording.dir).map_err(|error| {
+        elasticctl_core::Error::new(
+            elasticctl_core::ErrorKind::Error,
+            format!(
+                "creating fixture directory {}: {error}",
+                recording.dir.display()
+            ),
+        )
+    })?;
+    for fixture in recording.fixtures {
+        let path = recording.dir.join(format!("{}.json", fixture.name));
+        let encoded = serde_json::to_string_pretty(&fixture.document).map_err(|error| {
+            elasticctl_core::Error::new(
+                elasticctl_core::ErrorKind::Error,
+                format!("encoding fixture {}: {error}", fixture.name),
+            )
+        })?;
+        std::fs::write(&path, encoded).map_err(|error| {
+            elasticctl_core::Error::new(
+                elasticctl_core::ErrorKind::Error,
+                format!("writing fixture {}: {error}", path.display()),
+            )
+        })?;
+        println!("wrote {}", path.display());
+    }
+    Ok(())
 }
 
 /// Scratch index queried by the preview probe. It carries the
@@ -276,13 +328,369 @@ struct PreviewHitsExchange {
 /// Return `Err` rather than panicking and return the exchange for the caller to
 /// write after deleting the scratch index and probe rule. No hits are an error,
 /// not a fixture claiming a field matched.
-async fn record_preview_hits(
+#[derive(Default)]
+struct CleanupOwnership {
+    rule: bool,
+    item: bool,
+    list: bool,
+    scratch_index: bool,
+}
+
+#[derive(Default)]
+struct CleanupResponses {
+    rule: Option<Value>,
+}
+
+struct RecordingSession<'a> {
+    transport: &'a elasticctl_core::Transport,
+    ownership: CleanupOwnership,
+}
+
+fn recording_error(message: impl Into<String>) -> elasticctl_core::Error {
+    elasticctl_core::Error::new(elasticctl_core::ErrorKind::Error, message)
+}
+
+fn has_marker_tags(value: &Value) -> bool {
+    let tags = value.get("tags").and_then(Value::as_array);
+    MARKER_TAGS.iter().all(|tag| {
+        tags.is_some_and(|tags| tags.iter().any(|candidate| candidate.as_str() == Some(tag)))
+    })
+}
+
+fn owns_rule(value: &Value) -> bool {
+    value.get("rule_id").and_then(Value::as_str) == Some(RULE_ID) && has_marker_tags(value)
+}
+
+fn owns_list(value: &Value) -> bool {
+    value.get("list_id").and_then(Value::as_str) == Some(LIST_ID)
+        && value
+            .get("namespace_type")
+            .and_then(Value::as_str)
+            .unwrap_or("single")
+            == NAMESPACE_TYPE
+        && has_marker_tags(value)
+}
+
+fn owns_item(value: &Value) -> bool {
+    value.get("item_id").and_then(Value::as_str) == Some(ITEM_ID)
+        && value.get("list_id").and_then(Value::as_str) == Some(LIST_ID)
+        && value
+            .get("namespace_type")
+            .and_then(Value::as_str)
+            .unwrap_or("single")
+            == NAMESPACE_TYPE
+        && has_marker_tags(value)
+}
+
+fn owns_scratch_index(value: &Value) -> bool {
+    value["_source"][SCRATCH_MARKER].as_bool() == Some(true)
+}
+
+async fn require_absent_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    match t
+        .get(&format!("/api/detection_engine/rules?rule_id={RULE_ID}"))
+        .await
+    {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: rule {RULE_ID} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_list(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    match t
+        .get(&format!(
+            "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
+            urlencode(LIST_ID)
+        ))
+        .await
+    {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: exception list {LIST_ID} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_item(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    match t
+        .get(&format!(
+            "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
+            urlencode(ITEM_ID)
+        ))
+        .await
+    {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: exception item {ITEM_ID} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_scratch_index(
     t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    match t.get_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}")).await {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: scratch index {PREVIEW_PROBE_INDEX} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn create_marked_list(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Value> {
+    require_absent_list(session.transport).await?;
+    let body = json!({
+        "list_id": LIST_ID,
+        "namespace_type": NAMESPACE_TYPE,
+        "name": "elasticctl sample exceptions",
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "type": "detection",
+        "tags": MARKER_TAGS,
+    });
+    let created = session
+        .transport
+        .post("/api/exception_lists", Some(&body))
+        .await?;
+    if !owns_list(&created) {
+        return Err(recording_error(
+            "exception list create response did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.list = true;
+    Ok(created)
+}
+
+async fn create_marked_item(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Value> {
+    require_absent_item(session.transport).await?;
+    let body = json!({
+        "item_id": ITEM_ID,
+        "list_id": LIST_ID,
+        "namespace_type": NAMESPACE_TYPE,
+        "name": "elasticctl sample exception item",
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "type": "simple",
+        "entries": [{
+            "field": "process.name",
+            "operator": "included",
+            "type": "match",
+            "value": "elasticctl-sample.exe",
+        }],
+        "tags": MARKER_TAGS,
+    });
+    let created = session
+        .transport
+        .post("/api/exception_lists/items", Some(&body))
+        .await?;
+    if !owns_item(&created) {
+        return Err(recording_error(
+            "exception item create response did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.item = true;
+    Ok(created)
+}
+
+async fn create_marked_rule(
+    session: &mut RecordingSession<'_>,
+    list_server_id: &str,
+) -> elasticctl_core::Result<(Value, Value)> {
+    require_absent_rule(session.transport).await?;
+    let body = json!({
+        "rule_id": RULE_ID,
+        "name": "elasticctl fixture probe",
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "type": "query",
+        "language": "kuery",
+        "query": "*:*",
+        "index": ["logs-*"],
+        "severity": "low",
+        "risk_score": 21,
+        "enabled": false,
+        "from": "now-6m",
+        "interval": "5m",
+        "tags": MARKER_TAGS,
+        "exceptions_list": [{
+            "id": list_server_id,
+            "list_id": LIST_ID,
+            "namespace_type": NAMESPACE_TYPE,
+            "type": "detection",
+        }],
+    });
+    let created = session
+        .transport
+        .post("/api/detection_engine/rules", Some(&body))
+        .await?;
+    if !owns_rule(&created) {
+        return Err(recording_error(
+            "rule create response did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.rule = true;
+    Ok((body, created))
+}
+
+impl RecordingSession<'_> {
+    async fn cleanup(&mut self) -> elasticctl_core::Result<CleanupResponses> {
+        let mut errors = Vec::new();
+        let mut responses = CleanupResponses::default();
+
+        if self.ownership.rule {
+            match self
+                .transport
+                .get(&format!("/api/detection_engine/rules?rule_id={RULE_ID}"))
+                .await
+            {
+                Ok(rule) if owns_rule(&rule) => {
+                    match self
+                        .transport
+                        .delete(&format!("/api/detection_engine/rules?rule_id={RULE_ID}"))
+                        .await
+                    {
+                        Ok(deleted) => {
+                            self.ownership.rule = false;
+                            responses.rule = Some(deleted);
+                        }
+                        Err(error) => {
+                            errors.push(format!("deleting rule {RULE_ID}: {}", error.message))
+                        }
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete rule {RULE_ID}: its marker fields no longer match"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.rule = false;
+                }
+                Err(error) => errors.push(format!("checking rule {RULE_ID}: {}", error.message)),
+            }
+        }
+
+        if self.ownership.item {
+            match self
+                .transport
+                .get(&format!(
+                    "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
+                    urlencode(ITEM_ID)
+                ))
+                .await
+            {
+                Ok(item) if owns_item(&item) => {
+                    match self
+                        .transport
+                        .delete(&format!(
+                            "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
+                            urlencode(ITEM_ID)
+                        ))
+                        .await
+                    {
+                        Ok(_) => self.ownership.item = false,
+                        Err(error) => {
+                            errors.push(format!("deleting item {ITEM_ID}: {}", error.message))
+                        }
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete item {ITEM_ID}: its marker fields no longer match"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.item = false;
+                }
+                Err(error) => errors.push(format!("checking item {ITEM_ID}: {}", error.message)),
+            }
+        }
+
+        if self.ownership.list {
+            match self
+                .transport
+                .get(&format!(
+                    "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
+                    urlencode(LIST_ID)
+                ))
+                .await
+            {
+                Ok(list) if owns_list(&list) => {
+                    match self
+                        .transport
+                        .delete(&format!(
+                            "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
+                            urlencode(LIST_ID)
+                        ))
+                        .await
+                    {
+                        Ok(_) => self.ownership.list = false,
+                        Err(error) => {
+                            errors.push(format!("deleting list {LIST_ID}: {}", error.message))
+                        }
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete list {LIST_ID}: its marker fields no longer match"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.list = false;
+                }
+                Err(error) => errors.push(format!("checking list {LIST_ID}: {}", error.message)),
+            }
+        }
+
+        if self.ownership.scratch_index {
+            match self
+                .transport
+                .get_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}/_doc/{SCRATCH_DOC_ID}"))
+                .await
+            {
+                Ok(document) if owns_scratch_index(&document) => {
+                    match self
+                        .transport
+                        .delete_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}"))
+                        .await
+                    {
+                        Ok(_) => self.ownership.scratch_index = false,
+                        Err(error) => errors.push(format!(
+                            "deleting scratch index {PREVIEW_PROBE_INDEX}: {}",
+                            error.message
+                        )),
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete scratch index {PREVIEW_PROBE_INDEX}: its marker field no longer matches"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.scratch_index = false;
+                }
+                Err(error) => errors.push(format!(
+                    "checking scratch index {PREVIEW_PROBE_INDEX}: {}",
+                    error.message
+                )),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(responses)
+        } else {
+            Err(recording_error(format!(
+                "cleanup failed: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
+async fn record_preview_hits(
+    session: &mut RecordingSession<'_>,
     space: &str,
 ) -> elasticctl_core::Result<PreviewHitsExchange> {
-    // The probe rule must match this document.
+    require_absent_scratch_index(session.transport).await?;
+    let t = session.transport;
     let doc = json!({
         "@timestamp": PREVIEW_DOC_TIMESTAMP,
+        SCRATCH_MARKER: true,
         "event": {"category": ["process"], "type": ["start"], "code": "1"},
         "process": {
             "name": "elasticctl-sample.exe",
@@ -292,10 +700,19 @@ async fn record_preview_hits(
         "host": {"name": "elasticctl-sample-host"}
     });
     t.post_absolute_es(
-        &format!("/{PREVIEW_PROBE_INDEX}/_doc?refresh=wait_for"),
+        &format!("/{PREVIEW_PROBE_INDEX}/_doc/{SCRATCH_DOC_ID}?refresh=wait_for"),
         &doc,
     )
     .await?;
+    let proof = t
+        .get_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}/_doc/{SCRATCH_DOC_ID}"))
+        .await?;
+    if !owns_scratch_index(&proof) {
+        return Err(recording_error(
+            "scratch index write did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.scratch_index = true;
 
     let probe_name = format!("{PREVIEW_PROBE_NAME} {}", run_token());
     let preview_body = json!({
@@ -309,7 +726,7 @@ async fn record_preview_hits(
         "risk_score": 21,
         "from": "now-6m",
         "interval": "5m",
-        "tags": ["elasticctl", "fixture"],
+        "tags": MARKER_TAGS,
         "invocationCount": 1,
         "timeframeEnd": PREVIEW_TIMEFRAME_END
     });
@@ -320,7 +737,6 @@ async fn record_preview_hits(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    println!("preview id: {preview_id}");
 
     let index = format!(
         ".preview.alerts-security.alerts-{}",
@@ -332,28 +748,25 @@ async fn record_preview_hits(
         "query": {"term": {"kibana.alert.rule.uuid": preview_id}},
         "sort": [{"@timestamp": {"order": "desc"}}]
     });
+    let hits_of = |value: &Value| value["hits"]["total"]["value"].as_u64().unwrap_or(0);
 
-    let search = |body: Value| {
-        let index = index.clone();
-        async move {
-            t.post_absolute_es(&format!("/{index}/_search?ignore_unavailable=true"), &body)
-                .await
-        }
-    };
-
-    let hits_of = |v: &Value| v["hits"]["total"]["value"].as_u64().unwrap_or(0);
-
-    // Try immediately, then after Elasticsearch's default one-second refresh
-    // interval. Record which attempt first sees the alerts.
-    let mut response = search(by_uuid.clone()).await?;
+    let mut response = t
+        .post_absolute_es(
+            &format!("/{index}/_search?ignore_unavailable=true"),
+            &by_uuid,
+        )
+        .await?;
     let mut uuid_attempts = 1;
     if hits_of(&response) == 0 {
-        // The recorder performs one operation at a time.
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        response = search(by_uuid.clone()).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        response = t
+            .post_absolute_es(
+                &format!("/{index}/_search?ignore_unavailable=true"),
+                &by_uuid,
+            )
+            .await?;
         uuid_attempts = 2;
     }
-
     if hits_of(&response) > 0 {
         return Ok(PreviewHitsExchange {
             request: json!({
@@ -366,247 +779,508 @@ async fn record_preview_hits(
         });
     }
 
-    // The UUID field is a guess. Fall back to this run's unique probe name and
-    // record the response so the actual field is discoverable.
-    println!("no hits by kibana.alert.rule.uuid; retrying by rule name");
     let by_name = json!({
         "size": 3,
         "track_total_hits": true,
         "query": {"match_phrase": {"kibana.alert.rule.name": probe_name}}
     });
-    let fallback = search(by_name.clone()).await?;
+    let fallback = t
+        .post_absolute_es(
+            &format!("/{index}/_search?ignore_unavailable=true"),
+            &by_name,
+        )
+        .await?;
     if hits_of(&fallback) > 0 {
         return Ok(PreviewHitsExchange {
             request: json!({
                 "index": index,
                 "body": by_name,
                 "matched_by": "kibana.alert.rule.name",
-                // This fallback follows the UUID retries, so its attempt count
-                // starts at one for this query.
                 "attempts_until_hits": 1,
             }),
             response: fallback,
         });
     }
 
-    Err(elasticctl_core::Error::new(
-        elasticctl_core::ErrorKind::Error,
-        format!(
-            "no preview alerts found in {index}: kibana.alert.rule.uuid \
-             ({uuid_attempts} search(es)) and kibana.alert.rule.name (1 search) \
-             both returned zero hits"
-        ),
-    ))
+    Err(recording_error(format!(
+        "no preview alerts found in {index}: kibana.alert.rule.uuid \
+         ({uuid_attempts} search(es)) and kibana.alert.rule.name (1 search) \
+         both returned zero hits"
+    )))
 }
 
-async fn record() {
-    let t = transport_from_env(60);
+fn prebuilt_is_current(status: &Value) -> elasticctl_core::Result<bool> {
+    let fields = [
+        "rules_not_installed",
+        "rules_not_updated",
+        "timelines_not_installed",
+        "timelines_not_updated",
+    ];
+    fields.iter().try_fold(true, |current, field| {
+        let count = status.get(*field).and_then(Value::as_u64).ok_or_else(|| {
+            recording_error(format!(
+                "prebuilt status field {field} must be a non-negative integer"
+            ))
+        })?;
+        Ok(current && count == 0)
+    })
+}
 
-    let responded = t.get_with_headers("/api/status").await.expect("status");
+fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Result<bool> {
+    let fields = [
+        "rules_installed",
+        "rules_updated",
+        "timelines_installed",
+        "timelines_updated",
+    ];
+    fields.iter().try_fold(true, |current, field| {
+        let count = response
+            .get(*field)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                recording_error(format!(
+                    "prebuilt install field {field} must be a non-negative integer"
+                ))
+            })?;
+        Ok(current && count == 0)
+    })
+}
+
+async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
+    let responded = session.transport.get_with_headers("/api/status").await?;
     let status = responded.body.clone();
     let version = status["version"]["number"]
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-    // Elastic Cloud Hosted reports `build_flavor: "traditional"`, like a
-    // self-managed stack. Recording ECH without `ELASTICCTL_FIXTURE_FLAVOR`
-    // would overwrite the self-managed fixture set, so pass the deployment
-    // flavor explicitly.
     let flavor = std::env::var("ELASTICCTL_FIXTURE_FLAVOR").unwrap_or_else(|_| {
         status["version"]["build_flavor"]
             .as_str()
             .unwrap_or("default")
             .to_string()
     });
-    // Anchor on the manifest directory, not the process CWD. Running `cargo
-    // xtask record` from `lab/` must not write to `lab/tests/fixtures`.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("tests/fixtures")
         .join(format!("{flavor}-{version}"));
+    let mut recording = Recording {
+        dir,
+        fixtures: vec![response_fixture(
+            "status",
+            &flavor,
+            &version,
+            status,
+            Some(&responded.headers),
+        )],
+    };
+    let t = session.transport;
 
-    write_fixture_with_headers(
-        &dir,
-        "status",
+    recording.fixtures.push(response_fixture(
+        "authenticate",
         &flavor,
         &version,
-        status,
-        &responded.headers,
-    );
-
-    let auth = t
-        .get_absolute_es("/_security/_authenticate")
-        .await
-        .expect("authenticate");
-    write_fixture(&dir, "authenticate", &flavor, &version, auth);
-
-    // `info` returned a hardcoded null license tier and no space list. Record
-    // both values from their source endpoints.
-    let spaces = t.get("/api/spaces/space").await.expect("spaces");
-    write_fixture(&dir, "spaces", &flavor, &version, spaces);
-
-    // The license endpoint does not exist on Serverless, so this call is
-    // expected to fail there. Record it only on success and report either
-    // result.
-    match t.get_absolute_es("/_license").await {
-        Ok(license) => write_fixture(&dir, "license", &flavor, &version, license),
-        Err(e) => println!(
-            "no license endpoint on this stack ({}): {}",
-            flavor, e.message
-        ),
+        t.get_absolute_es("/_security/_authenticate").await?,
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "spaces",
+        &flavor,
+        &version,
+        t.get("/api/spaces/space").await?,
+        None,
+    ));
+    if let Ok(license) = t.get_absolute_es("/_license").await {
+        recording.fixtures.push(response_fixture(
+            "license", &flavor, &version, license, None,
+        ));
     }
 
-    // Use a distinctive ID so failed cleanup is visible in the UI.
-    let rule_id = "elasticctl-fixture-probe";
-    let body = json!({
-        "rule_id": rule_id, "name": "elasticctl fixture probe",
-        "description": "Recorded by cargo xtask record. Safe to delete.",
-        "type": "query", "language": "kuery", "query": "*:*", "index": ["logs-*"],
-        "severity": "low", "risk_score": 21, "enabled": false,
-        "from": "now-6m", "interval": "5m", "tags": ["elasticctl", "fixture"]
-    });
+    match t.get("/api/lists/index").await {
+        Ok(response) => recording.fixtures.push(response_fixture(
+            "lists_index",
+            &flavor,
+            &version,
+            response,
+            None,
+        )),
+        Err(error) => {
+            recording
+                .fixtures
+                .push(error_fixture("lists_index", &flavor, &version, error))
+        }
+    }
 
-    let created = t
-        .post("/api/detection_engine/rules", Some(&body))
-        .await
-        .expect("create");
-    write_fixture(&dir, "rules_create", &flavor, &version, created);
+    let prebuilt_before = t
+        .get("/api/detection_engine/rules/prepackaged/_status")
+        .await?;
+    if !prebuilt_is_current(&prebuilt_before)? {
+        return Err(recording_error(
+            "prebuilt rules or timelines are missing or outdated; run the separately guarded `cargo xtask seed` before recording",
+        ));
+    }
+    recording.fixtures.push(response_fixture(
+        "prebuilt_status",
+        &flavor,
+        &version,
+        prebuilt_before.clone(),
+        None,
+    ));
+    let prebuilt_install = t
+        .put("/api/detection_engine/rules/prepackaged", &Value::Null)
+        .await?;
+    if !prebuilt_install_is_noop(&prebuilt_install)? {
+        return Err(recording_error(
+            "prebuilt install changed the stack despite a no-op status; refusing to record a mutation",
+        ));
+    }
+    let prebuilt_after = t
+        .get("/api/detection_engine/rules/prepackaged/_status")
+        .await?;
+    if prebuilt_after != prebuilt_before {
+        return Err(recording_error(
+            "prebuilt status changed after the measured no-op install",
+        ));
+    }
+    recording.fixtures.push(response_fixture(
+        "prebuilt_install",
+        &flavor,
+        &version,
+        prebuilt_install,
+        None,
+    ));
 
-    // Find after create and scope the query to the probe rule. An unscoped find
-    // would write every custom rule's query, index, and actions to the public
-    // repository; `scrub` cannot remove content stored in values.
-    let find = t
+    let list = create_marked_list(session).await?;
+    let list_server_id = list["id"]
+        .as_str()
+        .ok_or_else(|| recording_error("exception list create response is missing id"))?
+        .to_string();
+    recording.fixtures.push(response_fixture(
+        "exception_list_create",
+        &flavor,
+        &version,
+        list,
+        None,
+    ));
+    let item = create_marked_item(session).await?;
+    recording.fixtures.push(response_fixture(
+        "exception_item_create",
+        &flavor,
+        &version,
+        item,
+        None,
+    ));
+    let (rule_body, rule) = create_marked_rule(session, &list_server_id).await?;
+    recording.fixtures.push(response_fixture(
+        "rules_create",
+        &flavor,
+        &version,
+        rule,
+        None,
+    ));
+
+    let list_filter = format!("exception-list.attributes.list_id: \"{LIST_ID}\"");
+    let lists_find = t
+        .get(&format!(
+            "/api/exception_lists/_find?page=1&per_page=2&namespace_type={NAMESPACE_TYPE}&filter={}",
+            urlencode(&list_filter)
+        ))
+        .await?;
+    recording.fixtures.push(exchange_fixture(
+        "exception_lists_find",
+        &flavor,
+        &version,
+        json!({"filter": list_filter}),
+        lists_find,
+    ));
+    recording.fixtures.push(response_fixture(
+        "exception_list_get",
+        &flavor,
+        &version,
+        t.get(&format!(
+            "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
+            urlencode(LIST_ID)
+        ))
+        .await?,
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "exception_list_items_find",
+        &flavor,
+        &version,
+        t.get(&format!(
+            "/api/exception_lists/items/_find?list_id={}&namespace_type={NAMESPACE_TYPE}&page=1&per_page=2",
+            urlencode(LIST_ID)
+        ))
+        .await?,
+        None,
+    ));
+
+    let rule_filter = format!("alert.attributes.params.ruleId: \"{RULE_ID}\"");
+    let rules_find = t
         .get(&format!(
             "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
-            urlencode(&format!("alert.attributes.params.ruleId: \"{rule_id}\""))
+            urlencode(&rule_filter)
         ))
-        .await
-        .expect("find");
-    write_fixture(&dir, "rules_find", &flavor, &version, find);
-
-    // Scope by the probe rule's name. This is the filter path
-    // `resolve::to_rule_id` uses instead of walking the corpus, so record it as
-    // a fact rather than an assumption.
+        .await?;
+    recording.fixtures.push(response_fixture(
+        "rules_find",
+        &flavor,
+        &version,
+        rules_find,
+        None,
+    ));
     let name_filter = "alert.attributes.name: \"elasticctl fixture probe\"";
-    let find_by_name = t
-        .get(&format!(
-            "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
-            urlencode(name_filter)
-        ))
-        .await
-        .expect("find by name");
-    write_exchange(
-        &dir,
+    recording.fixtures.push(exchange_fixture(
         "rules_find_by_name",
         &flavor,
         &version,
         json!({"filter": name_filter}),
-        find_by_name,
-    );
-
-    let got = t
-        .get(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
-        .await
-        .expect("get");
-    write_fixture(&dir, "rules_get", &flavor, &version, got);
-
-    let patched = t
-        .patch(
-            "/api/detection_engine/rules",
-            &json!({"rule_id": rule_id, "enabled": true}),
-        )
-        .await
-        .expect("patch");
-    write_fixture(&dir, "rules_patch", &flavor, &version, patched);
-
-    let bulk = t
-        .post(
-            "/api/detection_engine/rules/_bulk_action",
-            Some(&json!({
-                "action": "disable",
-                "query": format!("alert.attributes.params.ruleId: \"{rule_id}\"")
-            })),
-        )
-        .await
-        .expect("bulk");
-    write_fixture(&dir, "rules_bulk_disable", &flavor, &version, bulk);
-
-    let preview_body = {
-        let mut b = body.as_object().unwrap().clone();
-        b.remove("rule_id");
-        b.insert("invocationCount".into(), json!(1));
-        b.insert("timeframeEnd".into(), json!("2026-08-12T18:00:00.000Z"));
-        Value::Object(b)
-    };
-    let preview = t
-        .post("/api/detection_engine/rules/preview", Some(&preview_body))
-        .await
-        .expect("preview");
-    write_fixture(&dir, "rules_preview", &flavor, &version, preview);
-
-    let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
-    let hits = record_preview_hits(&t, &space).await;
-
-    // Drop the scratch index on every path so recording leaves the stack
-    // unchanged.
-    let cleanup = t
-        .delete_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}"))
-        .await;
-    if let Err(e) = &cleanup {
-        println!(
-            "WARNING: could not delete {PREVIEW_PROBE_INDEX}: {}",
-            e.message
-        );
+        t.get(&format!(
+            "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
+            urlencode(name_filter)
+        ))
+        .await?,
+    ));
+    for (name, source_filter) in [
+        (
+            "rules_find_source_custom",
+            format!("alert.attributes.params.immutable: false AND {rule_filter}"),
+        ),
+        (
+            "rules_find_source_customized",
+            format!("alert.attributes.params.ruleSource.isCustomized: true AND {rule_filter}"),
+        ),
+    ] {
+        let response = t
+            .get(&format!(
+                "/api/detection_engine/rules/_find?page=1&per_page=2&filter={}",
+                urlencode(&source_filter)
+            ))
+            .await?;
+        recording.fixtures.push(exchange_fixture(
+            name,
+            &flavor,
+            &version,
+            json!({"filter": source_filter}),
+            response,
+        ));
     }
 
-    // Export before deleting the rule so the fixture contains a real rule line.
-    // Scope the export to the probe rule: a fixture samples traffic; it is not
-    // an archive of every rule, including Elastic's prebuilt content.
-    let export = t
-        .post_text(
-            "/api/detection_engine/rules/_export",
-            Some(&json!({"objects": [{"rule_id": rule_id}]})),
-        )
-        .await;
-
-    // Delete the probe rule on every path before returning an export or
-    // preview-hit error. A failed recording must not strand it on a live
-    // project.
-    let deleted = t
-        .delete(&format!("/api/detection_engine/rules?rule_id={rule_id}"))
-        .await;
-    if let Err(e) = &deleted {
-        println!(
-            "WARNING: could not delete probe rule {rule_id}: {}",
-            e.message
-        );
-    }
-
-    // Both cleanups have run; now surface any failure.
-    let exchange = hits.expect("record preview hits");
-
-    let export = export.expect("export");
-    let (_, _summary) = elasticctl_api::codec::decode_ndjson(&export).expect("decode export");
-    write_fixture(
-        &dir,
-        "rules_export",
+    recording.fixtures.push(response_fixture(
+        "rules_get",
         &flavor,
         &version,
-        json!({"ndjson": scrub_ndjson(&export)}),
-    );
+        t.get(&format!("/api/detection_engine/rules?rule_id={RULE_ID}"))
+            .await?,
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "rules_patch",
+        &flavor,
+        &version,
+        t.patch(
+            "/api/detection_engine/rules",
+            &json!({"rule_id": RULE_ID, "enabled": true}),
+        )
+        .await?,
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "rules_bulk_disable",
+        &flavor,
+        &version,
+        t.post(
+            "/api/detection_engine/rules/_bulk_action",
+            Some(&json!({"action": "disable", "query": rule_filter})),
+        )
+        .await?,
+        None,
+    ));
 
-    let deleted = deleted.expect("delete");
-    write_fixture(&dir, "rules_delete", &flavor, &version, deleted);
-
-    write_exchange(
-        &dir,
+    let preview_body = {
+        let mut body = rule_body
+            .as_object()
+            .cloned()
+            .expect("rule body is an object");
+        body.remove("rule_id");
+        body.insert("invocationCount".into(), json!(1));
+        body.insert("timeframeEnd".into(), json!(PREVIEW_TIMEFRAME_END));
+        Value::Object(body)
+    };
+    recording.fixtures.push(response_fixture(
+        "rules_preview",
+        &flavor,
+        &version,
+        t.post("/api/detection_engine/rules/preview", Some(&preview_body))
+            .await?,
+        None,
+    ));
+    let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
+    let preview_hits = record_preview_hits(session, &space).await?;
+    recording.fixtures.push(exchange_fixture(
         "rules_preview_hits",
         &flavor,
         &version,
-        exchange.request,
-        exchange.response,
-    );
+        preview_hits.request,
+        preview_hits.response,
+    ));
 
+    let exception_export_path = format!(
+        "/api/exception_lists/_export?id={}&list_id={}&namespace_type={NAMESPACE_TYPE}&include_expired_exceptions=true",
+        urlencode(&list_server_id),
+        urlencode(LIST_ID)
+    );
+    let exception_export = t.post_text(&exception_export_path, None).await?;
+    let exception_bundle = elasticctl_api::codec::decode_bundle(&exception_export)?;
+    if exception_bundle.lists.len() != 1
+        || exception_bundle.items.len() != 1
+        || exception_bundle.lists[0].list_id()? != LIST_ID
+        || exception_bundle.items[0].item_id()? != ITEM_ID
+        || exception_bundle.items[0].list_id()? != LIST_ID
+    {
+        return Err(recording_error(
+            "scoped exception export did not contain exactly the marker list and item",
+        ));
+    }
+    let hosts = recording_hosts();
+    recording.fixtures.push(response_fixture(
+        "exception_list_export",
+        &flavor,
+        &version,
+        json!({"ndjson": scrub_ndjson(&exception_export, &hosts)}),
+        None,
+    ));
+    recording.fixtures.push(exchange_fixture(
+        "exception_list_import",
+        &flavor,
+        &version,
+        json!({"overwrite": true, "list_id": LIST_ID, "namespace_type": NAMESPACE_TYPE}),
+        t.post_multipart_ndjson(
+            "/api/exception_lists/_import?overwrite=true",
+            &exception_export,
+        )
+        .await?,
+    ));
+
+    let rule_export = t
+        .post_text(
+            "/api/detection_engine/rules/_export",
+            Some(&json!({"objects": [{"rule_id": RULE_ID}]})),
+        )
+        .await?;
+    let rule_bundle = elasticctl_api::codec::decode_bundle(&rule_export)?;
+    if rule_bundle.rules.len() != 1
+        || rule_bundle.lists.len() != 1
+        || rule_bundle.items.len() != 1
+        || rule_bundle.rules[0].rule_id()? != RULE_ID
+        || rule_bundle.lists[0].list_id()? != LIST_ID
+        || rule_bundle.items[0].item_id()? != ITEM_ID
+        || rule_bundle.items[0].list_id()? != LIST_ID
+    {
+        return Err(recording_error(
+            "scoped rule export did not contain exactly the marker rule, list, and item",
+        ));
+    }
+    let scrubbed_rule_export = scrub_ndjson(&rule_export, &hosts);
+    recording.fixtures.push(response_fixture(
+        "rules_export",
+        &flavor,
+        &version,
+        json!({"ndjson": scrubbed_rule_export.clone()}),
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "rules_export_bundle",
+        &flavor,
+        &version,
+        json!({"ndjson": scrubbed_rule_export}),
+        None,
+    ));
+    recording.fixtures.push(exchange_fixture(
+        "rules_import_bundle",
+        &flavor,
+        &version,
+        json!({"overwrite": true, "objects": [{"rule_id": RULE_ID}]}),
+        t.post_multipart_ndjson(
+            "/api/detection_engine/rules/_import?overwrite=true",
+            &rule_export,
+        )
+        .await?,
+    ));
+
+    Ok(recording)
+}
+
+async fn record() {
+    let transport = transport_from_env(60);
+    let mut session = RecordingSession {
+        transport: &transport,
+        ownership: CleanupOwnership::default(),
+    };
+    let recorded = record_session(&mut session).await;
+    let cleanup = session.cleanup().await;
+
+    let recording = match (recorded, cleanup) {
+        (Ok(recording), Ok(cleanup)) => {
+            if let Some(rule) = cleanup.rule {
+                let flavor = recording
+                    .fixtures
+                    .first()
+                    .and_then(|fixture| fixture.document["flavor"].as_str())
+                    .unwrap_or("default")
+                    .to_string();
+                let version = recording
+                    .fixtures
+                    .first()
+                    .and_then(|fixture| fixture.document["version"].as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let mut recording = recording;
+                recording.fixtures.push(response_fixture(
+                    "rules_delete",
+                    &flavor,
+                    &version,
+                    rule,
+                    None,
+                ));
+                recording
+            } else {
+                recording
+            }
+        }
+        (Err(record_error), Ok(_)) => {
+            eprintln!("record failed after cleanup: {}", record_error.message);
+            std::process::exit(1);
+        }
+        (Ok(_), Err(cleanup_error)) => {
+            eprintln!("record cleanup failed: {}", cleanup_error.message);
+            std::process::exit(1);
+        }
+        (Err(record_error), Err(cleanup_error)) => {
+            eprintln!(
+                "record failed after cleanup: {}; cleanup also failed: {}",
+                record_error.message, cleanup_error.message
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let flavor = recording
+        .fixtures
+        .first()
+        .and_then(|fixture| fixture.document["flavor"].as_str())
+        .unwrap_or("default")
+        .to_string();
+    let version = recording
+        .fixtures
+        .first()
+        .and_then(|fixture| fixture.document["version"].as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    if let Err(error) = write_recording(recording) {
+        eprintln!("record failed after cleanup: {}", error.message);
+        std::process::exit(1);
+    }
     println!("recorded {flavor} {version}");
 }
 
@@ -635,11 +1309,54 @@ mod tests {
         let mut v = json!({
             "kibana.alert.rule.created_by": "someone",
             "kibana.alert.rule.name": "keep me",
-            "nested": {"updated_by": "someone else"}
+            "nested": {
+                "updated_by": "someone else",
+                "tie_breaker_id": 42,
+                "_version": {"value": "server-owned"}
+            }
         });
         scrub(&mut v);
         assert_eq!(v["kibana.alert.rule.created_by"], "REDACTED");
         assert_eq!(v["nested"]["updated_by"], "REDACTED");
+        assert_eq!(v["nested"]["tie_breaker_id"], "REDACTED");
+        assert_eq!(v["nested"]["_version"]["value"], "REDACTED");
         assert_eq!(v["kibana.alert.rule.name"], "keep me");
+    }
+
+    #[test]
+    fn recording_host_removes_userinfo_and_keeps_the_authority() {
+        assert_eq!(
+            recording_host("https://alice:secret@cluster.example:9243/s/default?x=1#fragment"),
+            Some("cluster.example:9243".to_string())
+        );
+        assert_eq!(
+            recording_host(
+                "https://user:pa@ss@host.example:443/path@not-userinfo?x=@query#@fragment"
+            ),
+            Some("host.example:443".to_string())
+        );
+        assert_eq!(
+            recording_host("https://plain.example:5601/path?x=1#fragment"),
+            Some("plain.example:5601".to_string())
+        );
+    }
+
+    #[test]
+    fn ndjson_scrub_redacts_identity_and_recording_hosts() {
+        let text = concat!(
+            r#"{"created_by":7,"updated_by":"operator","tie_breaker_id":"stack","_version":4,"kibana.alert.url":"https://cluster.example:9243/app"}"#,
+            "\n"
+        );
+        let scrubbed = scrub_ndjson(text, &["cluster.example:9243".to_string()]);
+        let value: Value = serde_json::from_str(scrubbed.trim()).expect("scrubbed NDJSON is JSON");
+
+        assert_eq!(value["created_by"], "REDACTED");
+        assert_eq!(value["updated_by"], "REDACTED");
+        assert_eq!(value["tie_breaker_id"], "REDACTED");
+        assert_eq!(value["_version"], "REDACTED");
+        assert_eq!(
+            value["kibana.alert.url"],
+            "https://REDACTED.example.invalid/app"
+        );
     }
 }

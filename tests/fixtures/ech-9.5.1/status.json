@@ -975,117 +975,117 @@
       }
     },
     "metrics": {
-      "last_updated": "2026-08-13T14:24:29.915Z",
+      "last_updated": "2026-08-14T18:12:10.301Z",
       "collection_interval_in_millis": 5000,
       "os": {
         "platform": "linux",
         "platformRelease": "linux-5.15.0-1080-gcp",
         "load": {
-          "1m": 1,
-          "5m": 1.18,
-          "15m": 1.17
+          "1m": 0.86,
+          "5m": 0.98,
+          "15m": 0.96
         },
         "memory": {
           "total_in_bytes": 71743705088,
-          "free_in_bytes": 32838213632,
-          "used_in_bytes": 38905491456
+          "free_in_bytes": 32271843328,
+          "used_in_bytes": 39471861760
         },
-        "uptime_in_millis": 7908078470,
+        "uptime_in_millis": 8008138860,
         "distro": "Raspbian",
         "distroRelease": "Raspbian-20230214"
       },
       "process": {
         "memory": {
           "heap": {
-            "total_in_bytes": 859144192,
-            "used_in_bytes": 696970736,
+            "total_in_bytes": 951062528,
+            "used_in_bytes": 682415496,
             "size_limit": 1778384896
           },
-          "resident_set_size_in_bytes": 1112985600,
-          "array_buffers_in_bytes": 1874210,
-          "external_in_bytes": 6155956
+          "resident_set_size_in_bytes": 1532559360,
+          "array_buffers_in_bytes": 1715070,
+          "external_in_bytes": 5996560
         },
         "pid": 18,
-        "event_loop_delay": 14.458879,
+        "event_loop_delay": 44.400639,
         "event_loop_delay_histogram": {
-          "min": 9.084928,
-          "max": 14.458879,
-          "mean": 10.094019886639677,
+          "min": 9.0112,
+          "max": 44.400639,
+          "mean": 10.206191213114751,
           "exceeds": 0,
-          "stddev": 0.24634619125681684,
-          "fromTimestamp": "2026-08-13T14:24:24.914Z",
-          "lastUpdatedAt": "2026-08-13T14:24:29.914Z",
+          "stddev": 2.0611209558241232,
+          "fromTimestamp": "2026-08-14T18:12:05.300Z",
+          "lastUpdatedAt": "2026-08-14T18:12:10.300Z",
           "percentiles": {
-            "50": 10.084351,
+            "50": 10.076159,
             "75": 10.084351,
-            "90": 10.100735,
-            "95": 10.117119,
-            "99": 10.805247
+            "90": 10.092543,
+            "95": 10.141695,
+            "99": 10.485759
           }
         },
         "event_loop_utilization": {
-          "active": 64.7535295682028,
-          "idle": 4935.7517699999735,
-          "utilization": 0.01294939724867298
+          "active": 361.9085315167904,
+          "idle": 4638.277557998896,
+          "utilization": 0.07237901250828138
         },
-        "uptime_in_millis": 1410728.859048
+        "uptime_in_millis": 101471115.08999
       },
       "processes": [
         {
           "memory": {
             "heap": {
-              "total_in_bytes": 859144192,
-              "used_in_bytes": 696970736,
+              "total_in_bytes": 951062528,
+              "used_in_bytes": 682415496,
               "size_limit": 1778384896
             },
-            "resident_set_size_in_bytes": 1112985600,
-            "array_buffers_in_bytes": 1874210,
-            "external_in_bytes": 6155956
+            "resident_set_size_in_bytes": 1532559360,
+            "array_buffers_in_bytes": 1715070,
+            "external_in_bytes": 5996560
           },
           "pid": 18,
-          "event_loop_delay": 14.458879,
+          "event_loop_delay": 44.400639,
           "event_loop_delay_histogram": {
-            "min": 9.084928,
-            "max": 14.458879,
-            "mean": 10.094019886639677,
+            "min": 9.0112,
+            "max": 44.400639,
+            "mean": 10.206191213114751,
             "exceeds": 0,
-            "stddev": 0.24634619125681684,
-            "fromTimestamp": "2026-08-13T14:24:24.914Z",
-            "lastUpdatedAt": "2026-08-13T14:24:29.914Z",
+            "stddev": 2.0611209558241232,
+            "fromTimestamp": "2026-08-14T18:12:05.300Z",
+            "lastUpdatedAt": "2026-08-14T18:12:10.300Z",
             "percentiles": {
-              "50": 10.084351,
+              "50": 10.076159,
               "75": 10.084351,
-              "90": 10.100735,
-              "95": 10.117119,
-              "99": 10.805247
+              "90": 10.092543,
+              "95": 10.141695,
+              "99": 10.485759
             }
           },
           "event_loop_utilization": {
-            "active": 64.7535295682028,
-            "idle": 4935.7517699999735,
-            "utilization": 0.01294939724867298
+            "active": 361.9085315167904,
+            "idle": 4638.277557998896,
+            "utilization": 0.07237901250828138
           },
-          "uptime_in_millis": 1410728.859048
+          "uptime_in_millis": 101471115.08999
         }
       ],
       "response_times": {
-        "avg_in_millis": 10,
-        "max_in_millis": 15
+        "avg_in_millis": 3,
+        "max_in_millis": 3
       },
-      "concurrent_connections": 3,
+      "concurrent_connections": 2,
       "requests": {
         "disconnects": 0,
-        "total": 4,
+        "total": 1,
         "statusCodes": {
-          "200": 4
+          "200": 1
         },
         "status_codes": {
-          "200": 4
+          "200": 1
         }
       },
       "elasticsearch_client": {
-        "totalActiveSockets": 0,
-        "totalIdleSockets": 12,
+        "totalActiveSockets": 1,
+        "totalIdleSockets": 47,
         "totalQueuedRequests": 0
       }
     }

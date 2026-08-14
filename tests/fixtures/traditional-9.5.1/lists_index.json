@@ -1,0 +1,10 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "lists_index",
+  "error": {
+    "kind": "not_found",
+    "message": "data stream .lists-default and data stream .items-default does not exist",
+    "http_status": 404
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "prebuilt_install",
+  "response": {
+    "rules_installed": 0,
+    "rules_updated": 0,
+    "timelines_installed": 0,
+    "timelines_updated": 0
+  }
+}
