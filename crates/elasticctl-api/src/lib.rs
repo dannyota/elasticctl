@@ -27,4 +27,6 @@ pub use ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPl
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
 pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
-pub use state::{DiffReport, PullReport, PushPlan, PushReport};
+pub use state::{
+    DanglingPointer, DiffReport, ExceptionDrift, ListChange, PullReport, PushPlan, PushReport,
+};

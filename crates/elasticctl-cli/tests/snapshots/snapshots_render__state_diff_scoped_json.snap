@@ -13,6 +13,12 @@ expression: rendered
       "name": "elasticctl sample B"
     }
   ],
+  "exceptions": {
+    "local": 0,
+    "remote": 0,
+    "changes": [],
+    "dangling": []
+  },
   "selected": 1,
   "local_total": 2
 }

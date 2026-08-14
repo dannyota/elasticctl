@@ -6,5 +6,11 @@ expression: rendered
   "clean": true,
   "local": 2,
   "remote": 2,
-  "changes": []
+  "changes": [],
+  "exceptions": {
+    "local": 0,
+    "remote": 0,
+    "changes": [],
+    "dangling": []
+  }
 }
