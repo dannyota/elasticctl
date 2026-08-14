@@ -5,6 +5,7 @@ mod cmd;
 mod context;
 mod guard;
 mod render;
+mod report_file;
 mod resolve;
 
 use clap::Parser;

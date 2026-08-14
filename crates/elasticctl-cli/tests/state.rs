@@ -467,6 +467,61 @@ async fn push_dry_run_previews_and_sends_no_mutation() {
     );
 }
 
+// A report path is part of the mutation preflight: a bad local destination
+// must refuse before `--yes` can send the already-planned remote write.
+#[tokio::test]
+async fn an_invalid_report_destination_stops_before_remote_writes() {
+    let server = server_with(vec![]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "rule_id": "new", "name": "New", "type": "query", "id": "srv"
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    fs::create_dir_all(state.join("rules")).unwrap();
+    fs::write(
+        state.join("rules/new.ndjson"),
+        "{\"rule_id\":\"new\",\"name\":\"New\",\"type\":\"query\",\"query\":\"*:*\"}\n",
+    )
+    .unwrap();
+    let report = dir.path().join("missing-parent/report.json");
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "push", "--yes", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap())
+        .unwrap_or_else(|_| panic!("stderr ended without an error envelope: {stderr}"));
+    assert_eq!(error["error"]["kind"], "error");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&report.display().to_string())
+    );
+    let writes: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|request| matches!(request.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE"))
+        .collect();
+    assert!(writes.is_empty(), "unexpected remote writes: {writes:?}");
+}
+
 // A dry-run report must record proposed creates and updates, not only changes
 // that were applied. This gives scripts the pending count without parsing the
 // preview text.

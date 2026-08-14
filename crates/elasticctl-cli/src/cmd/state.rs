@@ -4,6 +4,7 @@
 
 use crate::context::Context;
 use crate::guard::{self, Preview};
+use crate::report_file;
 use elasticctl_api::codec::Format as FileFormat;
 use elasticctl_api::rules::RuleSource;
 use elasticctl_api::state;
@@ -58,6 +59,13 @@ pub async fn push(
     };
     let plan = state::plan_push(t, dir, selectors, tag, source, &identity).await?;
 
+    // A report destination is local mutation preflight. Validate, recover, and
+    // stage the dry-run report before the guard so a bad path can never turn a
+    // confirmed push into a remote write without durable change evidence.
+    let prepared_report = report_path
+        .map(|path| report_file::prepare_report(path, &plan.report))
+        .transpose()?;
+
     let preview = Preview {
         action: plan.preview_action.clone(),
         details: plan.preview_details.clone(),
@@ -70,14 +78,12 @@ pub async fn push(
         plan
     };
 
-    // The change-evidence report is written on both paths. A dry run's report
-    // is the reviewable artefact an operator attaches to a change ticket
-    // *before* approving it, so skipping it there defeats its purpose.
-    if let Some(path) = report_path {
-        let body = serde_json::to_string_pretty(&plan.report)
-            .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))?;
-        std::fs::write(path, body).map_err(|e| {
-            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+    // The final typed report is committed on both paths. A dry run remains
+    // reviewable before approval; an apply records its remote outcomes.
+    if let Some(prepared) = prepared_report {
+        let path = prepared.path().to_path_buf();
+        prepared.publish(&plan.report).map_err(|error| {
+            report_file::report_publication_error(plan.report.applied, &path, error)
         })?;
     }
 
