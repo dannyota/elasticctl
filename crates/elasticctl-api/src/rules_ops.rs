@@ -5,7 +5,7 @@
 //! functions and serialize the same structs.
 
 use crate::codec::{self, Format};
-use crate::model::Rule;
+use crate::model::{Rule, server_defaults};
 use crate::normalize;
 use crate::ops::{ExportOutcome, MutationPlan};
 use crate::rules::{self, BulkAction, RuleFilter};
@@ -63,6 +63,23 @@ pub struct ImportReport {
     pub failed: Value,
 }
 
+/// One rule's validation entry.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RuleValidation {
+    pub rule_id: String,
+    pub name: String,
+    pub rule_type: String,
+    pub defaults_applied: Vec<String>,
+}
+
+/// The report `validate` renders.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ValidateReport {
+    pub valid: bool,
+    pub count: usize,
+    pub rules: Vec<RuleValidation>,
+}
+
 /// The report a preview renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PreviewReport {
@@ -94,7 +111,7 @@ pub async fn get_one(t: &Transport, selector: &str) -> Result<Rule> {
 /// The codecs reject missing or non-string `rule_id` values. Keep the
 /// per-rule check because derived `Rule::Deserialize` bypasses that
 /// validation. Check every rule so one report names every invalid index.
-pub fn validate(path: &Path) -> Result<Vec<Rule>> {
+pub fn validate(path: &Path) -> Result<ValidateReport> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
 
@@ -103,20 +120,43 @@ pub fn validate(path: &Path) -> Result<Vec<Rule>> {
         Format::Ndjson => codec::decode_ndjson(&body)?.0,
     };
 
+    let defaults = server_defaults();
+    let mut reports = Vec::with_capacity(rules.len());
     let mut failures = Vec::new();
+
     for (i, r) in rules.iter().enumerate() {
-        // Do not report a blank rule ID as valid.
-        if let Err(e) = r.rule_id() {
-            failures.push(format!("rule at index {i}: {}", e.message));
+        match r.rule_id() {
+            Ok(rule_id) => {
+                // Show server defaults applied to sparse rules.
+                let mut applied: Vec<String> = defaults
+                    .keys()
+                    .filter(|k| !r.as_map().contains_key(*k))
+                    .cloned()
+                    .collect();
+                applied.sort();
+                reports.push(RuleValidation {
+                    rule_id: rule_id.to_string(),
+                    name: r.name().to_string(),
+                    rule_type: r.rule_type().to_string(),
+                    defaults_applied: applied,
+                });
+            }
+            // Do not report a blank rule ID as valid.
+            Err(e) => failures.push(format!("rule at index {i}: {}", e.message)),
         }
     }
+
     if !failures.is_empty() {
         // An invalid rule invalidates the file. Return a classified error,
         // not a partial success payload.
         return Err(Error::new(ErrorKind::Error, failures.join("; ")));
     }
 
-    Ok(rules)
+    Ok(ValidateReport {
+        valid: true,
+        count: rules.len(),
+        rules: reports,
+    })
 }
 
 /// Resolve every selector to its rule ID and rule before previewing, so the
@@ -341,9 +381,6 @@ pub async fn apply_import(t: &Transport, ndjson: &str, overwrite: bool) -> Resul
     Ok(ImportReport { succeeded, failed })
 }
 
-/// Maximum matched documents returned with a preview.
-const MAX_SAMPLE: u32 = 100;
-
 /// Retry once only when the first search finds no hits.
 ///
 /// The preview already completed each invocation. A newly written alert can
@@ -372,14 +409,6 @@ pub async fn preview_rule(
     sample: u32,
     space: &str,
 ) -> Result<PreviewReport> {
-    // Preview posts to the server for both local and stack rules, so the
-    // sample cap is enforced before any request is sent.
-    if sample > MAX_SAMPLE {
-        return Err(Error::new(
-            ErrorKind::Error,
-            format!("--sample must be {MAX_SAMPLE} or fewer, got {sample}"),
-        ));
-    }
     let path = Path::new(source);
 
     let rule = if path.exists() {

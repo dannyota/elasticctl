@@ -20,5 +20,6 @@ pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
 pub use rules_ops::{
     DeleteOutcome, ImportPlan, ImportReport, PreviewReport, RuleListReport, SetEnabledOutcome,
+    ValidateReport,
 };
 pub use state::{DiffReport, PullReport, PushPlan, PushReport};

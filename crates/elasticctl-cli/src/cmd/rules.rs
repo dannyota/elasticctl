@@ -6,7 +6,7 @@ use crate::context::Context;
 use crate::guard::{self, Preview};
 use crate::resolve;
 use elasticctl_api::codec::Format as FileFormat;
-use elasticctl_api::model::{Rule, server_defaults};
+use elasticctl_api::model::Rule;
 use elasticctl_api::rules::RuleFilter;
 use elasticctl_api::rules_ops;
 use elasticctl_core::{Error, ErrorKind, Result};
@@ -17,6 +17,9 @@ fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
     serde_json::to_value(v)
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))
 }
+
+/// Maximum matched documents returned with a preview.
+const MAX_SAMPLE: u32 = 100;
 
 /// Summary shown by `rules list`. Use `rules get` or `rules export` for full
 /// rule bodies.
@@ -53,26 +56,7 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
 
 /// Check a rule file without contacting a server.
 pub fn validate(path: &Path) -> Result<Value> {
-    let rules = rules_ops::validate(path)?;
-    let defaults = server_defaults();
-
-    let mut reports = Vec::with_capacity(rules.len());
-    for r in &rules {
-        // Show server defaults applied to sparse rules.
-        let mut applied: Vec<&String> = defaults
-            .keys()
-            .filter(|k| !r.as_map().contains_key(*k))
-            .collect();
-        applied.sort();
-        reports.push(json!({
-            "rule_id": r.rule_id().unwrap_or(resolve::UNREADABLE_RULE_ID),
-            "name": r.name(),
-            "type": r.rule_type(),
-            "defaults_applied": applied,
-        }));
-    }
-
-    Ok(json!({"valid": true, "count": rules.len(), "rules": reports}))
+    to_value(&rules_ops::validate(path)?)
 }
 
 pub async fn set_enabled(ctx: &Context, selectors: &[String], enable: bool) -> Result<Value> {
@@ -183,8 +167,15 @@ pub async fn import(
 
 pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32) -> Result<Value> {
     // Preview posts to the server for both local and stack rules. Check the
-    // credential first so a missing one names the profile.
+    // credential first so a missing one names the profile, then the sample cap
+    // before building a transport.
     ctx.require_credential()?;
+    if sample > MAX_SAMPLE {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!("--sample must be {MAX_SAMPLE} or fewer, got {sample}"),
+        ));
+    }
     let t = ctx.transport().await?;
     let space = ctx.resolved.profile.space.clone();
     to_value(&rules_ops::preview_rule(t, source, invocations, sample, &space).await?)
