@@ -850,6 +850,14 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | List find is filterable server-side | `GET /api/exception_lists/_find` accepts a KQL `filter` over `exception-list.attributes.<field>`. Measured against three sample lists: `type: detection` returned 2 of 3, `tags: alpha` returned 2 of 3, and a quoted `list_id` returned 1 |
 | An empty filter is a 400 | Passing `filter=` with an empty value fails with `KQLSyntaxError: Expected "(", NOT, field name, value, whitespace but ")" found`. The parameter must be **omitted** when there is nothing to filter on, never sent empty |
 | Multi-list export concatenates | Exporting two lists and joining the bodies gives six lines — list, item, trailer, list, item, trailer — with a trailer **per list**, interior to the file. `_import?overwrite=true` accepts it: `success_count: 4`, both containers and both items restored |
+| `rule_default` lists are ordinary on the wire | `POST /api/exception_lists` with `"type": "rule_default"` creates one like any other container, and a rule references it through the same `exceptions_list` entry with `"type": "rule_default"`. Nothing about the route or the reference is special |
+
+That last row matters to the mirror. Spec 5.4 writes a `rule_default` list inline
+in its owning rule's file, and the obvious worry is that `push` could not put one
+back — making `pull` produce a mirror `push` rejects. It can: the container is
+created exactly like a `detection` list, before the rule that points at it, in
+the same containers-then-items-then-rules order. The inlining is a layout choice
+about where the object is written, not a claim that the object is unrestorable.
 
 The interior trailers matter to `decode_bundle`, which keeps the last trailer it
 sees. For a multi-list export that means `Bundle.summary` describes only the
