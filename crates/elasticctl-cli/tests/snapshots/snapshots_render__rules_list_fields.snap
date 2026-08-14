@@ -1,0 +1,7 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+rule_id              name                 
+elasticctl-sample-a  elasticctl sample A  
+elasticctl-sample-b  elasticctl sample B

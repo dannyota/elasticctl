@@ -4,17 +4,8 @@ use std::fs;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
-    let p = dir.join("config.toml");
-    fs::write(
-        &p,
-        format!(
-            "current = \"default\"\n\n[profiles.default]\nkibana_url = \"{uri}\"\napi_key = \"essu_t\"\nspace = \"default\"\nverify = true\ntimeout_secs = 5\n"
-        ),
-    )
-    .unwrap();
-    p
-}
+mod common;
+use common::config_for;
 
 #[test]
 fn validate_accepts_a_well_formed_yaml_rule_file() {

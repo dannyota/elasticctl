@@ -1,0 +1,16 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+{
+  "elasticctl_version": "0.1.3",
+  "profile": "default",
+  "kibana_url": "http://127.0.0.1:<port>",
+  "space": "default",
+  "spaces": [
+    "default"
+  ],
+  "flavor": "self-managed",
+  "stack_version": "9.5.1",
+  "license_tier": "platinum"
+}

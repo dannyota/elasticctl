@@ -1,0 +1,20 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+{
+  "enabled": true,
+  "index": [
+    "logs-*"
+  ],
+  "language": "kuery",
+  "name": "elasticctl sample A",
+  "query": "event.category:process",
+  "risk_score": 21,
+  "rule_id": "elasticctl-sample-a",
+  "severity": "low",
+  "tags": [
+    "elasticctl-sample"
+  ],
+  "type": "query"
+}

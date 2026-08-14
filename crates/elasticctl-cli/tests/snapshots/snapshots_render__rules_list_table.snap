@@ -1,0 +1,7 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+rule_id              name                 type   enabled  severity  risk_score  tags                   
+elasticctl-sample-a  elasticctl sample A  query  true     low       21          ["elasticctl-sample"]  
+elasticctl-sample-b  elasticctl sample B  query  false    high      73          ["elasticctl-sample"]

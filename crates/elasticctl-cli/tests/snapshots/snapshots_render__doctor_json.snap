@@ -1,0 +1,39 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+{
+  "checks": [
+    {
+      "check": "config",
+      "status": "ok",
+      "message": "profile 'default'"
+    },
+    {
+      "check": "connectivity",
+      "status": "ok",
+      "message": "http://127.0.0.1:<port>"
+    },
+    {
+      "check": "flavor",
+      "status": "ok",
+      "message": "self-managed 9.5.1"
+    },
+    {
+      "check": "auth",
+      "status": "ok",
+      "message": "elastic via native"
+    },
+    {
+      "check": "key_scope",
+      "status": "ok",
+      "message": "authenticated via the 'native' realm, not an Elasticsearch API key"
+    },
+    {
+      "check": "rules_access",
+      "status": "ok",
+      "message": "2 rules visible"
+    }
+  ],
+  "ok": true
+}

@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/elasticctl-core", "crates/elasticctl-api", "crates/elasticctl-cli", "xtask"]
+members = [
+    "crates/elasticctl-core",
+    "crates/elasticctl-api",
+    "crates/elasticctl-cli",
+    "crates/elasticctl-api/tests/support",
+    "xtask",
+]
 
 [workspace.package]
 version = "0.1.3"
@@ -13,6 +19,9 @@ authors = ["Danny"]
 [workspace.dependencies]
 elasticctl-core = { path = "crates/elasticctl-core", version = "0.1.3" }
 elasticctl-api = { path = "crates/elasticctl-api", version = "0.1.3" }
+# Test-only; `publish = false`, referenced by path+version so `cargo publish`
+# strips the path instead of failing on a missing registry crate.
+elasticctl-api-test-support = { path = "crates/elasticctl-api/tests/support", version = "0.1.3" }
 # Declare this once so every crate uses the same map semantics. Insertion order
 # drives table and CSV columns; alphabetical order would change field order.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }

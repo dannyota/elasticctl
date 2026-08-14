@@ -1,0 +1,28 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+[
+  {
+    "rule_id": "elasticctl-sample-a",
+    "name": "elasticctl sample A",
+    "type": "query",
+    "enabled": true,
+    "severity": "low",
+    "risk_score": 21,
+    "tags": [
+      "elasticctl-sample"
+    ]
+  },
+  {
+    "rule_id": "elasticctl-sample-b",
+    "name": "elasticctl sample B",
+    "type": "query",
+    "enabled": false,
+    "severity": "high",
+    "risk_score": 73,
+    "tags": [
+      "elasticctl-sample"
+    ]
+  }
+]
