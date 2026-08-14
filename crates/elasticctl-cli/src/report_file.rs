@@ -30,6 +30,12 @@ enum Phase {
     BackedUp,
     Installing,
     Installed,
+    /// Recovery has committed to restoring a saved report, before it mutates
+    /// either side of the backup-to-target rename.
+    Restoring,
+    /// The original bytes are durably back at the target. Cleanup may now
+    /// discard the transaction without making a later recovery guess.
+    Restored,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -393,51 +399,93 @@ fn recover_existing_target(
     phase: Phase,
 ) -> Result<()> {
     let backup = transaction_dir.join("backup.json");
-    if path_exists(&backup, "checking report backup")? {
-        require_regular_file(&backup, path, "reading report backup")?;
-        match target_metadata(path)? {
+    let backup_exists = path_exists(&backup, "checking report backup")?;
+    match (phase, backup_exists) {
+        (Phase::Restored, false) if target_is_regular_file(path)? => Ok(()),
+        (Phase::Restored, false) => Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "report transaction {} says {} was restored, but the target is missing",
+                transaction_dir.display(),
+                path.display()
+            ),
+        )),
+        (Phase::Restored, true) => Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "report transaction {} says {} was restored, but its backup remains",
+                transaction_dir.display(),
+                path.display()
+            ),
+        )),
+        (Phase::Restoring, false) => match target_metadata(path)? {
             Some(metadata) if metadata.file_type().is_file() => {
-                remove_file(
-                    ops,
-                    path,
-                    path,
-                    "removing replacement report during rollback",
-                )?;
-                sync_dir(ops, parent, "syncing report directory during rollback")?;
+                finish_restoration(path, transaction_dir, parent, ops)
             }
-            Some(_) => return non_regular_target(path),
-            None => {}
+            Some(_) => non_regular_target(path),
+            None => Err(Error::new(
+                ErrorKind::Error,
+                format!(
+                    "report transaction {} lost both the backup and target for {} during restoration",
+                    transaction_dir.display(),
+                    path.display()
+                ),
+            )),
+        },
+        (_, true) => {
+            require_regular_file(&backup, path, "reading report backup")?;
+            if phase != Phase::Restoring {
+                append_phase(transaction_dir, Phase::Restoring, path, ops)?;
+            }
+            match target_metadata(path)? {
+                Some(metadata) if metadata.file_type().is_file() => {
+                    remove_file(
+                        ops,
+                        path,
+                        path,
+                        "removing replacement report during rollback",
+                    )?;
+                    sync_dir(ops, parent, "syncing report directory during rollback")?;
+                }
+                Some(_) => return non_regular_target(path),
+                None => {}
+            }
+            rename(ops, &backup, path, path, "restoring previous change report")?;
+            finish_restoration(path, transaction_dir, parent, ops)
         }
-        rename(ops, &backup, path, path, "restoring previous change report")?;
-        sync_dir(ops, parent, "syncing report directory during rollback")?;
-        sync_dir(
-            ops,
-            transaction_dir,
-            "syncing report transaction directory during rollback",
-        )?;
-    } else if matches!(
-        phase,
-        Phase::BackedUp | Phase::Installing | Phase::Installed
-    ) {
-        return Err(Error::new(
+        (Phase::Prepared | Phase::BackingUp, false) if target_is_regular_file(path)? => Ok(()),
+        (_, false) => Err(Error::new(
             ErrorKind::Error,
             format!(
                 "report transaction {} lost the backup needed to recover {}",
                 transaction_dir.display(),
                 path.display()
             ),
-        ));
-    } else if !target_is_regular_file(path)? {
-        return Err(Error::new(
-            ErrorKind::Error,
-            format!(
-                "report transaction {} cannot find the previous report {}",
-                transaction_dir.display(),
-                path.display()
-            ),
-        ));
+        )),
     }
-    Ok(())
+}
+
+/// Finish a rollback after the backup rename. This is deliberately separate
+/// from the rename: if either directory sync or the final journal append
+/// fails, `Restoring` plus a regular target proves the retry must complete
+/// these steps rather than looking for a backup that has already moved.
+fn finish_restoration(
+    path: &Path,
+    transaction_dir: &Path,
+    parent: &Path,
+    ops: &dyn FileOps,
+) -> Result<()> {
+    sync_dir(
+        ops,
+        parent,
+        "syncing report directory after rollback restoration",
+    )?;
+    sync_dir(
+        ops,
+        transaction_dir,
+        "syncing report transaction directory after rollback restoration",
+    )?;
+    append_phase(transaction_dir, Phase::Restored, path, ops)
 }
 
 fn recover_absent_target(
@@ -535,22 +583,7 @@ fn read_journal(transaction_dir: &Path) -> Result<Option<Journal>> {
                 format!("reading report journal {}: {e}", journal.display()),
             )
         })?;
-        let expected = match phase {
-            Phase::Prepared => Phase::BackingUp,
-            Phase::BackingUp => Phase::BackedUp,
-            Phase::BackedUp => Phase::Installing,
-            Phase::Installing => Phase::Installed,
-            Phase::Installed => {
-                return Err(Error::new(
-                    ErrorKind::Error,
-                    format!(
-                        "report journal {} has records after installation",
-                        journal.display()
-                    ),
-                ));
-            }
-        };
-        if update.phase != expected {
+        if !is_valid_transition(phase, update.phase) {
             return Err(Error::new(
                 ErrorKind::Error,
                 format!(
@@ -565,6 +598,18 @@ fn read_journal(transaction_dir: &Path) -> Result<Option<Journal>> {
         existed_before: prepared.existed_before,
         phase,
     }))
+}
+
+fn is_valid_transition(from: Phase, to: Phase) -> bool {
+    match from {
+        Phase::Prepared => matches!(to, Phase::BackingUp | Phase::Restoring),
+        Phase::BackingUp => matches!(to, Phase::BackedUp | Phase::Restoring),
+        Phase::BackedUp => matches!(to, Phase::Installing | Phase::Restoring),
+        Phase::Installing => matches!(to, Phase::Installed | Phase::Restoring),
+        Phase::Installed => to == Phase::Restoring,
+        Phase::Restoring => to == Phase::Restored,
+        Phase::Restored => false,
+    }
 }
 
 fn finish_failed_preparation<T>(
@@ -1057,27 +1102,32 @@ mod tests {
         }
     }
 
-    fn seed_report_transaction(target: &Path, phase: Phase) {
+    fn seed_report_transaction(
+        target: &Path,
+        existed_before: bool,
+        phase: Phase,
+        backup_moved: bool,
+        staged_installed: bool,
+    ) {
         let transaction = transaction_dir(target);
         let staged = transaction.join("staged.json");
         let backup = transaction.join("backup.json");
-        fs::write(target, b"{\"previous\":true}").unwrap();
+        if existed_before {
+            fs::write(target, b"{\"previous\":true}").unwrap();
+        }
         fs::create_dir(&transaction).unwrap();
         fs::write(&staged, b"{\"replacement\":true}").unwrap();
 
-        if matches!(
-            phase,
-            Phase::BackedUp | Phase::Installing | Phase::Installed
-        ) {
+        if backup_moved {
             fs::rename(target, &backup).unwrap();
         }
-        if matches!(phase, Phase::Installing | Phase::Installed) {
+        if staged_installed {
             fs::rename(&staged, target).unwrap();
         }
 
         let mut journal = with_newline(
             serde_json::to_vec(&PreparedRecord {
-                existed_before: true,
+                existed_before,
                 phase: Phase::Prepared,
             })
             .unwrap(),
@@ -1088,6 +1138,8 @@ mod tests {
                 Phase::BackedUp,
                 Phase::Installing,
                 Phase::Installed,
+                Phase::Restoring,
+                Phase::Restored,
             ] {
                 journal.extend(with_newline(
                     serde_json::to_vec(&PhaseRecord {
@@ -1180,17 +1232,19 @@ mod tests {
     }
 
     #[test]
-    fn recovery_restores_the_old_report_at_every_journal_phase() {
-        for phase in [
-            Phase::Prepared,
-            Phase::BackingUp,
-            Phase::BackedUp,
-            Phase::Installing,
-            Phase::Installed,
+    fn recovery_restores_the_old_report_on_both_sides_of_each_rename() {
+        for (phase, backup_moved, staged_installed) in [
+            (Phase::Prepared, false, false),
+            (Phase::BackingUp, false, false),
+            (Phase::BackingUp, true, false),
+            (Phase::BackedUp, true, false),
+            (Phase::Installing, true, false),
+            (Phase::Installing, true, true),
+            (Phase::Installed, true, true),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let target = dir.path().join("report.json");
-            seed_report_transaction(&target, phase);
+            seed_report_transaction(&target, true, phase, backup_moved, staged_installed);
 
             recover_report(&target).unwrap();
             recover_report(&target).unwrap();
@@ -1198,6 +1252,105 @@ mod tests {
             assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
             assert!(!transaction_dir(&target).exists());
         }
+    }
+
+    #[test]
+    fn recovery_removes_an_installed_report_that_was_absent_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.json");
+        seed_report_transaction(&target, false, Phase::Installing, false, true);
+
+        recover_report(&target).unwrap();
+        recover_report(&target).unwrap();
+
+        assert!(!target.exists());
+        assert!(!transaction_dir(&target).exists());
+    }
+
+    #[test]
+    fn failed_sync_after_backup_restore_remains_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.json");
+        seed_report_transaction(&target, true, Phase::Installed, true, true);
+        let (parent, transaction, lock_path) = report_paths(&target).unwrap();
+        let lock = acquire_lock(&target, &lock_path).unwrap();
+        let ops = FailingFileOps::once("sync_dir", 3);
+
+        assert!(recover_report_locked(&target, &transaction, &parent, &ops).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
+        drop(lock);
+
+        recover_report(&target).unwrap();
+        recover_report(&target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
+        assert!(!transaction_dir(&target).exists());
+    }
+
+    #[test]
+    fn failures_after_the_restore_rename_remain_recoverable() {
+        for (operation, fail_at) in [
+            ("sync_dir", 3),
+            ("sync_dir", 4),
+            ("write", 2),
+            ("sync_file", 2),
+            ("sync_dir", 5),
+            ("remove_dir_all", 1),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("report.json");
+            seed_report_transaction(&target, true, Phase::Installed, true, true);
+            let (parent, transaction, lock_path) = report_paths(&target).unwrap();
+            let lock = acquire_lock(&target, &lock_path).unwrap();
+            let ops = FailingFileOps::once(operation, fail_at);
+
+            assert!(recover_report_locked(&target, &transaction, &parent, &ops).is_err());
+            assert!(transaction.exists(), "{operation} call {fail_at}");
+            drop(lock);
+
+            recover_report(&target).unwrap();
+            recover_report(&target).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
+            assert!(!transaction_dir(&target).exists());
+        }
+    }
+
+    #[test]
+    fn restoring_without_a_backup_preserves_ambiguous_recovery_evidence() {
+        for non_regular_target in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("report.json");
+            seed_report_transaction(&target, true, Phase::Restoring, false, false);
+            fs::remove_file(&target).unwrap();
+            if non_regular_target {
+                fs::create_dir(&target).unwrap();
+            }
+
+            let error = recover_report(&target).unwrap_err();
+
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+            assert!(transaction_dir(&target).exists());
+        }
+    }
+
+    #[test]
+    fn report_lock_stays_held_until_preparation_is_recovered_or_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_target = dir.path().join("first.json");
+        let second_target = dir.path().join("second.json");
+        let prepared = prepare_report(&first_target, &report(false)).unwrap();
+
+        let same_target = match prepare_report(&first_target, &report(false)) {
+            Ok(_) => panic!("a second report preparation acquired the same lock"),
+            Err(error) => error,
+        };
+        assert_eq!(same_target.kind, elasticctl_core::ErrorKind::Conflict);
+        let other = prepare_report(&second_target, &report(false)).unwrap();
+        drop(other);
+        drop(prepared);
+
+        recover_report(&first_target).unwrap();
+        let retried = prepare_report(&first_target, &report(false)).unwrap();
+        drop(retried);
     }
 
     #[test]
