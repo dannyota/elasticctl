@@ -1,0 +1,33 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+{
+  "valid": true,
+  "count": 1,
+  "rules": [
+    {
+      "rule_id": "elasticctl-sample-sparse",
+      "name": "elasticctl sample sparse",
+      "type": "query",
+      "defaults_applied": [
+        "actions",
+        "author",
+        "exceptions_list",
+        "false_positives",
+        "immutable",
+        "max_signals",
+        "output_index",
+        "references",
+        "related_integrations",
+        "required_fields",
+        "risk_score_mapping",
+        "rule_source",
+        "setup",
+        "severity_mapping",
+        "threat",
+        "to"
+      ]
+    }
+  ]
+}

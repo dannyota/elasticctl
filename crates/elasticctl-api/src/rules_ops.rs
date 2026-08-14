@@ -68,6 +68,7 @@ pub struct ImportReport {
 pub struct RuleValidation {
     pub rule_id: String,
     pub name: String,
+    #[serde(rename = "type")]
     pub rule_type: String,
     pub defaults_applied: Vec<String>,
 }

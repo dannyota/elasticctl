@@ -6,7 +6,7 @@
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod common;
 use common::profile_args;
@@ -59,6 +59,10 @@ const CASES: &[(&str, &[&str])] = &[
         "rules_get_json",
         &["rules", "get", "elasticctl-sample-a", "--json"],
     ),
+    (
+        "rules_validate_json",
+        &["rules", "validate", "--path", "FIXTURE_RULE_FILE", "--json"],
+    ),
     ("info_json", &["info", "--json"]),
     ("doctor_json", &["doctor", "--json"]),
     (
@@ -82,12 +86,12 @@ const CASES: &[(&str, &[&str])] = &[
 /// it so `info` and `doctor` snapshots do not read as drift.
 const PORT_FILTER: (&str, &str) = (r"127\.0\.0\.1:\d+", "127.0.0.1:<port>");
 
-/// Replace the `FIXTURE_DIR` placeholder with the mirror's real path.
-fn substitute(arg: &str, mirror: &Path) -> String {
-    if arg == "FIXTURE_DIR" {
-        mirror.to_string_lossy().into_owned()
-    } else {
-        arg.to_string()
+/// Replace the path placeholders with their real values.
+fn substitute(arg: &str, mirror: &Path, rule_file: &Path) -> String {
+    match arg {
+        "FIXTURE_DIR" => mirror.to_string_lossy().into_owned(),
+        "FIXTURE_RULE_FILE" => rule_file.to_string_lossy().into_owned(),
+        other => other.to_string(),
     }
 }
 
@@ -108,17 +112,33 @@ fn fixture_mirror(rules: &[Value]) -> tempfile::TempDir {
     dir
 }
 
+/// Write one sparse rule so `rules validate` reports a non-empty
+/// `defaults_applied`.
+fn fixture_rule_file(dir: &Path) -> PathBuf {
+    let path = dir.join("sparse.ndjson");
+    std::fs::write(
+        &path,
+        "{\"rule_id\":\"elasticctl-sample-sparse\",\"name\":\"elasticctl sample sparse\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+    path
+}
+
 #[tokio::test]
 async fn rendered_output_is_stable() {
     let dir = tempfile::tempdir().unwrap();
     let mirror = fixture_mirror(&sample_rules());
+    let rule_file = fixture_rule_file(dir.path());
     let stack = MockStack::with_rules(sample_rules()).await;
 
     for (name, args) in CASES {
         let out = Command::cargo_bin("elasticctl")
             .unwrap()
             .args(profile_args(dir.path(), &stack))
-            .args(args.iter().map(|a| substitute(a, mirror.path())))
+            .args(
+                args.iter()
+                    .map(|a| substitute(a, mirror.path(), &rule_file)),
+            )
             .output()
             .unwrap();
         assert!(

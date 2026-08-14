@@ -156,10 +156,15 @@ pub async fn import(
         }));
     }
 
-    // The upload always reaches the server, so require the credential here, as
-    // 0.1.3 did.
-    ctx.require_credential()?;
-    let t = ctx.transport().await?;
+    // The upload always reaches the server. The --skip-existing read already
+    // built the transport; otherwise build it now.
+    let t = match t {
+        Some(t) => t,
+        None => {
+            ctx.require_credential()?;
+            ctx.transport().await?
+        }
+    };
     let report = rules_ops::apply_import(t, &plan.ndjson, overwrite).await?;
     Ok(json!({
         "applied": true,
