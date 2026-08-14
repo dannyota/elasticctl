@@ -182,10 +182,4 @@ impl MockStack {
 
         stack
     }
-
-    /// A stack whose exception-list shape is seeded by Task 9. The response
-    /// shapes are measured there, so this returns the base stack for now.
-    pub async fn with_exception_lists(_n: usize) -> MockStack {
-        Self::new().await
-    }
 }
