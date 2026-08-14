@@ -191,7 +191,7 @@ impl MockStack {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "data": data,
                 "page": 1,
-                "per_page": n,
+                "per_page": n.max(1),
                 "total": n
             })))
             .mount(&stack.server)
@@ -207,14 +207,17 @@ impl MockStack {
                 .mount(&stack.server)
                 .await;
             // The export route resolves `id` first, then posts by both the
-            // volatile `id` and the stable identity (fact E). Serve one list
-            // line so `exceptions export` produces an importable body.
+            // volatile `id` and the stable identity (fact E). A measured
+            // trailer follows the list line, so the mock has the same
+            // completed-export shape as the live endpoint.
             Mock::given(method("POST"))
                 .and(path("/api/exception_lists/_export"))
                 .and(query_param("id", format!("id-l{i}")))
                 .and(query_param("list_id", format!("l{i}")))
                 .and(query_param("namespace_type", "single"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{list}\n")))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                    "{list}\n{{\"exported_exception_list_count\":1,\"exported_exception_list_item_count\":0,\"missing_exception_lists\":[],\"missing_exception_list_items\":[]}}\n"
+                )))
                 .mount(&stack.server)
                 .await;
         }
@@ -517,7 +520,7 @@ async fn mount_items(server: &MockServer, list_id: &str, namespace: &str, items:
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": items,
             "page": 1,
-            "per_page": items.len(),
+            "per_page": items.len().max(1),
             "total": items.len()
         })))
         .mount(server)
@@ -921,7 +924,7 @@ impl Respond for PagedItems {
         ResponseTemplate::new(200).set_body_json(json!({
             "data": data,
             "page": page,
-            "per_page": self.page_size,
+            "per_page": self.page_size.max(1),
             "total": self.items.len()
         }))
     }

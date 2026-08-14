@@ -10,7 +10,7 @@ use crate::normalize;
 use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 use crate::rules::kql_escape;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -55,10 +55,66 @@ impl ListFilter {
 }
 
 /// Decode the shared `{data, page, per_page, total}` envelope.
-fn decode_find(body: &Value) -> (Vec<Value>, u64) {
-    let total = body["total"].as_u64().unwrap_or(0);
-    let data = body["data"].as_array().cloned().unwrap_or_default();
-    (data, total)
+fn decode_find(body: &Value) -> Result<(Vec<Value>, u64)> {
+    let object = body.as_object().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Http,
+            "invalid exception _find response: expected an object",
+        )
+    })?;
+    let data = object
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| find_field_error("data", "an array"))?;
+    let page = required_positive_find_number(object, "page")?;
+    let per_page = required_positive_find_number(object, "per_page")?;
+    let total = object
+        .get("total")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| find_field_error("total", "a non-negative integer"))?;
+
+    let returned = data.len() as u64;
+    if returned > per_page {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!(
+                "invalid exception _find response: page {page} returned {returned} objects, \
+                 exceeding per_page {per_page}"
+            ),
+        ));
+    }
+    if returned > total {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!(
+                "invalid exception _find response: page {page} returned {returned} objects, \
+                 exceeding total {total}"
+            ),
+        ));
+    }
+    Ok((data, total))
+}
+
+fn required_positive_find_number(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<u64> {
+    let value = object
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| find_field_error(field, "a positive integer"))?;
+    if value == 0 {
+        return Err(find_field_error(field, "a positive integer"));
+    }
+    Ok(value)
+}
+
+fn find_field_error(field: &str, expected: &str) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("invalid exception _find response field {field}: expected {expected}"),
+    )
 }
 
 /// Read every object a `_find` route serves, paging until `total` is reached.
@@ -71,7 +127,7 @@ async fn find_paged(t: &Transport, path_for: impl Fn(u32) -> String) -> Result<V
     let mut page = 1u32;
     loop {
         let body = t.get(&path_for(page)).await?;
-        let (data, total) = decode_find(&body);
+        let (data, total) = decode_find(&body)?;
         let before = out.len();
         out.extend(data);
         if (out.len() as u64) >= total {
@@ -218,6 +274,77 @@ pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Resul
     ExceptionItem::from_value(body)
 }
 
+/// The required final line of one exception-list export response.
+///
+/// This deliberately does not reuse `ExportSummary`: that type defaults absent
+/// fields for importing historical bundles, while this live endpoint boundary
+/// must reject a response that does not state its measured outcome.
+#[derive(Deserialize)]
+struct ExceptionExportTrailer {
+    exported_exception_list_count: u64,
+    exported_exception_list_item_count: u64,
+    missing_exception_lists: Vec<Value>,
+    missing_exception_list_items: Vec<Value>,
+}
+
+struct DecodedExceptionExport {
+    exported_lists: u64,
+    missing: Vec<Value>,
+}
+
+fn decode_exception_export(body: &str, key: &ListKey) -> Result<DecodedExceptionExport> {
+    let trailer = body
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| Error::new(ErrorKind::Http, "missing exception export trailer"))?;
+    let trailer: ExceptionExportTrailer = serde_json::from_str(trailer).map_err(|e| {
+        Error::new(
+            ErrorKind::Http,
+            format!("invalid exception export trailer: {e}"),
+        )
+    })?;
+    if trailer.exported_exception_list_count > 1 {
+        return Err(Error::new(
+            ErrorKind::Http,
+            "contradictory exception export trailer: one request exported more than one list",
+        ));
+    }
+
+    let mut missing = trailer.missing_exception_lists;
+    missing.extend(trailer.missing_exception_list_items);
+    for value in &mut missing {
+        add_missing_identity(value, key);
+    }
+
+    // The item count is required even though one container export may carry
+    // any number of items. Destructure it so the wire contract remains
+    // explicit at this boundary.
+    let _ = trailer.exported_exception_list_item_count;
+    Ok(DecodedExceptionExport {
+        exported_lists: trailer.exported_exception_list_count,
+        missing,
+    })
+}
+
+fn add_missing_identity(value: &mut Value, key: &ListKey) {
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("list_id".to_string())
+            .or_insert_with(|| Value::String(key.list_id.clone()));
+        object
+            .entry("namespace_type".to_string())
+            .or_insert_with(|| Value::String(key.namespace_type.clone()));
+        return;
+    }
+
+    *value = json!({
+        "list_id": key.list_id,
+        "namespace_type": key.namespace_type,
+        "missing": std::mem::take(value),
+    });
+}
+
 /// Export the given containers and their items as NDJSON.
 ///
 /// The export route is the one path that refuses `list_id` alone (measured,
@@ -226,7 +353,7 @@ pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Resul
 /// here, at the boundary that demands it. A key with no live container is
 /// refused rather than skipped: a silently dropped key is a short export
 /// reported as a success.
-pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<String> {
+pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<ExportOutcome> {
     let ids = resolve_ids(t, keys).await?;
 
     // Name every missing key at once, the way the mirror names every colliding
@@ -243,7 +370,9 @@ pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<String> {
         ));
     }
 
-    let mut out = String::new();
+    let mut body = String::new();
+    let mut exported = 0u64;
+    let mut missing = Vec::new();
     for key in keys {
         let id = ids.get(key).expect("every key resolved before export");
         let path = format!(
@@ -252,13 +381,27 @@ pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<String> {
             urlencode(&key.list_id),
             urlencode(&key.namespace_type),
         );
-        let body = t.post_text(&path, None).await?;
-        out.push_str(&body);
-        if !body.ends_with('\n') {
-            out.push('\n');
+        let response = t.post_text(&path, None).await?;
+        let decoded = decode_exception_export(&response, key)?;
+        exported = exported
+            .checked_add(decoded.exported_lists)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Http,
+                    "invalid exception export trailers: exported-list count overflow",
+                )
+            })?;
+        missing.extend(decoded.missing);
+        body.push_str(&response);
+        if !response.ends_with('\n') {
+            body.push('\n');
         }
     }
-    Ok(out)
+    Ok(ExportOutcome {
+        body,
+        exported,
+        missing,
+    })
 }
 
 pub async fn import_lists(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Value> {
@@ -481,12 +624,7 @@ pub async fn export_op(
         Some(keys) => keys,
         None => all_list_keys(t, namespace).await?,
     };
-    let body = export_lists(t, &keys).await?;
-    Ok(ExportOutcome {
-        body,
-        exported: keys.len() as u64,
-        missing: Vec::new(),
-    })
+    export_lists(t, &keys).await
 }
 
 /// What `plan_delete_op` resolved, so the apply acts on exactly the keys the

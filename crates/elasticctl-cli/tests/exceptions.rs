@@ -71,6 +71,65 @@ async fn export_without_out_writes_importable_ndjson_to_stdout() {
     );
 }
 
+/// A list can disappear after its live ID is resolved. The partial response is
+/// still a file, but its trailer must make both export modes fail visibly.
+#[tokio::test]
+async fn a_deleted_exception_list_writes_the_partial_file_and_exits_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "id-l0",
+            "list_id": "l0",
+            "type": "detection",
+            "name": "L0",
+            "namespace_type": "single",
+            "tags": ["sample"],
+        })))
+        .mount(&server)
+        .await;
+    let trailer = concat!(
+        r#"{"exported_exception_list_count":0,"exported_exception_list_item_count":0,"missing_exception_lists":[{"reason":"deleted"}],"missing_exception_list_items":[]}"#,
+        "\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(trailer))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = common::config_for(dir.path(), &server.uri());
+    let file = dir.path().join("partial.ndjson");
+    let with_out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["exceptions", "export", "l0", "--json", "--config"])
+        .arg(&cfg)
+        .arg("--out")
+        .arg(&file)
+        .output()
+        .unwrap();
+
+    assert_eq!(with_out.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), trailer);
+    let report: Value = serde_json::from_slice(&with_out.stdout).unwrap();
+    assert_eq!(report["exported"], 0);
+    assert_eq!(report["failed"][0]["list_id"], "l0");
+    assert_eq!(report["failed"][0]["namespace_type"], "single");
+
+    let to_stdout = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["exceptions", "export", "l0", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(to_stdout.status.code(), Some(1));
+    assert_eq!(String::from_utf8(to_stdout.stdout).unwrap(), trailer);
+}
+
 /// Spec 4.5: the same `list_id` in both namespaces is a supported configuration.
 /// A bare `list_id` must be refused with a conflict naming `--namespace`, and
 /// resolved when the flag qualifies it.

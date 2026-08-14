@@ -1,5 +1,6 @@
 //! The exception-list endpoint wrappers' contract, independent of the CLI.
 
+use elasticctl_api::codec::Format;
 use elasticctl_api::exceptions::{self, ListFilter};
 use elasticctl_api::model::{ExceptionItem, ExceptionList, ListKey};
 use elasticctl_api_test_support::MockStack;
@@ -64,6 +65,63 @@ async fn find_lists_reads_the_data_array_and_total() {
         .unwrap();
     assert_eq!(found.len(), 2);
     assert_eq!(found[0].list_id().unwrap(), "l0");
+}
+
+/// A malformed `_find` envelope must not look like an empty success: an
+/// export or mirror built from it would silently omit every list.
+#[tokio::test]
+async fn find_lists_rejects_every_missing_or_mistyped_envelope_field() {
+    for (body, field) in [
+        (json!({"page": 1, "per_page": 1, "total": 0}), "data"),
+        (json!({"data": [], "per_page": 1, "total": 0}), "page"),
+        (json!({"data": [], "page": 1, "total": 0}), "per_page"),
+        (json!({"data": [], "page": 1, "per_page": 1}), "total"),
+        (
+            json!({"data": {}, "page": 1, "per_page": 1, "total": 0}),
+            "data",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/exception_lists/_find"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let err = exceptions::find_lists(&transport(&server), &ListFilter::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http);
+        assert!(err.message.contains(field), "{}", err.message);
+    }
+}
+
+/// A page that returns more objects than the server's total cannot be a
+/// complete read; accepting it hides a contradictory response.
+#[tokio::test]
+async fn find_items_rejects_a_page_that_returns_more_than_total() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/items/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [item_json(0), item_json(1)],
+            "page": 1,
+            "per_page": 2,
+            "total": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let err = exceptions::find_items(
+        &transport(&server),
+        &ListKey {
+            list_id: "l".into(),
+            namespace_type: "single".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
 }
 
 /// The empty-filter 400 (spec 7.7): `filter=` with no clauses is a KQL syntax
@@ -416,7 +474,7 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
         .and(query_param("namespace_type", "single"))
         .and(query_param("include_expired_exceptions", "true"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            "{}\n{}\n",
+            "{}\n{}\n{{\"exported_exception_list_count\":1,\"exported_exception_list_item_count\":1,\"missing_exception_lists\":[],\"missing_exception_list_items\":[]}}\n",
             list_json(0),
             item_json(0)
         )))
@@ -435,8 +493,9 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
     .unwrap();
 
     assert!(
-        out.contains("\"list_id\""),
-        "the export body is NDJSON: {out}"
+        out.body.contains("\"list_id\""),
+        "the export body is NDJSON: {}",
+        out.body
     );
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 2, "one resolve GET then one export POST");
@@ -453,6 +512,74 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
         pairs.contains(&("list_id".into(), "l0".into())),
         "the stable list_id travels alongside: {pairs:?}"
     );
+}
+
+/// A list can disappear after selection and ID resolution. The trailer is the
+/// authoritative outcome, so its missing entry must keep the stable key.
+#[tokio::test]
+async fn export_reports_a_list_deleted_after_id_resolution() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+            r#"{"exported_exception_list_count":0,"exported_exception_list_item_count":0,"missing_exception_lists":[{"reason":"deleted"}],"missing_exception_list_items":[]}"#,
+            "\n"
+        )))
+        .mount(&server)
+        .await;
+
+    let out = exceptions::export_op(
+        &transport(&server),
+        &["l0".to_string()],
+        None,
+        Some("single"),
+        Format::Ndjson,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out.exported, 0);
+    assert_eq!(out.missing[0]["list_id"], "l0");
+    assert_eq!(out.missing[0]["namespace_type"], "single");
+}
+
+/// The only trustworthy statement of an export's outcome is its final trailer.
+/// A 200 containing data lines but no trailer is not a completed export.
+#[tokio::test]
+async fn export_rejects_a_200_without_a_valid_trailer() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("{}\n", list_json(0))))
+        .mount(&server)
+        .await;
+
+    let err = exceptions::export_lists(
+        &transport(&server),
+        &[ListKey {
+            list_id: "l0".into(),
+            namespace_type: "single".into(),
+        }],
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Http);
+    assert!(err.message.contains("export trailer"), "{}", err.message);
 }
 
 /// A key with no live container is refused, not silently dropped: a short
