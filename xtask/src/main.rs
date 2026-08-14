@@ -86,6 +86,24 @@ fn recording_hosts() -> Vec<String> {
     .collect()
 }
 
+/// Remove userinfo from a URL authority without changing its path or query.
+///
+/// Fixture values can contain the configured host with credentials that were
+/// never part of the transport URL. Removing only the host would leave those
+/// credentials in the public fixture.
+fn strip_url_userinfo(value: &str) -> String {
+    let (scheme, rest) = match value.find("://") {
+        Some(index) => value.split_at(index + 3),
+        None => ("", value),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    match authority.rfind('@') {
+        Some(index) => format!("{scheme}{}{tail}", &authority[index + 1..]),
+        None => value.to_string(),
+    }
+}
+
 /// Replace the recording stack's hostname wherever it appears in a value.
 ///
 /// `is_sensitive` checks keys, but an alert document stores the project URL in
@@ -94,6 +112,7 @@ fn recording_hosts() -> Vec<String> {
 fn scrub_hosts(v: &mut Value, hosts: &[String]) {
     match v {
         Value::String(s) => {
+            *s = strip_url_userinfo(s);
             for h in hosts {
                 if s.contains(h.as_str()) {
                     *s = s.replace(h.as_str(), "REDACTED.example.invalid");
@@ -1338,6 +1357,20 @@ mod tests {
         assert_eq!(
             recording_host("https://plain.example:5601/path?x=1#fragment"),
             Some("plain.example:5601".to_string())
+        );
+    }
+
+    #[test]
+    fn host_scrub_removes_url_userinfo_before_replacing_the_host() {
+        let mut value = json!({
+            "url": "https://alice:secret@cluster.example:9243/app/rules?x=1#detail"
+        });
+
+        scrub_hosts(&mut value, &["cluster.example:9243".to_string()]);
+
+        assert_eq!(
+            value["url"],
+            "https://REDACTED.example.invalid/app/rules?x=1#detail"
         );
     }
 
