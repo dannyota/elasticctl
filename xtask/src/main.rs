@@ -144,9 +144,10 @@ fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> St
         let normalized_default = configured_authority
             .rsplit_once(':')
             .filter(|(hostname, port)| {
+                let port = port.parse::<u16>().ok();
                 !hostname.is_empty()
-                    && ((scheme.eq_ignore_ascii_case("https") && *port == "443")
-                        || (scheme.eq_ignore_ascii_case("http") && *port == "80"))
+                    && ((scheme.eq_ignore_ascii_case("https") && port == Some(443))
+                        || (scheme.eq_ignore_ascii_case("http") && port == Some(80)))
             })
             .map(|(hostname, _)| hostname);
 
@@ -1464,6 +1465,25 @@ mod tests {
         scrub_hosts(&mut value, &["INTERNAL.example:443".to_string()]);
 
         assert_eq!(value["url"], "https://REDACTED.example.invalid/app/rules");
+    }
+
+    #[test]
+    fn host_scrub_matches_zero_padded_default_ports() {
+        let mut value = json!({
+            "https": "https://internal.example/app/rules",
+            "http": "http://internal.example/app/rules"
+        });
+
+        scrub_hosts(
+            &mut value,
+            &[
+                "internal.example:0443".to_string(),
+                "internal.example:0080".to_string(),
+            ],
+        );
+
+        assert_eq!(value["https"], "https://REDACTED.example.invalid/app/rules");
+        assert_eq!(value["http"], "http://REDACTED.example.invalid/app/rules");
     }
 
     #[test]
