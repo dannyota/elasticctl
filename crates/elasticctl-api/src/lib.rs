@@ -27,7 +27,7 @@ pub use normalize::{canonical, comparable, sort_rules};
 pub use ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 pub use prebuilt::{PrebuiltInstallOutcome, PrebuiltStatus};
 pub use report::{ChangeReport, ReportEntry};
-pub use rules::{BulkAction, BulkOutcome, RuleFilter};
+pub use rules::{BulkAction, BulkOutcome, RuleFilter, RuleSource};
 pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
 pub use state::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, PullReport, PushPlan, PushReport,

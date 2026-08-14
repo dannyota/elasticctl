@@ -6,18 +6,13 @@
 //! outdated ones indivisibly, and takes no selection.
 
 use crate::ops::MutationPlan;
-use crate::rules::{self, RuleFilter};
+use crate::rules::{self, RuleFilter, RuleSource};
 use elasticctl_core::{Result, Transport};
 use serde::Serialize;
 use serde_json::Value;
 
 const PREPACKAGED_STATUS: &str = "/api/detection_engine/rules/prepackaged/_status";
 const PREPACKAGED: &str = "/api/detection_engine/rules/prepackaged";
-
-/// KQL selecting prebuilt rules edited on the stack (spec 4.6). The same
-/// clause is the `RuleSource::Customized` filter once `--source` lands; this
-/// vertical needs it before that, so it is written out here.
-const CUSTOMIZED_FILTER: &str = "alert.attributes.params.ruleSource.isCustomized: true";
 
 /// The report `rules prebuilt status` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -64,7 +59,7 @@ pub async fn status(t: &Transport) -> Result<PrebuiltStatus> {
 /// to see (spec 4.6).
 async fn customized_count(t: &Transport) -> Result<u64> {
     let filter = RuleFilter {
-        query: Some(CUSTOMIZED_FILTER.to_string()),
+        source: RuleSource::Customized,
         ..Default::default()
     };
     let (_, total) = rules::find_page(t, &filter, 1, 1).await?;

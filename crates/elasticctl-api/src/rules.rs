@@ -6,6 +6,7 @@ use crate::codec::{self, Bundle};
 use crate::model::Rule;
 use crate::normalize;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const BASE: &str = "/api/detection_engine/rules";
@@ -18,8 +19,39 @@ const BASE: &str = "/api/detection_engine/rules";
 /// 2.4 seconds; 21 pages of 100 took 8.4–11 seconds.
 const RESULT_WINDOW: u32 = 10_000;
 
+/// Which rules a rule operation acts on, by who authored them.
+///
+/// The server-side split is `alert.attributes.params.immutable`, measured to
+/// agree exactly with `params.ruleSource.type` (2,066 prebuilt / 0 custom on
+/// Serverless 9.6.0). `immutable` is used because it exists on every version in
+/// the support window; `customized` narrows the prebuilt set to rules edited on
+/// the stack. Spec 5.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleSource {
+    Custom,
+    Customized,
+    Prebuilt,
+    #[default]
+    All,
+}
+
+impl RuleSource {
+    /// The measured server-side filter clause. `None` means no clause: the
+    /// whole corpus. Spec 5.5.
+    pub fn clause(&self) -> Option<&'static str> {
+        match self {
+            RuleSource::Custom => Some("alert.attributes.params.immutable: false"),
+            RuleSource::Prebuilt => Some("alert.attributes.params.immutable: true"),
+            RuleSource::Customized => Some("alert.attributes.params.ruleSource.isCustomized: true"),
+            RuleSource::All => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RuleFilter {
+    pub source: RuleSource,
     pub enabled: Option<bool>,
     pub rule_type: Option<String>,
     pub severity: Option<String>,
@@ -35,6 +67,9 @@ impl RuleFilter {
     /// Kibana filters saved objects with KQL over `alert.attributes.*`.
     pub fn to_kql(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
+        if let Some(clause) = self.source.clause() {
+            parts.push(clause.to_string());
+        }
         if let Some(v) = self.enabled {
             parts.push(format!("alert.attributes.enabled: {v}"));
         }
@@ -108,6 +143,36 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
         .map(Rule::from_value)
         .collect::<Result<Vec<_>>>()?;
     Ok((rules, total))
+}
+
+/// Refuse a `custom` or `prebuilt` scope that matched nothing against a
+/// non-empty corpus.
+///
+/// Both scopes filter on `alert.attributes.params.immutable`. Whether that
+/// field exists on stacks older than 9.5.1 is unmeasured (fact H). If it is
+/// absent, the filter silently matches nothing, and a query would report "no
+/// custom rules" for a stack that simply lacks the field. An extra unfiltered
+/// `_find` distinguishes that from an honestly empty space. Query commands and
+/// `state pull` call this; `state diff` and `push` do not, because an empty
+/// scope there is reported through `out_of_scope` instead (spec 5.5).
+pub(crate) async fn refuse_silently_empty_scope(t: &Transport, source: RuleSource) -> Result<()> {
+    let name = match source {
+        RuleSource::Custom => "custom",
+        RuleSource::Prebuilt => "prebuilt",
+        _ => return Ok(()),
+    };
+    let (_, corpus) = find_page(t, &RuleFilter::default(), 1, 1).await?;
+    if corpus > 0 {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "--source {name} filtered on alert.attributes.params.immutable and matched 0 \
+                 of {corpus} rules. The field may be absent on this stack (unmeasured); \
+                 re-run with --source all to read the corpus."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Detection-rule types used to partition a corpus. Each rule has one
@@ -537,6 +602,36 @@ pub fn decode_preview_hits(response: &Value) -> PreviewHits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec 5.5, measured 2026-08-14.
+    #[test]
+    fn each_source_maps_to_its_measured_filter() {
+        assert_eq!(
+            RuleSource::Custom.clause(),
+            Some("alert.attributes.params.immutable: false")
+        );
+        assert_eq!(
+            RuleSource::Customized.clause(),
+            Some("alert.attributes.params.ruleSource.isCustomized: true")
+        );
+        assert_eq!(RuleSource::All.clause(), None, "all adds no clause");
+    }
+
+    #[test]
+    fn a_source_clause_combines_with_other_filters() {
+        let f = RuleFilter {
+            source: RuleSource::Custom,
+            tag: Some("prod".into()),
+            ..Default::default()
+        };
+        let kql = f.to_kql().unwrap();
+        assert!(kql.contains("immutable: false"), "{kql}");
+        assert!(kql.contains("prod"), "{kql}");
+        assert!(
+            kql.contains(" AND "),
+            "clauses combine, they do not replace: {kql}"
+        );
+    }
 
     #[test]
     fn kql_escape_doubles_a_lone_backslash() {
