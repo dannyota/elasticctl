@@ -137,6 +137,37 @@ async fn resolve_ids_maps_live_keys_to_ids_and_omits_absent_keys() {
     );
 }
 
+/// Spec 4.5: the same `list_id` in two namespaces are two objects. A container
+/// that exists only in `single` must not resolve under an `agnostic` key.
+#[tokio::test]
+async fn resolve_ids_does_not_cross_namespaces() {
+    let stack = mock_exception_lists(1).await; // l0 exists only in `single`
+    let map = exceptions::resolve_ids(
+        stack.transport(),
+        &[
+            ListKey {
+                list_id: "l0".into(),
+                namespace_type: "single".into(),
+            },
+            ListKey {
+                list_id: "l0".into(),
+                namespace_type: "agnostic".into(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(map.len(), 1, "the agnostic key has no live container");
+    assert!(
+        map.contains_key(&ListKey {
+            list_id: "l0".into(),
+            namespace_type: "single".into(),
+        }),
+        "only the single key resolves"
+    );
+}
+
 #[tokio::test]
 async fn get_list_reads_a_container_by_list_id_and_namespace() {
     let stack = mock_exception_lists(1).await;
