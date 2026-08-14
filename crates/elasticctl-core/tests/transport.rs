@@ -1,7 +1,82 @@
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
+use std::io::Read;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+use std::time::Duration;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[cfg(unix)]
+const STDERR_FILENO: i32 = 2;
+#[cfg(unix)]
+static STDERR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn close(fd: i32) -> i32;
+    fn dup(fd: i32) -> i32;
+    fn dup2(oldfd: i32, newfd: i32) -> i32;
+    fn pipe(fds: *mut i32) -> i32;
+}
+
+#[cfg(unix)]
+struct StderrCapture {
+    original_fd: i32,
+    read_fd: i32,
+}
+
+#[cfg(unix)]
+impl StderrCapture {
+    fn start() -> Self {
+        let mut fds = [0; 2];
+        // The test redirects only the process stderr and restores it before
+        // asserting. A shared lock prevents another test from writing there.
+        unsafe {
+            assert_eq!(pipe(fds.as_mut_ptr()), 0);
+            let original_fd = dup(STDERR_FILENO);
+            assert!(original_fd >= 0);
+            assert_eq!(dup2(fds[1], STDERR_FILENO), STDERR_FILENO);
+            assert_eq!(close(fds[1]), 0);
+            Self {
+                original_fd,
+                read_fd: fds[0],
+            }
+        }
+    }
+
+    fn finish(mut self) -> String {
+        unsafe {
+            assert_eq!(dup2(self.original_fd, STDERR_FILENO), STDERR_FILENO);
+            assert_eq!(close(self.original_fd), 0);
+        }
+        self.original_fd = -1;
+
+        let mut output = String::new();
+        let mut reader = unsafe { File::from_raw_fd(self.read_fd) };
+        self.read_fd = -1;
+        reader.read_to_string(&mut output).unwrap();
+        output
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrCapture {
+    fn drop(&mut self) {
+        unsafe {
+            if self.original_fd >= 0 {
+                let _ = dup2(self.original_fd, STDERR_FILENO);
+                let _ = close(self.original_fd);
+            }
+            if self.read_fd >= 0 {
+                let _ = close(self.read_fd);
+            }
+        }
+    }
+}
 
 fn profile_for(server: &MockServer) -> Profile {
     Profile {
@@ -14,6 +89,20 @@ fn profile_for(server: &MockServer) -> Profile {
         verify: true,
         timeout_secs: 5,
     }
+}
+
+fn absolute_es_profile_for(server: &MockServer) -> Profile {
+    let mut profile = profile_for(server);
+    profile.kibana_url = "https://kibana.invalid".into();
+    profile.es_url = Some(server.uri());
+    profile.space = "security".into();
+    profile
+}
+
+fn one_second_timeout_profile_for(server: &MockServer) -> Profile {
+    let mut profile = profile_for(server);
+    profile.timeout_secs = 1;
+    profile
 }
 
 #[test]
@@ -184,6 +273,101 @@ async fn post_absolute_es_classifies_an_error_response() {
 }
 
 #[tokio::test]
+async fn absolute_es_retries_a_429_once_without_kibana_headers_or_space_prefix() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/index/_search"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/index/_search"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"hits": {"total": {"value": 2}}})),
+        )
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+    let body = t
+        .post_absolute_es("/index/_search", &json!({"size": 2}))
+        .await
+        .unwrap();
+
+    assert_eq!(body["hits"]["total"]["value"], 2);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert_eq!(request.url.path(), "/index/_search");
+        assert_eq!(
+            request.headers.get("authorization").unwrap(),
+            "ApiKey essu_test"
+        );
+        assert!(request.headers.get("elastic-api-version").is_none());
+        assert!(request.headers.get("kbn-xsrf").is_none());
+        assert_eq!(
+            request.body_json::<serde_json::Value>().unwrap(),
+            json!({"size": 2})
+        );
+    }
+}
+
+#[cfg_attr(not(unix), ignore = "stderr capture uses Unix file descriptors")]
+#[tokio::test]
+async fn an_absolute_es_timeout_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/_cluster/health"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(1_100))
+                .set_body_json(json!({"status": "green"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut profile = one_second_timeout_profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::with_debug(&profile, true).unwrap();
+    #[cfg(unix)]
+    let _stderr_guard = STDERR_LOCK.lock().await;
+    #[cfg(unix)]
+    let capture = StderrCapture::start();
+    let err = t.get_absolute_es("/_cluster/health").await.unwrap_err();
+    #[cfg(unix)]
+    let debug = capture.finish();
+
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    #[cfg(unix)]
+    assert!(
+        debug.trim_end().ends_with("timeout"),
+        "debug output: {debug}"
+    );
+}
+
+#[tokio::test]
+async fn a_400_from_absolute_es_is_never_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/index/_search"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"message": "bad input"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+    assert!(
+        t.post_absolute_es("/index/_search", &json!({"size": 0}))
+            .await
+            .is_err()
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn delete_absolute_es_targets_the_es_host() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -216,4 +400,95 @@ async fn post_text_returns_the_raw_body_for_ndjson_export() {
     let t = Transport::new(&profile_for(&server)).unwrap();
     let body = t.post_text("/api/export", None).await.unwrap();
     assert_eq!(body.lines().count(), 2);
+}
+
+#[tokio::test]
+async fn multipart_retries_a_503_with_the_same_file_and_kibana_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": true})))
+        .mount(&server)
+        .await;
+
+    let ndjson = "{\"rule_id\":\"retry-rule\"}\n";
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    assert_eq!(
+        t.post_multipart_ndjson("/api/detection_engine/rules/_import", ndjson)
+            .await
+            .unwrap()["success"],
+        true
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let body = String::from_utf8(request.body).unwrap();
+        assert!(body.contains("filename=\"rules.ndjson\""));
+        assert!(body.contains(ndjson));
+        assert_eq!(
+            request.headers.get("authorization").unwrap(),
+            "ApiKey essu_test"
+        );
+        assert_eq!(
+            request.headers.get("elastic-api-version").unwrap(),
+            "2023-10-31"
+        );
+        assert_eq!(request.headers.get("kbn-xsrf").unwrap(), "true");
+    }
+}
+
+#[tokio::test]
+async fn a_multipart_timeout_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(1_100))
+                .set_body_json(json!({"success": true})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&one_second_timeout_profile_for(&server)).unwrap();
+    let err = t
+        .post_multipart_ndjson(
+            "/api/detection_engine/rules/_import",
+            "{\"rule_id\":\"timeout-rule\"}\n",
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_400_from_multipart_is_never_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"message": "bad input"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    assert!(
+        t.post_multipart_ndjson(
+            "/api/detection_engine/rules/_import",
+            "{\"rule_id\":\"bad-rule\"}\n",
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }

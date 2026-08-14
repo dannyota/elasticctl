@@ -7,6 +7,7 @@ use crate::error::{Error, ErrorKind, Result};
 use reqwest::{Client, Method, Response, StatusCode};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::Duration;
 
 /// Version of the public API this client targets.
@@ -151,7 +152,11 @@ impl Transport {
         if !self.debug {
             return;
         }
-        eprintln!("[debug] {} {url} -> {what}", method.as_str());
+        let _ = writeln!(
+            std::io::stderr(),
+            "[debug] {} {url} -> {what}",
+            method.as_str()
+        );
     }
 
     /// Prefix non-default spaces with `/s/<name>`.
@@ -174,40 +179,30 @@ impl Transport {
         format!("{}{}", self.base, Self::space_path(&self.space, path))
     }
 
-    async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Response> {
-        let url = self.url(path);
+    async fn send_retrying<F>(&self, method: Method, url: &str, mut build: F) -> Result<Response>
+    where
+        F: FnMut() -> Result<reqwest::RequestBuilder>,
+    {
         let mut attempt = 0;
 
         loop {
             attempt += 1;
-            let mut req = self
-                .client
-                .request(method.clone(), &url)
-                .header("Authorization", &self.auth_header)
-                .header("elastic-api-version", API_VERSION);
+            let req = build()?;
 
-            // Kibana rejects any state-changing request without this header.
-            if method != Method::GET {
-                req = req.header("kbn-xsrf", "true");
-            }
-            if let Some(b) = body {
-                req = req.json(b);
-            }
-
-            self.debug_request(&method, &url, attempt);
+            self.debug_request(&method, url, attempt);
             let result = req.send().await;
 
             let response = match result {
                 Ok(r) => r,
                 Err(e) if e.is_timeout() => {
-                    self.debug_failure(&method, &url, "timeout");
+                    self.debug_failure(&method, url, "timeout");
                     return Err(Error::new(
                         ErrorKind::Timeout,
                         format!("request timed out: {e}"),
                     ));
                 }
                 Err(e) => {
-                    self.debug_failure(&method, &url, "connection error");
+                    self.debug_failure(&method, url, "connection error");
                     return Err(Error::new(
                         ErrorKind::Connection,
                         format!("request failed: {e}"),
@@ -216,7 +211,7 @@ impl Transport {
             };
 
             let status = response.status();
-            self.debug_log(&method, &url, status.as_u16(), attempt);
+            self.debug_log(&method, url, status.as_u16(), attempt);
             if status.is_success() {
                 return Ok(response);
             }
@@ -234,6 +229,29 @@ impl Transport {
             let text = response.text().await.unwrap_or_default();
             return Err(Error::from_response_body(code, &text));
         }
+    }
+
+    async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Response> {
+        let url = self.url(path);
+        let request_method = method.clone();
+        self.send_retrying(method, &url, || {
+            let mut req = self
+                .client
+                .request(request_method.clone(), &url)
+                .header("Authorization", &self.auth_header)
+                .header("elastic-api-version", API_VERSION);
+
+            // Kibana rejects any state-changing request without this header.
+            if request_method != Method::GET {
+                req = req.header("kbn-xsrf", "true");
+            }
+            if let Some(b) = body {
+                req = req.json(b);
+            }
+
+            Ok(req)
+        })
+        .await
     }
 
     async fn send_json(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -303,26 +321,7 @@ impl Transport {
     ///
     /// Cloud deployments use a different Elasticsearch host.
     pub async fn get_absolute_es(&self, path: &str) -> Result<Value> {
-        let url = format!("{}{}", self.es_base, path);
-        self.debug_request(&Method::GET, &url, 1);
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .send()
-            .await
-            .map_err(|e| {
-                self.debug_failure(&Method::GET, &url, "connection error");
-                Error::new(ErrorKind::Connection, format!("request failed: {e}"))
-            })?;
-        let status = response.status().as_u16();
-        self.debug_log(&Method::GET, &url, status, 1);
-        let text = response.text().await.unwrap_or_default();
-        if !(200..300).contains(&status) {
-            return Err(Error::from_response_body(status, &text));
-        }
-        serde_json::from_str(&text)
-            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
+        self.send_absolute_es(Method::GET, path, None).await
     }
 
     /// POST JSON to Elasticsearch without a Kibana space prefix or `kbn-xsrf`
@@ -345,26 +344,24 @@ impl Transport {
         body: Option<&Value>,
     ) -> Result<Value> {
         let url = format!("{}{}", self.es_base, path);
-        let mut req = self
-            .client
-            .request(method.clone(), &url)
-            .header("Authorization", &self.auth_header);
-        if let Some(b) = body {
-            req = req.json(b);
-        }
+        let request_method = method.clone();
+        let response = self
+            .send_retrying(method, &url, || {
+                let mut req = self
+                    .client
+                    .request(request_method.clone(), &url)
+                    .header("Authorization", &self.auth_header);
+                if let Some(b) = body {
+                    req = req.json(b);
+                }
+                Ok(req)
+            })
+            .await?;
 
-        self.debug_request(&method, &url, 1);
-        let response = req.send().await.map_err(|e| {
-            self.debug_failure(&method, &url, "connection error");
-            Error::new(ErrorKind::Connection, format!("request failed: {e}"))
-        })?;
-
-        let status = response.status().as_u16();
-        self.debug_log(&method, &url, status, 1);
-        let text = response.text().await.unwrap_or_default();
-        if !(200..300).contains(&status) {
-            return Err(Error::from_response_body(status, &text));
-        }
+        let text = response
+            .text()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -384,36 +381,30 @@ impl Transport {
     /// Upload a multipart NDJSON file for Kibana rule import.
     pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
         let url = self.url(path);
-        let part = reqwest::multipart::Part::text(ndjson.to_string())
-            .file_name("rules.ndjson")
-            .mime_str("application/octet-stream")
-            .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
-        let form = reqwest::multipart::Form::new().part("file", part);
-
-        self.debug_request(&Method::POST, &url, 1);
         let response = self
-            .client
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("elastic-api-version", API_VERSION)
-            .header("kbn-xsrf", "true")
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                self.debug_failure(&Method::POST, &url, "connection error");
-                Error::new(ErrorKind::Connection, format!("upload failed: {e}"))
-            })?;
+            .send_retrying(Method::POST, &url, || {
+                // Retryable HTTP responses deliberately replay this POST. Part and Form are
+                // recreated here because reqwest consumes multipart bodies while sending.
+                let part = reqwest::multipart::Part::text(ndjson.to_string())
+                    .file_name("rules.ndjson")
+                    .mime_str("application/octet-stream")
+                    .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
+                let form = reqwest::multipart::Form::new().part("file", part);
 
-        let status = response.status().as_u16();
-        self.debug_log(&Method::POST, &url, status, 1);
+                Ok(self
+                    .client
+                    .post(&url)
+                    .header("Authorization", &self.auth_header)
+                    .header("elastic-api-version", API_VERSION)
+                    .header("kbn-xsrf", "true")
+                    .multipart(form))
+            })
+            .await?;
+
         let text = response
             .text()
             .await
             .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
-        if !(200..300).contains(&status) {
-            return Err(Error::from_response_body(status, &text));
-        }
         serde_json::from_str(&text)
             .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
