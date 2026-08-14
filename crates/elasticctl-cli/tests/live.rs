@@ -74,7 +74,7 @@ fn success(out: &Output, what: &str) {
 
 #[test]
 #[ignore = "requires a live stack"]
-fn doctor_reports_every_check_ok() {
+fn doctor_reports_no_failed_checks() {
     if skip_unless_live() {
         return;
     }
@@ -117,7 +117,7 @@ fn a_pull_followed_by_a_diff_is_clean() {
     let state = dir.path().join("state");
 
     let pull = bin()
-        .args(["state", "pull", "--config"])
+        .args(["state", "pull", "--source", "all", "--config"])
         .arg(&config)
         .arg("--dir")
         .arg(&state)
@@ -126,7 +126,7 @@ fn a_pull_followed_by_a_diff_is_clean() {
     success(&pull, "state pull");
 
     let diff = bin()
-        .args(["state", "diff", "--json", "--config"])
+        .args(["state", "diff", "--source", "all", "--json", "--config"])
         .arg(&config)
         .arg("--dir")
         .arg(&state)

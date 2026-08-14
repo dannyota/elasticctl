@@ -690,8 +690,9 @@ pub async fn plan_import_op(
         targets,
     };
 
-    // Kibana's import takes NDJSON regardless of the source file's format, and
-    // it rejects the trailer, so re-encode the bundle without it.
+    // Kibana's import accepts export trailers, but this plan may skip objects.
+    // Re-encode only the planned objects so stale trailer counts do not describe
+    // containers or items that will not be uploaded.
     let ndjson = codec::encode_bundle(&Bundle {
         rules: Vec::new(),
         lists,

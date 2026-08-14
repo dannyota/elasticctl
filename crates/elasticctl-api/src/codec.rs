@@ -391,8 +391,8 @@ mod tests {
     }
 
     /// `encode_bundle` writes rules, then lists, then items, and never the
-    /// trailer; `_import` rejects the trailer. The round-trip also proves the
-    /// two new newtypes keep their unknown fields, matching spec 3.2.
+    /// export-summary trailer. The round-trip also proves the two new newtypes
+    /// keep their unknown fields, matching spec 3.2.
     #[test]
     fn encode_bundle_writes_rules_then_lists_then_items_and_no_trailer() {
         let b = decode_bundle(BUNDLE).unwrap(); // 1 rule, 1 list, 1 item, trailer

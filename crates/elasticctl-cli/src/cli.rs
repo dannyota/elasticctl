@@ -292,10 +292,10 @@ pub enum ExceptionsAction {
 
 #[derive(Debug, Subcommand)]
 pub enum StateAction {
-    /// Write live rules to a directory. Pulls every rule unless selectors or
-    /// --tag narrow it.
+    /// Write live rules to a directory. Without selectors or --tag, pulls the
+    /// active --source scope.
     Pull {
-        /// Rule ids or names to pull. Omit to pull every rule.
+        /// Rule ids or names to pull. Omit with no --tag to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
@@ -304,28 +304,28 @@ pub enum StateAction {
         /// Pull every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Which rules to pull: custom, customized, prebuilt, or all
+        /// Source scope used when selectors and --tag are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
-    /// Show field-level drift between the directory and the stack. Compares
-    /// every rule unless selectors or --tag narrow it.
+    /// Show field-level drift between the directory and the stack. Without
+    /// selectors or --tag, compares the active --source scope.
     Diff {
-        /// Rule ids or names to compare. Omit to compare every rule.
+        /// Rule ids or names to compare. Omit with no --tag to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
         /// Compare every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Which rules to compare: custom, customized, prebuilt, or all
+        /// Source scope used when selectors and --tag are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
-    /// Apply the directory's rules to the stack. Applies every rule unless
-    /// selectors or --tag narrow it.
+    /// Apply the directory's rules to the stack. Without selectors or --tag,
+    /// applies the active --source scope.
     Push {
-        /// Rule ids or names to apply. Omit to apply every rule.
+        /// Rule ids or names to apply. Omit with no --tag to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
@@ -335,7 +335,7 @@ pub enum StateAction {
         /// Apply every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Which rules to apply: custom, customized, prebuilt, or all
+        /// Source scope used when selectors and --tag are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
