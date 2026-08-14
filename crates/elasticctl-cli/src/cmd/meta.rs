@@ -133,6 +133,7 @@ mod tests {
             "rules disable",
             "rules delete",
             "rules import",
+            "rules prebuilt install",
             "exceptions delete",
             "exceptions import",
             "state push",

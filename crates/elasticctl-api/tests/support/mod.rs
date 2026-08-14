@@ -241,6 +241,47 @@ impl MockStack {
 
         stack
     }
+
+    /// A stack whose prepackaged `_status` route returns `status` and whose
+    /// `_find` route reports `customized` customized rules. The `_find` mock
+    /// ignores query filters and serves whatever it is seeded with, so a test
+    /// must not depend on it honouring the customized filter.
+    pub async fn with_prebuilt_status(status: Value, customized: u64) -> MockStack {
+        let stack = Self::new().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(status))
+            .mount(&stack.server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(RULES_FIND))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "page": 1, "perPage": 1, "total": customized, "data": []
+            })))
+            .mount(&stack.server)
+            .await;
+
+        stack
+    }
+
+    /// A stack whose prepackaged `_status`, `_find`, and install routes return
+    /// `status`, `customized`, and `response` respectively.
+    pub async fn with_prebuilt_install(
+        status: Value,
+        customized: u64,
+        response: Value,
+    ) -> MockStack {
+        let stack = Self::with_prebuilt_status(status, customized).await;
+
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&stack.server)
+            .await;
+
+        stack
+    }
 }
 
 fn list_json(i: usize) -> Value {

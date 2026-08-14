@@ -8,7 +8,10 @@ mod render;
 mod resolve;
 
 use clap::Parser;
-use cli::{Cli, Command, ConfigAction, ExceptionsAction, GlobalArgs, RulesAction, StateAction};
+use cli::{
+    Cli, Command, ConfigAction, ExceptionsAction, GlobalArgs, PrebuiltAction, RulesAction,
+    StateAction,
+};
 use context::Context;
 use elasticctl_api::exceptions::ListFilter;
 use elasticctl_api::rules::RuleFilter;
@@ -143,6 +146,16 @@ async fn main() {
             } => match Context::build(&args.global) {
                 Ok(ctx) => cmd::rules::preview(&ctx, source, *invocations, *sample).await,
                 Err(e) => Err(e),
+            },
+            RulesAction::Prebuilt { action } => match action {
+                PrebuiltAction::Status => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::rules::prebuilt_status(&ctx).await,
+                    Err(e) => Err(e),
+                },
+                PrebuiltAction::Install => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::rules::prebuilt_install(&ctx).await,
+                    Err(e) => Err(e),
+                },
             },
         },
         Command::Exceptions { action } => match action {
