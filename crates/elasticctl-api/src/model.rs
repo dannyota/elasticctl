@@ -150,6 +150,235 @@ pub struct ExportSummary {
     pub missing_rules: Vec<Value>,
 }
 
+/// Server-owned fields an exception list container changes on every write.
+/// Stripped before diffing, like `VOLATILE_FIELDS` is for rules.
+pub const LIST_VOLATILE_FIELDS: [&str; 8] = [
+    "id",
+    "_version",
+    "tie_breaker_id",
+    "version",
+    "created_at",
+    "created_by",
+    "updated_at",
+    "updated_by",
+];
+
+/// The container set less `version`: a measured item carries `_version` but no
+/// `version`.
+pub const ITEM_VOLATILE_FIELDS: [&str; 7] = [
+    "id",
+    "_version",
+    "tie_breaker_id",
+    "created_at",
+    "created_by",
+    "updated_at",
+    "updated_by",
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExceptionList(Map<String, Value>);
+
+impl ExceptionList {
+    pub fn from_value(v: Value) -> Result<ExceptionList> {
+        let map = match v {
+            Value::Object(m) => m,
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception list must be a JSON object",
+                ));
+            }
+        };
+        match map.get("list_id") {
+            Some(Value::String(_)) => {}
+            Some(_) => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception list's list_id must be a string",
+                ));
+            }
+            None => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception list must have a list_id",
+                ));
+            }
+        }
+        Ok(ExceptionList(map))
+    }
+
+    pub fn list_id(&self) -> Result<&str> {
+        self.0
+            .get("list_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::new(ErrorKind::Error, "exception list is missing list_id"))
+    }
+
+    /// `single` is the API's own default and the value every measured response
+    /// carried. An absent value must resolve, or identity would depend on
+    /// whether a response happened to include the field.
+    pub fn namespace_type(&self) -> &str {
+        self.0
+            .get("namespace_type")
+            .and_then(Value::as_str)
+            .unwrap_or("single")
+    }
+
+    pub fn list_type(&self) -> &str {
+        self.0.get("type").and_then(Value::as_str).unwrap_or("")
+    }
+
+    pub fn name(&self) -> &str {
+        self.0.get("name").and_then(Value::as_str).unwrap_or("")
+    }
+
+    pub fn tags(&self) -> Vec<&str> {
+        self.0
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn key(&self) -> Result<ListKey> {
+        Ok(ListKey {
+            list_id: self.list_id()?.to_string(),
+            namespace_type: self.namespace_type().to_string(),
+        })
+    }
+
+    pub fn as_map(&self) -> &Map<String, Value> {
+        &self.0
+    }
+
+    pub fn as_map_mut(&mut self) -> &mut Map<String, Value> {
+        &mut self.0
+    }
+
+    pub fn into_value(self) -> Value {
+        Value::Object(self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExceptionItem(Map<String, Value>);
+
+impl ExceptionItem {
+    pub fn from_value(v: Value) -> Result<ExceptionItem> {
+        let map = match v {
+            Value::Object(m) => m,
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception item must be a JSON object",
+                ));
+            }
+        };
+        match map.get("item_id") {
+            Some(Value::String(_)) => {}
+            Some(_) => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception item's item_id must be a string",
+                ));
+            }
+            None => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "an exception item must have an item_id",
+                ));
+            }
+        }
+        Ok(ExceptionItem(map))
+    }
+
+    pub fn item_id(&self) -> Result<&str> {
+        self.0
+            .get("item_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::new(ErrorKind::Error, "exception item is missing item_id"))
+    }
+
+    /// An item without a list has no home, so absence is an error rather than
+    /// a default.
+    pub fn list_id(&self) -> Result<&str> {
+        self.0
+            .get("list_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::new(ErrorKind::Error, "exception item is missing list_id"))
+    }
+
+    pub fn namespace_type(&self) -> &str {
+        self.0
+            .get("namespace_type")
+            .and_then(Value::as_str)
+            .unwrap_or("single")
+    }
+
+    pub fn as_map(&self) -> &Map<String, Value> {
+        &self.0
+    }
+
+    pub fn as_map_mut(&mut self) -> &mut Map<String, Value> {
+        &mut self.0
+    }
+
+    pub fn into_value(self) -> Value {
+        Value::Object(self.0)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+pub struct ListKey {
+    pub list_id: String,
+    pub namespace_type: String,
+}
+
+/// The `{id, list_id, type, namespace_type}` reference a rule carries.
+pub struct ExceptionRef {
+    pub list_id: String,
+    pub namespace_type: String,
+    pub ref_type: String,
+    pub id: Option<String>,
+}
+
+/// Read a rule's `exceptions_list` array. A malformed entry is skipped rather
+/// than failing the rule: the field is server-owned and unknown shapes must
+/// survive a round trip.
+pub fn exception_refs(rule: &Rule) -> Vec<ExceptionRef> {
+    let entries = match rule
+        .as_map()
+        .get("exceptions_list")
+        .and_then(Value::as_array)
+    {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let obj = entry.as_object()?;
+            let list_id = obj.get("list_id")?.as_str()?.to_string();
+            Some(ExceptionRef {
+                list_id,
+                namespace_type: obj
+                    .get("namespace_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("single")
+                    .to_string(),
+                ref_type: obj
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                id: obj.get("id").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +515,117 @@ mod tests {
         for v in VOLATILE_FIELDS {
             assert!(!server_defaults().contains_key(v), "{v} is in both sets");
         }
+    }
+
+    /// Trimmed from the measured create response, 2026-08-14, Serverless 9.6.0.
+    fn probe_list() -> Value {
+        json!({
+            "id": "3724d409-4c0f-4630-a1ef-706499730808",
+            "list_id": "elasticctl-sample-exceptions",
+            "type": "detection",
+            "name": "elasticctl sample exceptions",
+            "description": "elasticctl sample exception list",
+            "immutable": false,
+            "namespace_type": "single",
+            "os_types": [],
+            "tags": ["elasticctl-sample"],
+            "version": 1,
+            "_version": "WzU3NDksMV0=",
+            "tie_breaker_id": "100fd2bc-b559-4c7f-9838-ef9b195c4369",
+            "created_at": "2026-08-13T23:38:39.519Z",
+            "created_by": "452295856",
+            "updated_at": "2026-08-13T23:38:39.519Z",
+            "updated_by": "452295856"
+        })
+    }
+
+    #[test]
+    fn a_list_reads_its_identity_and_keeps_unknown_fields() {
+        let l = ExceptionList::from_value(probe_list()).unwrap();
+        assert_eq!(l.list_id().unwrap(), "elasticctl-sample-exceptions");
+        assert_eq!(l.namespace_type(), "single");
+        assert_eq!(l.list_type(), "detection");
+        assert_eq!(l.tags(), vec!["elasticctl-sample"]);
+        assert_eq!(
+            l.clone().into_value(),
+            probe_list(),
+            "no field may be dropped"
+        );
+    }
+
+    #[test]
+    fn a_list_without_list_id_is_rejected() {
+        let err = ExceptionList::from_value(json!({"name": "x"})).unwrap_err();
+        assert!(err.message.contains("list_id"), "{}", err.message);
+    }
+
+    #[test]
+    fn namespace_type_defaults_to_single_when_absent() {
+        let l = ExceptionList::from_value(json!({"list_id": "x"})).unwrap();
+        assert_eq!(
+            l.namespace_type(),
+            "single",
+            "the API omits it on some responses; identity must still resolve"
+        );
+    }
+
+    #[test]
+    fn list_volatile_fields_match_the_measured_set() {
+        let mut got = LIST_VOLATILE_FIELDS.to_vec();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            [
+                "_version",
+                "created_at",
+                "created_by",
+                "id",
+                "tie_breaker_id",
+                "updated_at",
+                "updated_by",
+                "version"
+            ]
+        );
+    }
+
+    #[test]
+    fn item_volatile_fields_are_the_list_set_without_version() {
+        // Measured: an item carries `_version` but no `version`.
+        assert!(!ITEM_VOLATILE_FIELDS.contains(&"version"));
+        assert!(ITEM_VOLATILE_FIELDS.contains(&"_version"));
+        assert_eq!(ITEM_VOLATILE_FIELDS.len(), LIST_VOLATILE_FIELDS.len() - 1);
+    }
+
+    #[test]
+    fn exception_refs_reads_the_measured_reference_shape() {
+        let r = Rule::from_value(json!({
+            "rule_id": "x",
+            "exceptions_list": [{
+                "id": "3724d409-4c0f-4630-a1ef-706499730808",
+                "list_id": "elasticctl-sample-exceptions",
+                "type": "detection",
+                "namespace_type": "single"
+            }]
+        }))
+        .unwrap();
+        let refs = exception_refs(&r);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].list_id, "elasticctl-sample-exceptions");
+        assert_eq!(
+            refs[0].id.as_deref(),
+            Some("3724d409-4c0f-4630-a1ef-706499730808")
+        );
+    }
+
+    #[test]
+    fn exception_refs_skips_a_malformed_entry_without_failing() {
+        let r = Rule::from_value(json!({
+            "rule_id": "x",
+            "exceptions_list": ["not an object", {"list_id": "good"}]
+        }))
+        .unwrap();
+        let refs = exception_refs(&r);
+        assert_eq!(refs.len(), 1, "the readable entry survives");
+        assert_eq!(refs[0].list_id, "good");
     }
 }

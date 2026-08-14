@@ -15,7 +15,10 @@ pub mod state;
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
-pub use model::{ExportSummary, Rule, VOLATILE_FIELDS, server_defaults};
+pub use model::{
+    ExceptionItem, ExceptionList, ExceptionRef, ExportSummary, ITEM_VOLATILE_FIELDS,
+    LIST_VOLATILE_FIELDS, ListKey, Rule, VOLATILE_FIELDS, exception_refs, server_defaults,
+};
 pub use normalize::{canonical, comparable, sort_rules};
 pub use ops::{ExportOutcome, MutationPlan};
 pub use report::{ChangeReport, ReportEntry};
