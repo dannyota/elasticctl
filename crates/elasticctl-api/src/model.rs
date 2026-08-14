@@ -148,6 +148,14 @@ pub struct ExportSummary {
     /// selection. Kept as raw server values.
     #[serde(default)]
     pub missing_rules: Vec<Value>,
+    #[serde(default)]
+    pub exported_exception_list_count: u64,
+    #[serde(default)]
+    pub exported_exception_list_item_count: u64,
+    #[serde(default)]
+    pub missing_exception_lists: Vec<Value>,
+    #[serde(default)]
+    pub missing_exception_list_items: Vec<Value>,
 }
 
 /// Server-owned fields an exception list container changes on every write.

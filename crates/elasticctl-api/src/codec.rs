@@ -3,7 +3,7 @@
 //! Kibana exports and imports NDJSON, so it preserves rule fidelity. YAML is
 //! easier to review.
 
-use crate::model::{ExportSummary, Rule};
+use crate::model::{ExceptionItem, ExceptionList, ExportSummary, Rule};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::Value;
 use std::path::Path;
@@ -24,9 +24,118 @@ impl Format {
     }
 }
 
-/// An export trailer has no `rule_id` and has an export counter.
-fn is_summary(v: &Value) -> bool {
-    v.get("rule_id").is_none() && v.get("exported_count").is_some()
+/// One line of an export bundle: a rule, an exception-list container, an
+/// exception item, or the export trailer.
+enum Line {
+    Rule,
+    List,
+    Item,
+    Trailer,
+}
+
+/// Classify one NDJSON line from an export bundle.
+///
+/// Order matters. An exception item carries both `item_id` and `list_id`, so
+/// the item test must precede the list test or every item is misfiled as a
+/// container. A trailer carries neither an id nor a `list_id`, and the two
+/// export routes emit different counters: rules export writes `exported_count`,
+/// exception export writes `exported_exception_list_count` and no
+/// `exported_count` (measured fact 7).
+fn classify(v: &Value) -> Option<Line> {
+    if v.get("item_id").is_some() {
+        return Some(Line::Item);
+    }
+    if v.get("rule_id").is_some() {
+        return Some(Line::Rule);
+    }
+    if v.get("list_id").is_some() {
+        return Some(Line::List);
+    }
+    if v.get("exported_count").is_some() || v.get("exported_exception_list_count").is_some() {
+        return Some(Line::Trailer);
+    }
+    None
+}
+
+/// An export bundle split into its four line kinds.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Bundle {
+    pub rules: Vec<Rule>,
+    pub lists: Vec<ExceptionList>,
+    pub items: Vec<ExceptionItem>,
+    pub summary: Option<ExportSummary>,
+}
+
+/// Decode a `_export` body into rules, exception lists, exception items, and
+/// the trailer. Every non-empty line must classify as one of the four; an
+/// unclassifiable line is an error naming its line number.
+pub fn decode_bundle(body: &str) -> Result<Bundle> {
+    let mut out = Bundle::default();
+    for (i, line) in body.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line).map_err(|e| {
+            Error::new(
+                ErrorKind::Error,
+                format!("invalid JSON on line {}: {e}", i + 1),
+            )
+        })?;
+        // Prefix every construction error with its line number, so large
+        // exports identify the rejected object.
+        let at = |e: Error| Error::new(ErrorKind::Error, format!("line {}: {}", i + 1, e.message));
+        match classify(&value) {
+            Some(Line::Rule) => out.rules.push(Rule::from_value(value).map_err(at)?),
+            Some(Line::List) => out
+                .lists
+                .push(ExceptionList::from_value(value).map_err(at)?),
+            Some(Line::Item) => out
+                .items
+                .push(ExceptionItem::from_value(value).map_err(at)?),
+            Some(Line::Trailer) => out.summary = serde_json::from_value(value).ok(),
+            None => {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    format!(
+                        "line {}: not a rule (no rule_id), exception list (no list_id), exception item (no item_id), or export trailer",
+                        i + 1
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Encode a bundle as NDJSON: rules, then lists, then items, no trailer. The
+/// order matches the server's export and what `_import` expects.
+pub fn encode_bundle(bundle: &Bundle) -> Result<String> {
+    let mut out = String::new();
+    for r in &bundle.rules {
+        out.push_str(
+            &serde_json::to_string(r)
+                .map_err(|e| Error::new(ErrorKind::Error, format!("encoding rule: {e}")))?,
+        );
+        out.push('\n');
+    }
+    for l in &bundle.lists {
+        out.push_str(
+            &serde_json::to_string(l).map_err(|e| {
+                Error::new(ErrorKind::Error, format!("encoding exception list: {e}"))
+            })?,
+        );
+        out.push('\n');
+    }
+    for i in &bundle.items {
+        out.push_str(
+            &serde_json::to_string(i).map_err(|e| {
+                Error::new(ErrorKind::Error, format!("encoding exception item: {e}"))
+            })?,
+        );
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 pub fn encode_ndjson(rules: &[Rule]) -> Result<String> {
@@ -41,34 +150,8 @@ pub fn encode_ndjson(rules: &[Rule]) -> Result<String> {
 }
 
 pub fn decode_ndjson(body: &str) -> Result<(Vec<Rule>, Option<ExportSummary>)> {
-    let mut rules = Vec::new();
-    let mut summary = None;
-
-    for (i, line) in body.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(line).map_err(|e| {
-            Error::new(
-                ErrorKind::Error,
-                format!("invalid JSON on line {}: {e}", i + 1),
-            )
-        })?;
-
-        if is_summary(&value) {
-            summary = serde_json::from_value(value).ok();
-            continue;
-        }
-        // Include the line number so large exports identify the rejected rule.
-        rules.push(
-            Rule::from_value(value).map_err(|e| {
-                Error::new(ErrorKind::Error, format!("line {}: {}", i + 1, e.message))
-            })?,
-        );
-    }
-
-    Ok((rules, summary))
+    let b = decode_bundle(body)?;
+    Ok((b.rules, b.summary))
 }
 
 pub fn encode_yaml(rules: &[Rule]) -> Result<String> {
@@ -235,5 +318,71 @@ mod tests {
             "error must name the index: {}",
             err.message
         );
+    }
+
+    /// The measured four-line export of one rule carrying one exception list,
+    /// recorded 2026-08-14 from Serverless 9.6.0. Trimmed to the fields that
+    /// matter; every line's *kind* is exactly as recorded.
+    const BUNDLE: &str = concat!(
+        r#"{"rule_id":"r","name":"R","type":"query","exceptions_list":[{"id":"L","list_id":"l","type":"detection","namespace_type":"single"}]}"#,
+        "\n",
+        r#"{"id":"L","list_id":"l","type":"detection","name":"L","namespace_type":"single","tie_breaker_id":"t"}"#,
+        "\n",
+        r#"{"id":"I","item_id":"i","list_id":"l","type":"simple","name":"I","namespace_type":"single","entries":[]}"#,
+        "\n",
+        r#"{"exported_count":2,"exported_rules_count":1,"missing_rules":[],"missing_rules_count":0,"exported_exception_list_count":1,"exported_exception_list_item_count":1,"missing_exception_lists":[],"missing_exception_list_items":[]}"#,
+        "\n"
+    );
+
+    #[test]
+    fn decode_bundle_separates_all_four_line_kinds() {
+        let b = decode_bundle(BUNDLE).unwrap();
+        assert_eq!(b.rules.len(), 1);
+        assert_eq!(b.lists.len(), 1);
+        assert_eq!(b.items.len(), 1);
+        assert_eq!(b.summary.as_ref().unwrap().exported_exception_list_count, 1);
+    }
+
+    /// The bug this task closes. 0.1.3 answers "line 2: a rule must have a
+    /// rule_id" for every rule that carries an exception list.
+    #[test]
+    fn a_bundle_no_longer_fails_as_a_rule_list() {
+        assert!(
+            decode_bundle(BUNDLE).is_ok(),
+            "measured fact 2: this is the shipped failure"
+        );
+    }
+
+    /// An item carries both `item_id` and `list_id`, so the item test must run
+    /// before the list test or every item is misfiled as a container.
+    #[test]
+    fn an_item_is_not_classified_as_a_list() {
+        let line = r#"{"item_id":"i","list_id":"l","name":"I"}"#;
+        let b = decode_bundle(line).unwrap();
+        assert_eq!(b.items.len(), 1, "item_id must be tested before list_id");
+        assert!(b.lists.is_empty());
+    }
+
+    /// Measured fact 7: the exception export trailer has no `exported_count`.
+    #[test]
+    fn the_exception_export_trailer_is_recognised() {
+        let line = r#"{"exported_exception_list_count":1,"exported_exception_list_item_count":2,"missing_exception_lists":[],"missing_exception_list_items":[],"missing_exception_lists_count":0,"missing_exception_list_item_count":0}"#;
+        let b = decode_bundle(line).unwrap();
+        assert!(b.rules.is_empty() && b.lists.is_empty() && b.items.is_empty());
+        assert_eq!(b.summary.unwrap().exported_exception_list_count, 1);
+    }
+
+    #[test]
+    fn an_unclassifiable_line_is_refused_by_line_number() {
+        let body = "{\"rule_id\":\"a\"}\n{\"mystery\":true}\n";
+        let err = decode_bundle(body).unwrap_err();
+        assert!(err.message.contains("line 2"), "{}", err.message);
+    }
+
+    #[test]
+    fn decode_ndjson_still_returns_only_rules_and_the_trailer() {
+        let (rules, summary) = decode_ndjson(BUNDLE).unwrap();
+        assert_eq!(rules.len(), 1, "the wrapper keeps its old contract");
+        assert_eq!(summary.unwrap().exported_count, 2);
     }
 }
