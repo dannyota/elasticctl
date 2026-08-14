@@ -53,6 +53,14 @@ pub(crate) struct StagedFile {
     pub bytes: Vec<u8>,
 }
 
+/// Transaction removal discards the only rollback evidence. A later
+/// mirror-directory sync failure therefore leaves the installed mirror as the
+/// terminal state.
+enum CleanupOutcome {
+    Synced,
+    CommittedAfterSyncFailure,
+}
+
 /// The mutation points are isolated so failure tests can verify that recovery
 /// works across every rename boundary without a special filesystem.
 trait FileOps {
@@ -230,10 +238,10 @@ fn replace_staged_files_with(
         }
     }
 
-    if let Err(error) = remove_transaction(lock, ops) {
-        return finish_failed_replacement(lock, ops, error);
+    match remove_transaction(lock, ops) {
+        Ok(CleanupOutcome::Synced | CleanupOutcome::CommittedAfterSyncFailure) => Ok(()),
+        Err(error) => finish_failed_replacement(lock, ops, error),
     }
-    Ok(())
 }
 
 fn finish_failed_replacement(lock: &PullLock, ops: &dyn FileOps, original: Error) -> Result<()> {
@@ -310,12 +318,12 @@ fn recover_pull_with(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
     if !journal.exists() {
         // No prepared record exists, so no target rename was permitted. This
         // directory contains only transaction-owned staging bytes.
-        return remove_transaction(lock, ops);
+        return remove_transaction(lock, ops).map(|_| ());
     }
     let Some(entries) = read_journal(&transaction)? else {
         // The first record was never fully appended, so no prepared manifest
         // existed and no target rename was allowed to start.
-        return remove_transaction(lock, ops);
+        return remove_transaction(lock, ops).map(|_| ());
     };
     for entry in &entries {
         validate_relative(&entry.relative)?;
@@ -332,7 +340,7 @@ fn recover_pull_with(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
     if let Some(error) = first_error {
         return Err(error);
     }
-    remove_transaction(lock, ops)
+    remove_transaction(lock, ops).map(|_| ())
 }
 
 fn recover_one(
@@ -682,19 +690,23 @@ fn remove_file(ops: &dyn FileOps, path: &Path, relative: &Path, action: &str) ->
         .map_err(|e| filesystem_error(action, relative, e))
 }
 
-fn remove_transaction(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
+fn remove_transaction(lock: &PullLock, ops: &dyn FileOps) -> Result<CleanupOutcome> {
     let transaction = transaction_dir(lock);
-    if path_exists(&transaction)? {
-        require_directory(&transaction, "removing pull transaction")?;
-        ops.remove_dir_all(&transaction)
-            .map_err(|e| filesystem_error("removing pull transaction", &transaction, e))?;
-        sync_dir(
-            ops,
-            &lock.root,
-            "syncing mirror directory after transaction removal",
-        )?;
+    if !path_exists(&transaction)? {
+        return Ok(CleanupOutcome::Synced);
     }
-    Ok(())
+    require_directory(&transaction, "removing pull transaction")?;
+    ops.remove_dir_all(&transaction)
+        .map_err(|e| filesystem_error("removing pull transaction", &transaction, e))?;
+    match sync_dir(
+        ops,
+        &lock.root,
+        "syncing mirror directory after transaction removal",
+    ) {
+        Ok(()) => Ok(CleanupOutcome::Synced),
+        Err(_) if !path_exists(&transaction)? => Ok(CleanupOutcome::CommittedAfterSyncFailure),
+        Err(error) => Err(error),
+    }
 }
 
 fn filesystem_error(action: &str, path: &Path, error: io::Error) -> Error {
@@ -1018,6 +1030,34 @@ mod tests {
         );
         assert!(!root.join("exceptions/new.ndjson").exists());
         assert!(!root.join(".elasticctl-pull-txn").exists());
+    }
+
+    #[test]
+    fn a_failed_final_root_sync_keeps_the_committed_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        fs::create_dir_all(root.join("rules")).unwrap();
+        fs::write(root.join("rules/a.ndjson"), b"old a\n").unwrap();
+        fs::write(root.join("rules/b.ndjson"), b"old b\n").unwrap();
+        let lock = acquire_pull(&root).unwrap();
+
+        replace_staged_files_with(
+            &lock,
+            &[
+                staged("rules/a.ndjson", b"new a\n"),
+                staged("rules/b.ndjson", b"new b\n"),
+            ],
+            &FailingFileOps::once("sync_dir", 22),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(root.join("rules/a.ndjson")).unwrap(), b"new a\n");
+        assert_eq!(fs::read(root.join("rules/b.ndjson")).unwrap(), b"new b\n");
+        assert!(!root.join(".elasticctl-pull-txn").exists());
+        recover_pull(&lock).unwrap();
+        recover_pull(&lock).unwrap();
+        assert_eq!(fs::read(root.join("rules/a.ndjson")).unwrap(), b"new a\n");
+        assert_eq!(fs::read(root.join("rules/b.ndjson")).unwrap(), b"new b\n");
     }
 
     fn write_journal(root: &Path, existed_before: bool, phase: Phase) {
