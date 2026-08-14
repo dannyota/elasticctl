@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
+use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -32,6 +33,46 @@ async fn server_with(rules: Vec<serde_json::Value>) -> MockServer {
         .mount(&server)
         .await;
     server
+}
+
+fn mirror_tree(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn visit(root: &Path, directory: &Path, tree: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if entry.file_type().unwrap().is_dir() {
+                tree.push((relative, None));
+                visit(root, &path, tree);
+            } else {
+                tree.push((relative, Some(fs::read(&path).unwrap())));
+            }
+        }
+    }
+
+    let mut tree = Vec::new();
+    if root.exists() {
+        visit(root, root, &mut tree);
+    }
+    tree.sort_by(|left, right| left.0.cmp(&right.0));
+    tree
+}
+
+fn seed_old_mirror(state: &Path) {
+    fs::create_dir_all(state.join("rules")).unwrap();
+    fs::create_dir_all(state.join("exceptions")).unwrap();
+    fs::write(state.join("rules/existing.ndjson"), b"old selected rule\n").unwrap();
+    fs::write(
+        state.join("rules/unselected.ndjson"),
+        b"old unselected rule\n",
+    )
+    .unwrap();
+    fs::write(
+        state.join("exceptions/unrelated.ndjson"),
+        b"old unrelated exception\n",
+    )
+    .unwrap();
+    fs::write(state.join("README.md"), b"operator note\n").unwrap();
 }
 
 #[tokio::test]
@@ -91,6 +132,57 @@ async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename
     let msg = err["error"]["message"].as_str().unwrap();
     assert!(msg.contains("a/b"), "{msg}");
     assert!(msg.contains("a_b"), "{msg}");
+}
+
+/// A collision is found while planning, before a journal or target mutation
+/// is allowed. Existing selected and unselected local files must remain exact.
+#[tokio::test]
+async fn a_collision_refusal_leaves_the_complete_existing_mirror_unchanged() {
+    let server = server_with(vec![remote_rule("a/b", 21), remote_rule("a_b", 73)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    seed_old_mirror(&state);
+    let before = mirror_tree(&state);
+
+    Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .assert()
+        .code(1);
+
+    assert_eq!(mirror_tree(&state), before);
+}
+
+/// A remote rule without a string stable ID cannot be named or encoded. Its
+/// validation failure happens before the pull transaction starts.
+#[tokio::test]
+async fn an_invalid_rule_refusal_leaves_the_complete_existing_mirror_unchanged() {
+    let server = server_with(vec![json!({
+        "rule_id": 17,
+        "name": "Invalid",
+        "type": "query",
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    seed_old_mirror(&state);
+    let before = mirror_tree(&state);
+
+    Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["state", "pull", "--config"])
+        .arg(&cfg)
+        .arg("--dir")
+        .arg(&state)
+        .assert()
+        .code(1);
+
+    assert_eq!(mirror_tree(&state), before);
 }
 
 // Report all filename collisions in one run.

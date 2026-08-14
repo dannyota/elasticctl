@@ -9,6 +9,7 @@ mod mirror;
 mod pull;
 mod push;
 mod reports;
+mod transaction;
 
 pub use diff::diff;
 pub use mirror::{read_local, read_mirror};

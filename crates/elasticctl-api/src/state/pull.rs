@@ -7,6 +7,7 @@ use crate::model::{ExceptionItem, ExceptionList, ListKey, Rule};
 use crate::normalize;
 use crate::rules::RuleSource;
 use crate::state::mirror::{encode_list_file, encode_rule_file};
+use crate::state::transaction::{StagedFile, acquire_pull, recover_pull, replace_staged_files};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +23,12 @@ pub async fn pull(
     tag: Option<&str>,
     source: RuleSource,
 ) -> Result<PullReport> {
+    // The sibling lock is acquired before recovery and held through the
+    // remote read and local commit. A concurrent pull therefore cannot treat
+    // this process's prepared journal as a crashed transaction.
+    let lock = acquire_pull(dir)?;
+    recover_pull(&lock)?;
+
     // Pull reads from the stack, so selectors name stack rules. The directory
     // may not exist yet.
     let scope = super::scope_of(t, selectors, tag, source, &[], "pull").await?;
@@ -165,41 +172,30 @@ pub async fn pull(
         ));
     }
 
-    let target = super::rules_dir(dir);
-    std::fs::create_dir_all(&target).map_err(|e| {
-        Error::new(
-            ErrorKind::Error,
-            format!("creating {}: {e}", target.display()),
-        )
-    })?;
-
+    // Encode every planned object before starting the transaction. A collision
+    // or encoding refusal must leave an existing mirror byte-for-byte intact.
+    let mut staged = Vec::with_capacity(planned_rules.len() + lists_to_write.len());
     for (filename, canonical) in &planned_rules {
         let rule_id = canonical.rule_id()?;
         let inline = inline_by_rule.get(rule_id).cloned().unwrap_or_default();
         let body = encode_rule_file(canonical, &inline, format)?;
-        let path = target.join(filename);
-        std::fs::write(&path, body).map_err(|e| {
-            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
-        })?;
+        staged.push(StagedFile {
+            relative: Path::new("rules").join(filename),
+            bytes: body.into_bytes(),
+        });
     }
 
-    if !lists_to_write.is_empty() {
-        let lists_target = super::exceptions_dir(dir);
-        std::fs::create_dir_all(&lists_target).map_err(|e| {
-            Error::new(
-                ErrorKind::Error,
-                format!("creating {}: {e}", lists_target.display()),
-            )
-        })?;
-        for (key, list) in &lists_to_write {
-            let filename = super::safe_filename(&key.list_id, ext);
-            let body = encode_list_file(list, format)?;
-            let path = lists_target.join(filename);
-            std::fs::write(&path, body).map_err(|e| {
-                Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
-            })?;
-        }
+    for (key, list) in &lists_to_write {
+        let filename = super::safe_filename(&key.list_id, ext);
+        let body = encode_list_file(list, format)?;
+        staged.push(StagedFile {
+            relative: Path::new("exceptions").join(filename),
+            bytes: body.into_bytes(),
+        });
     }
+    replace_staged_files(&lock, &staged)?;
+
+    let target = super::rules_dir(dir);
 
     Ok(PullReport {
         pulled: planned_rules.len(),

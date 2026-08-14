@@ -25,6 +25,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  transaction-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p elasticctl-api --test state
+
   # Check advisories, licences, duplicate versions, and unvetted sources from
   # deny.toml.
   audit:

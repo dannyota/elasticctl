@@ -315,6 +315,58 @@ async fn pull_writes_the_referenced_lists_and_no_others() {
     );
 }
 
+/// Pull replaces only the planned files. A scoped update must not infer that
+/// files outside its selection, local notes, or unrelated exception lists are
+/// stale and delete them.
+#[tokio::test]
+async fn a_scoped_pull_preserves_every_unplanned_mirror_path() {
+    let stack = MockStack::with_rules(vec![json!({
+        "rule_id": "selected",
+        "name": "Selected",
+        "type": "query",
+        "risk_score": 42,
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::create_dir_all(&exceptions).unwrap();
+    std::fs::write(rules.join("selected.ndjson"), b"old selected\n").unwrap();
+    std::fs::write(rules.join("unselected.ndjson"), b"keep rule\n").unwrap();
+    std::fs::write(exceptions.join("unrelated.ndjson"), b"keep exception\n").unwrap();
+    std::fs::write(dir.path().join("README.md"), b"operator note\n").unwrap();
+    let selectors = vec!["selected".to_string()];
+
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Ndjson,
+        &selectors,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    assert_ne!(
+        std::fs::read(rules.join("selected.ndjson")).unwrap(),
+        b"old selected\n"
+    );
+    assert_eq!(
+        std::fs::read(rules.join("unselected.ndjson")).unwrap(),
+        b"keep rule\n"
+    );
+    assert_eq!(
+        std::fs::read(exceptions.join("unrelated.ndjson")).unwrap(),
+        b"keep exception\n"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("README.md")).unwrap(),
+        b"operator note\n"
+    );
+}
+
 /// Spec 5.4: a rule_default list belongs to one rule and lives in its file.
 #[tokio::test]
 async fn a_rule_default_list_is_inlined_in_its_rule_file() {
