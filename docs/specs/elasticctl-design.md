@@ -832,6 +832,25 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | `created_by` on Serverless | A bare numeric user id. It is identity and must be scrubbed from fixtures |
 | Value-list data streams | `.lists-default` and `.items-default` do not exist by default. `POST /api/lists/index` creates them, `GET` reports `{list_index, list_item_index}`, `DELETE` removes them |
 | Summary route | `GET /api/exception_lists/summary` returns `{windows, linux, macos, total}` |
+| Item find envelope | `GET /api/exception_lists/items/_find?list_id=&namespace_type=&page=&per_page=` returns `{data, page, per_page, total}`, the same envelope as the list find. Paging works: `per_page=2` against 3 items returned 2 with `total: 3` |
+| Container update | `PUT /api/exception_lists` updates by `list_id` alone. No `id` is required |
+| Item update | `PUT /api/exception_lists/items` updates by `item_id` alone. No `id` is required |
+| Item delete | `DELETE /api/exception_lists/items?item_id=&namespace_type=` returns the deleted item and leaves its siblings alone |
+| Exception import | `POST /api/exception_lists/_import?overwrite=true` accepts an export file **including its trailer** and returns `{errors, success, success_count, success_exception_lists, success_count_exception_lists, success_exception_list_items, success_count_exception_list_items}` |
+| **Exception export needs `id`** | `POST /api/exception_lists/_export` **requires the `id` query parameter**. `list_id` and `namespace_type` alone are a 400: `id: Invalid input: expected string, received undefined` |
+
+That last row is the fourth place this API disagrees with itself about
+exception-list identity, and it points the opposite way from the rest. Rules
+export and rules import both resolve a list by `list_id` and ignore `id`;
+container and item *updates* work by `list_id` and `item_id` with no `id` at
+all; but exception-list export refuses to run without the volatile `id`.
+
+The consequence for this client is concrete: `exceptions export` cannot be
+served from a `ListKey` alone. It must resolve each key to the live container
+`id` first and pass both. That resolution is the same lookup `push` already
+performs for the opposite reason, so the two share one code path — identity
+stays `list_id` plus `namespace_type` everywhere in this tool, and the `id` is
+fetched at the boundary where a route demands it.
 
 Because `rules import` re-resolves references itself, export and import are
 already a correct cross-stack promotion path once the decoder stops rejecting
