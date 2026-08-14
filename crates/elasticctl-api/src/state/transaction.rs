@@ -152,9 +152,10 @@ fn replace_staged_files_with(
     files: &[StagedFile],
     ops: &dyn FileOps,
 ) -> Result<()> {
-    validate_replacement(lock, files)?;
+    let existed_before = validate_replacement(lock, files)?;
+    ensure_mirror_root(lock, ops)?;
     let transaction = transaction_dir(lock);
-    if transaction.exists() {
+    if path_exists(&transaction)? {
         return Err(Error::new(
             ErrorKind::Conflict,
             format!(
@@ -165,12 +166,17 @@ fn replace_staged_files_with(
     }
 
     let prepare = || -> Result<Vec<JournalEntry>> {
-        fs::create_dir_all(transaction.join("staged"))
-            .map_err(|e| filesystem_error("creating pull staging directory", &transaction, e))?;
-        fs::create_dir_all(transaction.join("backups"))
-            .map_err(|e| filesystem_error("creating pull backup directory", &transaction, e))?;
-        sync_dir(ops, &lock.root, "syncing mirror directory")?;
-        sync_dir(ops, &transaction, "syncing pull transaction directory")?;
+        ensure_directory(&transaction, ops, "creating pull transaction directory")?;
+        ensure_directory(
+            &transaction.join("staged"),
+            ops,
+            "creating pull staging directory",
+        )?;
+        ensure_directory(
+            &transaction.join("backups"),
+            ops,
+            "creating pull backup directory",
+        )?;
 
         let mut entries = Vec::with_capacity(files.len());
         for (index, file) in files.iter().enumerate() {
@@ -179,7 +185,7 @@ fn replace_staged_files_with(
             sync_file(ops, &staged, &file.relative, "syncing staged file")?;
             entries.push(JournalEntry {
                 relative: file.relative.clone(),
-                existed_before: lock.root.join(&file.relative).exists(),
+                existed_before: existed_before[index],
                 phase: Phase::Prepared,
             });
         }
@@ -251,12 +257,18 @@ fn replace_one(
     let target = lock.root.join(&entry.relative);
     let backup = backup_path(transaction, index);
     if entry.existed_before {
+        let target_parent = ensure_target_parent(lock, &entry.relative, ops)?;
+        if !target_is_regular_file(lock, &entry.relative)? {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!(
+                    "backing up {}: expected an existing regular file",
+                    entry.relative.display()
+                ),
+            ));
+        }
         rename(ops, &target, &backup, &entry.relative, "backing up")?;
-        sync_dir(
-            ops,
-            target.parent().expect("relative target has a parent"),
-            "syncing target directory",
-        )?;
+        sync_dir(ops, &target_parent, "syncing target directory")?;
         sync_dir(
             ops,
             &transaction.join("backups"),
@@ -266,12 +278,9 @@ fn replace_one(
     append_phase(transaction, index, Phase::BackedUp, ops)?;
 
     append_phase(transaction, index, Phase::Installing, ops)?;
-    let target_parent = target.parent().expect("relative target has a parent");
-    fs::create_dir_all(target_parent)
-        .map_err(|e| filesystem_error("creating pull target directory", target_parent, e))?;
-    sync_dir(ops, target_parent, "syncing target directory")?;
+    let target_parent = ensure_target_parent(lock, &entry.relative, ops)?;
     let staged = staged_path(transaction, index);
-    if target.exists() {
+    if target_is_regular_file(lock, &entry.relative)? {
         return Err(Error::new(
             ErrorKind::Error,
             format!(
@@ -281,7 +290,7 @@ fn replace_one(
         ));
     }
     rename(ops, &staged, &target, &entry.relative, "installing")?;
-    sync_dir(ops, target_parent, "syncing target directory")?;
+    sync_dir(ops, &target_parent, "syncing target directory")?;
     sync_dir(
         ops,
         &transaction.join("staged"),
@@ -293,9 +302,10 @@ fn replace_one(
 fn recover_pull_with(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
     mirror_parent(&lock.root)?;
     let transaction = transaction_dir(lock);
-    if !transaction.exists() {
+    if !path_exists(&transaction)? {
         return Ok(());
     }
+    require_directory(&transaction, "reading pull transaction directory")?;
     let journal = journal_path(&transaction);
     if !journal.exists() {
         // No prepared record exists, so no target rename was permitted. This
@@ -337,49 +347,39 @@ fn recover_one(
     if entry.existed_before {
         let backup = backup_path(transaction, index);
         if backup.exists() {
-            if target.exists() {
+            let target_parent = ensure_target_parent(lock, &entry.relative, ops)?;
+            if target_is_regular_file(lock, &entry.relative)? {
                 remove_file(
                     ops,
                     &target,
                     &entry.relative,
                     "removing replacement during rollback",
                 )?;
-                sync_dir(
-                    ops,
-                    target.parent().expect("relative target has a parent"),
-                    "syncing target directory",
-                )?;
+                sync_dir(ops, &target_parent, "syncing target directory")?;
             }
             rename(ops, &backup, &target, &entry.relative, "restoring backup")?;
-            sync_dir(
-                ops,
-                target.parent().expect("relative target has a parent"),
-                "syncing target directory",
-            )?;
+            sync_dir(ops, &target_parent, "syncing target directory")?;
             sync_dir(
                 ops,
                 &transaction.join("backups"),
                 "syncing pull backup directory",
             )?;
         }
-    } else if matches!(entry.phase, Phase::Installing | Phase::Installed)
-        && !staged.exists()
-        && target.exists()
-    {
-        // A staged file disappearing proves the transaction performed the
-        // install. Do not remove a target while the staged side still exists:
-        // an interrupted pre-rename must leave an absent target untouched.
-        remove_file(
-            ops,
-            &target,
-            &entry.relative,
-            "removing newly created replacement during rollback",
-        )?;
-        sync_dir(
-            ops,
-            target.parent().expect("relative target has a parent"),
-            "syncing target directory",
-        )?;
+    } else if matches!(entry.phase, Phase::Installing | Phase::Installed) && !staged.exists() {
+        let target_parent = ensure_target_parent(lock, &entry.relative, ops)?;
+        if target_is_regular_file(lock, &entry.relative)? {
+            // A staged file disappearing proves the transaction performed the
+            // install. Do not remove a target while the staged side still
+            // exists: an interrupted pre-rename must leave an absent target
+            // untouched.
+            remove_file(
+                ops,
+                &target,
+                &entry.relative,
+                "removing newly created replacement during rollback",
+            )?;
+            sync_dir(ops, &target_parent, "syncing target directory")?;
+        }
     }
     Ok(())
 }
@@ -452,19 +452,22 @@ fn read_journal(transaction: &Path) -> Result<Option<Vec<JournalEntry>>> {
     Ok(Some(entries))
 }
 
-fn validate_replacement(lock: &PullLock, files: &[StagedFile]) -> Result<()> {
+fn validate_replacement(lock: &PullLock, files: &[StagedFile]) -> Result<Vec<bool>> {
     mirror_parent(&lock.root)?;
     let mut planned = BTreeSet::new();
+    let mut existed_before = Vec::with_capacity(files.len());
     for file in files {
         validate_relative(&file.relative)?;
+        validate_target_ancestors(&lock.root, &file.relative)?;
         if !planned.insert(file.relative.clone()) {
             return Err(Error::new(
                 ErrorKind::Error,
                 format!("pull plans {} more than once", file.relative.display()),
             ));
         }
+        existed_before.push(target_is_regular_file(lock, &file.relative)?);
     }
-    Ok(())
+    Ok(existed_before)
 }
 
 fn validate_relative(relative: &Path) -> Result<()> {
@@ -503,18 +506,127 @@ fn invalid_relative(relative: &Path) -> Result<()> {
     ))
 }
 
+fn ensure_mirror_root(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
+    mirror_parent(&lock.root)?;
+    ensure_directory(&lock.root, ops, "creating mirror root")
+}
+
+fn ensure_target_parent(lock: &PullLock, relative: &Path, ops: &dyn FileOps) -> Result<PathBuf> {
+    let parent = relative
+        .parent()
+        .expect("validated replacement path has a parent");
+    require_directory(&lock.root, "reading mirror root")?;
+    let mut current = lock.root.clone();
+    for component in parent.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("validated replacement path has normal components");
+        };
+        current.push(component);
+        ensure_directory(&current, ops, "creating pull target directory")?;
+    }
+    Ok(current)
+}
+
+fn validate_target_ancestors(root: &Path, relative: &Path) -> Result<()> {
+    match path_metadata(root, "reading mirror root")? {
+        None => return Ok(()),
+        Some(metadata) if metadata.file_type().is_dir() => {}
+        Some(_) => return non_directory(root, "mirror root"),
+    }
+
+    let parent = relative
+        .parent()
+        .expect("validated replacement path has a parent");
+    let mut current = root.to_path_buf();
+    for component in parent.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("validated replacement path has normal components");
+        };
+        current.push(component);
+        match path_metadata(&current, "reading pull target directory")? {
+            None => return Ok(()),
+            Some(metadata) if metadata.file_type().is_dir() => {}
+            Some(_) => return non_directory(&current, "pull target directory"),
+        }
+    }
+    Ok(())
+}
+
+fn target_is_regular_file(lock: &PullLock, relative: &Path) -> Result<bool> {
+    validate_target_ancestors(&lock.root, relative)?;
+    let target = lock.root.join(relative);
+    match path_metadata(&target, "reading pull target")? {
+        None => Ok(false),
+        Some(metadata) if metadata.file_type().is_file() => Ok(true),
+        Some(_) => Err(Error::new(
+            ErrorKind::Error,
+            format!("pull target {} is not a regular file", relative.display()),
+        )),
+    }
+}
+
+fn ensure_directory(path: &Path, ops: &dyn FileOps, action: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .expect("a created pull directory has a parent");
+    require_directory(parent, action)?;
+    match path_metadata(path, action)? {
+        Some(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Some(_) => non_directory(path, action),
+        None => match fs::create_dir(path) {
+            Ok(()) => sync_dir(ops, parent, "syncing parent after directory creation"),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                require_directory(path, action)
+            }
+            Err(error) => Err(filesystem_error(action, path, error)),
+        },
+    }
+}
+
+fn require_directory(path: &Path, action: &str) -> Result<()> {
+    match path_metadata(path, action)? {
+        Some(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Some(_) => non_directory(path, action),
+        None => Err(Error::new(
+            ErrorKind::Error,
+            format!("{action} {}: directory does not exist", path.display()),
+        )),
+    }
+}
+
+fn non_directory(path: &Path, action: &str) -> Result<()> {
+    Err(Error::new(
+        ErrorKind::Error,
+        format!("{action} {} is not a directory", path.display()),
+    ))
+}
+
+fn path_metadata(path: &Path, action: &str) -> Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(filesystem_error(action, path, error)),
+    }
+}
+
+fn path_exists(path: &Path) -> Result<bool> {
+    Ok(path_metadata(path, "checking pull transaction")?.is_some())
+}
+
 fn mirror_parent(root: &Path) -> Result<PathBuf> {
     let parent = root.parent().filter(|path| !path.as_os_str().is_empty());
     let parent = parent.unwrap_or_else(|| Path::new("."));
-    let metadata =
-        fs::metadata(parent).map_err(|e| filesystem_error("reading mirror parent", parent, e))?;
-    if !metadata.is_dir() {
-        return Err(Error::new(
+    match path_metadata(parent, "reading mirror parent")? {
+        Some(metadata) if metadata.file_type().is_dir() => Ok(parent.to_path_buf()),
+        Some(_) => Err(Error::new(
             ErrorKind::Error,
             format!("mirror parent {} is not a directory", parent.display()),
-        ));
+        )),
+        None => Err(Error::new(
+            ErrorKind::Error,
+            format!("mirror parent {} does not exist", parent.display()),
+        )),
     }
-    Ok(parent.to_path_buf())
 }
 
 fn transaction_dir(lock: &PullLock) -> PathBuf {
@@ -572,9 +684,15 @@ fn remove_file(ops: &dyn FileOps, path: &Path, relative: &Path, action: &str) ->
 
 fn remove_transaction(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
     let transaction = transaction_dir(lock);
-    if transaction.exists() {
+    if path_exists(&transaction)? {
+        require_directory(&transaction, "removing pull transaction")?;
         ops.remove_dir_all(&transaction)
             .map_err(|e| filesystem_error("removing pull transaction", &transaction, e))?;
+        sync_dir(
+            ops,
+            &lock.root,
+            "syncing mirror directory after transaction removal",
+        )?;
     }
     Ok(())
 }
@@ -589,7 +707,7 @@ fn filesystem_error(action: &str, path: &Path, error: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::fs::{self, File, OpenOptions};
     use std::io::{self, Write};
     use std::path::Path;
@@ -622,6 +740,18 @@ mod tests {
         }
     }
 
+    fn sync_test_directory(path: &Path) -> io::Result<()> {
+        #[cfg(not(windows))]
+        {
+            File::open(path)?.sync_all()
+        }
+        #[cfg(windows)]
+        {
+            let _ = path;
+            Ok(())
+        }
+    }
+
     impl FileOps for FailingFileOps {
         fn write(&self, path: &Path, bytes: &[u8], append: bool) -> io::Result<()> {
             self.fail("write")?;
@@ -642,7 +772,7 @@ mod tests {
 
         fn sync_dir(&self, path: &Path) -> io::Result<()> {
             self.fail("sync_dir")?;
-            File::open(path)?.sync_all()
+            sync_test_directory(path)
         }
 
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -661,11 +791,196 @@ mod tests {
         }
     }
 
+    struct RecordingFileOps {
+        synced_directories: RefCell<Vec<PathBuf>>,
+    }
+
+    impl RecordingFileOps {
+        fn new() -> Self {
+            Self {
+                synced_directories: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn synced_directories(&self) -> Vec<PathBuf> {
+            self.synced_directories.borrow().clone()
+        }
+    }
+
+    impl FileOps for RecordingFileOps {
+        fn write(&self, path: &Path, bytes: &[u8], append: bool) -> io::Result<()> {
+            let mut options = OpenOptions::new();
+            options.write(true).create(true);
+            if append {
+                options.append(true);
+            } else {
+                options.truncate(true);
+            }
+            std::io::Write::write_all(&mut options.open(path)?, bytes)
+        }
+
+        fn sync_file(&self, path: &Path) -> io::Result<()> {
+            File::open(path)?.sync_all()
+        }
+
+        fn sync_dir(&self, path: &Path) -> io::Result<()> {
+            self.synced_directories
+                .borrow_mut()
+                .push(path.to_path_buf());
+            sync_test_directory(path)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            fs::rename(from, to)
+        }
+
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            fs::remove_file(path)
+        }
+
+        fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+            fs::remove_dir_all(path)
+        }
+    }
+
     fn staged(relative: &str, bytes: &[u8]) -> StagedFile {
         StagedFile {
             relative: relative.into(),
             bytes: bytes.to_vec(),
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum TreeEntry {
+        Directory,
+        File(Vec<u8>),
+        Symlink(PathBuf),
+        Other,
+    }
+
+    fn mirror_tree(root: &Path) -> Vec<(PathBuf, TreeEntry)> {
+        fn visit(root: &Path, directory: &Path, tree: &mut Vec<(PathBuf, TreeEntry)>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                let kind = entry.file_type().unwrap();
+                let value = if kind.is_dir() {
+                    TreeEntry::Directory
+                } else if kind.is_file() {
+                    TreeEntry::File(fs::read(&path).unwrap())
+                } else if kind.is_symlink() {
+                    TreeEntry::Symlink(fs::read_link(&path).unwrap())
+                } else {
+                    TreeEntry::Other
+                };
+                if kind.is_dir() {
+                    visit(root, &path, tree);
+                }
+                tree.push((relative, value));
+            }
+        }
+
+        let mut tree = Vec::new();
+        if root.exists() {
+            visit(root, root, &mut tree);
+        }
+        tree.sort_by(|left, right| left.0.cmp(&right.0));
+        tree
+    }
+
+    #[test]
+    fn replacement_refuses_a_directory_target_before_creating_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        let target = root.join("rules/a.ndjson");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("operator-note"), b"keep\n").unwrap();
+        fs::write(root.join("rules/unselected.ndjson"), b"also keep\n").unwrap();
+        let before = mirror_tree(&root);
+        let lock = acquire_pull(&root).unwrap();
+
+        let error = replace_staged_files(&lock, &[staged("rules/a.ndjson", b"new\n")]).unwrap_err();
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+        assert_eq!(mirror_tree(&root), before);
+        assert!(!root.join(".elasticctl-pull-txn").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_refuses_a_dangling_symlink_target_before_creating_a_transaction() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        let target = root.join("rules/a.ndjson");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        symlink("missing-target", &target).unwrap();
+        fs::write(root.join("rules/unselected.ndjson"), b"also keep\n").unwrap();
+        let before = mirror_tree(&root);
+        let lock = acquire_pull(&root).unwrap();
+
+        let error = replace_staged_files(&lock, &[staged("rules/a.ndjson", b"new\n")]).unwrap_err();
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+        assert_eq!(mirror_tree(&root), before);
+        assert!(!root.join(".elasticctl-pull-txn").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_refuses_a_symlinked_target_parent_before_creating_a_transaction() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("a.ndjson"), b"outside old\n").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        symlink(&outside, root.join("rules")).unwrap();
+        let before = mirror_tree(&root);
+        let outside_before = fs::read(outside.join("a.ndjson")).unwrap();
+        let lock = acquire_pull(&root).unwrap();
+
+        let error = replace_staged_files(&lock, &[staged("rules/a.ndjson", b"new\n")]).unwrap_err();
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+        assert_eq!(mirror_tree(&root), before);
+        assert_eq!(fs::read(outside.join("a.ndjson")).unwrap(), outside_before);
+        assert!(!root.join(".elasticctl-pull-txn").exists());
+    }
+
+    #[test]
+    fn transaction_syncs_each_new_directory_from_parent_to_child_and_after_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        let transaction = root.join(".elasticctl-pull-txn");
+        let rules = root.join("rules");
+        let lock = acquire_pull(&root).unwrap();
+        let ops = RecordingFileOps::new();
+
+        replace_staged_files_with(&lock, &[staged("rules/nested/a.ndjson", b"new\n")], &ops)
+            .unwrap();
+
+        let synced = ops.synced_directories();
+        assert_eq!(
+            &synced[..4],
+            [
+                dir.path().to_path_buf(),
+                root.clone(),
+                transaction.clone(),
+                transaction.clone(),
+            ]
+        );
+        assert!(
+            synced
+                .windows(2)
+                .any(|pair| pair == [root.clone(), rules.clone()]),
+            "target directory creations must sync root before rules: {synced:?}"
+        );
+        assert_eq!(synced.last(), Some(&root));
     }
 
     #[test]
