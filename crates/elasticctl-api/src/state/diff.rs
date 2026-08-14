@@ -210,18 +210,6 @@ async fn fetch_remote_lists(t: &Transport, keys: &BTreeSet<ListKey>) -> Result<V
     Ok(out)
 }
 
-/// Spec 5.4. Item reconciliation — the engine's only push-side delete — assumes
-/// the local item set for a mirrored container is complete. That holds because
-/// `pull` always writes a container's items in full: state commands resolve
-/// selectors to `rule_id`s through `scope_of`, which narrows rules and nothing
-/// else, and there is no parameter by which a caller can mirror part of a
-/// container's items. If an item-level selector is ever added, an item absent
-/// locally stops being a delete instruction and the `ItemRemoved` handling in
-/// `item_reconciliation` must be revisited before that selector ships.
-fn selectors_are_rule_level() -> bool {
-    true
-}
-
 /// Spec 4.5. Compare each remote rule's stored pointer against the live
 /// container for its `list_id`. `comparable` has stripped this field by the
 /// time `Drift::compute` runs, so the check works on the raw response.
@@ -257,24 +245,34 @@ fn dangling_pointers(
 /// Compare local and remote items for each container in `both`, emitting
 /// `ItemAdded`, `ItemModified`, `ItemRemoved`, or nothing per `item_id`.
 /// `ItemRemoved` is the engine's only actionable deletion (spec 5.4).
+///
+/// `ItemRemoved` assumes the local item set for a mirrored container is
+/// complete. That holds because `pull` always writes a container's items in
+/// full: state commands resolve selectors to `rule_id`s through `scope_of`,
+/// which narrows rules and nothing else, and there is no parameter by which a
+/// caller can mirror part of a container's items. If an item-level selector is
+/// ever added, an item absent locally stops being a delete instruction and the
+/// `ItemRemoved` handling below must be revisited before that selector ships.
 fn item_reconciliation(
     both: &BTreeSet<ListKey>,
     local_items: &BTreeMap<ListKey, Vec<ExceptionItem>>,
     remote_items: &BTreeMap<ListKey, Vec<ExceptionItem>>,
-) -> (Vec<ListChange>, Vec<ItemOp>) {
-    debug_assert!(
-        selectors_are_rule_level(),
-        "item reconciliation assumes a complete local item set"
-    );
-
-    let index = |items: &[ExceptionItem]| -> BTreeMap<String, ExceptionItem> {
+) -> Result<(Vec<ListChange>, Vec<ItemOp>)> {
+    // A duplicate `item_id` within one side is mirror corruption; refusing
+    // matches `index_lists`, which refuses a duplicate `list_id`. First-wins
+    // would silently hide which item the operator intended to keep.
+    let index = |items: &[ExceptionItem], side: &str| -> Result<BTreeMap<String, ExceptionItem>> {
         let mut m = BTreeMap::new();
         for i in items {
-            if let Ok(id) = i.item_id() {
-                m.entry(id.to_string()).or_insert_with(|| i.clone());
+            let Some(id) = i.item_id().ok() else { continue };
+            if m.insert(id.to_string(), i.clone()).is_some() {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    format!("{side} has two exception items with item_id \"{id}\""),
+                ));
             }
         }
-        m
+        Ok(m)
     };
 
     let mut changes = Vec::new();
@@ -283,8 +281,8 @@ fn item_reconciliation(
     for key in both {
         let local = local_items.get(key).cloned().unwrap_or_default();
         let remote = remote_items.get(key).cloned().unwrap_or_default();
-        let local_by_id = index(&local);
-        let remote_by_id = index(&remote);
+        let local_by_id = index(&local, "local")?;
+        let remote_by_id = index(&remote, "remote")?;
 
         let mut ids: Vec<&String> = local_by_id.keys().chain(remote_by_id.keys()).collect();
         ids.sort();
@@ -328,7 +326,7 @@ fn item_reconciliation(
         }
     }
 
-    (changes, ops)
+    Ok((changes, ops))
 }
 
 /// Compute exception drift and the ordered container/item writes, closing over
@@ -401,7 +399,7 @@ pub(crate) async fn exception_plan(
         }
     }
 
-    let (item_changes, reconciled) = item_reconciliation(&both, &local_items, &remote_items);
+    let (item_changes, reconciled) = item_reconciliation(&both, &local_items, &remote_items)?;
     item_ops.extend(reconciled);
 
     drift.dangling = dangling_pointers(remote_rules, &live);

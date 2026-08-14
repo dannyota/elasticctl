@@ -188,5 +188,21 @@ fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
     let Some(Value::Array(items)) = list.as_map_mut().remove("items") else {
         return Ok(Vec::new());
     };
-    items.into_iter().map(ExceptionItem::from_value).collect()
+    let list_id = list.list_id()?.to_string();
+    let namespace = list.namespace_type().to_string();
+    items
+        .into_iter()
+        .map(|value| {
+            let mut item = ExceptionItem::from_value(value)?;
+            // Key an item by its container, not its own body. An item that
+            // omits `namespace_type` (which defaults to "single") inside an
+            // `agnostic` container would otherwise group under the wrong key
+            // and reconcile as a deletion (spec 5.4).
+            item.as_map_mut()
+                .insert("list_id".into(), Value::String(list_id.clone()));
+            item.as_map_mut()
+                .insert("namespace_type".into(), Value::String(namespace.clone()));
+            Ok(item)
+        })
+        .collect()
 }

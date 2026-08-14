@@ -83,10 +83,15 @@ pub async fn plan_push(
     // A dangling pointer is drift the normalized diff cannot see, so a rule
     // whose normalized form is unchanged still needs a write to repair it.
     // Remote-only rules are skipped: push never touches what it has no local
-    // form for.
+    // form for. Dedupe by `rule_id`: a rule referencing two wrong pointers
+    // emits two `DanglingPointer`s but is one rule write.
     let mut repairs: Vec<DanglingPointer> = Vec::new();
+    let mut repaired_ids: BTreeSet<String> = BTreeSet::new();
     for dangling in &exceptions.dangling {
-        if actionable_ids.contains(&dangling.rule_id) || by_id(&dangling.rule_id).is_none() {
+        if actionable_ids.contains(&dangling.rule_id)
+            || by_id(&dangling.rule_id).is_none()
+            || !repaired_ids.insert(dangling.rule_id.clone())
+        {
             continue;
         }
         repairs.push(dangling.clone());
@@ -226,15 +231,24 @@ pub async fn plan_push(
     }
 
     // Name the selection so a scoped preview differs from a full preview. The
-    // banner names rule, list, and item counts (spec 6.1).
-    let preview_action = format!(
-        "Push {} rule change(s), {} exception list(s) and {} item(s) from {}{}",
+    // banner names rule, list, and item counts (spec 6.1). Removals get their
+    // own count: the number an operator reads before `--yes` must not read the
+    // same for a run that deletes three items and one that creates three.
+    let item_removals = item_ops
+        .iter()
+        .filter(|op| matches!(op, ItemOp::Remove { .. }))
+        .count();
+    let item_writes = item_ops.len() - item_removals;
+    let mut preview_action = format!(
+        "Push {} rule change(s), {} exception list(s) and {} item(s)",
         actionable.len() + repairs.len(),
         list_ops.len(),
-        item_ops.len(),
-        dir.display(),
-        scope.describe()
+        item_writes,
     );
+    if item_removals > 0 {
+        preview_action.push_str(&format!(", {} item deletion(s)", item_removals));
+    }
+    preview_action.push_str(&format!(" from {}{}", dir.display(), scope.describe()));
 
     let report = ChangeReport {
         profile: identity.profile.clone(),
@@ -327,7 +341,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 }
                 Err(e) => Some((
                     item.item_id().unwrap_or("<unreadable>").to_string(),
-                    String::new(),
+                    item.list_id().unwrap_or("<unreadable>").to_string(),
                     "create_item",
                     e.message,
                 )),
@@ -339,7 +353,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 }
                 Err(e) => Some((
                     item.item_id().unwrap_or("<unreadable>").to_string(),
-                    String::new(),
+                    item.list_id().unwrap_or("<unreadable>").to_string(),
                     "update_item",
                     e.message,
                 )),

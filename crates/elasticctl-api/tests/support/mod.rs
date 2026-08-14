@@ -606,7 +606,16 @@ pub async fn mock_stack_with_two_lists_one_mirrored() -> MockStack {
         vec![item_for("mirrored", "drop", "single")],
     )
     .await;
-    mount_items(&stack.server, "unmirrored", "single", vec![]).await;
+    // `unmirrored` carries an item too, so the test's exact-equality assertion
+    // on `deleted_item_ids` guards the containment bound: a reconciliation that
+    // widened to remote-only containers would delete "survivor" and fail.
+    mount_items(
+        &stack.server,
+        "unmirrored",
+        "single",
+        vec![item_for("unmirrored", "survivor", "single")],
+    )
+    .await;
     Mock::given(method("DELETE"))
         .and(path("/api/exception_lists/items"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -647,6 +656,45 @@ pub async fn mock_stack_with_dangling_pointer(
 /// A rule whose stored pointer matches the live container id, the clean case.
 pub async fn mock_stack_with_matching_pointer(rule_id: &str, list_id: &str) -> MockStack {
     mock_stack_with_dangling_pointer(rule_id, list_id, "id-shared").await
+}
+
+/// A rule referencing two live containers, each carrying the same wrong stored
+/// id, so the repair path must dedupe one rule rather than emit two writes.
+pub async fn mock_stack_with_rule_with_two_wrong_pointers() -> MockStack {
+    let rule = json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [
+            {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "list_id": "one",
+                "type": "detection",
+                "namespace_type": "single"
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "list_id": "two",
+                "type": "detection",
+                "namespace_type": "single"
+            }
+        ]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+    mount_get_list(&stack.server, "one", "single", "detection", "id-one").await;
+    mount_get_list(&stack.server, "two", "single", "detection", "id-two").await;
+    mount_items(&stack.server, "one", "single", vec![]).await;
+    mount_items(&stack.server, "two", "single", vec![]).await;
+    Mock::given(method("PUT"))
+        .and(path(RULES))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "rule_id": "r",
+            "name": "R",
+            "type": "query"
+        })))
+        .mount(&stack.server)
+        .await;
+    stack
 }
 
 /// An empty rule corpus with container and item create responses mounted, so a

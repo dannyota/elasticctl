@@ -7,7 +7,8 @@ use elasticctl_api_test_support::{
     mock_stack_with_dangling_pointer, mock_stack_with_failing_item_create,
     mock_stack_with_list_and_items, mock_stack_with_list_id, mock_stack_with_matching_pointer,
     mock_stack_with_rule_default_list, mock_stack_with_rule_referencing,
-    mock_stack_with_two_list_ids, mock_stack_with_two_lists_one_mirrored,
+    mock_stack_with_rule_with_two_wrong_pointers, mock_stack_with_two_list_ids,
+    mock_stack_with_two_lists_one_mirrored,
 };
 use elasticctl_core::ErrorKind;
 use serde_json::json;
@@ -937,5 +938,118 @@ async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
     assert!(
         !dir.path().join("rules").exists(),
         "no mirror is written when a referenced list is missing"
+    );
+}
+
+/// A rule referencing two wrong pointers is one rule, repaired once, not once
+/// per pointer (spec 4.5). After a restore or stack rebuild every pointer is
+/// wrong, so any multi-list rule hits this.
+#[tokio::test]
+async fn a_rule_with_two_wrong_pointers_is_repaired_once() {
+    let stack = mock_stack_with_rule_with_two_wrong_pointers().await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[\
+         {\"list_id\":\"one\",\"type\":\"detection\",\"namespace_type\":\"single\"},\
+         {\"list_id\":\"two\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    for list in ["one", "two"] {
+        std::fs::write(
+            exceptions.join(format!("{list}.ndjson")),
+            format!(
+                "{}\n",
+                json!({
+                    "list_id": list, "type": "detection",
+                    "name": format!("list {list}"), "namespace_type": "single"
+                })
+            ),
+        )
+        .unwrap();
+    }
+
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    let applied = state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(applied.summary.updated, 1, "one rule, one update, not two");
+    assert_eq!(
+        stack.write_paths().await,
+        vec!["PUT /api/detection_engine/rules".to_string()],
+        "a rule with two wrong pointers is still one write"
+    );
+}
+
+/// `live_id: None` is a distinct finding: no container with that `list_id`
+/// exists on the stack. The pointer is reported, not collapsed onto a wrong id.
+#[tokio::test]
+async fn diff_reports_a_pointer_whose_container_is_missing() {
+    let stack = MockStack::with_rules(vec![json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "list_id": "ghost", "type": "detection", "namespace_type": "single"
+        }]
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[\
+         {\"list_id\":\"ghost\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+    );
+
+    let d = state::diff(stack.transport(), dir.path(), &[], None)
+        .await
+        .unwrap();
+
+    assert_eq!(d.exceptions.dangling.len(), 1);
+    assert_eq!(d.exceptions.dangling[0].list_id, "ghost");
+    assert_eq!(d.exceptions.dangling[0].live_id, None);
+    assert_eq!(
+        d.exceptions.dangling[0].stored_id,
+        json!("00000000-0000-0000-0000-000000000000")
+    );
+}
+
+/// An unchanged rule referencing a list that exists nowhere now blocks the push
+/// rather than being silently left dangling: the repair cannot resolve a live
+/// id, so the refusal is the honest answer (spec 4.5).
+#[tokio::test]
+async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
+    let stack = MockStack::with_rules(vec![json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "list_id": "ghost", "type": "detection", "namespace_type": "single"
+        }]
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[\
+         {\"list_id\":\"ghost\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+    );
+
+    let err = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert!(err.message.contains("ghost"), "{}", err.message);
+    assert!(
+        stack.write_requests().await.is_empty(),
+        "the refusal happens before any write"
     );
 }
