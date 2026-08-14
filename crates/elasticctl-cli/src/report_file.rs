@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 const JOURNAL: &str = "journal.ndjson";
+const ORIGINAL: &str = "original.json";
 const TRANSACTION_SUFFIX: &str = ".elasticctl-report-txn";
 const LOCK_SUFFIX: &str = ".elasticctl-report.lock";
 
@@ -276,6 +277,9 @@ fn publish_report_with(
             "syncing report transaction directory",
         )?;
 
+        if journal.existed_before {
+            snapshot_original(&prepared.target, &prepared.transaction_dir, ops)?;
+        }
         append_phase(
             &prepared.transaction_dir,
             Phase::BackingUp,
@@ -401,15 +405,7 @@ fn recover_existing_target(
     let backup = transaction_dir.join("backup.json");
     let backup_exists = path_exists(&backup, "checking report backup")?;
     match (phase, backup_exists) {
-        (Phase::Restored, false) if target_is_regular_file(path)? => Ok(()),
-        (Phase::Restored, false) => Err(Error::new(
-            ErrorKind::Error,
-            format!(
-                "report transaction {} says {} was restored, but the target is missing",
-                transaction_dir.display(),
-                path.display()
-            ),
-        )),
+        (Phase::Restored, false) => target_matches_original(path, transaction_dir),
         (Phase::Restored, true) => Err(Error::new(
             ErrorKind::Error,
             format!(
@@ -418,22 +414,21 @@ fn recover_existing_target(
                 path.display()
             ),
         )),
-        (Phase::Restoring, false) => match target_metadata(path)? {
-            Some(metadata) if metadata.file_type().is_file() => {
-                finish_restoration(path, transaction_dir, parent, ops)
-            }
-            Some(_) => non_regular_target(path),
-            None => Err(Error::new(
-                ErrorKind::Error,
-                format!(
-                    "report transaction {} lost both the backup and target for {} during restoration",
-                    transaction_dir.display(),
-                    path.display()
-                ),
-            )),
-        },
+        (Phase::Restoring, false) => {
+            target_matches_original(path, transaction_dir)?;
+            finish_restoration(path, transaction_dir, parent, ops)
+        }
+        (Phase::Prepared, true) => Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "report transaction {} has a backup before recording BackingUp for {}",
+                transaction_dir.display(),
+                path.display()
+            ),
+        )),
         (_, true) => {
             require_regular_file(&backup, path, "reading report backup")?;
+            read_original(path, transaction_dir)?;
             if phase != Phase::Restoring {
                 append_phase(transaction_dir, Phase::Restoring, path, ops)?;
             }
@@ -475,6 +470,7 @@ fn finish_restoration(
     parent: &Path,
     ops: &dyn FileOps,
 ) -> Result<()> {
+    target_matches_original(path, transaction_dir)?;
     sync_dir(
         ops,
         parent,
@@ -495,6 +491,15 @@ fn recover_absent_target(
     ops: &dyn FileOps,
     phase: Phase,
 ) -> Result<()> {
+    if matches!(phase, Phase::Restoring | Phase::Restored) {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "report transaction {} has recovery-only phase {phase:?} for a report that did not exist",
+                transaction_dir.display()
+            ),
+        ));
+    }
     let staged = transaction_dir.join("staged.json");
     if matches!(phase, Phase::Installing | Phase::Installed)
         && !path_exists(&staged, "checking staged change report")?
@@ -602,7 +607,7 @@ fn read_journal(transaction_dir: &Path) -> Result<Option<Journal>> {
 
 fn is_valid_transition(from: Phase, to: Phase) -> bool {
     match from {
-        Phase::Prepared => matches!(to, Phase::BackingUp | Phase::Restoring),
+        Phase::Prepared => to == Phase::BackingUp,
         Phase::BackingUp => matches!(to, Phase::BackedUp | Phase::Restoring),
         Phase::BackedUp => matches!(to, Phase::Installing | Phase::Restoring),
         Phase::Installing => matches!(to, Phase::Installed | Phase::Restoring),
@@ -610,6 +615,65 @@ fn is_valid_transition(from: Phase, to: Phase) -> bool {
         Phase::Restoring => to == Phase::Restored,
         Phase::Restored => false,
     }
+}
+
+/// Copy the target immediately before its backup rename. The artifact is only
+/// used by recovery after that backup has disappeared, when its bytes are the
+/// sole unambiguous proof that the regular target is the original report.
+fn snapshot_original(path: &Path, transaction_dir: &Path, ops: &dyn FileOps) -> Result<()> {
+    let original = original_path(transaction_dir);
+    if path_exists(&original, "checking original change report")? {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "report transaction {} already has an original report artifact",
+                transaction_dir.display()
+            ),
+        ));
+    }
+    require_regular_file(path, path, "reading original change report")?;
+    let bytes =
+        fs::read(path).map_err(|e| filesystem_error("reading original change report", path, e))?;
+    write(
+        ops,
+        &original,
+        &bytes,
+        false,
+        path,
+        "snapshotting original change report",
+    )?;
+    sync_file(ops, &original, path, "syncing original change report")?;
+    sync_dir(
+        ops,
+        transaction_dir,
+        "syncing report transaction directory after original snapshot",
+    )
+}
+
+fn target_matches_original(path: &Path, transaction_dir: &Path) -> Result<()> {
+    let original = read_original(path, transaction_dir)?;
+    require_regular_file(path, path, "reading restored change report")?;
+    let target =
+        fs::read(path).map_err(|e| filesystem_error("reading restored change report", path, e))?;
+    if target == original {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "report transaction {} found target {} that does not match its original report artifact",
+                transaction_dir.display(),
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn read_original(path: &Path, transaction_dir: &Path) -> Result<Vec<u8>> {
+    let original = original_path(transaction_dir);
+    require_regular_file(&original, path, "reading original change report")?;
+    fs::read(&original)
+        .map_err(|e| filesystem_error("reading original change report", &original, e))
 }
 
 fn finish_failed_preparation<T>(
@@ -900,6 +964,10 @@ fn journal_path(transaction_dir: &Path) -> PathBuf {
     transaction_dir.join(JOURNAL)
 }
 
+fn original_path(transaction_dir: &Path) -> PathBuf {
+    transaction_dir.join(ORIGINAL)
+}
+
 fn with_newline(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes.push(b'\n');
     bytes
@@ -1116,6 +1184,9 @@ mod tests {
             fs::write(target, b"{\"previous\":true}").unwrap();
         }
         fs::create_dir(&transaction).unwrap();
+        if existed_before {
+            fs::write(transaction.join("original.json"), b"{\"previous\":true}").unwrap();
+        }
         fs::write(&staged, b"{\"replacement\":true}").unwrap();
 
         if backup_moved {
@@ -1232,6 +1303,27 @@ mod tests {
     }
 
     #[test]
+    fn publication_snapshots_the_bytes_present_immediately_before_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.json");
+        fs::write(&target, b"{\"prepared\":true}").unwrap();
+        let prepared = prepare_report(&target, &report(false)).unwrap();
+        fs::write(&target, b"{\"at_backup\":true}").unwrap();
+
+        let ops = FailingFileOps::at("rename", &[2, 3]);
+        assert!(publish_report_with(prepared, &report(true), &ops).is_err());
+        assert_eq!(
+            fs::read(transaction_dir(&target).join(ORIGINAL)).unwrap(),
+            b"{\"at_backup\":true}"
+        );
+
+        recover_report(&target).unwrap();
+        recover_report(&target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"{\"at_backup\":true}");
+        assert!(!transaction_dir(&target).exists());
+    }
+
+    #[test]
     fn recovery_restores_the_old_report_on_both_sides_of_each_rename() {
         for (phase, backup_moved, staged_installed) in [
             (Phase::Prepared, false, false),
@@ -1330,6 +1422,89 @@ mod tests {
             assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
             assert!(transaction_dir(&target).exists());
         }
+    }
+
+    #[test]
+    fn restoring_without_a_backup_requires_the_original_bytes() {
+        for replacement in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("report.json");
+            seed_report_transaction(&target, true, Phase::Restoring, false, false);
+            if replacement {
+                fs::write(&target, b"{\"replacement\":true}").unwrap();
+
+                let error = recover_report(&target).unwrap_err();
+
+                assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+                assert!(transaction_dir(&target).exists());
+            } else {
+                recover_report(&target).unwrap();
+                recover_report(&target).unwrap();
+                assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
+                assert!(!transaction_dir(&target).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn restoring_without_a_backup_requires_a_regular_original_artifact() {
+        for non_regular_original in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("report.json");
+            seed_report_transaction(&target, true, Phase::Restoring, false, false);
+            let original = transaction_dir(&target).join(ORIGINAL);
+            fs::remove_file(&original).unwrap();
+            if non_regular_original {
+                fs::create_dir(&original).unwrap();
+            }
+
+            let error = recover_report(&target).unwrap_err();
+
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+            assert!(transaction_dir(&target).exists());
+        }
+    }
+
+    #[test]
+    fn recovery_refuses_recovery_only_phases_for_previously_absent_reports() {
+        for phase in [Phase::Restoring, Phase::Restored] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("report.json");
+            seed_report_transaction(&target, false, phase, false, true);
+
+            let error = recover_report(&target).unwrap_err();
+
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+            assert!(target.is_file());
+            assert!(transaction_dir(&target).exists());
+        }
+    }
+
+    #[test]
+    fn journal_rejects_a_prepared_to_restoring_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.json");
+        let transaction = transaction_dir(&target);
+        fs::create_dir(&transaction).unwrap();
+        let mut journal = with_newline(
+            serde_json::to_vec(&PreparedRecord {
+                existed_before: true,
+                phase: Phase::Prepared,
+            })
+            .unwrap(),
+        );
+        journal.extend(with_newline(
+            serde_json::to_vec(&PhaseRecord {
+                phase: Phase::Restoring,
+            })
+            .unwrap(),
+        ));
+        fs::write(transaction.join(JOURNAL), journal).unwrap();
+
+        let error = recover_report(&target).unwrap_err();
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
+        assert!(transaction.exists());
     }
 
     #[test]
