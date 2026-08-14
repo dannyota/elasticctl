@@ -53,6 +53,31 @@ async fn delete_without_yes_previews_and_changes_nothing() {
     assert!(stack.write_requests().await.is_empty());
 }
 
+/// Repeated selectors describe one list identity, so an apply must issue one
+/// deletion and report one target rather than failing a duplicate second call.
+#[tokio::test]
+async fn delete_deduplicates_repeated_qualified_selectors() {
+    let stack = mock_exception_lists(1).await;
+    let out = run(
+        &stack.uri(),
+        &[
+            "exceptions",
+            "delete",
+            "l0",
+            "l0",
+            "--namespace",
+            "single",
+            "--yes",
+            "--json",
+        ],
+    )
+    .await;
+
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["total"], 1);
+    assert_eq!(stack.deleted_list_ids().await, vec!["l0"]);
+}
+
 /// Spec 6.2: a file-producing command's stdout is the file.
 #[tokio::test]
 async fn export_without_out_writes_importable_ndjson_to_stdout() {

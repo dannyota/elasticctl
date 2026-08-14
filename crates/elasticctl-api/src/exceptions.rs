@@ -12,7 +12,7 @@ use crate::rules::kql_escape;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const BASE: &str = "/api/exception_lists";
@@ -647,19 +647,19 @@ pub async fn plan_delete_op(
     list_ids: &[String],
     namespace: Option<&str>,
 ) -> Result<DeletePlan> {
-    let mut details = Vec::with_capacity(list_ids.len());
-    let mut targets = Vec::with_capacity(list_ids.len());
-    let mut keys = Vec::with_capacity(list_ids.len());
+    let mut resolved = BTreeSet::new();
     for id in list_ids {
-        let key = resolve_list_key(t, id, namespace).await?;
-        details.push(format!("{id}  ({})", key.namespace_type));
-        targets.push(id.clone());
-        keys.push(key);
+        resolved.insert(resolve_list_key(t, id, namespace).await?);
     }
+    let keys: Vec<_> = resolved.into_iter().collect();
+    let targets: Vec<_> = keys
+        .iter()
+        .map(|key| format!("{} ({})", key.list_id, key.namespace_type))
+        .collect();
     Ok(DeletePlan {
         preview: MutationPlan {
             preview_action: format!("Delete {} exception list(s)", targets.len()),
-            preview_details: details,
+            preview_details: targets.clone(),
             targets,
         },
         keys,
@@ -677,7 +677,11 @@ pub async fn apply_delete_op(t: &Transport, plan: &DeletePlan) -> Result<DeleteO
                 "list_id": key.list_id,
                 "namespace_type": key.namespace_type,
             })),
-            Err(e) => failed.push(json!({"list_id": key.list_id, "error": e.message})),
+            Err(e) => failed.push(json!({
+                "list_id": key.list_id,
+                "namespace_type": key.namespace_type,
+                "error": e.message,
+            })),
         }
     }
     Ok(DeleteOutcome {

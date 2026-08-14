@@ -379,6 +379,77 @@ async fn delete_list_deletes_by_list_id_and_namespace() {
     assert_eq!(deleted.list_id().unwrap(), "l0");
 }
 
+/// Repeating one selector must still produce one resolved identity and one
+/// deletion. Otherwise the second deletion can fail after the first succeeds.
+#[tokio::test]
+async fn deleting_the_same_selector_twice_issues_one_delete() {
+    let stack = mock_exception_lists(1).await;
+    let plan = exceptions::plan_delete_op(
+        stack.transport(),
+        &["l0".into(), "l0".into()],
+        Some("single"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        plan.keys,
+        vec![ListKey {
+            list_id: "l0".into(),
+            namespace_type: "single".into(),
+        }]
+    );
+    assert_eq!(plan.preview.targets, vec!["l0 (single)"]);
+    let out = exceptions::apply_delete_op(stack.transport(), &plan)
+        .await
+        .unwrap();
+    assert_eq!(out.total, 1);
+    assert_eq!(stack.deleted_list_ids().await, vec!["l0"]);
+}
+
+/// A failed delete must report the full stable identity, not just its
+/// list_id, because the same id can exist in multiple namespaces.
+#[tokio::test]
+async fn a_failed_delete_keeps_list_id_and_namespace_type() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "agnostic"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "id-l0",
+            "list_id": "l0",
+            "type": "detection",
+            "name": "list l0",
+            "namespace_type": "agnostic",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "agnostic"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "delete failed"})))
+        .mount(&server)
+        .await;
+
+    let plan = exceptions::plan_delete_op(&transport(&server), &["l0".into()], Some("agnostic"))
+        .await
+        .unwrap();
+    let out = exceptions::apply_delete_op(&transport(&server), &plan)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        out.failed,
+        vec![json!({
+            "list_id": "l0",
+            "namespace_type": "agnostic",
+            "error": "delete failed",
+        })]
+    );
+}
+
 #[tokio::test]
 async fn create_item_posts_the_item() {
     let server = MockServer::start().await;
