@@ -51,18 +51,9 @@ pub(crate) struct ExceptionPlan {
     pub resolvable: BTreeSet<ListKey>,
 }
 
-/// Compare the mirror to the stack, defaulting to `--source custom` (spec 5.5).
+/// Compare the mirror to the stack, scoped by `source`. The `custom`/`all`
+/// default lives on the clap flag, where `--help` shows it (spec 5.5).
 pub async fn diff(
-    t: &Transport,
-    dir: &Path,
-    selectors: &[String],
-    tag: Option<&str>,
-) -> Result<DiffReport> {
-    diff_with_source(t, dir, selectors, tag, crate::rules::RuleSource::Custom).await
-}
-
-/// `diff` with an explicit `--source` scope.
-pub async fn diff_with_source(
     t: &Transport,
     dir: &Path,
     selectors: &[String],

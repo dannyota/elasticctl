@@ -151,16 +151,33 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
 /// Both scopes filter on `alert.attributes.params.immutable`. Whether that
 /// field exists on stacks older than 9.5.1 is unmeasured (fact H). If it is
 /// absent, the filter silently matches nothing, and a query would report "no
-/// custom rules" for a stack that simply lacks the field. An extra unfiltered
-/// `_find` distinguishes that from an honestly empty space. Query commands and
-/// `state pull` call this; `state diff` and `push` do not, because an empty
-/// scope there is reported through `out_of_scope` instead (spec 5.5).
+/// custom rules" for a stack that simply lacks the field.
+///
+/// The probe is the source-only read, not the caller's combined filter: a
+/// `--tag` that narrows a healthy custom scope to nothing must not be blamed on
+/// `immutable`. Query commands and `state pull` call this; `state diff` and
+/// `push` do not, because an empty scope there is reported through
+/// `out_of_scope` instead (spec 5.5).
 pub(crate) async fn refuse_silently_empty_scope(t: &Transport, source: RuleSource) -> Result<()> {
     let name = match source {
         RuleSource::Custom => "custom",
         RuleSource::Prebuilt => "prebuilt",
         _ => return Ok(()),
     };
+    // Source-only, so a narrower clause (tag, severity, ...) never triggers it.
+    let (_, scoped) = find_page(
+        t,
+        &RuleFilter {
+            source,
+            ..Default::default()
+        },
+        1,
+        1,
+    )
+    .await?;
+    if scoped > 0 {
+        return Ok(());
+    }
     let (_, corpus) = find_page(t, &RuleFilter::default(), 1, 1).await?;
     if corpus > 0 {
         return Err(Error::new(

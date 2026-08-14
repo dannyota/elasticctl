@@ -2,7 +2,7 @@
 
 use elasticctl_api::rules_ops;
 use elasticctl_api::state::{self, StackIdentity};
-use elasticctl_api::{Change, Format, RuleFilter};
+use elasticctl_api::{Change, Format, RuleFilter, RuleSource};
 use elasticctl_api_test_support::{
     MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces,
     mock_stack_with_dangling_pointer, mock_stack_with_failing_item_create,
@@ -51,9 +51,16 @@ async fn plan_push_sends_no_write_request() {
         "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
     );
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plan.summary.pending, 1, "the create is planned");
     assert!(!plan.summary.applied, "planning is not applying");
@@ -80,9 +87,16 @@ async fn apply_push_issues_a_create_for_an_added_rule() {
         "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
     );
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert_eq!(plan.summary.pending, 1);
 
     state::apply_push(stack.transport(), plan).await.unwrap();
@@ -112,9 +126,16 @@ async fn apply_push_issues_an_update_for_a_modified_rule() {
         "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\",\"risk_score\":99,\"severity\":\"low\"}\n",
     );
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert_eq!(plan.summary.pending, 1);
 
     state::apply_push(stack.transport(), plan).await.unwrap();
@@ -138,9 +159,16 @@ async fn apply_push_issues_no_request_for_a_remote_only_rule() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("rules")).unwrap();
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert_eq!(plan.summary.skipped_remote_only, 1);
 
     state::apply_push(stack.transport(), plan).await.unwrap();
@@ -164,9 +192,16 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
         );
     }
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert_eq!(plan.summary.pending, 2);
 
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
@@ -261,9 +296,16 @@ fn mirror_with_rule_default_list() -> tempfile::TempDir {
 async fn pull_writes_the_referenced_lists_and_no_others() {
     let stack = mock_stack_with_rule_referencing("shared").await;
     let dir = tempfile::tempdir().unwrap();
-    let r = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
+    let r = state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(r.exception_lists, 1, "only the referenced list is mirrored");
     assert!(dir.path().join("exceptions/shared.yaml").exists());
@@ -278,9 +320,16 @@ async fn pull_writes_the_referenced_lists_and_no_others() {
 async fn a_rule_default_list_is_inlined_in_its_rule_file() {
     let stack = mock_stack_with_rule_default_list().await;
     let dir = tempfile::tempdir().unwrap();
-    state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     let rule_file = std::fs::read_to_string(dir.path().join("rules/r.yaml")).unwrap();
     assert!(rule_file.contains("rule_default"), "{rule_file}");
     assert!(
@@ -294,9 +343,16 @@ async fn a_rule_default_list_is_inlined_in_its_rule_file() {
 async fn pull_inlines_a_rule_default_lists_items() {
     let stack = mock_stack_with_rule_default_list().await;
     let dir = tempfile::tempdir().unwrap();
-    state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     let rule_file = std::fs::read_to_string(dir.path().join("rules/r.yaml")).unwrap();
     assert!(
         rule_file.contains("i1"),
@@ -310,9 +366,16 @@ async fn pull_inlines_a_rule_default_lists_items() {
 async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
     let stack = mock_stack_with_colliding_namespaces("dup").await;
     let dir = tempfile::tempdir().unwrap();
-    let err = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap_err();
+    let err = state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
     assert!(err.message.contains("dup"), "{}", err.message);
     assert!(
@@ -330,9 +393,16 @@ async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
 async fn push_creates_the_list_before_the_rule_that_points_at_it() {
     let stack = mock_empty_stack().await;
     let dir = mirror_with_rule_and_new_list();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     let order = stack.write_paths().await;
@@ -355,9 +425,16 @@ async fn push_creates_the_list_before_the_rule_that_points_at_it() {
 async fn push_creates_the_items_before_the_rule() {
     let stack = mock_empty_stack().await;
     let dir = mirror_with_rule_and_new_list();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     let order = stack.write_paths().await;
@@ -411,9 +488,16 @@ async fn push_injects_the_target_stacks_list_id() {
         .unwrap();
     }
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     let body = stack.last_rule_write_body().await;
@@ -443,9 +527,16 @@ async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
     )
     .unwrap();
 
-    let err = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap_err();
+    let err = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::NotFound);
     assert!(err.message.contains("ghost"), "{}", err.message);
     assert!(
@@ -460,9 +551,16 @@ async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
 async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
     let stack = mock_stack_with_failing_item_create().await;
     let dir = mirror_with_rule_and_new_list();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
 
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
 
@@ -491,9 +589,16 @@ async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
 async fn the_push_preview_names_the_exception_counts() {
     let stack = mock_empty_stack().await;
     let dir = mirror_with_rule_and_new_list();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert!(
         plan.preview_action.contains("1 exception list(s)"),
         "the banner must name the list it will create: {}",
@@ -511,9 +616,16 @@ async fn the_push_preview_names_the_exception_counts() {
 async fn push_never_deletes_a_container_absent_locally() {
     let stack = mock_stack_with_list_id("orphan", "id").await;
     let dir = tempfile::tempdir().unwrap();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
     assert!(
         !stack
@@ -540,7 +652,7 @@ async fn a_remote_only_list_is_reported_but_never_deleted() {
     )
     .unwrap();
 
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
     assert!(
@@ -552,9 +664,16 @@ async fn a_remote_only_list_is_reported_but_never_deleted() {
         d.exceptions.changes
     );
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
     assert!(
         !stack
@@ -572,10 +691,17 @@ async fn a_remote_only_list_is_reported_but_never_deleted() {
 async fn pull_then_diff_in_yaml_is_clean() {
     let stack = mock_stack_with_rule_referencing("shared").await;
     let dir = tempfile::tempdir().unwrap();
-    state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
     assert!(
@@ -593,10 +719,17 @@ async fn pull_then_diff_in_yaml_is_clean() {
 async fn pull_then_diff_is_clean_with_a_rule_default_list() {
     let stack = mock_stack_with_rule_default_list().await;
     let dir = tempfile::tempdir().unwrap();
-    state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
     assert!(
@@ -614,9 +747,16 @@ async fn pull_then_diff_is_clean_with_a_rule_default_list() {
 async fn push_creates_a_rule_default_list_on_a_fresh_stack() {
     let stack = mock_empty_stack().await;
     let dir = mirror_with_rule_default_list();
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     let requests = stack.write_requests().await;
@@ -733,9 +873,16 @@ fn mirror_with_list_items(list_id: &str, item_ids: &[&str]) -> tempfile::TempDir
 async fn an_item_absent_locally_is_deleted() {
     let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
     let dir = mirror_with_list_items("l", &["keep"]);
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
 
     assert!(
         plan.preview_details
@@ -755,9 +902,16 @@ async fn an_item_absent_locally_is_deleted() {
 async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
     let stack = mock_stack_with_two_lists_one_mirrored().await;
     let dir = mirror_with_list_items("mirrored", &[]);
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     // The fixture must actually delete an item, or the "no container deleted"
@@ -782,9 +936,16 @@ async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
 async fn planning_an_item_deletion_deletes_nothing() {
     let stack = mock_stack_with_list_and_items("l", &["drop"]).await;
     let dir = mirror_with_list_items("l", &[]);
-    state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     assert!(stack.deleted_item_ids().await.is_empty());
 }
 
@@ -797,7 +958,7 @@ async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
         mock_stack_with_dangling_pointer("r", "shared", "00000000-0000-0000-0000-000000000000")
             .await;
     let dir = mirror_with_rule_referencing("shared");
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
 
@@ -811,7 +972,7 @@ async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
 async fn a_pointer_matching_the_live_container_is_not_reported() {
     let stack = mock_stack_with_matching_pointer("r", "shared").await;
     let dir = mirror_with_rule_referencing("shared");
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
     assert!(d.exceptions.dangling.is_empty());
@@ -827,9 +988,16 @@ async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
         mock_stack_with_dangling_pointer("r", "shared", "00000000-0000-0000-0000-000000000000")
             .await;
     let dir = mirror_with_rule_referencing("shared");
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
     assert_eq!(
@@ -850,9 +1018,16 @@ async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
 async fn an_item_added_to_an_existing_container_is_created() {
     let stack = mock_stack_with_list_and_items("l", &[]).await;
     let dir = mirror_with_list_items("l", &["new"]);
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
 
     assert_eq!(
@@ -897,9 +1072,16 @@ async fn a_modified_item_is_updated() {
     )
     .unwrap();
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
 
     assert_eq!(
@@ -930,9 +1112,16 @@ async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
     .await;
     let dir = tempfile::tempdir().unwrap();
 
-    let err = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap_err();
+    let err = state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.kind, ErrorKind::NotFound);
     assert!(err.message.contains("ghost"), "{}", err.message);
@@ -972,9 +1161,16 @@ async fn a_rule_with_two_wrong_pointers_is_repaired_once() {
         .unwrap();
     }
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
 
     assert_eq!(applied.summary.updated, 1, "one rule, one update, not two");
@@ -1007,7 +1203,7 @@ async fn diff_reports_a_pointer_whose_container_is_missing() {
          {\"list_id\":\"ghost\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
     );
 
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
 
@@ -1043,9 +1239,16 @@ async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
          {\"list_id\":\"ghost\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
     );
 
-    let err = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap_err();
+    let err = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.kind, ErrorKind::NotFound);
     assert!(err.message.contains("ghost"), "{}", err.message);
@@ -1093,15 +1296,23 @@ fn mirror_holding_a_prebuilt_rule() -> tempfile::TempDir {
     dir
 }
 
-/// Spec 5.5: the defaults differ per command, on purpose.
+/// Spec 5.5: a `custom`-scoped pull returns only authored rules, while a
+/// query with the default (all) filter hides nothing.
 #[tokio::test]
-async fn state_commands_default_to_custom_and_rules_list_defaults_to_all() {
+async fn a_custom_pull_returns_only_authored_rules_while_the_default_filter_returns_all() {
     let stack = mock_mixed_corpus(/* custom */ 2, /* prebuilt */ 5).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let pulled = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap();
+    let pulled = state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         pulled.pulled, 2,
         "a mirror holds what the operator authored"
@@ -1118,7 +1329,7 @@ async fn state_commands_default_to_custom_and_rules_list_defaults_to_all() {
 async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
     let stack = mock_mixed_corpus(0, 1).await;
     let dir = mirror_holding_a_prebuilt_rule();
-    let d = state::diff(stack.transport(), dir.path(), &[], None)
+    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
 
@@ -1136,9 +1347,16 @@ async fn a_custom_pull_against_a_prebuilt_only_stack_names_the_field() {
     let stack = mock_mixed_corpus(0, 3).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let err = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
-        .await
-        .unwrap_err();
+    let err = state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.kind, ErrorKind::Unsupported);
     assert!(err.message.contains("immutable"), "{}", err.message);

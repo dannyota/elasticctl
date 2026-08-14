@@ -12,20 +12,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Pull the mirror, defaulting to `--source custom`: a mirror holds what the
-/// operator authored (spec 5.5).
+/// Pull the mirror, scoped by `source`. The `custom`/`all` default lives on the
+/// clap flag, where `--help` shows it, not in this signature (spec 5.5).
 pub async fn pull(
-    t: &Transport,
-    dir: &Path,
-    format: Format,
-    selectors: &[String],
-    tag: Option<&str>,
-) -> Result<PullReport> {
-    pull_with_source(t, dir, format, selectors, tag, RuleSource::Custom).await
-}
-
-/// `pull` with an explicit `--source` scope.
-pub async fn pull_with_source(
     t: &Transport,
     dir: &Path,
     format: Format,

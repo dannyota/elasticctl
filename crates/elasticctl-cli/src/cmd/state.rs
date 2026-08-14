@@ -26,7 +26,7 @@ pub async fn pull(
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::pull_with_source(t, dir, format, selectors, tag, source).await?)
+    to_value(&state::pull(t, dir, format, selectors, tag, source).await?)
 }
 
 pub async fn diff(
@@ -38,7 +38,7 @@ pub async fn diff(
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::diff_with_source(t, dir, selectors, tag, source).await?)
+    to_value(&state::diff(t, dir, selectors, tag, source).await?)
 }
 
 pub async fn push(
@@ -56,7 +56,7 @@ pub async fn push(
         host: ctx.resolved.profile.host(),
         space: ctx.resolved.profile.space.clone(),
     };
-    let plan = state::plan_push_with_source(t, dir, selectors, tag, source, &identity).await?;
+    let plan = state::plan_push(t, dir, selectors, tag, source, &identity).await?;
 
     let preview = Preview {
         action: plan.preview_action.clone(),

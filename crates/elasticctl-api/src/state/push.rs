@@ -43,27 +43,9 @@ struct ExceptionCounts {
 }
 
 /// Compute the push preview and dry-run report without mutating the stack,
-/// defaulting to `--source custom` (spec 5.5).
+/// scoped by `source`. The `custom`/`all` default lives on the clap flag, where
+/// `--help` shows it (spec 5.5).
 pub async fn plan_push(
-    t: &Transport,
-    dir: &Path,
-    selectors: &[String],
-    tag: Option<&str>,
-    identity: &StackIdentity,
-) -> Result<PushPlan> {
-    plan_push_with_source(
-        t,
-        dir,
-        selectors,
-        tag,
-        crate::rules::RuleSource::Custom,
-        identity,
-    )
-    .await
-}
-
-/// `plan_push` with an explicit `--source` scope.
-pub async fn plan_push_with_source(
     t: &Transport,
     dir: &Path,
     selectors: &[String],

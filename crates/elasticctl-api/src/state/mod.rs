@@ -10,10 +10,10 @@ mod pull;
 mod push;
 mod reports;
 
-pub use diff::{diff, diff_with_source};
+pub use diff::diff;
 pub use mirror::{read_local, read_mirror};
-pub use pull::{pull, pull_with_source};
-pub use push::{PushPlan, apply_push, plan_push, plan_push_with_source};
+pub use pull::pull;
+pub use push::{PushPlan, apply_push, plan_push};
 pub use reports::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, Mirror, PullReport, PushReport,
     StackIdentity,

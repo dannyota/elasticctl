@@ -107,7 +107,7 @@ pub async fn export(
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let outcome = rules_ops::export_rules_with_source(t, selectors, tag, source, format).await?;
+    let outcome = rules_ops::export_rules(t, selectors, tag, source, format).await?;
 
     match out {
         Some(path) => {

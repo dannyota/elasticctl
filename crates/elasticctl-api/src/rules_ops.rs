@@ -225,25 +225,14 @@ pub async fn apply_delete(t: &Transport, plan: &MutationPlan) -> Result<DeleteOu
 }
 
 /// Fetch, canonicalize, and sort selected rules by rule ID. Exports from an
-/// unchanged stack are byte-identical for version-control review.
-///
-/// Defaults to `--source all`: a query command hides nothing (spec 5.5).
-pub async fn export_rules(
-    t: &Transport,
-    selectors: &[String],
-    tag: Option<&str>,
-    format: Format,
-) -> Result<ExportOutcome> {
-    export_rules_with_source(t, selectors, tag, RuleSource::All, format).await
-}
-
-/// `export_rules` with an explicit `--source` scope.
+/// unchanged stack are byte-identical for version-control review. Scoped by
+/// `source`; the `all` default lives on the clap flag (spec 5.5).
 ///
 /// A source scope without a selector or tag resolves to the matching rule IDs
 /// first, so the subset export transfers only the subset (spec 4.3). A selector
 /// or tag is an explicit narrowing and overrides the source default, matching
 /// the state commands (spec 5.3).
-pub async fn export_rules_with_source(
+pub async fn export_rules(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,

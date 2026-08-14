@@ -478,6 +478,49 @@ async fn a_custom_scope_returning_zero_against_a_non_empty_corpus_names_the_fiel
     );
 }
 
+/// The empty-scope guard must not blame `immutable` for an emptiness a narrower
+/// clause caused. Here `--source custom --tag nomatch` returns nothing because
+/// the tag misses, while the source-only scope is non-empty, so `list` returns
+/// an empty result rather than an error naming `immutable`.
+#[tokio::test]
+async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.immutable: false AND alert.attributes.tags: \"nomatch\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 0, "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    // The source-only read is non-empty, so the guard stays silent.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.immutable: false",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 1, "total": 2, "data": [rule_json("a"), rule_json("b")]
+        })))
+        .mount(&server)
+        .await;
+
+    let filter = RuleFilter {
+        source: RuleSource::Custom,
+        tag: Some("nomatch".into()),
+        ..Default::default()
+    };
+    let report = rules_ops::list(&transport(&server), &filter).await.unwrap();
+
+    assert_eq!(report.total, 0, "the tag missed, so nothing is listed");
+}
+
 #[tokio::test]
 async fn get_queries_by_rule_id_not_by_server_id() {
     let server = MockServer::start().await;
@@ -755,9 +798,15 @@ async fn export_rules_carries_the_exception_bundle() {
         .mount(&server)
         .await;
 
-    let outcome = rules_ops::export_rules(&transport(&server), &[], None, Format::Ndjson)
-        .await
-        .unwrap();
+    let outcome = rules_ops::export_rules(
+        &transport(&server),
+        &[],
+        None,
+        RuleSource::All,
+        Format::Ndjson,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(outcome.exported, 1);
     assert!(
@@ -788,9 +837,15 @@ async fn export_rules_yaml_without_exceptions_still_encodes_rules() {
         .mount(&server)
         .await;
 
-    let outcome = rules_ops::export_rules(&transport(&server), &[], None, Format::Yaml)
-        .await
-        .unwrap();
+    let outcome = rules_ops::export_rules(
+        &transport(&server),
+        &[],
+        None,
+        RuleSource::All,
+        Format::Yaml,
+    )
+    .await
+    .unwrap();
 
     let rules = elasticctl_api::codec::decode_yaml(&outcome.body).unwrap();
     assert_eq!(rules.len(), 1);
@@ -817,9 +872,15 @@ async fn export_rules_yaml_refuses_a_bundle_with_exceptions() {
         .mount(&server)
         .await;
 
-    let err = rules_ops::export_rules(&transport(&server), &[], None, Format::Yaml)
-        .await
-        .unwrap_err();
+    let err = rules_ops::export_rules(
+        &transport(&server),
+        &[],
+        None,
+        RuleSource::All,
+        Format::Yaml,
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.kind, ErrorKind::Unsupported);
     assert!(err.message.contains("ndjson"), "{}", err.message);
