@@ -50,6 +50,12 @@ pub struct DiffReport {
 }
 
 /// The summary `push` renders.
+///
+/// `created`, `updated`, `skipped_remote_only`, and `pending` count rules.
+/// `failed` counts every failed write, rules and exceptions alike, so a failed
+/// list or item write still exits nonzero. The `*_lists`/`items_*` fields name
+/// the exception writes separately, so a run that creates only containers and
+/// items never reads as "nothing happened".
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PushReport {
     pub applied: bool,
@@ -58,14 +64,20 @@ pub struct PushReport {
     pub skipped_remote_only: usize,
     pub failed: usize,
     pub pending: usize,
+    pub lists_created: usize,
+    pub lists_updated: usize,
+    pub items_created: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_total: Option<usize>,
 }
 
-/// The mirror `read_mirror` reads: the scoped rules plus exactly the exception
-/// lists those rules reference, with their items.
+/// The mirror `read_mirror` reads: every rule and exception-list file under
+/// `dir`, with each list's `items` array split out.
+///
+/// It does not apply the reference closure itself; the state command consuming
+/// the mirror narrows `lists`/`items` to what the in-scope rules reference.
 #[derive(Debug)]
 pub struct Mirror {
     pub rules: Vec<Rule>,

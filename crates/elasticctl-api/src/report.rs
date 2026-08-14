@@ -7,9 +7,12 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportEntry {
+    /// The object this entry describes: a `rule_id` for rules, or a `list_id`
+    /// / `item_id` for exception writes.
     pub rule_id: String,
     pub name: String,
-    /// `create`, `update`, or `skipped_remote_only`.
+    /// `create`, `update`, or `skipped_remote_only` for rules; `create_list`,
+    /// `update_list`, or `create_item` for exception writes.
     pub action: String,
     pub before: Option<Value>,
     pub after: Option<Value>,

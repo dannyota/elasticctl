@@ -30,16 +30,25 @@ pub async fn pull(
     let wanted: BTreeSet<ListKey> = super::referenced_keys(&remote);
     let mut fetched: BTreeMap<ListKey, (ExceptionList, Vec<ExceptionItem>)> = BTreeMap::new();
     for key in &wanted {
-        match exceptions::get_list(t, key).await {
-            Ok(list) => {
-                let items = exceptions::find_items(t, key).await?;
-                fetched.insert(key.clone(), (list, items));
+        let list = match exceptions::get_list(t, key).await {
+            Ok(list) => list,
+            // Refuse rather than silently write a mirror missing a referenced
+            // list: that truncation would only surface as a `not_found` at
+            // apply time (spec 5.2).
+            Err(e) if e.kind == ErrorKind::NotFound => {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    format!(
+                        "a rule references exception list \"{}\" ({}), which does not exist on \
+                         this stack",
+                        key.list_id, key.namespace_type
+                    ),
+                ));
             }
-            // A rule referencing a missing list is a dangling pointer; `diff`
-            // reports it, so `pull` mirrors what exists.
-            Err(e) if e.kind == ErrorKind::NotFound => {}
             Err(e) => return Err(e),
-        }
+        };
+        let items = exceptions::find_items(t, key).await?;
+        fetched.insert(key.clone(), (list, items));
     }
 
     let ext = match format {
@@ -132,7 +141,7 @@ pub async fn pull(
         return Err(Error::new(
             ErrorKind::Conflict,
             format!(
-                "{} filename collision(s); rename one rule id in each pair: {}",
+                "{} filename collision(s); rename one id in each pair: {}",
                 collisions.len(),
                 collisions.join("; ")
             ),

@@ -269,21 +269,27 @@ fn item_json(i: usize) -> Value {
     })
 }
 
-/// A container body for `list_id`, with an optional live `id`.
-fn container_json(list_id: &str, namespace: &str, list_type: &str, id: Option<&str>) -> Value {
-    let mut list = json!({
+/// A container body for `list_id`, carrying the volatile fields a real
+/// `get_list` returns so `canonical_list` stripping is exercised.
+fn container_json(list_id: &str, namespace: &str, list_type: &str, id: &str) -> Value {
+    json!({
+        "id": id,
         "list_id": list_id,
         "type": list_type,
         "name": format!("list {list_id}"),
         "namespace_type": namespace,
-    });
-    if let Some(id) = id {
-        list["id"] = json!(id);
-    }
-    list
+        "_version": "WzUsMV0=",
+        "tie_breaker_id": "tb",
+        "version": 1,
+        "created_at": "2026-08-13T23:38:39.519Z",
+        "created_by": "452295856",
+        "updated_at": "2026-08-13T23:38:39.519Z",
+        "updated_by": "452295856"
+    })
 }
 
-/// An item body for `item_id` inside `list_id`.
+/// An item body for `item_id` inside `list_id`, with the volatile fields a real
+/// `find_items` returns.
 fn item_for(list_id: &str, item_id: &str, namespace: &str) -> Value {
     json!({
         "id": format!("id-{item_id}"),
@@ -292,6 +298,12 @@ fn item_for(list_id: &str, item_id: &str, namespace: &str) -> Value {
         "type": "simple",
         "name": format!("item {item_id}"),
         "namespace_type": namespace,
+        "_version": "WzUsMV0=",
+        "tie_breaker_id": "tb",
+        "created_at": "2026-08-13T23:38:39.519Z",
+        "created_by": "452295856",
+        "updated_at": "2026-08-13T23:38:39.519Z",
+        "updated_by": "452295856",
         "entries": []
     })
 }
@@ -301,7 +313,7 @@ async fn mount_get_list(
     list_id: &str,
     namespace: &str,
     list_type: &str,
-    id: Option<&str>,
+    id: &str,
 ) {
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
@@ -349,8 +361,8 @@ pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
         .and(path("/api/exception_lists/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [
-                container_json(list_id, "single", "detection", None),
-                container_json("orphan", "single", "detection", None)
+                container_json(list_id, "single", "detection", "id-shared"),
+                container_json("orphan", "single", "detection", "id-orphan")
             ],
             "page": 1,
             "per_page": 2,
@@ -358,7 +370,7 @@ pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
         })))
         .mount(&stack.server)
         .await;
-    mount_get_list(&stack.server, list_id, "single", "detection", None).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", "id-shared").await;
     mount_items(&stack.server, list_id, "single", vec![]).await;
     stack
 }
@@ -376,7 +388,7 @@ pub async fn mock_stack_with_rule_default_list() -> MockStack {
         }]
     });
     let stack = MockStack::with_rules(vec![rule]).await;
-    mount_get_list(&stack.server, "rd", "single", "rule_default", Some("id-rd")).await;
+    mount_get_list(&stack.server, "rd", "single", "rule_default", "id-rd").await;
     mount_items(
         &stack.server,
         "rd",
@@ -400,8 +412,15 @@ pub async fn mock_stack_with_colliding_namespaces(list_id: &str) -> MockStack {
         ]
     });
     let stack = MockStack::with_rules(vec![rule]).await;
-    mount_get_list(&stack.server, list_id, "single", "detection", None).await;
-    mount_get_list(&stack.server, list_id, "agnostic", "detection", None).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", "id-single").await;
+    mount_get_list(
+        &stack.server,
+        list_id,
+        "agnostic",
+        "detection",
+        "id-agnostic",
+    )
+    .await;
     mount_items(&stack.server, list_id, "single", vec![]).await;
     mount_items(&stack.server, list_id, "agnostic", vec![]).await;
     stack
@@ -411,7 +430,16 @@ pub async fn mock_stack_with_colliding_namespaces(list_id: &str) -> MockStack {
 /// `id`, so a push can resolve the pointer against this stack.
 pub async fn mock_stack_with_list_id(list_id: &str, id: &str) -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
-    mount_get_list(&stack.server, list_id, "single", "detection", Some(id)).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", id).await;
+    stack
+}
+
+/// An empty rule corpus with two live containers, `one` and `two`, each with a
+/// distinct id, so a push that injects pointers must resolve every reference.
+pub async fn mock_stack_with_two_list_ids() -> MockStack {
+    let stack = MockStack::with_rules(vec![]).await;
+    mount_get_list(&stack.server, "one", "single", "detection", "id-one").await;
+    mount_get_list(&stack.server, "two", "single", "detection", "id-two").await;
     stack
 }
 
@@ -441,6 +469,32 @@ pub async fn mock_empty_stack() -> MockStack {
             "namespace_type": "single",
             "entries": []
         })))
+        .mount(&stack.server)
+        .await;
+    stack
+}
+
+/// An empty rule corpus whose container create succeeds but whose item create
+/// fails, so a push that reaches the item step records the failure and returns
+/// the plan rather than discarding the change ticket.
+pub async fn mock_stack_with_failing_item_create() -> MockStack {
+    let stack = MockStack::with_rules(vec![]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "new-live-id",
+            "list_id": "newlist",
+            "type": "detection",
+            "name": "newlist",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_json(json!({"message": "item create failed"})),
+        )
         .mount(&stack.server)
         .await;
     stack

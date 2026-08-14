@@ -33,7 +33,7 @@ pub async fn diff(
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let (exceptions, _, _) = exception_plan(t, lists, items, &local, &remote).await?;
+    let (exceptions, _, _, _) = exception_plan(t, lists, items, &local, &remote).await?;
 
     // Omit unchanged rules so the diff shows only differences.
     let changes: Vec<Change> = drift
@@ -173,14 +173,22 @@ async fn fetch_remote_lists(t: &Transport, keys: &BTreeSet<ListKey>) -> Result<V
 }
 
 /// Compute exception drift and the ordered container/item writes, closing over
-/// the lists referenced by the local and remote rules in scope.
+/// the lists referenced by the local and remote rules in scope. The last
+/// element is the set of keys that resolve at apply time: already on the stack
+/// or about to be created. `plan_push` refuses any other referenced key before
+/// a single write.
 pub(crate) async fn exception_plan(
     t: &Transport,
     mirror_lists: Vec<ExceptionList>,
     mirror_items: Vec<ExceptionItem>,
     local_rules: &[Rule],
     remote_rules: &[Rule],
-) -> Result<(ExceptionDrift, Vec<ListOp>, Vec<ExceptionItem>)> {
+) -> Result<(
+    ExceptionDrift,
+    Vec<ListOp>,
+    Vec<ExceptionItem>,
+    BTreeSet<ListKey>,
+)> {
     let wanted: BTreeSet<ListKey> = super::referenced_keys(local_rules)
         .into_iter()
         .chain(super::referenced_keys(remote_rules))
@@ -193,6 +201,14 @@ pub(crate) async fn exception_plan(
         .collect();
 
     let (drift, ops) = list_drift(&local_lists, &remote_lists)?;
+
+    let mut resolvable: BTreeSet<ListKey> =
+        remote_lists.iter().filter_map(|l| l.key().ok()).collect();
+    for op in &ops {
+        if let ListOp::Create(list) = op {
+            resolvable.insert(list.key()?);
+        }
+    }
 
     // Items are created only for a newly created container in Task 11; item
     // reconciliation inside existing containers is Task 12.
@@ -210,7 +226,7 @@ pub(crate) async fn exception_plan(
         }
     }
 
-    Ok((drift, ops, item_creates))
+    Ok((drift, ops, item_creates, resolvable))
 }
 
 fn group_items(items: Vec<ExceptionItem>) -> BTreeMap<ListKey, Vec<ExceptionItem>> {

@@ -3,8 +3,10 @@
 use elasticctl_api::Format;
 use elasticctl_api::state::{self, StackIdentity};
 use elasticctl_api_test_support::{
-    MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces, mock_stack_with_list_id,
+    MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces,
+    mock_stack_with_failing_item_create, mock_stack_with_list_id,
     mock_stack_with_rule_default_list, mock_stack_with_rule_referencing,
+    mock_stack_with_two_list_ids,
 };
 use elasticctl_core::ErrorKind;
 use serde_json::json;
@@ -183,41 +185,6 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
     );
 }
 
-/// A local mirror with one rule referencing `list_id` and a matching container.
-/// The rule's reference carries no `id`, matching a freshly pulled file.
-fn mirror_with_rule_referencing(list_id: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let rules = dir.path().join("rules");
-    std::fs::create_dir_all(&rules).unwrap();
-    std::fs::write(
-        rules.join("r.ndjson"),
-        format!(
-            "{}\n",
-            json!({
-                "rule_id": "r", "name": "R", "type": "query",
-                "exceptions_list": [{
-                    "list_id": list_id, "type": "detection", "namespace_type": "single"
-                }]
-            })
-        ),
-    )
-    .unwrap();
-    let exceptions = dir.path().join("exceptions");
-    std::fs::create_dir_all(&exceptions).unwrap();
-    std::fs::write(
-        exceptions.join(format!("{list_id}.ndjson")),
-        format!(
-            "{}\n",
-            json!({
-                "list_id": list_id, "type": "detection",
-                "name": format!("list {list_id}"), "namespace_type": "single"
-            })
-        ),
-    )
-    .unwrap();
-    dir
-}
-
 /// A local mirror with one rule referencing a NEW list that has one item.
 fn mirror_with_rule_and_new_list() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -247,6 +214,36 @@ fn mirror_with_rule_and_new_list() -> tempfile::TempDir {
                 "namespace_type": "single",
                 "items": [{
                     "item_id": "i1", "list_id": "newlist", "type": "simple",
+                    "name": "item i1", "namespace_type": "single", "entries": []
+                }]
+            })
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// A local mirror with one rule whose `rule_default` list is inlined in the
+/// rule file, exactly as `pull` writes it.
+fn mirror_with_rule_default_list() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(
+        rules.join("r.ndjson"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "rule_id": "r", "name": "R", "type": "query",
+                "exceptions_list": [{
+                    "list_id": "rd", "type": "rule_default", "namespace_type": "single"
+                }]
+            }),
+            json!({
+                "list_id": "rd", "type": "rule_default", "name": "list rd",
+                "namespace_type": "single",
+                "items": [{
+                    "item_id": "i1", "list_id": "rd", "type": "simple",
                     "name": "item i1", "namespace_type": "single", "entries": []
                 }]
             })
@@ -317,7 +314,11 @@ async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
     assert!(err.message.contains("dup"), "{}", err.message);
     assert!(
         !dir.path().join("exceptions").exists(),
-        "nothing is written before every filename is planned"
+        "no exception file is written before every filename is planned"
+    );
+    assert!(
+        !dir.path().join("rules").exists(),
+        "no rule file is written before every filename is planned"
     );
 }
 
@@ -376,11 +377,37 @@ async fn push_creates_the_items_before_the_rule() {
 }
 
 /// Measured fact 3: `id` is required and unvalidated. Push must supply the
-/// target stack's id, not the one the file was pulled with.
+/// target stack's id, not the one the file was pulled with, for every reference
+/// the rule carries.
 #[tokio::test]
 async fn push_injects_the_target_stacks_list_id() {
-    let stack = mock_stack_with_list_id("shared", "live-id-on-this-stack").await;
-    let dir = mirror_with_rule_referencing("shared");
+    let stack = mock_stack_with_two_list_ids().await;
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(
+        rules.join("r.ndjson"),
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[\
+         {\"list_id\":\"one\",\"type\":\"detection\",\"namespace_type\":\"single\"},\
+         {\"list_id\":\"two\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+    )
+    .unwrap();
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    for list in ["one", "two"] {
+        std::fs::write(
+            exceptions.join(format!("{list}.ndjson")),
+            format!(
+                "{}\n",
+                json!({
+                    "list_id": list, "type": "detection",
+                    "name": format!("list {list}"), "namespace_type": "single"
+                })
+            ),
+        )
+        .unwrap();
+    }
+
     let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
         .await
         .unwrap();
@@ -389,13 +416,18 @@ async fn push_injects_the_target_stacks_list_id() {
     let body = stack.last_rule_write_body().await;
     assert_eq!(
         body["exceptions_list"][0]["id"],
-        json!("live-id-on-this-stack"),
-        "the pointer is resolved against the target, never carried from the source"
+        json!("id-one"),
+        "every reference's pointer is resolved against the target"
+    );
+    assert_eq!(
+        body["exceptions_list"][1]["id"],
+        json!("id-two"),
+        "injection must not stop after the first reference"
     );
 }
 
 /// A rule referencing a list that is neither on the stack nor in the mirror is
-/// refused, never written with a fabricated pointer.
+/// refused at plan time, before any write, never given a fabricated pointer.
 #[tokio::test]
 async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
     let stack = MockStack::with_rules(vec![]).await;
@@ -408,17 +440,49 @@ async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
     )
     .unwrap();
 
-    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
-        .await
-        .unwrap();
-    let err = state::apply_push(stack.transport(), plan)
+    let err = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
         .await
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::NotFound);
     assert!(err.message.contains("ghost"), "{}", err.message);
+    assert!(
+        stack.write_requests().await.is_empty(),
+        "the refusal must happen before any write"
+    );
 }
 
-/// Spec 5.4: the banner names rule and exception counts. A push that changed
+/// When an exception write fails after earlier writes succeeded, `apply_push`
+/// returns the plan with the evidence, not a bare error that discards it.
+#[tokio::test]
+async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
+    let stack = mock_stack_with_failing_item_create().await;
+    let dir = mirror_with_rule_and_new_list();
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+
+    let applied = state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(applied.summary.lists_created, 1, "the container succeeded");
+    assert_eq!(applied.summary.items_created, 0, "the item failed");
+    assert_eq!(applied.summary.failed, 1, "the item failure is recorded");
+    assert_eq!(
+        applied.summary.pending, 1,
+        "the rule was never written after the item failure"
+    );
+    assert!(
+        applied
+            .report
+            .entries
+            .iter()
+            .any(|e| e.action == "create_item"
+                && e.error.as_deref().unwrap_or("").contains("failed")),
+        "the change ticket records the failed item: {:?}",
+        applied.report.entries
+    );
+}
+
+/// Spec 5.4: the banner names rule, list, and item counts. A push that changed
 /// exceptions while the banner spoke only of rules would defeat the guard.
 #[tokio::test]
 async fn the_push_preview_names_the_exception_counts() {
@@ -428,8 +492,13 @@ async fn the_push_preview_names_the_exception_counts() {
         .await
         .unwrap();
     assert!(
-        plan.preview_action.contains("exception"),
-        "the banner must name what it will change: {}",
+        plan.preview_action.contains("1 exception list(s)"),
+        "the banner must name the list it will create: {}",
+        plan.preview_action
+    );
+    assert!(
+        plan.preview_action.contains("1 item(s)"),
+        "the banner must name the item it will create: {}",
         plan.preview_action
     );
 }
@@ -513,4 +582,75 @@ async fn pull_then_diff_in_yaml_is_clean() {
     );
     assert_eq!(d.exceptions.local, 1, "the exception file was read back");
     assert_eq!(d.exceptions.remote, 1);
+}
+
+/// A `rule_default` list is an ordinary container: pull then diff against the
+/// same stack must read clean, not report permanent fake drift.
+#[tokio::test]
+async fn pull_then_diff_is_clean_with_a_rule_default_list() {
+    let stack = mock_stack_with_rule_default_list().await;
+    let dir = tempfile::tempdir().unwrap();
+    state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
+        .await
+        .unwrap();
+    let d = state::diff(stack.transport(), dir.path(), &[], None)
+        .await
+        .unwrap();
+    assert!(
+        d.clean,
+        "a rule_default list must round-trip clean: {:?}",
+        d.exceptions
+    );
+    assert_eq!(d.exceptions.local, 1);
+    assert_eq!(d.exceptions.remote, 1);
+}
+
+/// A `rule_default` list is created like any other container before the rule
+/// that references it.
+#[tokio::test]
+async fn push_creates_a_rule_default_list_on_a_fresh_stack() {
+    let stack = mock_empty_stack().await;
+    let dir = mirror_with_rule_default_list();
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    state::apply_push(stack.transport(), plan).await.unwrap();
+
+    let requests = stack.write_requests().await;
+    let container_at = requests
+        .iter()
+        .position(|r| r.path == "/api/exception_lists")
+        .unwrap();
+    let rule_at = requests
+        .iter()
+        .position(|r| r.path == "/api/detection_engine/rules")
+        .unwrap();
+    assert!(
+        container_at < rule_at,
+        "the container is created before the rule that references it: {requests:?}"
+    );
+    assert_eq!(
+        requests[container_at].body["type"],
+        json!("rule_default"),
+        "a rule_default list is created like any other container"
+    );
+}
+
+/// A rule file produced by `rules export` carries a trailer; `read_mirror`
+/// must tolerate it rather than hard-error.
+#[tokio::test]
+async fn read_mirror_tolerates_an_export_trailer_in_a_rule_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(
+        rules.join("r.ndjson"),
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\"}\n\
+         {\"exported_count\":1,\"exported_rules_count\":1,\"missing_rules\":[],\"missing_rules_count\":0}\n",
+    )
+    .unwrap();
+
+    let mirror = state::read_mirror(dir.path()).unwrap();
+    assert_eq!(mirror.rules.len(), 1, "the rule is read");
+    assert_eq!(mirror.rules[0].rule_id().unwrap(), "r");
 }

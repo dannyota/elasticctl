@@ -31,6 +31,14 @@ pub struct PushPlan {
     item_creates: Vec<ExceptionItem>,
 }
 
+/// The exception writes `apply_push` performed, folded into `PushReport`.
+#[derive(Default, Clone, Copy)]
+struct ExceptionCounts {
+    lists_created: usize,
+    lists_updated: usize,
+    items_created: usize,
+}
+
 /// Compute the push preview and dry-run report without mutating the stack.
 pub async fn plan_push(
     t: &Transport,
@@ -51,7 +59,7 @@ pub async fn plan_push(
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let (_, list_ops, item_creates) =
+    let (_, list_ops, item_creates, resolvable) =
         super::diff::exception_plan(t, lists, items, &local, &remote).await?;
 
     let by_id = |id: &str| local.iter().find(|r| r.rule_id().ok() == Some(id)).cloned();
@@ -143,12 +151,33 @@ pub async fn plan_push(
         });
     }
 
+    // Refuse, before any write, a rule that references a list neither on the
+    // stack nor in the mirror. The ids are injected at write time against the
+    // target, but resolvability is known here.
+    let desired_rules: Vec<Rule> = desired.values().cloned().collect();
+    let unresolved: Vec<String> = super::referenced_keys(&desired_rules)
+        .into_iter()
+        .filter(|key| !resolvable.contains(key))
+        .map(|key| format!("\"{}\" ({})", key.list_id, key.namespace_type))
+        .collect();
+    if !unresolved.is_empty() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "rule(s) reference exception list(s) that do not exist on this stack and are \
+                 not in the mirror: {}",
+                unresolved.join(", ")
+            ),
+        ));
+    }
+
     // Name the selection so a scoped preview differs from a full preview. The
-    // banner names rule and exception counts (spec 6.1).
+    // banner names rule, list, and item counts (spec 6.1).
     let preview_action = format!(
-        "Push {} rule change(s) and {} exception list(s) from {}{}",
+        "Push {} rule change(s), {} exception list(s) and {} item(s) from {}{}",
         actionable.len(),
         list_ops.len(),
+        item_creates.len(),
         dir.display(),
         scope.describe()
     );
@@ -164,6 +193,7 @@ pub async fn plan_push(
         &report,
         scope.is_scoped().then(|| scope.selected()),
         scope.is_scoped().then_some(scope.local_total),
+        ExceptionCounts::default(),
     );
 
     Ok(PushPlan {
@@ -190,24 +220,63 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     let wanted: Vec<ListKey> = super::referenced_keys(&desired_rules).into_iter().collect();
     let mut resolved = exceptions::resolve_ids(t, &wanted).await?;
 
-    // 1. Containers.
+    let mut counts = ExceptionCounts::default();
+
+    // 1. Containers. A failure records the evidence and stops: the ordering
+    // invariant means later writes depend on this one.
     for op in &plan.list_ops {
-        match op {
-            super::diff::ListOp::Create(list) => {
-                let created = exceptions::create_list(t, list).await?;
-                if let Some(id) = created.as_map().get("id").and_then(Value::as_str) {
-                    resolved.insert(list.key()?, id.to_string());
+        let failure = match op {
+            super::diff::ListOp::Create(list) => match exceptions::create_list(t, list).await {
+                Ok(created) => {
+                    if let Some(id) = created.as_map().get("id").and_then(Value::as_str) {
+                        resolved.insert(list.key()?, id.to_string());
+                    }
+                    counts.lists_created += 1;
+                    None
                 }
-            }
-            super::diff::ListOp::Update(list) => {
-                exceptions::update_list(t, list).await?;
-            }
+                Err(e) => Some((
+                    list.list_id().unwrap_or("<unreadable>").to_string(),
+                    list.name().to_string(),
+                    "create_list",
+                    e.message,
+                )),
+            },
+            super::diff::ListOp::Update(list) => match exceptions::update_list(t, list).await {
+                Ok(_) => {
+                    counts.lists_updated += 1;
+                    None
+                }
+                Err(e) => Some((
+                    list.list_id().unwrap_or("<unreadable>").to_string(),
+                    list.name().to_string(),
+                    "update_list",
+                    e.message,
+                )),
+            },
+        };
+        if let Some((id, name, action, error)) = failure {
+            return Ok(finish_after_exception_failure(
+                plan, id, name, action, error, counts,
+            ));
         }
     }
 
     // 2. Items, only for a newly created container in Task 11.
     for item in &plan.item_creates {
-        exceptions::create_item(t, item).await?;
+        match exceptions::create_item(t, item).await {
+            Ok(_) => counts.items_created += 1,
+            Err(e) => {
+                let id = item.item_id().unwrap_or("<unreadable>").to_string();
+                return Ok(finish_after_exception_failure(
+                    plan,
+                    id,
+                    String::new(),
+                    "create_item",
+                    e.message,
+                    counts,
+                ));
+            }
+        }
     }
 
     // 3. Rules, injecting the resolved pointer into each.
@@ -237,9 +306,21 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         };
 
         let mut to_write = desired.clone();
-        // A rule referencing a list that is neither on the stack nor in the
-        // mirror is refused here, before the rule is written.
-        inject_list_ids(&mut to_write, &resolved)?;
+        // `plan_push` verified resolvability, so a miss here is a container
+        // whose live id could not be read (or a list deleted since planning).
+        // Record it per-rule, like any other write failure, and continue.
+        if let Err(e) = inject_list_ids(&mut to_write, &resolved) {
+            entries.push(ReportEntry {
+                rule_id: entry.rule_id,
+                name: entry.name,
+                action: entry.action,
+                before: entry.before,
+                after: None,
+                applied: false,
+                error: Some(e.message),
+            });
+            continue;
+        }
         let before = entry.before;
         let is_create = entry.action == "create";
 
@@ -276,14 +357,41 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     let (selected, local_total) = (plan.summary.selected, plan.summary.local_total);
     plan.report.entries = entries;
     plan.report.applied = true;
-    plan.summary = push_summary(&plan.report, selected, local_total);
+    plan.summary = push_summary(&plan.report, selected, local_total, counts);
     Ok(plan)
+}
+
+/// Record a failed exception write in the change ticket and finalize the plan,
+/// returning it so the caller keeps the evidence of what landed before the
+/// failure.
+fn finish_after_exception_failure(
+    mut plan: PushPlan,
+    id: String,
+    name: String,
+    action: &str,
+    error: String,
+    counts: ExceptionCounts,
+) -> PushPlan {
+    plan.report.entries.push(ReportEntry {
+        rule_id: id,
+        name,
+        action: action.into(),
+        before: None,
+        after: None,
+        applied: false,
+        error: Some(error),
+    });
+    plan.report.applied = true;
+    let (selected, local_total) = (plan.summary.selected, plan.summary.local_total);
+    plan.summary = push_summary(&plan.report, selected, local_total, counts);
+    plan
 }
 
 fn push_summary(
     report: &ChangeReport,
     selected: Option<usize>,
     local_total: Option<usize>,
+    counts: ExceptionCounts,
 ) -> PushReport {
     let (created, updated, skipped, failed) = report.counts();
     PushReport {
@@ -293,17 +401,21 @@ fn push_summary(
         skipped_remote_only: skipped,
         failed,
         pending: report.pending(),
+        lists_created: counts.lists_created,
+        lists_updated: counts.lists_updated,
+        items_created: counts.items_created,
         selected,
         local_total,
     }
 }
 
-/// Inject each referenced list's live `id` into the rule, refusing a list that
-/// is neither on the stack nor in the mirror.
+/// Inject each referenced list's live `id` into the rule.
 ///
 /// Measured fact 3: `id` is required on create and validated by nothing, so a
 /// fabricated or carried pointer would be stored silently. Resolve against this
-/// stack every time.
+/// stack every time. `plan_push` has already refused a list that is neither on
+/// the stack nor in the mirror, so a miss here means the live id could not be
+/// read, not that the list is absent.
 fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<()> {
     let Some(Value::Array(refs)) = rule.as_map_mut().get_mut("exceptions_list") else {
         return Ok(());
@@ -331,8 +443,8 @@ fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<
                 return Err(Error::new(
                     ErrorKind::NotFound,
                     format!(
-                        "rule references exception list \"{list_id}\" ({namespace}), which does \
-                         not exist on this stack and is not in the mirror"
+                        "rule references exception list \"{list_id}\" ({namespace}), whose live \
+                         id could not be resolved on this stack"
                     ),
                 ));
             }
