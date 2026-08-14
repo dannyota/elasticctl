@@ -534,6 +534,18 @@ a `list_id` collide on filename and are refused the same way.
 `push` applies in a fixed order: containers, then items, then rules. A rule is
 never written before the list it points at exists.
 
+A scoped run reconciles items the same way, including in a container shared with
+rules outside the scope. That is sound for the same reason the deletion itself
+is: `pull` writes a container's items in full whenever it writes the container
+at all, and the item read is scoped by `list_id`, never by rule. So a mirror
+produced by `state pull --rules r1` holds the complete item set of every
+container `r1` references, even one that `r2` also references. The local set is
+never a partial view, so an item missing from it is still an instruction.
+
+What a scoped run does *not* do is touch a container no in-scope rule
+references — that container is not in the mirror, and its items are never even
+read.
+
 **Containers and rules are never deleted. Items inside a mirrored container are
 reconciled exactly, deletes included.** The asymmetry follows from what is
 mirrored rather than from a softened contract. A rule or a list absent locally
