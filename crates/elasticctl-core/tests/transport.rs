@@ -6,6 +6,8 @@ use std::fs::File;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -79,8 +81,12 @@ impl Drop for StderrCapture {
 }
 
 fn profile_for(server: &MockServer) -> Profile {
+    profile_for_url(server.uri())
+}
+
+fn profile_for_url(kibana_url: String) -> Profile {
     Profile {
-        kibana_url: server.uri(),
+        kibana_url,
         es_url: None,
         api_key: Some("essu_test".into()),
         username: None,
@@ -103,6 +109,41 @@ fn one_second_timeout_profile_for(server: &MockServer) -> Profile {
     let mut profile = profile_for(server);
     profile.timeout_secs = 1;
     profile
+}
+
+async fn headers_then_delayed_body_server()
+-> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_count = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        request_count.fetch_add(1, Ordering::SeqCst);
+
+        let mut request = [0; 1_024];
+        tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, b"{\"ok\":true}").await;
+
+        if let Ok(Ok((_stream, _))) =
+            tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
+        {
+            request_count.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    (url, requests, server)
 }
 
 #[test]
@@ -341,6 +382,32 @@ async fn an_absolute_es_timeout_is_not_retried() {
 
     assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    #[cfg(unix)]
+    assert!(
+        debug.trim_end().ends_with("timeout"),
+        "debug output: {debug}"
+    );
+}
+
+#[tokio::test]
+async fn a_delayed_response_body_is_a_timeout_without_a_retry() {
+    let (url, requests, server) = headers_then_delayed_body_server().await;
+    let mut profile = profile_for_url(url);
+    profile.timeout_secs = 1;
+    let t = Transport::with_debug(&profile, true).unwrap();
+    #[cfg(unix)]
+    let _stderr_guard = STDERR_LOCK.lock().await;
+    #[cfg(unix)]
+    let capture = StderrCapture::start();
+
+    let err = t.get("/api/delayed-body").await.unwrap_err();
+
+    #[cfg(unix)]
+    let debug = capture.finish();
+    server.await.unwrap();
+
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
     #[cfg(unix)]
     assert!(
         debug.trim_end().ends_with("timeout"),

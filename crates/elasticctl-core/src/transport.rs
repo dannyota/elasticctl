@@ -179,6 +179,33 @@ impl Transport {
         format!("{}{}", self.base, Self::space_path(&self.space, path))
     }
 
+    /// Read a response body without retrying an operation that may have
+    /// completed after its headers were received.
+    async fn response_text(
+        &self,
+        method: &Method,
+        url: &str,
+        response: Response,
+    ) -> Result<String> {
+        match response.text().await {
+            Ok(text) => Ok(text),
+            Err(e) if e.is_timeout() => {
+                self.debug_failure(method, url, "timeout");
+                Err(Error::new(
+                    ErrorKind::Timeout,
+                    format!("request timed out while reading response body: {e}"),
+                ))
+            }
+            Err(e) => {
+                self.debug_failure(method, url, "connection error");
+                Err(Error::new(
+                    ErrorKind::Connection,
+                    format!("request failed while reading response body: {e}"),
+                ))
+            }
+        }
+    }
+
     async fn send_retrying<F>(&self, method: Method, url: &str, mut build: F) -> Result<Response>
     where
         F: FnMut() -> Result<reqwest::RequestBuilder>,
@@ -226,7 +253,7 @@ impl Transport {
             }
 
             let code = status.as_u16();
-            let text = response.text().await.unwrap_or_default();
+            let text = self.response_text(&method, url, response).await?;
             return Err(Error::from_response_body(code, &text));
         }
     }
@@ -255,11 +282,9 @@ impl Transport {
     }
 
     async fn send_json(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
-        let response = self.send(method, path, body).await?;
-        let text = response
-            .text()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        let url = self.url(path);
+        let response = self.send(method.clone(), path, body).await?;
+        let text = self.response_text(&method, &url, response).await?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -276,7 +301,9 @@ impl Transport {
     /// This is separate from `get` because only the capability probe needs
     /// headers.
     pub async fn get_with_headers(&self, path: &str) -> Result<Responded> {
-        let response = self.send(Method::GET, path, None).await?;
+        let method = Method::GET;
+        let url = self.url(path);
+        let response = self.send(method.clone(), path, None).await?;
 
         let mut headers = BTreeMap::new();
         for name in CAPTURED_HEADERS {
@@ -287,10 +314,7 @@ impl Transport {
             }
         }
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        let text = self.response_text(&method, &url, response).await?;
         let body = if text.trim().is_empty() {
             Value::Null
         } else {
@@ -346,7 +370,7 @@ impl Transport {
         let url = format!("{}{}", self.es_base, path);
         let request_method = method.clone();
         let response = self
-            .send_retrying(method, &url, || {
+            .send_retrying(method.clone(), &url, || {
                 let mut req = self
                     .client
                     .request(request_method.clone(), &url)
@@ -358,10 +382,7 @@ impl Transport {
             })
             .await?;
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        let text = self.response_text(&method, &url, response).await?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -371,18 +392,18 @@ impl Transport {
 
     /// POST and return the raw body for NDJSON endpoints.
     pub async fn post_text(&self, path: &str, body: Option<&Value>) -> Result<String> {
-        let response = self.send(Method::POST, path, body).await?;
-        response
-            .text()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))
+        let method = Method::POST;
+        let url = self.url(path);
+        let response = self.send(method.clone(), path, body).await?;
+        self.response_text(&method, &url, response).await
     }
 
     /// Upload a multipart NDJSON file for Kibana rule import.
     pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
+        let method = Method::POST;
         let url = self.url(path);
         let response = self
-            .send_retrying(Method::POST, &url, || {
+            .send_retrying(method.clone(), &url, || {
                 // Retryable HTTP responses deliberately replay this POST. Part and Form are
                 // recreated here because reqwest consumes multipart bodies while sending.
                 let part = reqwest::multipart::Part::text(ndjson.to_string())
@@ -401,10 +422,7 @@ impl Transport {
             })
             .await?;
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| Error::new(ErrorKind::Http, format!("reading response body: {e}")))?;
+        let text = self.response_text(&method, &url, response).await?;
         serde_json::from_str(&text)
             .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
     }
