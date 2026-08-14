@@ -978,9 +978,9 @@ Same project, same date.
 
 Fixtures are **recorded, not hand-written**. `cargo xtask record` drives a live
 stack, dumps the real exchanges, and scrubs credentials, URL userinfo, and the
-recording host in both configured-authority and normalized-default-port forms.
-Each fixture records its deployment flavor and stack version so drift is
-visible.
+recording host in configured-authority and normalized-default-port forms,
+using URL hostname case-insensitive matching. Each fixture records its
+deployment flavor and stack version so drift is visible.
 
 The directory is `tests/fixtures/<flavor>-<version>`, where flavor is the
 *deployment* flavor, not the value a stack reports. Hosted and self-managed

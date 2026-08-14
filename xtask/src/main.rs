@@ -86,6 +86,12 @@ fn recording_hosts() -> Vec<String> {
     .collect()
 }
 
+fn url_authority_end(value: &str) -> usize {
+    value
+        .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_ascii_whitespace())
+        .unwrap_or(value.len())
+}
+
 /// Remove userinfo from a URL authority without changing its path or query.
 ///
 /// Fixture values can contain the configured host with credentials that were
@@ -100,7 +106,7 @@ fn strip_url_userinfo(value: &str) -> String {
         scrubbed.push_str(&remaining[..authority_start]);
         remaining = &remaining[authority_start..];
 
-        let authority_end = remaining.find(['/', '?', '#']).unwrap_or(remaining.len());
+        let authority_end = url_authority_end(remaining);
         let (authority, tail) = remaining.split_at(authority_end);
         scrubbed.push_str(
             authority
@@ -113,41 +119,45 @@ fn strip_url_userinfo(value: &str) -> String {
     scrubbed
 }
 
-/// Replace a URL authority that omitted the configured default port.
+/// Replace the configured authority in every absolute URL.
 ///
-/// A configured `https://host:443` can appear in a response as
-/// `https://host/...`, and `http://host:80` likewise loses `:80`. Do not
-/// derive a bare-host match for non-default ports: `host:9243` and `host` can
-/// identify different deployments.
-fn scrub_normalized_default_port_url(value: &str, authority: &str) -> String {
-    let Some((hostname, port)) = authority.rsplit_once(':') else {
-        return value.to_string();
-    };
-    let scheme = match port {
-        "443" => "https",
-        "80" => "http",
-        _ => return value.to_string(),
-    };
-    if hostname.is_empty() {
-        return value.to_string();
-    }
-
-    let needle = format!("{scheme}://{hostname}");
-    let replacement = format!("{scheme}://REDACTED.example.invalid");
+/// URL hostnames compare case-insensitively. A configured
+/// `https://host:443` can also appear in a response as `https://host/...`, and
+/// `http://host:80` likewise loses `:80`. Do not derive a bare-host match for
+/// non-default ports: `host:9243` and `host` can identify different
+/// deployments.
+fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> String {
     let mut scrubbed = String::new();
     let mut remaining = value;
 
-    while let Some(position) = remaining.find(&needle) {
-        let end = position + needle.len();
-        let tail = &remaining[end..];
-        if matches!(tail.chars().next(), None | Some('/' | '?' | '#')) {
-            scrubbed.push_str(&remaining[..position]);
-            scrubbed.push_str(&replacement);
-            remaining = tail;
+    while let Some(scheme_end) = remaining.find("://") {
+        let authority_start = scheme_end + 3;
+        let scheme = remaining[..scheme_end]
+            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+            .next()
+            .unwrap_or("");
+        scrubbed.push_str(&remaining[..authority_start]);
+        remaining = &remaining[authority_start..];
+
+        let authority_end = url_authority_end(remaining);
+        let (authority, tail) = remaining.split_at(authority_end);
+        let normalized_default = configured_authority
+            .rsplit_once(':')
+            .filter(|(hostname, port)| {
+                !hostname.is_empty()
+                    && ((scheme.eq_ignore_ascii_case("https") && *port == "443")
+                        || (scheme.eq_ignore_ascii_case("http") && *port == "80"))
+            })
+            .map(|(hostname, _)| hostname);
+
+        if authority.eq_ignore_ascii_case(configured_authority)
+            || normalized_default.is_some_and(|host| authority.eq_ignore_ascii_case(host))
+        {
+            scrubbed.push_str("REDACTED.example.invalid");
         } else {
-            scrubbed.push_str(&remaining[..end]);
-            remaining = tail;
+            scrubbed.push_str(authority);
         }
+        remaining = tail;
     }
     scrubbed.push_str(remaining);
     scrubbed
@@ -166,7 +176,7 @@ fn scrub_hosts(v: &mut Value, hosts: &[String]) {
                 if s.contains(h.as_str()) {
                     *s = s.replace(h.as_str(), "REDACTED.example.invalid");
                 }
-                *s = scrub_normalized_default_port_url(s, h);
+                *s = scrub_recording_authority_urls(s, h);
             }
         }
         Value::Object(m) => m.values_mut().for_each(|x| scrub_hosts(x, hosts)),
@@ -1427,14 +1437,14 @@ mod tests {
     #[test]
     fn host_scrub_removes_userinfo_from_each_url_in_a_string() {
         let mut value = json!({
-            "urls": "https://alice:secret@cluster.example:9243/a https://bob:hidden@cluster.example:9243/b"
+            "urls": "https://alice:secret@cluster.example:9243 https://bob:hidden@cluster.example:9243/b"
         });
 
         scrub_hosts(&mut value, &["cluster.example:9243".to_string()]);
 
         assert_eq!(
             value["urls"],
-            "https://REDACTED.example.invalid/a https://REDACTED.example.invalid/b"
+            "https://REDACTED.example.invalid https://REDACTED.example.invalid/b"
         );
     }
 
@@ -1443,6 +1453,15 @@ mod tests {
         let mut value = json!({"url": "https://internal.example/app/rules"});
 
         scrub_hosts(&mut value, &["internal.example:443".to_string()]);
+
+        assert_eq!(value["url"], "https://REDACTED.example.invalid/app/rules");
+    }
+
+    #[test]
+    fn host_scrub_matches_a_case_normalized_default_port_url() {
+        let mut value = json!({"url": "https://internal.example/app/rules"});
+
+        scrub_hosts(&mut value, &["INTERNAL.example:443".to_string()]);
 
         assert_eq!(value["url"], "https://REDACTED.example.invalid/app/rules");
     }
