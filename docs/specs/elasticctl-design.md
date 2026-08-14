@@ -872,7 +872,7 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | Item delete | `DELETE /api/exception_lists/items?item_id=&namespace_type=` returns the deleted item and leaves its siblings alone |
 | Exception import | `POST /api/exception_lists/_import?overwrite=true` accepts an export file **including its trailer** and returns `{errors, success, success_count, success_exception_lists, success_count_exception_lists, success_exception_list_items, success_count_exception_list_items}` |
 | **Exception export needs `id`** | `POST /api/exception_lists/_export` **requires the `id` query parameter**. `list_id` and `namespace_type` alone are a 400: `id: Invalid input: expected string, received undefined` |
-| List find is filterable server-side | `GET /api/exception_lists/_find` accepts a KQL `filter` over `exception-list.attributes.<field>`. Measured against three sample lists: `type: detection` returned 2 of 3, `tags: alpha` returned 2 of 3, and a quoted `list_id` returned 1 |
+| List find is filterable server-side | `GET /api/exception_lists/_find` accepts a KQL `filter` over the namespace's saved-object type: `exception-list.attributes.<field>` for `single` and `exception-list-agnostic.attributes.<field>` for `agnostic`. Measured against three sample lists: `type: detection` returned 2 of 3, `tags: alpha` returned 2 of 3, and a quoted `list_id` returned 1 |
 | An empty filter is a 400 | Passing `filter=` with an empty value fails with `KQLSyntaxError: Expected "(", NOT, field name, value, whitespace but ")" found`. The parameter must be **omitted** when there is nothing to filter on, never sent empty |
 | Multi-list export concatenates | Exporting two lists and joining the bodies gives six lines — list, item, trailer, list, item, trailer — with a trailer **per list**, interior to the file. `_import?overwrite=true` accepts it: `success_count: 4`, both containers and both items restored |
 | `rule_default` lists are ordinary on the wire | `POST /api/exception_lists` with `"type": "rule_default"` creates one like any other container, and a rule references it through the same `exceptions_list` entry with `"type": "rule_default"`. Nothing about the route or the reference is special |
@@ -891,9 +891,10 @@ for a multi-list export, so it is recorded rather than fixed — but a future
 caller that trusts `summary` to describe the whole file would be wrong, and the
 decoder should grow a `Vec<ExportSummary>` before anyone does.
 
-The prefix differs from the rules vertical, which filters on
-`alert.attributes.<field>`. Both are the saved-object type name, so neither is
-transferable to the other.
+The prefixes differ from the rules vertical, which filters on
+`alert.attributes.<field>`. Each exception namespace also has its own
+saved-object type. A client that reuses the `single` prefix for an explicit
+`agnostic` lookup receives `This type exception-list is not allowed`.
 
 The empty-filter 400 is worth stating because it fails in the direction that
 looks like working code: a caller that builds a filter string by joining
@@ -1207,11 +1208,15 @@ evidence rather than care: the retrofit lands first as its own wave, and
 snapshot tests prove every existing command renders byte-identically before any
 0.2 feature is written. If the rest of 0.2 runs long, the retrofit ships alone.
 
-**A dangling exception pointer is silent — mitigated, not eliminated.** The
-server accepts `exceptions_list[].id` without validating it, and whether the
-detection engine matches exceptions on `id` or on `list_id` at run time is not
-measured. `diff` reports a mismatch and `push` repairs it, so a mirror
-converges on a correct pointer either way. What stays unknown is the blast
-radius of a wrong one: whether a rule holding a stale `id` applies its
-exceptions or silently ignores them. Measuring that needs a rule that fires, so
-it belongs to the live suite rather than to a fixture.
+**Fact G — runtime exception identity — resolved.** Measured on Serverless
+9.6.0 on 2026-08-15: a matching exception suppressed the test event with both
+the live pointer and a zero UUID pointer, producing zero preview hits in each
+case. Runtime exception lookup therefore follows `list_id` on the measured
+stack; the stored `exceptions_list[].id` is not its runtime discriminator.
+
+`diff` still reports the stale pointer and `push` repairs it, so a mirror
+converges on the target stack's current saved-object id. The same serialized
+live test deletes the exception container, imports the exported rule bundle,
+and proves that import rewrites the upload placeholder to the recreated
+container's live id. This behavior needs a rule that fires against a real
+stack, so it remains live conformance rather than a recorded response fixture.

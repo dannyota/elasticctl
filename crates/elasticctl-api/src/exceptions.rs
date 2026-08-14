@@ -42,20 +42,24 @@ pub struct ListFilter {
 impl ListFilter {
     /// The KQL `filter` for this selection, or `None` when nothing filters.
     ///
-    /// The list `_find` route filters over `exception-list.attributes.*` — the
-    /// saved-object type name, not the rules vertical's `alert.attributes.*`
-    /// (measured, spec 7.7). Values are quoted and escaped like `rules::to_kql`.
+    /// The list `_find` route filters over the namespace's saved-object type,
+    /// not the rules vertical's `alert.attributes.*` (measured, spec 7.7).
+    /// Values are quoted and escaped like `rules::to_kql`.
     pub fn to_kql(&self) -> Option<String> {
+        let object_type = match self.namespace.as_deref() {
+            Some("agnostic") => "exception-list-agnostic",
+            _ => "exception-list",
+        };
         let mut parts: Vec<String> = Vec::new();
         if let Some(ty) = &self.list_type {
             parts.push(format!(
-                "exception-list.attributes.type: \"{}\"",
+                "{object_type}.attributes.type: \"{}\"",
                 kql_escape(ty)
             ));
         }
         if let Some(tag) = &self.tag {
             parts.push(format!(
-                "exception-list.attributes.tags: \"{}\"",
+                "{object_type}.attributes.tags: \"{}\"",
                 kql_escape(tag)
             ));
         }
@@ -1025,6 +1029,19 @@ mod tests {
         assert_eq!(
             f.to_kql().unwrap(),
             "exception-list.attributes.tags: \"alpha\""
+        );
+    }
+
+    #[test]
+    fn to_kql_uses_the_agnostic_saved_object_type_for_that_namespace() {
+        let f = ListFilter {
+            tag: Some("alpha".into()),
+            namespace: Some("agnostic".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list-agnostic.attributes.tags: \"alpha\""
         );
     }
 

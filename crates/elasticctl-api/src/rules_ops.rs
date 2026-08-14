@@ -5,7 +5,7 @@
 //! functions and serialize the same structs.
 
 use crate::codec::{self, Format};
-use crate::model::{Rule, server_defaults};
+use crate::model::{ListKey, Rule, exception_refs, server_defaults};
 use crate::normalize;
 use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 use crate::rules::{self, BulkAction, RuleFilter, RuleSource};
@@ -14,6 +14,11 @@ use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::Path;
+
+/// Kibana validates an exception pointer as a string before it re-resolves the
+/// reference against the target stack. This deterministic placeholder is
+/// upload-only: the server replaces it with the live container id.
+const EXCEPTION_POINTER_PLACEHOLDER: &str = "00000000-0000-0000-0000-000000000000";
 
 /// The report `list` renders: every matching rule, in server order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -337,27 +342,36 @@ pub async fn plan_import(
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
 
-    let rules = match Format::from_path(path) {
-        Format::Yaml => codec::decode_yaml(&body)?,
-        Format::Ndjson => codec::decode_ndjson(&body)?.0,
+    let format = Format::from_path(path);
+    let mut bundle = match format {
+        // YAML has no exception-bundle representation. Preserve its existing
+        // rules-only behavior, then upload it as Kibana's required NDJSON.
+        Format::Yaml => codec::Bundle {
+            rules: codec::decode_yaml(&body)?,
+            ..Default::default()
+        },
+        // Rules export emits rules, exception containers, and exception items
+        // in one NDJSON bundle. Import must retain all three so Kibana can
+        // recreate containers and resolve their server-owned pointers.
+        Format::Ndjson => codec::decode_bundle(&body)?,
     };
-    let total = rules.len();
+    let total = bundle.rules.len();
 
     let mut skipped: Vec<Value> = Vec::new();
-    let mut to_upload = rules;
 
     if skip_existing {
         let t = t.ok_or_else(|| {
             Error::new(ErrorKind::Error, "import --skip-existing needs a transport")
         })?;
-        let ids: Vec<String> = to_upload
+        let ids: Vec<String> = bundle
+            .rules
             .iter()
             .filter_map(|r| r.rule_id().ok().map(str::to_owned))
             .collect();
         let existing = rules::existing_rule_ids(t, &ids).await?;
 
-        let mut keep = Vec::with_capacity(to_upload.len());
-        for rule in to_upload {
+        let mut keep = Vec::with_capacity(bundle.rules.len());
+        for rule in std::mem::take(&mut bundle.rules) {
             match rule.rule_id() {
                 Ok(id) if existing.contains(id) => {
                     skipped.push(json!({"rule_id": id, "reason": "exists"}));
@@ -365,10 +379,16 @@ pub async fn plan_import(
                 _ => keep.push(rule),
             }
         }
-        to_upload = keep;
+        bundle.rules = keep;
     }
 
-    let mut details: Vec<String> = to_upload
+    if format == Format::Ndjson {
+        retain_referenced_exception_objects(&mut bundle);
+    }
+    add_upload_pointer_placeholders(&mut bundle);
+
+    let mut details: Vec<String> = bundle
+        .rules
         .iter()
         .map(|r| format!("{}  {}  import", r.rule_id().unwrap_or(""), r.name()))
         .collect();
@@ -389,18 +409,24 @@ pub async fn plan_import(
     let preview = MutationPlan {
         preview_action: format!(
             "Import {} rule(s) from {}{qualifier}",
-            to_upload.len(),
+            bundle.rules.len(),
             path.display()
         ),
         preview_details: details,
-        targets: to_upload
+        targets: bundle
+            .rules
             .iter()
             .filter_map(|r| r.rule_id().ok().map(str::to_owned))
             .collect(),
     };
 
     // Kibana's import takes NDJSON regardless of the source file's format.
-    let ndjson = codec::encode_ndjson(&to_upload)?;
+    // A source NDJSON bundle keeps its exception members; YAML remains rules
+    // only because that format cannot represent containers or items.
+    let ndjson = match format {
+        Format::Yaml => codec::encode_ndjson(&bundle.rules)?,
+        Format::Ndjson => codec::encode_bundle(&bundle)?,
+    };
 
     Ok(ImportPlan {
         preview,
@@ -408,6 +434,57 @@ pub async fn plan_import(
         total,
         skipped,
     })
+}
+
+/// Keep only containers and items a rule scheduled for upload references.
+/// `rules import` is guarded as a rule mutation, so an exception-only or
+/// unreferenced object must never become an unpreviewed side effect. Namespace
+/// is part of stable list identity, so equal `list_id` values in `single` and
+/// `agnostic` remain disjoint.
+fn retain_referenced_exception_objects(bundle: &mut codec::Bundle) {
+    let wanted: std::collections::BTreeSet<ListKey> = bundle
+        .rules
+        .iter()
+        .flat_map(exception_refs)
+        .map(|reference| ListKey {
+            list_id: reference.list_id,
+            namespace_type: reference.namespace_type,
+        })
+        .collect();
+
+    bundle
+        .lists
+        .retain(|list| list.key().is_ok_and(|key| wanted.contains(&key)));
+    bundle.items.retain(|item| {
+        item.list_id().is_ok_and(|list_id| {
+            wanted.contains(&ListKey {
+                list_id: list_id.to_string(),
+                namespace_type: item.namespace_type().to_string(),
+            })
+        })
+    });
+}
+
+/// Make every readable exception reference acceptable to Kibana's import
+/// schema. This deliberately changes only the transient upload bundle; source
+/// files remain pointer-free and malformed/unreadable entries survive intact.
+fn add_upload_pointer_placeholders(bundle: &mut codec::Bundle) {
+    for rule in &mut bundle.rules {
+        let Some(Value::Array(references)) = rule.as_map_mut().get_mut("exceptions_list") else {
+            continue;
+        };
+        for reference in references {
+            let Value::Object(reference) = reference else {
+                continue;
+            };
+            if reference.get("list_id").is_some_and(Value::is_string) {
+                reference.insert(
+                    "id".to_string(),
+                    Value::String(EXCEPTION_POINTER_PLACEHOLDER.to_string()),
+                );
+            }
+        }
+    }
 }
 
 /// Upload the NDJSON `plan_import` prepared.
