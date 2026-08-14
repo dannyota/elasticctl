@@ -5,8 +5,8 @@
 //! They remain separate so `pull` does not write defaults the author omitted.
 
 use crate::model::{
-    ExceptionItem, ExceptionList, ITEM_VOLATILE_FIELDS, LIST_VOLATILE_FIELDS, Rule,
-    VOLATILE_FIELDS, server_defaults,
+    COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ITEM_VOLATILE_FIELDS,
+    LIST_VOLATILE_FIELDS, Rule, VOLATILE_FIELDS, server_defaults,
 };
 use serde_json::{Map, Value};
 
@@ -98,6 +98,17 @@ pub fn canonical_item(item: &ExceptionItem) -> ExceptionItem {
     let mut out = item.clone();
     for field in ITEM_VOLATILE_FIELDS {
         out.as_map_mut().remove(field);
+    }
+    // Comments carry server-minted fields too (spec 7.7). Skip non-object
+    // entries the way `exception_refs` skips malformed reference entries.
+    if let Some(Value::Array(comments)) = out.as_map_mut().get_mut("comments") {
+        for c in comments.iter_mut() {
+            if let Value::Object(m) = c {
+                for field in COMMENT_VOLATILE_FIELDS {
+                    m.remove(field);
+                }
+            }
+        }
     }
     let sorted = sort_value(&Value::Object(out.as_map().clone()));
     ExceptionItem::from_value(sorted).expect("item_id survives normalization")
@@ -383,6 +394,30 @@ mod tests {
     }
 
     #[test]
+    fn strip_exception_ids_strips_every_reference_not_just_the_first() {
+        let c = canonical(
+            &Rule::from_value(json!({
+                "rule_id": "x",
+                "exceptions_list": [
+                    {"id": "id-1", "list_id": "one"},
+                    {"id": "id-2", "list_id": "two"}
+                ]
+            }))
+            .unwrap(),
+        );
+        let refs = c.as_map()["exceptions_list"].as_array().unwrap();
+        assert_eq!(refs.len(), 2);
+        for entry in refs {
+            assert!(
+                entry.get("id").is_none(),
+                "every reference loses its pointer"
+            );
+        }
+        assert_eq!(refs[0]["list_id"], json!("one"));
+        assert_eq!(refs[1]["list_id"], json!("two"));
+    }
+
+    #[test]
     fn a_rule_with_no_exceptions_is_untouched() {
         let r = Rule::from_value(json!({"rule_id": "x", "name": "X"})).unwrap();
         assert_eq!(canonical(&r).as_map().get("exceptions_list"), None);
@@ -402,12 +437,35 @@ mod tests {
     }
 
     #[test]
+    fn strip_exception_ids_skips_non_objects_and_absent_ids() {
+        let mut r = Rule::from_value(json!({
+            "rule_id": "x",
+            "exceptions_list": ["not an object", {"list_id": "already stripped"}]
+        }))
+        .unwrap();
+        strip_exception_ids(&mut r); // must not panic
+        let refs = r.as_map()["exceptions_list"].as_array().unwrap();
+        assert_eq!(
+            refs[0],
+            json!("not an object"),
+            "non-object entries are left alone"
+        );
+        assert_eq!(
+            refs[1],
+            json!({"list_id": "already stripped"}),
+            "an absent id is a no-op"
+        );
+    }
+
+    #[test]
     fn canonical_list_strips_every_measured_volatile_field() {
         let l = ExceptionList::from_value(json!({
             "list_id": "l", "name": "L", "id": "server-id", "_version": "WzUsMV0=",
             "tie_breaker_id": "tb", "version": 3,
             "created_at": "2026-08-13T23:38:39.519Z", "created_by": "452295856",
-            "updated_at": "2026-08-13T23:38:39.519Z", "updated_by": "452295856"
+            "updated_at": "2026-08-13T23:38:39.519Z", "updated_by": "452295856",
+            "meta": {"zeta": 1, "alpha": 2},
+            "os_types": ["linux", "windows"]
         }))
         .unwrap();
         let c = canonical_list(&l);
@@ -415,6 +473,16 @@ mod tests {
             assert!(!c.as_map().contains_key(f), "{f} should have been stripped");
         }
         assert_eq!(c.list_id().unwrap(), "l", "identity must survive");
+        let nested = c.as_map()["meta"].as_object().unwrap();
+        let keys: Vec<&String> = nested.keys().collect();
+        assert_eq!(keys, vec!["alpha", "zeta"], "nested keys are sorted");
+        let os = c.as_map()["os_types"].as_array().unwrap();
+        let os_strs: Vec<&str> = os.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            os_strs,
+            vec!["linux", "windows"],
+            "array order is preserved"
+        );
     }
 
     #[test]
@@ -423,7 +491,9 @@ mod tests {
             "item_id": "i", "list_id": "l", "name": "I", "id": "server-id",
             "_version": "WzUsMV0=", "tie_breaker_id": "tb",
             "created_at": "2026-08-13T23:38:39.519Z", "created_by": "452295856",
-            "updated_at": "2026-08-13T23:38:39.519Z", "updated_by": "452295856"
+            "updated_at": "2026-08-13T23:38:39.519Z", "updated_by": "452295856",
+            "meta": {"zeta": 1, "alpha": 2},
+            "entries": [{"z": 1}, {"a": 2}]
         }))
         .unwrap();
         let c = canonical_item(&i);
@@ -431,6 +501,40 @@ mod tests {
             assert!(!c.as_map().contains_key(f), "{f} should have been stripped");
         }
         assert_eq!(c.item_id().unwrap(), "i", "identity must survive");
+        let nested = c.as_map()["meta"].as_object().unwrap();
+        let keys: Vec<&String> = nested.keys().collect();
+        assert_eq!(keys, vec!["alpha", "zeta"], "nested keys are sorted");
+        let entries = c.as_map()["entries"].as_array().unwrap();
+        let first_key = entries[0].as_object().unwrap().keys().next().unwrap();
+        assert_eq!(
+            first_key, "z",
+            "array element order preserved, keys sorted within"
+        );
+    }
+
+    #[test]
+    fn canonical_item_strips_volatile_fields_inside_comments() {
+        let i = ExceptionItem::from_value(json!({
+            "item_id": "i", "list_id": "l",
+            "comments": [{
+                "id": "0b025f61-b0b9-4658-83cf-cbb581ad2358",
+                "comment": "first note",
+                "created_at": "2026-08-14T04:49:54.101Z",
+                "created_by": "452295856"
+            }]
+        }))
+        .unwrap();
+        let c = canonical_item(&i);
+        let comments = c.as_map()["comments"].as_array().unwrap();
+        let first = comments[0].as_object().unwrap();
+        for f in COMMENT_VOLATILE_FIELDS {
+            assert!(!first.contains_key(f), "{f} should have been stripped");
+        }
+        assert_eq!(
+            comments[0]["comment"],
+            json!("first note"),
+            "the author's text survives"
+        );
     }
 
     #[test]

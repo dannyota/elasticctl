@@ -16,8 +16,9 @@ pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
-    ExceptionItem, ExceptionList, ExceptionRef, ExportSummary, ITEM_VOLATILE_FIELDS,
-    LIST_VOLATILE_FIELDS, ListKey, Rule, VOLATILE_FIELDS, exception_refs, server_defaults,
+    COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
+    ITEM_VOLATILE_FIELDS, LIST_VOLATILE_FIELDS, ListKey, Rule, VOLATILE_FIELDS, exception_refs,
+    server_defaults,
 };
 pub use normalize::{canonical, comparable, sort_rules};
 pub use ops::{ExportOutcome, MutationPlan};

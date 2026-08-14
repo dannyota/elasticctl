@@ -654,6 +654,14 @@ A `query` rule created with 13 fields comes back with 36.
 **Volatile — strip before diffing (7):** `id`, `created_at`, `created_by`,
 `updated_at`, `updated_by`, `revision`, `version`.
 
+Normalization descends into an exception item's `comments` array and strips the
+same class of field there. A comment's `id`, `created_at`, and `created_by` are
+minted by the server on write, so an item carrying a comment would otherwise
+show drift on every stack it is promoted to, and no operator action could
+resolve it. `updated_at` and `updated_by` are stripped from a comment too: they
+were not present on a freshly created one, but they name the same class on every
+other object in this API, and removing an absent key costs nothing.
+
 **Server defaults — fill before diffing a sparse local file (16):** `actions`,
 `author`, `exceptions_list`, `false_positives`, `immutable`, `max_signals`,
 `output_index`, `references`, `related_integrations`, `required_fields`,
@@ -819,7 +827,8 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | A dangling `id` is accepted | A zeroed UUID beside a live `list_id` returns 200 and is stored verbatim |
 | The exception export trailer differs | `POST /api/exception_lists/_export` ends with `exported_exception_list_count` and carries no `exported_count`, so the rules trailer test does not match it |
 | Container volatile fields | `id`, `_version`, `tie_breaker_id`, `version`, `created_at`, `created_by`, `updated_at`, `updated_by` |
-| Item volatile fields | The same set less `version`, plus per-comment timestamps |
+| Item volatile fields | The same set less `version`. A measured item response has `_version` but no `version` |
+| Comment shape | A comment created as `{"comment": "..."}` comes back as `{id, comment, created_at, created_by}`. The volatile part is `id`, `created_at`, and `created_by`; `comment` is the author's text |
 | `created_by` on Serverless | A bare numeric user id. It is identity and must be scrubbed from fixtures |
 | Value-list data streams | `.lists-default` and `.items-default` do not exist by default. `POST /api/lists/index` creates them, `GET` reports `{list_index, list_item_index}`, `DELETE` removes them |
 | Summary route | `GET /api/exception_lists/summary` returns `{windows, linux, macos, total}` |

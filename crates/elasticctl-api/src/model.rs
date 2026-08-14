@@ -183,6 +183,13 @@ pub const ITEM_VOLATILE_FIELDS: [&str; 7] = [
     "updated_by",
 ];
 
+/// Server-minted fields on an exception item comment. `id`, `created_at`, and
+/// `created_by` are measured; `updated_at` and `updated_by` were absent on a
+/// freshly created comment but name the same class on every other object in
+/// this API, and removing an absent key costs nothing.
+pub const COMMENT_VOLATILE_FIELDS: [&str; 5] =
+    ["id", "created_at", "created_by", "updated_at", "updated_by"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ExceptionList(Map<String, Value>);
