@@ -907,6 +907,7 @@ Same project, same date.
 |---|---|
 | Public status route | `GET /api/detection_engine/rules/prepackaged/_status` returns 200 with `rules_installed: 2066`, `rules_custom_installed: 0`, `rules_not_installed: 0`, `rules_not_updated: 0`, and three timeline counters |
 | Public install route | `PUT /api/detection_engine/rules/prepackaged` returns 200 with `{rules_installed, rules_updated, timelines_installed, timelines_updated}`. It installs and updates in one call and takes no selection |
+| The install route ignores its body | `PUT .../prepackaged` returns the same 200 whether sent an explicit `null` body or no body at all. The transport has no bodyless PUT, so the client sends `null`; this records that the route does not care |
 | No `dry_run` | The route has no dry-run parameter, so the guard preview is computed from `_status` |
 | Internal routes unavailable | `/internal/detection_engine/prebuilt_rules/status` answers 400, `exists but is not available with the current configuration` |
 | Customization is filterable | `params.ruleSource.isCustomized` splits 0 / 2,066. A prebuilt rule carries `rule_source: {type, is_customized, customized_fields, has_base_version}` |
