@@ -54,8 +54,9 @@ pub struct DiffReport {
 /// `created`, `updated`, `skipped_remote_only`, and `pending` count rules.
 /// `failed` counts every failed write, rules and exceptions alike, so a failed
 /// list or item write still exits nonzero. The `*_lists`/`items_*` fields name
-/// the exception writes separately, so a run that creates only containers and
-/// items never reads as "nothing happened".
+/// the exception writes separately, so a run that creates, updates, or removes
+/// only containers and items never reads as "nothing happened". `items_removed`
+/// is the one deletion the state engine performs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PushReport {
     pub applied: bool,
@@ -67,6 +68,8 @@ pub struct PushReport {
     pub lists_created: usize,
     pub lists_updated: usize,
     pub items_created: usize,
+    pub items_updated: usize,
+    pub items_removed: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]

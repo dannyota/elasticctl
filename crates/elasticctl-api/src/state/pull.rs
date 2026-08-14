@@ -47,6 +47,10 @@ pub async fn pull(
             }
             Err(e) => return Err(e),
         };
+        // The full item set is fetched, never narrowed: `state pull` takes
+        // rule-level selectors only. `state/diff.rs` item reconciliation
+        // deletes an item absent locally on the strength of this — add an
+        // item-level selector and that deletion becomes unsound (spec 5.4).
         let items = exceptions::find_items(t, key).await?;
         fetched.insert(key.clone(), (list, items));
     }

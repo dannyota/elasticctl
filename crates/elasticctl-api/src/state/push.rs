@@ -1,15 +1,16 @@
 //! `state push`: plan and apply, in container-then-item-then-rule order.
 
-use super::reports::{Mirror, PushReport, StackIdentity};
+use super::diff::{ItemOp, ListOp};
+use super::reports::{DanglingPointer, Mirror, PushReport, StackIdentity};
 use crate::diff::{Change, Drift};
 use crate::exceptions;
-use crate::model::{ExceptionItem, ListKey, Rule};
+use crate::model::{ListKey, Rule};
 use crate::normalize;
 use crate::report::{ChangeReport, ReportEntry};
 use crate::rules as api;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// What `plan_push` computed and `apply_push` performs.
@@ -26,9 +27,9 @@ pub struct PushPlan {
     /// `apply_push` never re-reads the mirror after the guard.
     desired: BTreeMap<String, Rule>,
     /// Container writes, ordered before any item or rule write.
-    list_ops: Vec<super::diff::ListOp>,
-    /// Items for a newly created container, ordered before rule writes.
-    item_creates: Vec<ExceptionItem>,
+    list_ops: Vec<ListOp>,
+    /// Item creates, updates, and removals, ordered before rule writes.
+    item_ops: Vec<ItemOp>,
 }
 
 /// The exception writes `apply_push` performed, folded into `PushReport`.
@@ -37,6 +38,8 @@ struct ExceptionCounts {
     lists_created: usize,
     lists_updated: usize,
     items_created: usize,
+    items_updated: usize,
+    items_removed: usize,
 }
 
 /// Compute the push preview and dry-run report without mutating the stack.
@@ -59,8 +62,11 @@ pub async fn plan_push(
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let (_, list_ops, item_creates, resolvable) =
-        super::diff::exception_plan(t, lists, items, &local, &remote).await?;
+    let plan = super::diff::exception_plan(t, lists, items, &local, &remote).await?;
+    let exceptions = plan.drift;
+    let list_ops = plan.list_ops;
+    let item_ops = plan.item_ops;
+    let resolvable = plan.resolvable;
 
     let by_id = |id: &str| local.iter().find(|r| r.rule_id().ok() == Some(id)).cloned();
     let remote_by_id = |id: &str| {
@@ -71,21 +77,46 @@ pub async fn plan_push(
     };
 
     let actionable = drift.actionable();
+    let actionable_ids: BTreeSet<String> =
+        actionable.iter().map(|c| c.rule_id().to_string()).collect();
+
+    // A dangling pointer is drift the normalized diff cannot see, so a rule
+    // whose normalized form is unchanged still needs a write to repair it.
+    // Remote-only rules are skipped: push never touches what it has no local
+    // form for.
+    let mut repairs: Vec<DanglingPointer> = Vec::new();
+    for dangling in &exceptions.dangling {
+        if actionable_ids.contains(&dangling.rule_id) || by_id(&dangling.rule_id).is_none() {
+            continue;
+        }
+        repairs.push(dangling.clone());
+    }
+
     let mut preview_details = Vec::new();
 
     // Name containers and items first, matching apply order.
     for op in &list_ops {
         match op {
-            super::diff::ListOp::Create(list) => {
+            ListOp::Create(list) => {
                 preview_details.push(format!("{}  {}  create", list.list_id()?, list.name()))
             }
-            super::diff::ListOp::Update(list) => {
+            ListOp::Update(list) => {
                 preview_details.push(format!("{}  {}  update", list.list_id()?, list.name()))
             }
         }
     }
-    for item in &item_creates {
-        preview_details.push(format!("{}  {}  create", item.item_id()?, item.list_id()?));
+    for op in &item_ops {
+        match op {
+            ItemOp::Create(item) => {
+                preview_details.push(format!("{}  {}  create", item.item_id()?, item.list_id()?))
+            }
+            ItemOp::Update(item) => {
+                preview_details.push(format!("{}  {}  update", item.item_id()?, item.list_id()?))
+            }
+            ItemOp::Remove {
+                list_id, item_id, ..
+            } => preview_details.push(format!("{item_id}  {list_id}  delete")),
+        }
     }
     for change in &actionable {
         let line = match change {
@@ -103,6 +134,12 @@ pub async fn plan_push(
         if !line.is_empty() {
             preview_details.push(line);
         }
+    }
+    for dangling in &repairs {
+        let name = by_id(&dangling.rule_id)
+            .map(|r| r.name().to_string())
+            .unwrap_or_default();
+        preview_details.push(format!("{}  {}  update (pointer)", dangling.rule_id, name));
     }
 
     let mut entries: Vec<ReportEntry> = Vec::new();
@@ -151,6 +188,23 @@ pub async fn plan_push(
         });
     }
 
+    // A repaired pointer is an update whose `before`/`after` normalization
+    // cannot show the difference; the write still happens.
+    for dangling in &repairs {
+        let desired_rule = by_id(&dangling.rule_id).expect("repair rule was found above");
+        let before = remote_by_id(&dangling.rule_id).map(|r| normalize::canonical(&r).into_value());
+        desired.insert(dangling.rule_id.clone(), desired_rule.clone());
+        entries.push(ReportEntry {
+            rule_id: dangling.rule_id.clone(),
+            name: desired_rule.name().to_string(),
+            action: "update".into(),
+            before,
+            after: Some(normalize::canonical(&desired_rule).into_value()),
+            applied: false,
+            error: None,
+        });
+    }
+
     // Refuse, before any write, a rule that references a list neither on the
     // stack nor in the mirror. The ids are injected at write time against the
     // target, but resolvability is known here.
@@ -175,9 +229,9 @@ pub async fn plan_push(
     // banner names rule, list, and item counts (spec 6.1).
     let preview_action = format!(
         "Push {} rule change(s), {} exception list(s) and {} item(s) from {}{}",
-        actionable.len(),
+        actionable.len() + repairs.len(),
         list_ops.len(),
-        item_creates.len(),
+        item_ops.len(),
         dir.display(),
         scope.describe()
     );
@@ -203,7 +257,7 @@ pub async fn plan_push(
         summary,
         desired,
         list_ops,
-        item_creates,
+        item_ops,
     })
 }
 
@@ -226,7 +280,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     // invariant means later writes depend on this one.
     for op in &plan.list_ops {
         let failure = match op {
-            super::diff::ListOp::Create(list) => match exceptions::create_list(t, list).await {
+            ListOp::Create(list) => match exceptions::create_list(t, list).await {
                 Ok(created) => {
                     if let Some(id) = created.as_map().get("id").and_then(Value::as_str) {
                         resolved.insert(list.key()?, id.to_string());
@@ -241,7 +295,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     e.message,
                 )),
             },
-            super::diff::ListOp::Update(list) => match exceptions::update_list(t, list).await {
+            ListOp::Update(list) => match exceptions::update_list(t, list).await {
                 Ok(_) => {
                     counts.lists_updated += 1;
                     None
@@ -261,21 +315,51 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         }
     }
 
-    // 2. Items, only for a newly created container in Task 11.
-    for item in &plan.item_creates {
-        match exceptions::create_item(t, item).await {
-            Ok(_) => counts.items_created += 1,
-            Err(e) => {
-                let id = item.item_id().unwrap_or("<unreadable>").to_string();
-                return Ok(finish_after_exception_failure(
-                    plan,
-                    id,
+    // 2. Items: create, update, or delete. A failure records the evidence and
+    // stops, like a container failure; a retry re-plans against the partial
+    // state and re-converges.
+    for op in &plan.item_ops {
+        let failure = match op {
+            ItemOp::Create(item) => match exceptions::create_item(t, item).await {
+                Ok(_) => {
+                    counts.items_created += 1;
+                    None
+                }
+                Err(e) => Some((
+                    item.item_id().unwrap_or("<unreadable>").to_string(),
                     String::new(),
                     "create_item",
                     e.message,
-                    counts,
-                ));
-            }
+                )),
+            },
+            ItemOp::Update(item) => match exceptions::update_item(t, item).await {
+                Ok(_) => {
+                    counts.items_updated += 1;
+                    None
+                }
+                Err(e) => Some((
+                    item.item_id().unwrap_or("<unreadable>").to_string(),
+                    String::new(),
+                    "update_item",
+                    e.message,
+                )),
+            },
+            ItemOp::Remove {
+                list_id,
+                item_id,
+                namespace_type,
+            } => match exceptions::delete_item(t, item_id, namespace_type).await {
+                Ok(_) => {
+                    counts.items_removed += 1;
+                    None
+                }
+                Err(e) => Some((item_id.clone(), list_id.clone(), "delete_item", e.message)),
+            },
+        };
+        if let Some((id, name, action, error)) = failure {
+            return Ok(finish_after_exception_failure(
+                plan, id, name, action, error, counts,
+            ));
         }
     }
 
@@ -404,6 +488,8 @@ fn push_summary(
         lists_created: counts.lists_created,
         lists_updated: counts.lists_updated,
         items_created: counts.items_created,
+        items_updated: counts.items_updated,
+        items_removed: counts.items_removed,
         selected,
         local_total,
     }

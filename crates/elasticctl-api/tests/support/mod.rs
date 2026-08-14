@@ -386,11 +386,14 @@ async fn mount_items(server: &MockServer, list_id: &str, namespace: &str, items:
 /// One rule references `list_id`; the list corpus also holds an orphan the rule
 /// does not reference, so `pull` must mirror only the referenced list.
 pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
+    // A real create returns the live pointer in the rule, so the mock carries it
+    // too; otherwise the Task 12 dangling check would flag a clean pull.
     let rule = json!({
         "rule_id": "r",
         "name": "R",
         "type": "query",
         "exceptions_list": [{
+            "id": "id-shared",
             "list_id": list_id,
             "type": "detection",
             "namespace_type": "single"
@@ -423,6 +426,7 @@ pub async fn mock_stack_with_rule_default_list() -> MockStack {
         "name": "R",
         "type": "query",
         "exceptions_list": [{
+            "id": "id-rd",
             "list_id": "rd",
             "type": "rule_default",
             "namespace_type": "single"
@@ -481,7 +485,168 @@ pub async fn mock_stack_with_two_list_ids() -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
     mount_get_list(&stack.server, "one", "single", "detection", "id-one").await;
     mount_get_list(&stack.server, "two", "single", "detection", "id-two").await;
+    // Both containers exist remotely and are mirrored, so item reconciliation
+    // reads their (empty) item sets.
+    mount_items(&stack.server, "one", "single", vec![]).await;
+    mount_items(&stack.server, "two", "single", vec![]).await;
     stack
+}
+
+/// A rule referencing `list_id`, whose live container holds exactly `item_ids`
+/// and answers item deletes, so a push can reconcile the items. The rule's
+/// stored pointer matches the live container, so the run has no dangling drift.
+pub async fn mock_stack_with_list_and_items(list_id: &str, item_ids: &[&str]) -> MockStack {
+    let live_id = format!("id-{list_id}");
+    let rule = json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "id": live_id,
+            "list_id": list_id,
+            "type": "detection",
+            "namespace_type": "single"
+        }]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", &live_id).await;
+    mount_items(
+        &stack.server,
+        list_id,
+        "single",
+        item_ids
+            .iter()
+            .map(|id| item_for(list_id, id, "single"))
+            .collect(),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item_id": "created",
+            "list_id": list_id,
+            "type": "simple",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item_id": "updated",
+            "list_id": list_id,
+            "type": "simple",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item_id": "deleted",
+            "list_id": list_id,
+            "type": "simple",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    stack
+}
+
+/// Two live containers: `mirrored`, referenced by a remote rule and mirrored
+/// locally, holding one item; and `unmirrored`, referenced by a second remote
+/// rule but absent locally. The run deletes `mirrored`'s item and must leave
+/// the `unmirrored` container alone.
+pub async fn mock_stack_with_two_lists_one_mirrored() -> MockStack {
+    let rules = vec![
+        json!({
+            "rule_id": "r",
+            "name": "R",
+            "type": "query",
+            "exceptions_list": [{
+                "id": "id-mirrored",
+                "list_id": "mirrored",
+                "type": "detection",
+                "namespace_type": "single"
+            }]
+        }),
+        json!({
+            "rule_id": "r2",
+            "name": "R2",
+            "type": "query",
+            "exceptions_list": [{
+                "id": "id-unmirrored",
+                "list_id": "unmirrored",
+                "type": "detection",
+                "namespace_type": "single"
+            }]
+        }),
+    ];
+    let stack = MockStack::with_rules(rules).await;
+    mount_get_list(
+        &stack.server,
+        "mirrored",
+        "single",
+        "detection",
+        "id-mirrored",
+    )
+    .await;
+    mount_get_list(
+        &stack.server,
+        "unmirrored",
+        "single",
+        "detection",
+        "id-unmirrored",
+    )
+    .await;
+    mount_items(
+        &stack.server,
+        "mirrored",
+        "single",
+        vec![item_for("mirrored", "drop", "single")],
+    )
+    .await;
+    mount_items(&stack.server, "unmirrored", "single", vec![]).await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item_id": "deleted",
+            "list_id": "mirrored",
+            "type": "simple",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    stack
+}
+
+/// A rule whose stored pointer is `stored` beside a live container `list_id`
+/// with id `id-shared`. Used to exercise the raw-remote dangling check.
+pub async fn mock_stack_with_dangling_pointer(
+    rule_id: &str,
+    list_id: &str,
+    stored: &str,
+) -> MockStack {
+    let rule = json!({
+        "rule_id": rule_id,
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "id": stored,
+            "list_id": list_id,
+            "type": "detection",
+            "namespace_type": "single"
+        }]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", "id-shared").await;
+    mount_items(&stack.server, list_id, "single", vec![]).await;
+    stack
+}
+
+/// A rule whose stored pointer matches the live container id, the clean case.
+pub async fn mock_stack_with_matching_pointer(rule_id: &str, list_id: &str) -> MockStack {
+    mock_stack_with_dangling_pointer(rule_id, list_id, "id-shared").await
 }
 
 /// An empty rule corpus with container and item create responses mounted, so a

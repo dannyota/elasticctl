@@ -4,9 +4,10 @@ use elasticctl_api::Format;
 use elasticctl_api::state::{self, StackIdentity};
 use elasticctl_api_test_support::{
     MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces,
-    mock_stack_with_failing_item_create, mock_stack_with_list_id,
+    mock_stack_with_dangling_pointer, mock_stack_with_failing_item_create,
+    mock_stack_with_list_and_items, mock_stack_with_list_id, mock_stack_with_matching_pointer,
     mock_stack_with_rule_default_list, mock_stack_with_rule_referencing,
-    mock_stack_with_two_list_ids,
+    mock_stack_with_two_list_ids, mock_stack_with_two_lists_one_mirrored,
 };
 use elasticctl_core::ErrorKind;
 use serde_json::json;
@@ -653,4 +654,288 @@ async fn read_mirror_tolerates_an_export_trailer_in_a_rule_file() {
     let mirror = state::read_mirror(dir.path()).unwrap();
     assert_eq!(mirror.rules.len(), 1, "the rule is read");
     assert_eq!(mirror.rules[0].rule_id().unwrap(), "r");
+}
+
+/// A local mirror with a rule `r` referencing `list_id` and the container file
+/// itself, so the list is present on both sides of the diff.
+fn mirror_with_rule_referencing(list_id: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        &format!(
+            "{}\n",
+            json!({
+                "rule_id": "r", "name": "R", "type": "query",
+                "exceptions_list": [{
+                    "list_id": list_id, "type": "detection", "namespace_type": "single"
+                }]
+            })
+        ),
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    std::fs::write(
+        exceptions.join(format!("{list_id}.ndjson")),
+        format!(
+            "{}\n",
+            json!({
+                "list_id": list_id, "type": "detection",
+                "name": format!("list {list_id}"), "namespace_type": "single"
+            })
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// A local mirror with a rule `r` referencing `list_id` and the container
+/// holding exactly `item_ids`.
+fn mirror_with_list_items(list_id: &str, item_ids: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        &format!(
+            "{}\n",
+            json!({
+                "rule_id": "r", "name": "R", "type": "query",
+                "exceptions_list": [{
+                    "list_id": list_id, "type": "detection", "namespace_type": "single"
+                }]
+            })
+        ),
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    std::fs::write(
+        exceptions.join(format!("{list_id}.ndjson")),
+        format!(
+            "{}\n",
+            json!({
+                "list_id": list_id, "type": "detection",
+                "name": format!("list {list_id}"), "namespace_type": "single",
+                "items": item_ids.iter().map(|id| json!({
+                    "item_id": id, "list_id": list_id, "type": "simple",
+                    "name": format!("item {id}"), "namespace_type": "single", "entries": []
+                })).collect::<Vec<_>>()
+            })
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// Spec 5.4. The single delete path in the tool's state engine.
+#[tokio::test]
+async fn an_item_absent_locally_is_deleted() {
+    let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
+    let dir = mirror_with_list_items("l", &["keep"]);
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+
+    assert!(
+        plan.preview_details
+            .iter()
+            .any(|d| d.contains("drop") && d.contains("delete")),
+        "the preview must name the deletion: {:?}",
+        plan.preview_details
+    );
+
+    state::apply_push(stack.transport(), plan).await.unwrap();
+    let deletes = stack.deleted_item_ids().await;
+    assert_eq!(deletes, vec!["drop"], "only the absent item is deleted");
+}
+
+/// The asymmetry must hold in the same run: items reconcile, containers do not.
+#[tokio::test]
+async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
+    let stack = mock_stack_with_two_lists_one_mirrored().await;
+    let dir = mirror_with_list_items("mirrored", &[]);
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    state::apply_push(stack.transport(), plan).await.unwrap();
+
+    // The fixture must actually delete an item, or the "no container deleted"
+    // assertion below proves nothing: deletion has to be possible for its
+    // absence to mean anything.
+    assert_eq!(
+        stack.deleted_item_ids().await,
+        vec!["drop"],
+        "the run deletes an item, so the container check is discriminating"
+    );
+    assert!(
+        !stack
+            .deleted_list_ids()
+            .await
+            .contains(&"unmirrored".to_string()),
+        "an unmirrored container is never deleted"
+    );
+}
+
+/// A dry run deletes nothing, including items.
+#[tokio::test]
+async fn planning_an_item_deletion_deletes_nothing() {
+    let stack = mock_stack_with_list_and_items("l", &["drop"]).await;
+    let dir = mirror_with_list_items("l", &[]);
+    state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    assert!(stack.deleted_item_ids().await.is_empty());
+}
+
+/// Spec 4.5: the server does not catch a dangling pointer, so diff does.
+/// The check runs on the RAW remote rule, because `comparable` has already
+/// stripped the pointer by the time drift is computed.
+#[tokio::test]
+async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
+    let stack =
+        mock_stack_with_dangling_pointer("r", "shared", "00000000-0000-0000-0000-000000000000")
+            .await;
+    let dir = mirror_with_rule_referencing("shared");
+    let d = state::diff(stack.transport(), dir.path(), &[], None)
+        .await
+        .unwrap();
+
+    assert_eq!(d.exceptions.dangling.len(), 1);
+    assert_eq!(d.exceptions.dangling[0].rule_id, "r");
+    assert_eq!(d.exceptions.dangling[0].list_id, "shared");
+    assert!(!d.clean, "a dangling pointer is drift");
+}
+
+#[tokio::test]
+async fn a_pointer_matching_the_live_container_is_not_reported() {
+    let stack = mock_stack_with_matching_pointer("r", "shared").await;
+    let dir = mirror_with_rule_referencing("shared");
+    let d = state::diff(stack.transport(), dir.path(), &[], None)
+        .await
+        .unwrap();
+    assert!(d.exceptions.dangling.is_empty());
+    assert!(d.clean);
+}
+
+/// Spec 4.5: `push` repairs a dangling pointer by rewriting the rule, even when
+/// its normalized form is unchanged — the one change a normalized diff cannot
+/// see.
+#[tokio::test]
+async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
+    let stack =
+        mock_stack_with_dangling_pointer("r", "shared", "00000000-0000-0000-0000-000000000000")
+            .await;
+    let dir = mirror_with_rule_referencing("shared");
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(
+        stack.write_paths().await,
+        vec!["PUT /api/detection_engine/rules".to_string()],
+        "a wrong pointer is repaired with one rule update"
+    );
+    assert_eq!(
+        stack.last_rule_write_body().await["exceptions_list"][0]["id"],
+        json!("id-shared"),
+        "the rewrite injects the live container id"
+    );
+}
+
+/// Spec 5.4: an item added locally to an already-live container is created, so
+/// a retry after a partial push re-converges instead of assuming a clean slate.
+#[tokio::test]
+async fn an_item_added_to_an_existing_container_is_created() {
+    let stack = mock_stack_with_list_and_items("l", &[]).await;
+    let dir = mirror_with_list_items("l", &["new"]);
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    let applied = state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(
+        applied.summary.items_created, 1,
+        "the missing item is created into the existing container"
+    );
+    assert!(
+        stack
+            .write_paths()
+            .await
+            .contains(&"POST /api/exception_lists/items".to_string()),
+        "the create is issued"
+    );
+}
+
+/// Spec 5.4: a modified item is updated, not left to drift.
+#[tokio::test]
+async fn a_modified_item_is_updated() {
+    let stack = mock_stack_with_list_and_items("l", &["keep"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[\
+         {\"list_id\":\"l\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    std::fs::write(
+        exceptions.join("l.ndjson"),
+        format!(
+            "{}\n",
+            json!({
+                "list_id": "l", "type": "detection", "name": "list l", "namespace_type": "single",
+                "items": [{
+                    "item_id": "keep", "list_id": "l", "type": "simple",
+                    "name": "item keep", "namespace_type": "single",
+                    "entries": [{"field": "host.name", "type": "match", "operator": "included", "value": ["x"]}]
+                }]
+            })
+        ),
+    )
+    .unwrap();
+
+    let plan = state::plan_push(stack.transport(), dir.path(), &[], None, &identity())
+        .await
+        .unwrap();
+    let applied = state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(
+        applied.summary.items_updated, 1,
+        "the item update succeeded"
+    );
+    assert!(
+        stack
+            .write_paths()
+            .await
+            .contains(&"PUT /api/exception_lists/items".to_string()),
+        "a differing item is updated"
+    );
+}
+
+/// Task 11's refusal: a rule referencing a list that 404s cannot be pulled, or
+/// the mirror would silently miss the list and only surface it at apply time.
+#[tokio::test]
+async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
+    let stack = MockStack::with_rules(vec![json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "list_id": "ghost", "type": "detection", "namespace_type": "single"
+        }]
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let err = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert!(err.message.contains("ghost"), "{}", err.message);
+    assert!(
+        !dir.path().join("rules").exists(),
+        "no mirror is written when a referenced list is missing"
+    );
 }
