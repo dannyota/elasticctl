@@ -38,3 +38,21 @@ async fn doctor_reports_the_value_list_index_as_bootstrapped() {
         .unwrap();
     assert_eq!(check.status, Status::Ok);
 }
+
+/// A successful but malformed index response is a failed health check, not
+/// evidence that the streams have not been bootstrapped.
+#[tokio::test]
+async fn doctor_reports_a_malformed_value_list_index_as_failed() {
+    let stack = MockStack::with_value_list_index(serde_json::json!({
+        "list_index": true
+    }))
+    .await;
+    let r = health::doctor(stack.transport()).await.unwrap();
+    let check = r
+        .checks
+        .iter()
+        .find(|c| c.name == "value_list_index")
+        .unwrap();
+    assert_eq!(check.status, Status::Fail);
+    assert!(check.detail.contains("list_item_index"), "{}", check.detail);
+}

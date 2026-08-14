@@ -58,9 +58,6 @@ pub async fn plan_push(
         lists,
         items,
     } = super::mirror::read_mirror(dir)?;
-    // Captured before `items` moves into `exception_plan`: the value-list
-    // report reads only the entries, and needs them regardless of the plan.
-    let value_lists = value_list_refs(&items);
     // Resolve locally first because disk-only rules have no remote ID and may
     // be created by a scoped push.
     let scope = super::scope_of(t, selectors, tag, source, &local_all, "apply").await?;
@@ -71,6 +68,11 @@ pub async fn plan_push(
     } else {
         scope.split_by_source(local_all)
     };
+    // A value-list reference is active only if its exception container is
+    // reachable from a rule in this push's active closure. Reading every
+    // mirror item here would let an out-of-scope rule block this preview.
+    let active_list_keys = super::referenced_keys(&local);
+    let value_lists = value_list_refs(&items, &active_list_keys);
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
@@ -165,11 +167,20 @@ pub async fn plan_push(
     // when they are not bootstrapped, no value list can exist. The `?` refuses
     // on any failure that is not a clean "absent" 404, so an unverifiable
     // reference is a failure rather than a silent omission.
-    if !value_lists.is_empty() && !exceptions::value_lists_bootstrapped(t).await? {
-        for id in &value_lists {
-            preview_details.push(format!(
-                "value list \"{id}\" is absent; run POST /api/lists/index to bootstrap the data streams"
-            ));
+    if !value_lists.is_empty() {
+        if !exceptions::value_lists_bootstrapped(t).await? {
+            for value_list in &value_lists {
+                preview_details.push(format!(
+                    "value list \"{}\" is absent; run POST /api/lists/index to bootstrap the data streams",
+                    value_list.id
+                ));
+            }
+        } else {
+            for value_list in &value_lists {
+                if !exceptions::value_list_exists(t, &value_list.id).await? {
+                    preview_details.push(format!("value list \"{}\" is absent", value_list.id));
+                }
+            }
         }
     }
 
@@ -595,9 +606,22 @@ fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<
 /// A `list` entry references a value list through `list.id`, a caller-supplied
 /// id that is stable across stacks (spec 7.7). A `BTreeSet` keeps the preview
 /// order deterministic.
-fn value_list_refs(items: &[ExceptionItem]) -> BTreeSet<String> {
+fn value_list_refs(
+    items: &[ExceptionItem],
+    active_list_keys: &BTreeSet<ListKey>,
+) -> BTreeSet<exceptions::ValueListRef> {
     let mut ids = BTreeSet::new();
     for item in items {
+        let Ok(list_id) = item.list_id() else {
+            continue;
+        };
+        let key = ListKey {
+            list_id: list_id.to_string(),
+            namespace_type: item.namespace_type().to_string(),
+        };
+        if !active_list_keys.contains(&key) {
+            continue;
+        }
         let Some(entries) = item.as_map().get("entries").and_then(Value::as_array) else {
             continue;
         };
@@ -614,7 +638,7 @@ fn value_list_refs(items: &[ExceptionItem]) -> BTreeSet<String> {
                 .and_then(|l| l.get("id"))
                 .and_then(Value::as_str)
             {
-                ids.insert(id.to_string());
+                ids.insert(exceptions::ValueListRef { id: id.to_string() });
             }
         }
     }

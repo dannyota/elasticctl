@@ -352,16 +352,53 @@ impl MockStack {
     /// A stack whose value-list data streams are bootstrapped, so
     /// `GET /api/lists/index` reports both indexes present.
     pub async fn with_value_lists_bootstrapped() -> MockStack {
+        Self::with_value_lists(&[]).await
+    }
+
+    /// A stack whose value-list index returns `body`. This keeps malformed
+    /// index responses testable without making them look like absent streams.
+    pub async fn with_value_list_index(body: Value) -> MockStack {
         let stack = Self::with_rules(vec![]).await;
         Mock::given(method("GET"))
             .and(path("/api/lists/index"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "list_index": true,
-                "list_item_index": true
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&stack.server)
             .await;
         stack
+    }
+
+    /// A stack with bootstrapped value-list streams and exactly these ids.
+    pub async fn with_value_lists(ids: &[&str]) -> MockStack {
+        let stack = Self::with_value_list_index(json!({
+            "list_index": true,
+            "list_item_index": true
+        }))
+        .await;
+        for id in ids {
+            Mock::given(method("GET"))
+                .and(path("/api/lists"))
+                .and(query_param("id", *id))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": id,
+                    "name": format!("value list {id}")
+                })))
+                .mount(&stack.server)
+                .await;
+        }
+        stack
+    }
+
+    /// Count exact public value-list lookups for `id`.
+    pub async fn value_list_lookups(&self, id: &str) -> usize {
+        self.requests()
+            .await
+            .into_iter()
+            .filter(|request| {
+                request.method == http::Method::GET.as_str()
+                    && request.path == "/api/lists"
+                    && request.query.get("id").is_some_and(|value| value == id)
+            })
+            .count()
     }
 }
 

@@ -938,7 +938,7 @@ async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
 /// line is absent, so a bootstrapped stack is not reported as broken.
 #[tokio::test]
 async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
-    let stack = MockStack::with_value_lists_bootstrapped().await;
+    let stack = MockStack::with_value_lists(&["ip-allowlist"]).await;
     let dir = mirror_with_item_referencing_value_list("ip-allowlist");
     let plan = state::plan_push(
         stack.transport(),
@@ -958,6 +958,136 @@ async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
         "{:?}",
         plan.preview_details
     );
+}
+
+/// A 200 index must still be validated: a missing measured field makes the
+/// stack unverifiable, not silently absent.
+#[tokio::test]
+async fn malformed_value_list_index_response_fails_planning() {
+    let stack = MockStack::with_value_list_index(json!({
+        "list_index": true
+    }))
+    .await;
+    let dir = mirror_with_item_referencing_value_list("ip-allowlist");
+
+    let err = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Http);
+    assert!(err.message.contains("list_item_index"), "{}", err.message);
+    assert!(stack.write_requests().await.is_empty());
+}
+
+/// A bootstrapped index alone does not prove that a referenced value list
+/// exists; its id must be resolved through the public lookup route.
+#[tokio::test]
+async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
+    let stack = MockStack::with_value_lists(&[]).await;
+    let dir = mirror_with_item_referencing_value_list("missing");
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        plan.preview_details
+            .iter()
+            .any(|line| line.contains("missing")),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
+fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r1",
+        &format!(
+            "{}\n",
+            json!({
+                "rule_id": "r1", "name": "R1", "type": "query",
+                "exceptions_list": [{
+                    "list_id": "detect-a", "type": "detection", "namespace_type": "single"
+                }]
+            })
+        ),
+    );
+    write_local_rule(
+        dir.path(),
+        "r2",
+        &format!(
+            "{}\n",
+            json!({
+                "rule_id": "r2", "name": "R2", "type": "query",
+                "exceptions_list": [{
+                    "list_id": "detect-b", "type": "detection", "namespace_type": "single"
+                }]
+            })
+        ),
+    );
+    let exceptions = dir.path().join("exceptions");
+    std::fs::create_dir_all(&exceptions).unwrap();
+    for (list_id, item_id, value_list_id) in [
+        ("detect-a", "i1", "ip-allowlist"),
+        ("detect-b", "i2", "dns-allowlist"),
+    ] {
+        std::fs::write(
+            exceptions.join(format!("{list_id}.ndjson")),
+            format!(
+                "{}\n",
+                json!({
+                    "list_id": list_id, "type": "detection", "name": list_id,
+                    "namespace_type": "single",
+                    "items": [{
+                        "item_id": item_id, "list_id": list_id, "type": "simple",
+                        "name": item_id, "namespace_type": "single",
+                        "entries": [{
+                            "field": "source.ip", "operator": "included", "type": "list",
+                            "list": {"id": value_list_id, "type": "ip"}
+                        }]
+                    }]
+                })
+            ),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// Scoped planning only reads value lists reached through selected rules, so
+/// an unrelated broken reference cannot block or warn on this push.
+#[tokio::test]
+async fn scoped_push_checks_each_reachable_value_list_once() {
+    let stack = MockStack::with_value_lists(&["ip-allowlist", "dns-allowlist"]).await;
+    let dir = mirror_with_selected_and_unselected_value_list_refs();
+    state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &["r1".into()],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(stack.value_list_lookups("ip-allowlist").await, 1);
+    assert_eq!(stack.value_list_lookups("dns-allowlist").await, 0);
 }
 
 /// Spec 5.4. The single delete path in the tool's state engine.
