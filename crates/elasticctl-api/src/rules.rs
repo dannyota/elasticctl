@@ -144,51 +144,66 @@ pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     Ok((rules, total))
 }
 
-/// Refuse a `custom` or `prebuilt` scope that matched nothing against a
-/// non-empty corpus.
+/// The three totals that prove `immutable` divides the complete rule corpus.
+pub(crate) struct SourceTotals {
+    pub custom: u64,
+    pub prebuilt: u64,
+    pub all: u64,
+}
+
+impl SourceTotals {
+    fn is_exhaustive(&self) -> bool {
+        self.custom.checked_add(self.prebuilt) == Some(self.all)
+    }
+}
+
+/// Verify that the custom and prebuilt `immutable` filters are disjoint and
+/// exhaustive. `customized` is intentionally absent: it overlaps prebuilt.
 ///
-/// Both scopes filter on `alert.attributes.params.immutable`. Whether that
-/// field exists on stacks older than 9.5.1 is unmeasured (fact H). If it is
-/// absent, the filter silently matches nothing, and a query would report "no
-/// custom rules" for a stack that simply lacks the field.
-///
-/// The probe is the source-only read, not the caller's combined filter: a
-/// `--tag` that narrows a healthy custom scope to nothing must not be blamed on
-/// `immutable`. Query commands and `state pull` call this; `state diff` and
-/// `push` do not, because an empty scope there is reported through
-/// `out_of_scope` instead (spec 5.5).
-pub(crate) async fn refuse_silently_empty_scope(t: &Transport, source: RuleSource) -> Result<()> {
-    let name = match source {
-        RuleSource::Custom => "custom",
-        RuleSource::Prebuilt => "prebuilt",
-        _ => return Ok(()),
-    };
-    // Source-only, so a narrower clause (tag, severity, ...) never triggers it.
-    let (_, scoped) = find_page(
+/// This runs only after an otherwise unselected custom or prebuilt read found
+/// no rules. A valid empty slice must still account for the entire corpus with
+/// its opposite source slice.
+pub(crate) async fn verify_source_partition(t: &Transport) -> Result<SourceTotals> {
+    let (_, custom) = find_page(
         t,
         &RuleFilter {
-            source,
+            source: RuleSource::Custom,
             ..Default::default()
         },
         1,
         1,
     )
     .await?;
-    if scoped > 0 {
-        return Ok(());
-    }
-    let (_, corpus) = find_page(t, &RuleFilter::default(), 1, 1).await?;
-    if corpus > 0 {
+    let (_, prebuilt) = find_page(
+        t,
+        &RuleFilter {
+            source: RuleSource::Prebuilt,
+            ..Default::default()
+        },
+        1,
+        1,
+    )
+    .await?;
+    let (_, all) = find_page(t, &RuleFilter::default(), 1, 1).await?;
+
+    let totals = SourceTotals {
+        custom,
+        prebuilt,
+        all,
+    };
+    if !totals.is_exhaustive() {
         return Err(Error::new(
             ErrorKind::Unsupported,
             format!(
-                "--source {name} filtered on alert.attributes.params.immutable and matched 0 \
-                 of {corpus} rules. The field may be absent on this stack (unmeasured); \
-                 re-run with --source all to read the corpus."
+                "the immutable source partition is not exhaustive: custom={}, \
+                 prebuilt={}, all={}. The field may be absent on this stack; \
+                 re-run with --source all to read the corpus.",
+                totals.custom, totals.prebuilt, totals.all
             ),
         ));
     }
-    Ok(())
+
+    Ok(totals)
 }
 
 /// Detection-rule types used to partition a corpus. Each rule has one

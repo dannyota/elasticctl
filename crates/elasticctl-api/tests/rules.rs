@@ -1,6 +1,7 @@
 use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{self, BulkAction, RuleFilter, RuleSource};
 use elasticctl_api::{Format, rules_ops};
+use elasticctl_api_test_support::MockStack;
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{
@@ -432,50 +433,81 @@ async fn find_all_accepts_an_honestly_empty_corpus() {
     );
 }
 
-/// Fact H: a `custom` scope that matches zero rules against a non-empty corpus
-/// must name the field it filtered on, rather than reporting "no rules".
+/// An empty prebuilt slice is valid when the custom and prebuilt totals still
+/// account for the whole corpus.
 #[tokio::test]
-async fn a_custom_scope_returning_zero_against_a_non_empty_corpus_names_the_field() {
-    let server = MockServer::start().await;
+async fn a_custom_only_stack_has_a_valid_empty_prebuilt_scope() {
+    let stack = MockStack::with_rules(vec![
+        json!({"rule_id": "custom-0", "name": "custom 0", "type": "query", "immutable": false}),
+        json!({"rule_id": "custom-1", "name": "custom 1", "type": "query", "immutable": false}),
+        json!({"rule_id": "custom-2", "name": "custom 2", "type": "query", "immutable": false}),
+    ])
+    .await;
+    let report = rules_ops::list(
+        stack.transport(),
+        &RuleFilter {
+            source: RuleSource::Prebuilt,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
-    Mock::given(method("GET"))
-        .and(path("/api/detection_engine/rules/_find"))
-        .and(query_param(
-            "filter",
-            "alert.attributes.params.immutable: false",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 10000, "total": 0, "data": []
-        })))
-        .mount(&server)
-        .await;
+    assert_eq!(report.total, 0);
+}
 
-    // The unfiltered read is the non-empty corpus the empty scope is judged
-    // against.
-    Mock::given(method("GET"))
-        .and(path("/api/detection_engine/rules/_find"))
-        .and(query_param_is_missing("filter"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 1, "total": 5, "data": [rule_json("a")]
-        })))
-        .mount(&server)
-        .await;
+/// An accepted empty source export is an empty typed outcome, not an unscoped
+/// export request.
+#[tokio::test]
+async fn an_exhaustively_empty_source_export_sends_no_unscoped_request() {
+    let stack = MockStack::with_rules(vec![
+        json!({"rule_id": "prebuilt-0", "name": "prebuilt 0", "type": "query", "immutable": true}),
+        json!({"rule_id": "prebuilt-1", "name": "prebuilt 1", "type": "query", "immutable": true}),
+        json!({"rule_id": "prebuilt-2", "name": "prebuilt 2", "type": "query", "immutable": true}),
+    ])
+    .await;
+    let outcome = rules_ops::export_rules(
+        stack.transport(),
+        &[],
+        None,
+        RuleSource::Custom,
+        Format::Ndjson,
+    )
+    .await
+    .unwrap();
 
-    let filter = RuleFilter {
-        source: RuleSource::Custom,
-        ..Default::default()
-    };
-    let err = rules_ops::list(&transport(&server), &filter)
-        .await
-        .unwrap_err();
+    assert_eq!(outcome.exported, 0);
+    assert!(outcome.missing.is_empty());
+    assert!(outcome.body.is_empty());
+    assert!(
+        !stack
+            .write_paths()
+            .await
+            .iter()
+            .any(|path| { path == "POST /api/detection_engine/rules/_export" })
+    );
+}
+
+/// An old stack is unsupported only when custom and prebuilt do not partition
+/// its unfiltered corpus.
+#[tokio::test]
+async fn a_non_exhaustive_immutable_partition_is_refused() {
+    let stack = MockStack::with_source_totals(0, 2, 3).await;
+    let err = rules_ops::list(
+        stack.transport(),
+        &RuleFilter {
+            source: RuleSource::Custom,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.kind, ErrorKind::Unsupported);
-    assert!(err.message.contains("immutable"), "{}", err.message);
-    assert!(
-        err.message.contains("5"),
-        "must name the corpus: {}",
-        err.message
-    );
+    for count in ["0", "2", "3"] {
+        assert!(err.message.contains(count), "{}", err.message);
+    }
+    assert!(err.message.contains("--source all"), "{}", err.message);
 }
 
 /// The empty-scope guard must not blame `immutable` for an emptiness a narrower

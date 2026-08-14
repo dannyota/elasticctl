@@ -67,15 +67,23 @@ pub struct PreviewReport {
 
 pub async fn list(t: &Transport, filter: &RuleFilter) -> Result<RuleListReport> {
     let rules = rules::find_all(t, filter).await?;
-    // A query command that hid 2,066 prebuilt rules would be lying, so the
-    // default is `all`. When the caller explicitly scoped to `custom` or
-    // `prebuilt`, an empty result against a non-empty corpus must name the
-    // field rather than report "no rules" (spec 5.5, fact H).
-    if rules.is_empty() {
-        rules::refuse_silently_empty_scope(t, filter.source).await?;
+    if rules.is_empty() && is_unselected_source_query(filter) {
+        rules::verify_source_partition(t).await?;
     }
     let total = rules.len();
     Ok(RuleListReport { total, rules })
+}
+
+/// A `rules list` filter has no positional selectors. Any remaining clause
+/// deliberately narrows the result and must not trigger a corpus proof.
+fn is_unselected_source_query(filter: &RuleFilter) -> bool {
+    matches!(filter.source, RuleSource::Custom | RuleSource::Prebuilt)
+        && filter.enabled.is_none()
+        && filter.rule_type.is_none()
+        && filter.severity.is_none()
+        && filter.tag.is_none()
+        && filter.name.is_none()
+        && filter.query.is_none()
 }
 
 /// Resolve a selector and fetch the rule, canonicalized so output is stable.
@@ -250,7 +258,14 @@ pub async fn export_rules(
             )
             .await?;
             if scoped.is_empty() {
-                rules::refuse_silently_empty_scope(t, source).await?;
+                if matches!(source, RuleSource::Custom | RuleSource::Prebuilt) {
+                    rules::verify_source_partition(t).await?;
+                }
+                return Ok(ExportOutcome {
+                    body: String::new(),
+                    exported: 0,
+                    missing: Vec::new(),
+                });
             }
             Some(
                 scoped

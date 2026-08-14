@@ -26,11 +26,14 @@ pub async fn pull(
     // may not exist yet.
     let scope = super::scope_of(t, selectors, tag, source, &[], "pull").await?;
     let mut remote = scope.remote(t).await?;
-    // A `custom`/`prebuilt` pull that matched nothing against a non-empty
-    // corpus would silently write an empty mirror; refuse and name the field
-    // instead (spec 5.5, fact H).
-    if remote.is_empty() && !scope.is_scoped() {
-        crate::rules::refuse_silently_empty_scope(t, scope.source).await?;
+    // An empty unselected custom/prebuilt pull is valid only when both source
+    // totals still account for the whole corpus. `customized` overlaps
+    // prebuilt, so it has no partition proof.
+    if remote.is_empty()
+        && !scope.is_scoped()
+        && matches!(scope.source, RuleSource::Custom | RuleSource::Prebuilt)
+    {
+        crate::rules::verify_source_partition(t).await?;
     }
     // Sort unstable server output so collision reports and writes are stable.
     normalize::sort_rules(&mut remote);

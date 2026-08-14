@@ -1432,14 +1432,14 @@ async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
     );
 }
 
-/// Fact H: a `custom` scope matching nothing against a non-empty corpus must
-/// name the field it filtered on, not silently write an empty mirror.
+/// A prebuilt-only stack has an honestly empty custom slice, so `pull` writes
+/// an empty mirror rather than treating it as an unsupported old stack.
 #[tokio::test]
-async fn a_custom_pull_against_a_prebuilt_only_stack_names_the_field() {
+async fn a_prebuilt_only_stack_has_a_valid_empty_custom_scope() {
     let stack = mock_mixed_corpus(0, 3).await;
     let dir = tempfile::tempdir().unwrap();
 
-    let err = state::pull(
+    let report = state::pull(
         stack.transport(),
         dir.path(),
         Format::Yaml,
@@ -1448,13 +1448,7 @@ async fn a_custom_pull_against_a_prebuilt_only_stack_names_the_field() {
         RuleSource::Custom,
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    assert_eq!(err.kind, ErrorKind::Unsupported);
-    assert!(err.message.contains("immutable"), "{}", err.message);
-    assert!(
-        err.message.contains("3"),
-        "the corpus size must be named: {}",
-        err.message
-    );
+    assert_eq!(report.pulled, 0);
 }

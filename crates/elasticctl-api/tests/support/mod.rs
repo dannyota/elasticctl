@@ -180,6 +180,23 @@ impl MockStack {
         stack
     }
 
+    /// A stack whose `_find` totals describe custom, prebuilt, and unfiltered
+    /// source slices independently. This permits an old-stack partition that
+    /// cannot be represented by one consistent rule corpus.
+    pub async fn with_source_totals(custom: u64, prebuilt: u64, all: u64) -> MockStack {
+        let stack = Self::new().await;
+        Mock::given(method("GET"))
+            .and(path(RULES_FIND))
+            .respond_with(SourceTotalsRules {
+                custom,
+                prebuilt,
+                all,
+            })
+            .mount(&stack.server)
+            .await;
+        stack
+    }
+
     /// A stack pre-seeded with `n` exception-list containers named `l0..l{n-1}`,
     /// plus a `?list_id=` lookup for each so `resolve_ids` and `get_list` work.
     pub async fn with_exception_lists(n: usize) -> MockStack {
@@ -328,6 +345,33 @@ impl MockStack {
 /// filter.
 struct FilteredRules {
     rules: Vec<Value>,
+}
+
+/// Serve only the three totals used to verify that `immutable` partitions the
+/// corpus. Its zero-result data is intentional: callers use this fixture only
+/// after their source-scoped read returned no rules.
+struct SourceTotalsRules {
+    custom: u64,
+    prebuilt: u64,
+    all: u64,
+}
+
+impl Respond for SourceTotalsRules {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let filter = request
+            .url
+            .query_pairs()
+            .find_map(|(k, v)| (k.as_ref() == "filter").then(|| v.into_owned()));
+        let total = match filter.as_deref() {
+            Some("alert.attributes.params.immutable: false") => self.custom,
+            Some("alert.attributes.params.immutable: true") => self.prebuilt,
+            None => self.all,
+            _ => 0,
+        };
+        ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 1, "total": total, "data": []
+        }))
+    }
 }
 
 impl Respond for FilteredRules {
