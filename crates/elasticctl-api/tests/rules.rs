@@ -1,5 +1,5 @@
 use elasticctl_api::model::Rule;
-use elasticctl_api::rules::{self, BulkAction, RuleFilter};
+use elasticctl_api::rules::{self, BulkAction, RuleFilter, RuleSource};
 use elasticctl_api::{Format, rules_ops};
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
@@ -194,6 +194,58 @@ async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     );
 }
 
+/// Spec 5.2 + 5.5: when `--source` is active, a partitioned read compares its
+/// slice totals against the *filtered* total, not the corpus total. The source
+/// clause is carried into every type slice, and the seven slices sum to the
+/// scoped total (10,001) rather than any larger unfiltered corpus.
+#[tokio::test]
+async fn a_scoped_partition_checks_slices_against_the_filtered_total() {
+    let server = MockServer::start().await;
+    let filter = RuleFilter {
+        source: RuleSource::Custom,
+        ..Default::default()
+    };
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.immutable: false",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(10001, vec![])))
+        .mount(&server)
+        .await;
+
+    for (rule_type, count) in [
+        ("query", 1u64),
+        ("eql", 1),
+        ("esql", 1),
+        ("threshold", 1),
+        ("threat_match", 1),
+        ("machine_learning", 1),
+        ("new_terms", 9995),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/_find"))
+            .and(query_param(
+                "filter",
+                format!(
+                    "alert.attributes.params.immutable: false AND \
+                     alert.attributes.params.type: \"{rule_type}\""
+                ),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(find_body(count, rules_of(rule_type, count))),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let all = rules::find_all(&transport(&server), &filter).await.unwrap();
+    assert_eq!(all.len(), 10001);
+}
+
 /// A type still over the window is partitioned by `enabled`. A caller's
 /// `rule_type` selects one type slice before that partition.
 #[tokio::test]
@@ -377,6 +429,52 @@ async fn find_all_accepts_an_honestly_empty_corpus() {
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+/// Fact H: a `custom` scope that matches zero rules against a non-empty corpus
+/// must name the field it filtered on, rather than reporting "no rules".
+#[tokio::test]
+async fn a_custom_scope_returning_zero_against_a_non_empty_corpus_names_the_field() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.immutable: false",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 0, "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    // The unfiltered read is the non-empty corpus the empty scope is judged
+    // against.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param_is_missing("filter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 1, "total": 5, "data": [rule_json("a")]
+        })))
+        .mount(&server)
+        .await;
+
+    let filter = RuleFilter {
+        source: RuleSource::Custom,
+        ..Default::default()
+    };
+    let err = rules_ops::list(&transport(&server), &filter)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Unsupported);
+    assert!(err.message.contains("immutable"), "{}", err.message);
+    assert!(
+        err.message.contains("5"),
+        "must name the corpus: {}",
+        err.message
     );
 }
 

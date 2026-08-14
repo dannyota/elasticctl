@@ -10,11 +10,11 @@ mod resolve;
 use clap::Parser;
 use cli::{
     Cli, Command, ConfigAction, ExceptionsAction, GlobalArgs, PrebuiltAction, RulesAction,
-    StateAction,
+    SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::exceptions::ListFilter;
-use elasticctl_api::rules::RuleFilter;
+use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_core::{Config, Error, ErrorKind};
 use serde_json::{Value, json};
 
@@ -51,6 +51,7 @@ async fn main() {
                 severity,
                 tag,
                 filter,
+                source,
             } => {
                 if *enabled && *disabled {
                     Err(Error::new(
@@ -59,6 +60,7 @@ async fn main() {
                     ))
                 } else {
                     let f = RuleFilter {
+                        source: source_to_api(*source),
                         enabled: if *enabled {
                             Some(true)
                         } else if *disabled {
@@ -115,6 +117,7 @@ async fn main() {
                 selectors,
                 tag,
                 format_file,
+                source,
             } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
                     Ok(ctx) => {
@@ -122,6 +125,7 @@ async fn main() {
                             &ctx,
                             selectors,
                             tag.as_deref(),
+                            source_to_api(*source),
                             args.global.out.as_deref(),
                             format,
                         )
@@ -234,9 +238,20 @@ async fn main() {
                 format_file,
                 selectors,
                 tag,
+                source,
             } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
-                    Ok(ctx) => cmd::state::pull(&ctx, dir, format, selectors, tag.as_deref()).await,
+                    Ok(ctx) => {
+                        cmd::state::pull(
+                            &ctx,
+                            dir,
+                            format,
+                            selectors,
+                            tag.as_deref(),
+                            source_to_api(*source),
+                        )
+                        .await
+                    }
                     Err(e) => Err(e),
                 },
                 Err(e) => Err(e),
@@ -245,8 +260,12 @@ async fn main() {
                 dir,
                 selectors,
                 tag,
+                source,
             } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::state::diff(&ctx, dir, selectors, tag.as_deref()).await,
+                Ok(ctx) => {
+                    cmd::state::diff(&ctx, dir, selectors, tag.as_deref(), source_to_api(*source))
+                        .await
+                }
                 Err(e) => Err(e),
             },
             StateAction::Push {
@@ -254,9 +273,18 @@ async fn main() {
                 report,
                 selectors,
                 tag,
+                source,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
-                    cmd::state::push(&ctx, dir, report.as_deref(), selectors, tag.as_deref()).await
+                    cmd::state::push(
+                        &ctx,
+                        dir,
+                        report.as_deref(),
+                        selectors,
+                        tag.as_deref(),
+                        source_to_api(*source),
+                    )
+                    .await
                 }
                 Err(e) => Err(e),
             },
@@ -343,6 +371,17 @@ async fn main() {
             eprintln!("{}", err.to_envelope());
             std::process::exit(render::exit_code_for(&err));
         }
+    }
+}
+
+/// Map the CLI's `--source` flag onto the `-api` value. The parsed `clap`
+/// enum never crosses into `-api`.
+fn source_to_api(source: SourceArg) -> RuleSource {
+    match source {
+        SourceArg::Custom => RuleSource::Custom,
+        SourceArg::Customized => RuleSource::Customized,
+        SourceArg::Prebuilt => RuleSource::Prebuilt,
+        SourceArg::All => RuleSource::All,
     }
 }
 

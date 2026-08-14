@@ -5,6 +5,7 @@
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::codec::Format as FileFormat;
+use elasticctl_api::rules::RuleSource;
 use elasticctl_api::state;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::Value;
@@ -21,10 +22,11 @@ pub async fn pull(
     format: FileFormat,
     selectors: &[String],
     tag: Option<&str>,
+    source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::pull(t, dir, format, selectors, tag).await?)
+    to_value(&state::pull_with_source(t, dir, format, selectors, tag, source).await?)
 }
 
 pub async fn diff(
@@ -32,10 +34,11 @@ pub async fn diff(
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::diff(t, dir, selectors, tag).await?)
+    to_value(&state::diff_with_source(t, dir, selectors, tag, source).await?)
 }
 
 pub async fn push(
@@ -44,6 +47,7 @@ pub async fn push(
     report_path: Option<&Path>,
     selectors: &[String],
     tag: Option<&str>,
+    source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
@@ -52,7 +56,7 @@ pub async fn push(
         host: ctx.resolved.profile.host(),
         space: ctx.resolved.profile.space.clone(),
     };
-    let plan = state::plan_push(t, dir, selectors, tag, &identity).await?;
+    let plan = state::plan_push_with_source(t, dir, selectors, tag, source, &identity).await?;
 
     let preview = Preview {
         action: plan.preview_action.clone(),

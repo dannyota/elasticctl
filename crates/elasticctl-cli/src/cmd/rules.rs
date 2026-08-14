@@ -8,7 +8,7 @@ use crate::resolve;
 use elasticctl_api::codec::Format as FileFormat;
 use elasticctl_api::model::Rule;
 use elasticctl_api::prebuilt;
-use elasticctl_api::rules::RuleFilter;
+use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_api::rules_ops;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
@@ -101,12 +101,13 @@ pub async fn export(
     ctx: &Context,
     selectors: &[String],
     tag: Option<&str>,
+    source: RuleSource,
     out: Option<&Path>,
     format: FileFormat,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let outcome = rules_ops::export_rules(t, selectors, tag, format).await?;
+    let outcome = rules_ops::export_rules_with_source(t, selectors, tag, source, format).await?;
 
     match out {
         Some(path) => {

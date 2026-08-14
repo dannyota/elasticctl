@@ -1,7 +1,8 @@
 //! The state engine's contract, independent of the CLI.
 
-use elasticctl_api::Format;
+use elasticctl_api::rules_ops;
 use elasticctl_api::state::{self, StackIdentity};
+use elasticctl_api::{Change, Format, RuleFilter};
 use elasticctl_api_test_support::{
     MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces,
     mock_stack_with_dangling_pointer, mock_stack_with_failing_item_create,
@@ -1051,5 +1052,99 @@ async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
     assert!(
         stack.write_requests().await.is_empty(),
         "the refusal happens before any write"
+    );
+}
+
+/// A corpus split by source: `custom` rules carry `immutable: false`, `prebuilt`
+/// carry `immutable: true`. The mock's `_find` honours the filter, so a scoped
+/// read returns only the matching slice.
+async fn mock_mixed_corpus(custom: usize, prebuilt: usize) -> MockStack {
+    let mut rules = Vec::with_capacity(custom + prebuilt);
+    for i in 0..custom {
+        rules.push(json!({
+            "rule_id": format!("custom-{i}"),
+            "name": format!("custom {i}"),
+            "type": "query",
+            "immutable": false,
+        }));
+    }
+    for i in 0..prebuilt {
+        rules.push(json!({
+            "rule_id": format!("prebuilt-{i}"),
+            "name": format!("prebuilt {i}"),
+            "type": "query",
+            "immutable": true,
+        }));
+    }
+    MockStack::with_rules(rules).await
+}
+
+/// A mirror holding one prebuilt rule, as a 0.1 `state pull` would have written
+/// it before `--source` existed.
+fn mirror_holding_a_prebuilt_rule() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    std::fs::write(
+        rules.join("prebuilt-0.ndjson"),
+        "{\"rule_id\":\"prebuilt-0\",\"name\":\"prebuilt 0\",\"type\":\"query\",\"immutable\":true}\n",
+    )
+    .unwrap();
+    dir
+}
+
+/// Spec 5.5: the defaults differ per command, on purpose.
+#[tokio::test]
+async fn state_commands_default_to_custom_and_rules_list_defaults_to_all() {
+    let stack = mock_mixed_corpus(/* custom */ 2, /* prebuilt */ 5).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let pulled = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
+        .await
+        .unwrap();
+    assert_eq!(
+        pulled.pulled, 2,
+        "a mirror holds what the operator authored"
+    );
+
+    let listed = rules_ops::list(stack.transport(), &RuleFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(listed.total, 7, "a query command hides nothing");
+}
+
+/// Spec 5.5, the upgrade guard.
+#[tokio::test]
+async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
+    let stack = mock_mixed_corpus(0, 1).await;
+    let dir = mirror_holding_a_prebuilt_rule();
+    let d = state::diff(stack.transport(), dir.path(), &[], None)
+        .await
+        .unwrap();
+
+    assert_eq!(d.out_of_scope, 1);
+    assert!(
+        !d.changes.iter().any(|c| matches!(c, Change::Added { .. })),
+        "a prebuilt rule in an 0.1 mirror must not read as a pending create"
+    );
+}
+
+/// Fact H: a `custom` scope matching nothing against a non-empty corpus must
+/// name the field it filtered on, not silently write an empty mirror.
+#[tokio::test]
+async fn a_custom_pull_against_a_prebuilt_only_stack_names_the_field() {
+    let stack = mock_mixed_corpus(0, 3).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let err = state::pull(stack.transport(), dir.path(), Format::Yaml, &[], None)
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Unsupported);
+    assert!(err.message.contains("immutable"), "{}", err.message);
+    assert!(
+        err.message.contains("3"),
+        "the corpus size must be named: {}",
+        err.message
     );
 }

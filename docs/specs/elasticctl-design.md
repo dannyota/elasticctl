@@ -590,6 +590,15 @@ A local file outside the active scope is reported as `out_of_scope`, naming the
 flag, not as `local_only`. A 0.1 mirror holding 2,066 prebuilt rules would
 otherwise read as catastrophic drift on the first `state diff` after upgrading.
 
+A `custom` or `prebuilt` scope that matches zero rules against a non-empty
+corpus is refused, naming the field it filtered on
+(`alert.attributes.params.immutable`). Whether that field exists on stacks
+older than 9.5.1 is unmeasured (fact H); if it is absent, the filter silently
+matches nothing, and a query would report "no custom rules" for a stack that
+simply lacks the field. The query commands and `state pull` refuse; `state diff`
+and `state push` do not, because an empty scope there is reported through
+`out_of_scope` instead.
+
 ## 6. Contracts
 
 ### 6.1 Safety

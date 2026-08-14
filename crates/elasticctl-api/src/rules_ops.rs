@@ -8,7 +8,7 @@ use crate::codec::{self, Format};
 use crate::model::{Rule, server_defaults};
 use crate::normalize;
 use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
-use crate::rules::{self, BulkAction, RuleFilter};
+use crate::rules::{self, BulkAction, RuleFilter, RuleSource};
 use crate::selection;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::Serialize;
@@ -67,6 +67,13 @@ pub struct PreviewReport {
 
 pub async fn list(t: &Transport, filter: &RuleFilter) -> Result<RuleListReport> {
     let rules = rules::find_all(t, filter).await?;
+    // A query command that hid 2,066 prebuilt rules would be lying, so the
+    // default is `all`. When the caller explicitly scoped to `custom` or
+    // `prebuilt`, an empty result against a non-empty corpus must name the
+    // field rather than report "no rules" (spec 5.5, fact H).
+    if rules.is_empty() {
+        rules::refuse_silently_empty_scope(t, filter.source).await?;
+    }
     let total = rules.len();
     Ok(RuleListReport { total, rules })
 }
@@ -219,14 +226,54 @@ pub async fn apply_delete(t: &Transport, plan: &MutationPlan) -> Result<DeleteOu
 
 /// Fetch, canonicalize, and sort selected rules by rule ID. Exports from an
 /// unchanged stack are byte-identical for version-control review.
+///
+/// Defaults to `--source all`: a query command hides nothing (spec 5.5).
 pub async fn export_rules(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,
     format: Format,
 ) -> Result<ExportOutcome> {
-    // Export reads from the stack, so every selector names a server rule.
-    let selection = selection::resolve(t, selectors, tag, &[], "export").await?;
+    export_rules_with_source(t, selectors, tag, RuleSource::All, format).await
+}
+
+/// `export_rules` with an explicit `--source` scope.
+///
+/// A source scope without a selector or tag resolves to the matching rule IDs
+/// first, so the subset export transfers only the subset (spec 4.3). A selector
+/// or tag is an explicit narrowing and overrides the source default, matching
+/// the state commands (spec 5.3).
+pub async fn export_rules_with_source(
+    t: &Transport,
+    selectors: &[String],
+    tag: Option<&str>,
+    source: RuleSource,
+    format: Format,
+) -> Result<ExportOutcome> {
+    let selection: Option<Vec<String>> =
+        if selectors.is_empty() && tag.is_none() && source != RuleSource::All {
+            let scoped = rules::find_all(
+                t,
+                &RuleFilter {
+                    source,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            if scoped.is_empty() {
+                rules::refuse_silently_empty_scope(t, source).await?;
+            }
+            Some(
+                scoped
+                    .iter()
+                    .filter_map(|r| r.rule_id().ok().map(str::to_owned))
+                    .collect(),
+            )
+        } else {
+            // Export reads from the stack, so every selector names a server rule.
+            selection::resolve(t, selectors, tag, &[], "export").await?
+        };
+
     let mut bundle = rules::export(t, selection.as_deref()).await?;
     for r in &mut bundle.rules {
         *r = normalize::canonical(r);

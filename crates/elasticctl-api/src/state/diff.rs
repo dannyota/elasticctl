@@ -24,9 +24,10 @@ pub(crate) enum ListOp {
 /// An item write `push` will perform, in apply order.
 ///
 /// `Remove` is the only deletion the state engine performs anywhere. It is
-/// sound only because of `selectors_are_rule_level` (spec 5.4): an item absent
-/// locally is a delete instruction solely because `pull` always writes a
-/// container's full item set.
+/// sound only because `pull` always writes a container's full item set: the
+/// invariant is documented on `item_reconciliation` and at `pull.rs`'s
+/// fetch-site cross-reference (spec 5.4). An item absent locally is a delete
+/// instruction solely because no item-level selector exists.
 #[derive(Debug, Clone)]
 pub(crate) enum ItemOp {
     Create(ExceptionItem),
@@ -50,19 +51,38 @@ pub(crate) struct ExceptionPlan {
     pub resolvable: BTreeSet<ListKey>,
 }
 
+/// Compare the mirror to the stack, defaulting to `--source custom` (spec 5.5).
 pub async fn diff(
     t: &Transport,
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
 ) -> Result<DiffReport> {
+    diff_with_source(t, dir, selectors, tag, crate::rules::RuleSource::Custom).await
+}
+
+/// `diff` with an explicit `--source` scope.
+pub async fn diff_with_source(
+    t: &Transport,
+    dir: &Path,
+    selectors: &[String],
+    tag: Option<&str>,
+    source: crate::rules::RuleSource,
+) -> Result<DiffReport> {
     let Mirror {
         rules: local_all,
         lists,
         items,
     } = super::mirror::read_mirror(dir)?;
-    let scope = super::scope_of(t, selectors, tag, &local_all, "compare").await?;
-    let local = scope.narrow(local_all);
+    let scope = super::scope_of(t, selectors, tag, source, &local_all, "compare").await?;
+    // A selector narrows both sides; with none, the `--source` scope decides.
+    // A local file outside that scope is reported as `out_of_scope`, never as a
+    // pending create (spec 5.5, the 0.1 upgrade guard).
+    let (local, out_of_scope) = if scope.is_scoped() {
+        (scope.narrow(local_all), 0)
+    } else {
+        scope.split_by_source(local_all)
+    };
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
@@ -83,6 +103,7 @@ pub async fn diff(
         remote: remote.len(),
         changes,
         exceptions,
+        out_of_scope,
         selected: scope.is_scoped().then(|| scope.selected()),
         local_total: scope.is_scoped().then_some(scope.local_total),
     })

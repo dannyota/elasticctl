@@ -42,12 +42,33 @@ struct ExceptionCounts {
     items_removed: usize,
 }
 
-/// Compute the push preview and dry-run report without mutating the stack.
+/// Compute the push preview and dry-run report without mutating the stack,
+/// defaulting to `--source custom` (spec 5.5).
 pub async fn plan_push(
     t: &Transport,
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    identity: &StackIdentity,
+) -> Result<PushPlan> {
+    plan_push_with_source(
+        t,
+        dir,
+        selectors,
+        tag,
+        crate::rules::RuleSource::Custom,
+        identity,
+    )
+    .await
+}
+
+/// `plan_push` with an explicit `--source` scope.
+pub async fn plan_push_with_source(
+    t: &Transport,
+    dir: &Path,
+    selectors: &[String],
+    tag: Option<&str>,
+    source: crate::rules::RuleSource,
     identity: &StackIdentity,
 ) -> Result<PushPlan> {
     let Mirror {
@@ -57,8 +78,14 @@ pub async fn plan_push(
     } = super::mirror::read_mirror(dir)?;
     // Resolve locally first because disk-only rules have no remote ID and may
     // be created by a scoped push.
-    let scope = super::scope_of(t, selectors, tag, &local_all, "apply").await?;
-    let local = scope.narrow(local_all);
+    let scope = super::scope_of(t, selectors, tag, source, &local_all, "apply").await?;
+    // A local file outside the `--source` scope is never a pending create
+    // (spec 5.5). Selectors narrow both sides and leave the count at zero.
+    let (local, out_of_scope) = if scope.is_scoped() {
+        (scope.narrow(local_all), 0)
+    } else {
+        scope.split_by_source(local_all)
+    };
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
@@ -261,6 +288,7 @@ pub async fn plan_push(
         &report,
         scope.is_scoped().then(|| scope.selected()),
         scope.is_scoped().then_some(scope.local_total),
+        out_of_scope,
         ExceptionCounts::default(),
     );
 
@@ -452,10 +480,14 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         }
     }
 
-    let (selected, local_total) = (plan.summary.selected, plan.summary.local_total);
+    let (selected, local_total, out_of_scope) = (
+        plan.summary.selected,
+        plan.summary.local_total,
+        plan.summary.out_of_scope,
+    );
     plan.report.entries = entries;
     plan.report.applied = true;
-    plan.summary = push_summary(&plan.report, selected, local_total, counts);
+    plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
     Ok(plan)
 }
 
@@ -480,8 +512,12 @@ fn finish_after_exception_failure(
         error: Some(error),
     });
     plan.report.applied = true;
-    let (selected, local_total) = (plan.summary.selected, plan.summary.local_total);
-    plan.summary = push_summary(&plan.report, selected, local_total, counts);
+    let (selected, local_total, out_of_scope) = (
+        plan.summary.selected,
+        plan.summary.local_total,
+        plan.summary.out_of_scope,
+    );
+    plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
     plan
 }
 
@@ -489,6 +525,7 @@ fn push_summary(
     report: &ChangeReport,
     selected: Option<usize>,
     local_total: Option<usize>,
+    out_of_scope: usize,
     counts: ExceptionCounts,
 ) -> PushReport {
     let (created, updated, skipped, failed) = report.counts();
@@ -504,6 +541,7 @@ fn push_summary(
         items_created: counts.items_created,
         items_updated: counts.items_updated,
         items_removed: counts.items_removed,
+        out_of_scope,
         selected,
         local_total,
     }

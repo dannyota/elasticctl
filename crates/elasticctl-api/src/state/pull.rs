@@ -5,12 +5,15 @@ use crate::codec::Format;
 use crate::exceptions;
 use crate::model::{ExceptionItem, ExceptionList, ListKey, Rule};
 use crate::normalize;
+use crate::rules::RuleSource;
 use crate::state::mirror::{encode_list_file, encode_rule_file};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// Pull the mirror, defaulting to `--source custom`: a mirror holds what the
+/// operator authored (spec 5.5).
 pub async fn pull(
     t: &Transport,
     dir: &Path,
@@ -18,10 +21,28 @@ pub async fn pull(
     selectors: &[String],
     tag: Option<&str>,
 ) -> Result<PullReport> {
+    pull_with_source(t, dir, format, selectors, tag, RuleSource::Custom).await
+}
+
+/// `pull` with an explicit `--source` scope.
+pub async fn pull_with_source(
+    t: &Transport,
+    dir: &Path,
+    format: Format,
+    selectors: &[String],
+    tag: Option<&str>,
+    source: RuleSource,
+) -> Result<PullReport> {
     // Pull reads from the stack, so selectors name stack rules. The directory
     // may not exist yet.
-    let scope = super::scope_of(t, selectors, tag, &[], "pull").await?;
+    let scope = super::scope_of(t, selectors, tag, source, &[], "pull").await?;
     let mut remote = scope.remote(t).await?;
+    // A `custom`/`prebuilt` pull that matched nothing against a non-empty
+    // corpus would silently write an empty mirror; refuse and name the field
+    // instead (spec 5.5, fact H).
+    if remote.is_empty() && !scope.is_scoped() {
+        crate::rules::refuse_silently_empty_scope(t, scope.source).await?;
+    }
     // Sort unstable server output so collision reports and writes are stable.
     normalize::sort_rules(&mut remote);
 

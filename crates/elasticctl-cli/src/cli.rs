@@ -1,6 +1,6 @@
 //! Argument definitions. Nothing here reaches into `elasticctl-api`.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use elasticctl_core::{Error, ErrorKind};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -30,6 +30,16 @@ impl FromStr for Format {
             )),
         }
     }
+}
+
+/// The `--source` flag's values. The CLI-local enum keeps clap types out of
+/// `-api`; `main` maps it to `elasticctl_api::rules::RuleSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SourceArg {
+    Custom,
+    Customized,
+    Prebuilt,
+    All,
 }
 
 #[derive(Debug, Clone, Default, Parser)]
@@ -153,6 +163,9 @@ pub enum RulesAction {
         /// Raw KQL, combined with the other filters
         #[arg(long)]
         filter: Option<String>,
+        /// Which rules to list: custom, customized, prebuilt, or all
+        #[arg(long, value_enum, default_value = "all")]
+        source: SourceArg,
     },
     /// Show one rule by rule_id or name. rule_id is tried first: if the
     /// selector happens to be both a valid rule_id and a different rule's
@@ -181,6 +194,9 @@ pub enum RulesAction {
         /// which renders this command's own report, not the exported file.
         #[arg(long = "format-file", default_value = "ndjson")]
         format_file: String,
+        /// Which rules to export: custom, customized, prebuilt, or all
+        #[arg(long, value_enum, default_value = "all")]
+        source: SourceArg,
     },
     /// Import rules from a file
     Import {
@@ -288,6 +304,9 @@ pub enum StateAction {
         /// Pull every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
+        /// Which rules to pull: custom, customized, prebuilt, or all
+        #[arg(long, value_enum, default_value = "custom")]
+        source: SourceArg,
     },
     /// Show field-level drift between the directory and the stack. Compares
     /// every rule unless selectors or --tag narrow it.
@@ -299,6 +318,9 @@ pub enum StateAction {
         /// Compare every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
+        /// Which rules to compare: custom, customized, prebuilt, or all
+        #[arg(long, value_enum, default_value = "custom")]
+        source: SourceArg,
     },
     /// Apply the directory's rules to the stack. Applies every rule unless
     /// selectors or --tag narrow it.
@@ -313,6 +335,9 @@ pub enum StateAction {
         /// Apply every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
+        /// Which rules to apply: custom, customized, prebuilt, or all
+        #[arg(long, value_enum, default_value = "custom")]
+        source: SourceArg,
     },
 }
 

@@ -43,6 +43,12 @@ pub struct DiffReport {
     pub remote: usize,
     pub changes: Vec<Change>,
     pub exceptions: ExceptionDrift,
+    /// Local rule files outside the active `--source` scope. Reported instead
+    /// of `local_only` so a 0.1 mirror of prebuilt rules does not read as
+    /// drift (spec 5.5). Omitted when zero, so a clean scope keeps its 0.1
+    /// output shape.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,10 +76,18 @@ pub struct PushReport {
     pub items_created: usize,
     pub items_updated: usize,
     pub items_removed: usize,
+    /// Local rule files outside the active `--source` scope, never planned as
+    /// creates (spec 5.5). Omitted when zero.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_total: Option<usize>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The mirror `read_mirror` reads: every rule and exception-list file under

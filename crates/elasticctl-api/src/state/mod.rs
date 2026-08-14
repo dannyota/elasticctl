@@ -10,18 +10,20 @@ mod pull;
 mod push;
 mod reports;
 
-pub use diff::diff;
+pub use diff::{diff, diff_with_source};
 pub use mirror::{read_local, read_mirror};
-pub use pull::pull;
-pub use push::{PushPlan, apply_push, plan_push};
+pub use pull::{pull, pull_with_source};
+pub use push::{PushPlan, apply_push, plan_push, plan_push_with_source};
 pub use reports::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, Mirror, PullReport, PushReport,
     StackIdentity,
 };
 
 use crate::model::{ListKey, Rule};
+use crate::rules::{RuleFilter, RuleSource};
 use crate::selection;
 use elasticctl_core::{Result, Transport};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -76,9 +78,10 @@ fn referenced_keys(rules: &[Rule]) -> BTreeSet<ListKey> {
 /// Rules selected for a scoped run.
 ///
 /// `None` in `rule_ids` means no selector was given and the command acts on
-/// all rules.
+/// every rule inside the `source` scope.
 struct Scope {
     rule_ids: Option<Vec<String>>,
+    source: RuleSource,
     local_total: usize,
 }
 
@@ -102,11 +105,37 @@ impl Scope {
         }
     }
 
-    /// Read only the scoped remote rules. A scoped run uses filtered `_find`
-    /// requests rather than reading the full corpus.
+    /// Split unscoped local rules by source scope, returning the in-scope rules
+    /// and the count outside it. A rule outside the scope is reported as
+    /// `out_of_scope`, never as a pending create (spec 5.5).
+    fn split_by_source(&self, rules: Vec<Rule>) -> (Vec<Rule>, usize) {
+        let mut kept = Vec::with_capacity(rules.len());
+        let mut out_of_scope = 0;
+        for rule in rules {
+            if in_source(self.source, &rule) {
+                kept.push(rule);
+            } else {
+                out_of_scope += 1;
+            }
+        }
+        (kept, out_of_scope)
+    }
+
+    /// Read only the scoped remote rules. An unscoped run reads the active
+    /// `source` scope; a scoped run uses a `rule_id`-filtered `_find` instead
+    /// of reading the full corpus.
     async fn remote(&self, t: &Transport) -> Result<Vec<Rule>> {
         match &self.rule_ids {
-            None => crate::rules::find_all(t, &Default::default()).await,
+            None => {
+                crate::rules::find_all(
+                    t,
+                    &RuleFilter {
+                        source: self.source,
+                        ..Default::default()
+                    },
+                )
+                .await
+            }
             Some(ids) => crate::rules::find_by_rule_ids(t, ids).await,
         }
     }
@@ -124,6 +153,29 @@ impl Scope {
     }
 }
 
+/// Whether a local rule file falls inside the active `--source` scope, judged
+/// on the field that scope filters server-side. A missing `immutable` reads as
+/// its server default (`false`, custom), so a sparse local file is not
+/// mistaken for a prebuilt rule.
+fn in_source(source: RuleSource, rule: &Rule) -> bool {
+    match source {
+        RuleSource::All => true,
+        RuleSource::Custom => !is_prebuilt(rule),
+        RuleSource::Prebuilt => is_prebuilt(rule),
+        RuleSource::Customized => rule
+            .as_map()
+            .get("rule_source")
+            .and_then(Value::as_object)
+            .and_then(|rs| rs.get("is_customized"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+fn is_prebuilt(rule: &Rule) -> bool {
+    rule.as_map().get("immutable").and_then(Value::as_bool) == Some(true)
+}
+
 /// Resolve selectors against local rules, then the stack.
 ///
 /// `local` is empty for `pull`, which reads from the stack and whose selectors
@@ -132,12 +184,14 @@ async fn scope_of(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,
+    source: RuleSource,
     local: &[Rule],
     noun: &str,
 ) -> Result<Scope> {
     let rule_ids = selection::resolve(t, selectors, tag, local, noun).await?;
     Ok(Scope {
         rule_ids,
+        source,
         local_total: local.len(),
     })
 }
