@@ -177,7 +177,10 @@ async fn create_list_posts_the_container_and_strips_volatile_fields() {
     let body: Value = server.received_requests().await.unwrap()[0]
         .body_json()
         .unwrap();
-    assert!(body.get("id").is_none(), "the volatile id is stripped: {body}");
+    assert!(
+        body.get("id").is_none(),
+        "the volatile id is stripped: {body}"
+    );
     assert!(
         body.get("_version").is_none(),
         "the volatile _version is stripped: {body}"
@@ -208,7 +211,10 @@ async fn update_list_puts_by_list_id_without_an_id() {
     let body: Value = server.received_requests().await.unwrap()[0]
         .body_json()
         .unwrap();
-    assert!(body.get("id").is_none(), "PUT resolves by list_id, no id: {body}");
+    assert!(
+        body.get("id").is_none(),
+        "PUT resolves by list_id, no id: {body}"
+    );
     assert_eq!(body["list_id"], "l0");
 }
 
@@ -258,7 +264,10 @@ async fn create_item_posts_the_item() {
     let body: Value = server.received_requests().await.unwrap()[0]
         .body_json()
         .unwrap();
-    assert!(body.get("id").is_none(), "the volatile id is stripped: {body}");
+    assert!(
+        body.get("id").is_none(),
+        "the volatile id is stripped: {body}"
+    );
     assert_eq!(body["item_id"], "i0", "identity survives");
 }
 
@@ -284,7 +293,10 @@ async fn update_item_puts_by_item_id_without_an_id() {
     let body: Value = server.received_requests().await.unwrap()[0]
         .body_json()
         .unwrap();
-    assert!(body.get("id").is_none(), "PUT resolves by item_id, no id: {body}");
+    assert!(
+        body.get("id").is_none(),
+        "PUT resolves by item_id, no id: {body}"
+    );
 }
 
 #[tokio::test]
@@ -301,4 +313,108 @@ async fn delete_item_deletes_by_item_id_and_namespace() {
 
     let deleted = exceptions::delete_item(&t, "i0", "single").await.unwrap();
     assert_eq!(deleted.item_id().unwrap(), "i0");
+}
+
+/// Measured fact E: the export route requires the volatile `id` and rejects
+/// `list_id` alone with a 400. `export_lists` must resolve each key to its live
+/// `id` and pass both, without changing what identity means.
+#[tokio::test]
+async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
+    let server = MockServer::start().await;
+    // get_list resolves l0 -> id-l0.
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    // The export route carries both the volatile id and the stable identity.
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_export"))
+        .and(query_param("id", "id-l0"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .and(query_param("include_expired_exceptions", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "{}\n{}\n",
+            list_json(0),
+            item_json(0)
+        )))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let out = exceptions::export_lists(
+        &t,
+        &[ListKey {
+            list_id: "l0".into(),
+            namespace_type: "single".into(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        out.contains("\"list_id\""),
+        "the export body is NDJSON: {out}"
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2, "one resolve GET then one export POST");
+    let pairs: Vec<(String, String)> = reqs[1]
+        .url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    assert!(
+        pairs.contains(&("id".into(), "id-l0".into())),
+        "the volatile id is fetched and passed: {pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("list_id".into(), "l0".into())),
+        "the stable list_id travels alongside: {pairs:?}"
+    );
+}
+
+/// A key with no live container has nothing to export and is skipped rather
+/// than exported under a placeholder id.
+#[tokio::test]
+async fn export_lists_skips_a_key_without_a_live_container() {
+    let server = MockServer::start().await;
+    // No list mocks: get_list for "missing" answers 404, so nothing resolves.
+    let t = transport(&server);
+
+    let out = exceptions::export_lists(
+        &t,
+        &[ListKey {
+            list_id: "missing".into(),
+            namespace_type: "single".into(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert!(out.is_empty(), "nothing to export, no request to _export");
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1, "only the resolving GET was issued");
+    assert_eq!(reqs[0].url.path(), "/api/exception_lists");
+}
+
+#[tokio::test]
+async fn import_lists_posts_to_the_import_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_import"))
+        .and(query_param("overwrite", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "success_count": 1, "errors": []
+        })))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let out = exceptions::import_lists(&t, "{\"list_id\":\"l0\"}", true)
+        .await
+        .unwrap();
+    assert_eq!(out["success"], true);
 }

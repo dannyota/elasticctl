@@ -185,6 +185,40 @@ pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Resul
     ExceptionItem::from_value(body)
 }
 
+/// Export the given containers and their items as NDJSON.
+///
+/// The export route is the one path that refuses `list_id` alone (measured,
+/// fact E), so each key is resolved to its live container `id` first. Identity
+/// stays `list_id` plus `namespace_type` everywhere; the `id` is fetched only
+/// here, at the boundary that demands it. A key with no live container has
+/// nothing to export and is skipped.
+pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<String> {
+    let ids = resolve_ids(t, keys).await?;
+    let mut out = String::new();
+    for key in keys {
+        let Some(id) = ids.get(key) else {
+            continue;
+        };
+        let path = format!(
+            "{BASE}/_export?id={}&list_id={}&namespace_type={}&include_expired_exceptions=true",
+            urlencode(id),
+            urlencode(&key.list_id),
+            urlencode(&key.namespace_type),
+        );
+        let body = t.post_text(&path, None).await?;
+        out.push_str(&body);
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+pub async fn import_lists(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Value> {
+    t.post_multipart_ndjson(&format!("{BASE}/_import?overwrite={overwrite}"), ndjson)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
