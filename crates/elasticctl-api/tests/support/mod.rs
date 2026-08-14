@@ -269,6 +269,183 @@ fn item_json(i: usize) -> Value {
     })
 }
 
+/// A container body for `list_id`, with an optional live `id`.
+fn container_json(list_id: &str, namespace: &str, list_type: &str, id: Option<&str>) -> Value {
+    let mut list = json!({
+        "list_id": list_id,
+        "type": list_type,
+        "name": format!("list {list_id}"),
+        "namespace_type": namespace,
+    });
+    if let Some(id) = id {
+        list["id"] = json!(id);
+    }
+    list
+}
+
+/// An item body for `item_id` inside `list_id`.
+fn item_for(list_id: &str, item_id: &str, namespace: &str) -> Value {
+    json!({
+        "id": format!("id-{item_id}"),
+        "item_id": item_id,
+        "list_id": list_id,
+        "type": "simple",
+        "name": format!("item {item_id}"),
+        "namespace_type": namespace,
+        "entries": []
+    })
+}
+
+async fn mount_get_list(
+    server: &MockServer,
+    list_id: &str,
+    namespace: &str,
+    list_type: &str,
+    id: Option<&str>,
+) {
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", list_id))
+        .and(query_param("namespace_type", namespace))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(container_json(list_id, namespace, list_type, id)),
+        )
+        .mount(server)
+        .await;
+}
+
+async fn mount_items(server: &MockServer, list_id: &str, namespace: &str, items: Vec<Value>) {
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/items/_find"))
+        .and(query_param("list_id", list_id))
+        .and(query_param("namespace_type", namespace))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": items,
+            "page": 1,
+            "per_page": items.len(),
+            "total": items.len()
+        })))
+        .mount(server)
+        .await;
+}
+
+/// One rule references `list_id`; the list corpus also holds an orphan the rule
+/// does not reference, so `pull` must mirror only the referenced list.
+pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
+    let rule = json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "list_id": list_id,
+            "type": "detection",
+            "namespace_type": "single"
+        }]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                container_json(list_id, "single", "detection", None),
+                container_json("orphan", "single", "detection", None)
+            ],
+            "page": 1,
+            "per_page": 2,
+            "total": 2
+        })))
+        .mount(&stack.server)
+        .await;
+    mount_get_list(&stack.server, list_id, "single", "detection", None).await;
+    mount_items(&stack.server, list_id, "single", vec![]).await;
+    stack
+}
+
+/// One rule references a `rule_default` list holding one item.
+pub async fn mock_stack_with_rule_default_list() -> MockStack {
+    let rule = json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [{
+            "list_id": "rd",
+            "type": "rule_default",
+            "namespace_type": "single"
+        }]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+    mount_get_list(&stack.server, "rd", "single", "rule_default", Some("id-rd")).await;
+    mount_items(
+        &stack.server,
+        "rd",
+        "single",
+        vec![item_for("rd", "i1", "single")],
+    )
+    .await;
+    stack
+}
+
+/// One rule references the same `list_id` in both namespaces, which collide on
+/// a single filename.
+pub async fn mock_stack_with_colliding_namespaces(list_id: &str) -> MockStack {
+    let rule = json!({
+        "rule_id": "r",
+        "name": "R",
+        "type": "query",
+        "exceptions_list": [
+            {"list_id": list_id, "type": "detection", "namespace_type": "single"},
+            {"list_id": list_id, "type": "detection", "namespace_type": "agnostic"}
+        ]
+    });
+    let stack = MockStack::with_rules(vec![rule]).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", None).await;
+    mount_get_list(&stack.server, list_id, "agnostic", "detection", None).await;
+    mount_items(&stack.server, list_id, "single", vec![]).await;
+    mount_items(&stack.server, list_id, "agnostic", vec![]).await;
+    stack
+}
+
+/// An empty rule corpus whose `get_list` for `list_id` returns the given live
+/// `id`, so a push can resolve the pointer against this stack.
+pub async fn mock_stack_with_list_id(list_id: &str, id: &str) -> MockStack {
+    let stack = MockStack::with_rules(vec![]).await;
+    mount_get_list(&stack.server, list_id, "single", "detection", Some(id)).await;
+    stack
+}
+
+/// An empty rule corpus with container and item create responses mounted, so a
+/// push that creates a new list can resolve its live id and order its writes.
+pub async fn mock_empty_stack() -> MockStack {
+    let stack = MockStack::with_rules(vec![]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "new-live-id",
+            "list_id": "newlist",
+            "type": "detection",
+            "name": "newlist",
+            "namespace_type": "single"
+        })))
+        .mount(&stack.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "new-item-id",
+            "item_id": "i1",
+            "list_id": "newlist",
+            "type": "simple",
+            "name": "item i1",
+            "namespace_type": "single",
+            "entries": []
+        })))
+        .mount(&stack.server)
+        .await;
+    stack
+}
+
 /// Serves `total` items across pages of `page_size`, honouring the `page` query
 /// parameter so callers that stop after one page come up short.
 struct PagedItems {
