@@ -5,6 +5,7 @@
 //! which fetches `id` at the single boundary where the route demands it.
 
 use crate::model::{ExceptionItem, ExceptionList, ListKey};
+use crate::normalize;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -136,6 +137,52 @@ pub async fn resolve_ids(t: &Transport, keys: &[ListKey]) -> Result<BTreeMap<Lis
         }
     }
     Ok(map)
+}
+
+pub async fn create_list(t: &Transport, l: &ExceptionList) -> Result<ExceptionList> {
+    let payload = normalize::canonical_list(l);
+    let response = t.post(BASE, Some(&payload.into_value())).await?;
+    ExceptionList::from_value(response)
+}
+
+pub async fn update_list(t: &Transport, l: &ExceptionList) -> Result<ExceptionList> {
+    let payload = normalize::canonical_list(l);
+    let response = t.put(BASE, &payload.into_value()).await?;
+    ExceptionList::from_value(response)
+}
+
+pub async fn delete_list(t: &Transport, key: &ListKey) -> Result<ExceptionList> {
+    let body = t
+        .delete(&format!(
+            "{BASE}?list_id={}&namespace_type={}",
+            urlencode(&key.list_id),
+            urlencode(&key.namespace_type),
+        ))
+        .await?;
+    ExceptionList::from_value(body)
+}
+
+pub async fn create_item(t: &Transport, i: &ExceptionItem) -> Result<ExceptionItem> {
+    let payload = normalize::canonical_item(i);
+    let response = t.post(ITEMS, Some(&payload.into_value())).await?;
+    ExceptionItem::from_value(response)
+}
+
+pub async fn update_item(t: &Transport, i: &ExceptionItem) -> Result<ExceptionItem> {
+    let payload = normalize::canonical_item(i);
+    let response = t.put(ITEMS, &payload.into_value()).await?;
+    ExceptionItem::from_value(response)
+}
+
+pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Result<ExceptionItem> {
+    let body = t
+        .delete(&format!(
+            "{ITEMS}?item_id={}&namespace_type={}",
+            urlencode(item_id),
+            urlencode(namespace),
+        ))
+        .await?;
+    ExceptionItem::from_value(body)
 }
 
 #[cfg(test)]

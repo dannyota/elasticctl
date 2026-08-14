@@ -1,8 +1,12 @@
 //! The exception-list endpoint wrappers' contract, independent of the CLI.
 
 use elasticctl_api::exceptions::{self, ListFilter};
-use elasticctl_api::model::ListKey;
+use elasticctl_api::model::{ExceptionItem, ExceptionList, ListKey};
 use elasticctl_api_test_support::MockStack;
+use elasticctl_core::{Profile, Transport};
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn mock_exception_lists(n: usize) -> MockStack {
     MockStack::with_exception_lists(n).await
@@ -10,6 +14,46 @@ async fn mock_exception_lists(n: usize) -> MockStack {
 
 async fn mock_exception_items(n: usize) -> MockStack {
     MockStack::with_exception_items(n).await
+}
+
+fn profile(uri: &str) -> Profile {
+    Profile {
+        kibana_url: uri.to_string(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    }
+}
+
+fn transport(server: &MockServer) -> Transport {
+    Transport::new(&profile(&server.uri())).unwrap()
+}
+
+fn list_json(i: usize) -> Value {
+    json!({
+        "id": format!("id-l{i}"),
+        "list_id": format!("l{i}"),
+        "type": "detection",
+        "name": format!("list l{i}"),
+        "namespace_type": "single",
+        "tags": ["sample"]
+    })
+}
+
+fn item_json(i: usize) -> Value {
+    json!({
+        "id": format!("id-i{i}"),
+        "item_id": format!("i{i}"),
+        "list_id": "l",
+        "type": "simple",
+        "name": format!("item {i}"),
+        "namespace_type": "single",
+        "entries": []
+    })
 }
 
 #[tokio::test]
@@ -107,4 +151,154 @@ async fn get_list_reads_a_container_by_list_id_and_namespace() {
     .unwrap();
     assert_eq!(list.list_id().unwrap(), "l0");
     assert_eq!(list.namespace_type(), "single");
+}
+
+/// A create posts the container and strips server-minted volatile fields, the
+/// way `rules::create` does. A stale `id` must not be re-sent as identity.
+#[tokio::test]
+async fn create_list_posts_the_container_and_strips_volatile_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let input = ExceptionList::from_value(json!({
+        "list_id": "l0", "type": "detection", "name": "L",
+        "id": "stale", "_version": "WzEsMV0=", "namespace_type": "single"
+    }))
+    .unwrap();
+
+    let created = exceptions::create_list(&t, &input).await.unwrap();
+    assert_eq!(created.list_id().unwrap(), "l0");
+
+    let body: Value = server.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert!(body.get("id").is_none(), "the volatile id is stripped: {body}");
+    assert!(
+        body.get("_version").is_none(),
+        "the volatile _version is stripped: {body}"
+    );
+    assert_eq!(body["list_id"], "l0", "identity survives");
+}
+
+/// Measured: `PUT /api/exception_lists` updates by `list_id` alone; no `id` is
+/// required. The wrapper must not send one.
+#[tokio::test]
+async fn update_list_puts_by_list_id_without_an_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/exception_lists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let input = ExceptionList::from_value(json!({
+        "list_id": "l0", "type": "detection", "name": "L", "id": "stale"
+    }))
+    .unwrap();
+
+    let updated = exceptions::update_list(&t, &input).await.unwrap();
+    assert_eq!(updated.list_id().unwrap(), "l0");
+
+    let body: Value = server.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert!(body.get("id").is_none(), "PUT resolves by list_id, no id: {body}");
+    assert_eq!(body["list_id"], "l0");
+}
+
+#[tokio::test]
+async fn delete_list_deletes_by_list_id_and_namespace() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let deleted = exceptions::delete_list(
+        &t,
+        &ListKey {
+            list_id: "l0".into(),
+            namespace_type: "single".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(deleted.list_id().unwrap(), "l0");
+}
+
+#[tokio::test]
+async fn create_item_posts_the_item() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(item_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let input = ExceptionItem::from_value(json!({
+        "item_id": "i0", "list_id": "l", "type": "simple", "name": "I",
+        "id": "stale", "namespace_type": "single"
+    }))
+    .unwrap();
+
+    let created = exceptions::create_item(&t, &input).await.unwrap();
+    assert_eq!(created.item_id().unwrap(), "i0");
+
+    let body: Value = server.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert!(body.get("id").is_none(), "the volatile id is stripped: {body}");
+    assert_eq!(body["item_id"], "i0", "identity survives");
+}
+
+/// Measured: `PUT /api/exception_lists/items` updates by `item_id` alone.
+#[tokio::test]
+async fn update_item_puts_by_item_id_without_an_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/exception_lists/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(item_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let input = ExceptionItem::from_value(json!({
+        "item_id": "i0", "list_id": "l", "type": "simple", "name": "I", "id": "stale"
+    }))
+    .unwrap();
+
+    let updated = exceptions::update_item(&t, &input).await.unwrap();
+    assert_eq!(updated.item_id().unwrap(), "i0");
+
+    let body: Value = server.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert!(body.get("id").is_none(), "PUT resolves by item_id, no id: {body}");
+}
+
+#[tokio::test]
+async fn delete_item_deletes_by_item_id_and_namespace() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists/items"))
+        .and(query_param("item_id", "i0"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(item_json(0)))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let deleted = exceptions::delete_item(&t, "i0", "single").await.unwrap();
+    assert_eq!(deleted.item_id().unwrap(), "i0");
 }
