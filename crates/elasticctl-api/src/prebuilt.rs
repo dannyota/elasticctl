@@ -7,12 +7,31 @@
 
 use crate::ops::MutationPlan;
 use crate::rules::{self, RuleFilter, RuleSource};
-use elasticctl_core::{Result, Transport};
-use serde::Serialize;
+use elasticctl_core::{Error, ErrorKind, Result, Transport};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const PREPACKAGED_STATUS: &str = "/api/detection_engine/rules/prepackaged/_status";
 const PREPACKAGED: &str = "/api/detection_engine/rules/prepackaged";
+
+#[derive(Deserialize)]
+struct StatusWire {
+    rules_installed: u64,
+    rules_custom_installed: u64,
+    rules_not_installed: u64,
+    rules_not_updated: u64,
+    timelines_installed: u64,
+    timelines_not_installed: u64,
+    timelines_not_updated: u64,
+}
+
+#[derive(Deserialize)]
+struct InstallOutcomeWire {
+    rules_installed: u64,
+    rules_updated: u64,
+    timelines_installed: u64,
+    timelines_updated: u64,
+}
 
 /// The report `rules prebuilt status` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -41,15 +60,34 @@ pub struct PrebuiltInstallOutcome {
 pub async fn status(t: &Transport) -> Result<PrebuiltStatus> {
     let body = t.get(PREPACKAGED_STATUS).await?;
     let customized = customized_count(t).await?;
+    decode_status(body, customized)
+}
+
+fn decode_status(body: Value, customized: u64) -> Result<PrebuiltStatus> {
+    validate_counters(
+        &body,
+        PREPACKAGED_STATUS,
+        &[
+            "rules_installed",
+            "rules_custom_installed",
+            "rules_not_installed",
+            "rules_not_updated",
+            "timelines_installed",
+            "timelines_not_installed",
+            "timelines_not_updated",
+        ],
+    )?;
+    let body: StatusWire = serde_json::from_value(body)
+        .map_err(|error| response_decode_error(PREPACKAGED_STATUS, error))?;
     Ok(PrebuiltStatus {
-        installed: body["rules_installed"].as_u64().unwrap_or(0),
-        not_installed: body["rules_not_installed"].as_u64().unwrap_or(0),
-        not_updated: body["rules_not_updated"].as_u64().unwrap_or(0),
-        custom_installed: body["rules_custom_installed"].as_u64().unwrap_or(0),
+        installed: body.rules_installed,
+        not_installed: body.rules_not_installed,
+        not_updated: body.rules_not_updated,
+        custom_installed: body.rules_custom_installed,
         customized,
-        timelines_installed: body["timelines_installed"].as_u64().unwrap_or(0),
-        timelines_not_installed: body["timelines_not_installed"].as_u64().unwrap_or(0),
-        timelines_not_updated: body["timelines_not_updated"].as_u64().unwrap_or(0),
+        timelines_installed: body.timelines_installed,
+        timelines_not_installed: body.timelines_not_installed,
+        timelines_not_updated: body.timelines_not_updated,
     })
 }
 
@@ -94,11 +132,54 @@ pub async fn apply_install(t: &Transport) -> Result<PrebuiltInstallOutcome> {
     // The route takes no selection, so the body is empty. `Transport::put`
     // always sends one, and `null` is the empty JSON body.
     let body = t.put(PREPACKAGED, &Value::Null).await?;
+    decode_install_outcome(body)
+}
+
+fn decode_install_outcome(body: Value) -> Result<PrebuiltInstallOutcome> {
+    validate_counters(
+        &body,
+        PREPACKAGED,
+        &[
+            "rules_installed",
+            "rules_updated",
+            "timelines_installed",
+            "timelines_updated",
+        ],
+    )?;
+    let body: InstallOutcomeWire =
+        serde_json::from_value(body).map_err(|error| response_decode_error(PREPACKAGED, error))?;
     Ok(PrebuiltInstallOutcome {
         applied: true,
-        rules_installed: body["rules_installed"].as_u64().unwrap_or(0),
-        rules_updated: body["rules_updated"].as_u64().unwrap_or(0),
-        timelines_installed: body["timelines_installed"].as_u64().unwrap_or(0),
-        timelines_updated: body["timelines_updated"].as_u64().unwrap_or(0),
+        rules_installed: body.rules_installed,
+        rules_updated: body.rules_updated,
+        timelines_installed: body.timelines_installed,
+        timelines_updated: body.timelines_updated,
     })
+}
+
+fn response_decode_error(endpoint: &str, error: serde_json::Error) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("invalid prebuilt response from {endpoint}: {error}"),
+    )
+}
+
+fn validate_counters(body: &Value, endpoint: &str, fields: &[&str]) -> Result<()> {
+    let object = body.as_object().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Http,
+            format!("invalid prebuilt response from {endpoint}: expected an object"),
+        )
+    })?;
+    for field in fields {
+        if object.get(*field).and_then(Value::as_u64).is_none() {
+            return Err(Error::new(
+                ErrorKind::Http,
+                format!(
+                    "invalid prebuilt response from {endpoint}: field `{field}` must be a non-negative integer"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }

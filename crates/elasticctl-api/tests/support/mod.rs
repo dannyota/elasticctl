@@ -1,8 +1,10 @@
-//! A `wiremock` stack that records which requests were writes.
+//! A `wiremock` stack that records requests.
 //!
 //! The log comes from the server's `received_requests`, not from a wrapper
 //! around `Transport`. A wrapper would sit in the one place `--debug` must
 //! never log, and would have to be maintained alongside it.
+
+use std::collections::BTreeMap;
 
 use elasticctl_core::{Profile, Transport};
 use serde_json::{Value, json};
@@ -12,12 +14,14 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const RULES: &str = "/api/detection_engine/rules";
 const RULES_FIND: &str = "/api/detection_engine/rules/_find";
 
-/// One non-GET request the stack received, in order.
+/// One request the stack received, in order.
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
     pub method: String,
     pub path: String,
+    pub query: BTreeMap<String, String>,
     pub body: Value,
+    pub body_text: String,
 }
 
 /// A mock Elastic stack with a recording server and a transport pointed at it.
@@ -89,19 +93,23 @@ impl MockStack {
         &self.transport
     }
 
-    /// Every non-GET request the stack received, in order.
-    pub async fn write_requests(&self) -> Vec<RecordedRequest> {
+    /// Every request the stack received, in order.
+    pub async fn requests(&self) -> Vec<RecordedRequest> {
         self.server
             .received_requests()
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|r| r.method != http::Method::GET)
-            .map(|r| RecordedRequest {
-                method: r.method.to_string(),
-                path: r.url.path().to_string(),
-                body: r.body_json().unwrap_or(Value::Null),
-            })
+            .map(recorded_request)
+            .collect()
+    }
+
+    /// Every non-GET request the stack received, in order.
+    pub async fn write_requests(&self) -> Vec<RecordedRequest> {
+        self.requests()
+            .await
+            .into_iter()
+            .filter(|request| request.method != http::Method::GET.as_str())
             .collect()
     }
 
@@ -333,6 +341,21 @@ impl MockStack {
             .mount(&stack.server)
             .await;
         stack
+    }
+}
+
+fn recorded_request(request: Request) -> RecordedRequest {
+    let body_text = String::from_utf8_lossy(&request.body).into_owned();
+    RecordedRequest {
+        method: request.method.to_string(),
+        path: request.url.path().to_string(),
+        query: request
+            .url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+        body: request.body_json().unwrap_or(Value::Null),
+        body_text,
     }
 }
 

@@ -1,7 +1,10 @@
 //! The prebuilt vertical's contract, independent of the CLI.
 
+use std::collections::BTreeMap;
+
 use elasticctl_api::prebuilt;
 use elasticctl_api_test_support::MockStack;
+use elasticctl_core::ErrorKind;
 use serde_json::json;
 
 /// Measured 2026-08-14, verbatim.
@@ -50,6 +53,44 @@ async fn status_maps_the_measured_body() {
     assert_eq!(s.timelines_installed, 10);
     assert_eq!(s.timelines_not_installed, 0);
     assert_eq!(s.timelines_not_updated, 0);
+}
+
+#[tokio::test]
+async fn status_rejects_each_missing_or_non_numeric_measured_counter() {
+    let valid: serde_json::Value = serde_json::from_str(STATUS_BODY).unwrap();
+    for field in [
+        "rules_installed",
+        "rules_custom_installed",
+        "rules_not_installed",
+        "rules_not_updated",
+        "timelines_installed",
+        "timelines_not_installed",
+        "timelines_not_updated",
+    ] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        let stack = MockStack::with_prebuilt_status(missing, 0).await;
+        let err = prebuilt::status(stack.transport()).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http, "missing {field}: {err}");
+        assert!(
+            err.message
+                .contains("/api/detection_engine/rules/prepackaged/_status")
+                && err.message.contains(field),
+            "missing {field}: {err}"
+        );
+
+        let mut mistyped = valid.clone();
+        mistyped[field] = json!("not a number");
+        let stack = MockStack::with_prebuilt_status(mistyped, 0).await;
+        let err = prebuilt::status(stack.transport()).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http, "mistyped {field}: {err}");
+        assert!(
+            err.message
+                .contains("/api/detection_engine/rules/prepackaged/_status")
+                && err.message.contains(field),
+            "mistyped {field}: {err}"
+        );
+    }
 }
 
 /// Spec 4.6: the preview is client-computed because the route has no dry_run.
@@ -106,4 +147,86 @@ async fn install_issues_exactly_one_put() {
     let writes = stack.write_paths().await;
     assert_eq!(writes.len(), 1, "{writes:?}");
     assert!(writes[0].ends_with("/api/detection_engine/rules/prepackaged"));
+}
+
+#[tokio::test]
+async fn install_rejects_each_missing_or_non_numeric_measured_counter() {
+    let status: serde_json::Value = serde_json::from_str(STATUS_BODY).unwrap();
+    let valid = json!({
+        "rules_installed": 11,
+        "rules_updated": 4,
+        "timelines_installed": 1,
+        "timelines_updated": 2
+    });
+    for field in [
+        "rules_installed",
+        "rules_updated",
+        "timelines_installed",
+        "timelines_updated",
+    ] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        let stack = MockStack::with_prebuilt_install(status.clone(), 0, missing).await;
+        let err = prebuilt::apply_install(stack.transport())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http, "missing {field}: {err}");
+        assert!(
+            err.message
+                .contains("/api/detection_engine/rules/prepackaged")
+                && err.message.contains(field),
+            "missing {field}: {err}"
+        );
+
+        let mut mistyped = valid.clone();
+        mistyped[field] = json!("not a number");
+        let stack = MockStack::with_prebuilt_install(status.clone(), 0, mistyped).await;
+        let err = prebuilt::apply_install(stack.transport())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http, "mistyped {field}: {err}");
+        assert!(
+            err.message
+                .contains("/api/detection_engine/rules/prepackaged")
+                && err.message.contains(field),
+            "mistyped {field}: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn prebuilt_requests_have_the_measured_methods_paths_queries_and_null_body() {
+    let stack = mock_prebuilt_install().await;
+    prebuilt::status(stack.transport()).await.unwrap();
+    prebuilt::apply_install(stack.transport()).await.unwrap();
+
+    let requests = stack.requests().await;
+    assert_eq!(requests.len(), 3, "{requests:#?}");
+
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(
+        requests[0].path,
+        "/api/detection_engine/rules/prepackaged/_status"
+    );
+    assert!(requests[0].query.is_empty());
+
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(requests[1].path, "/api/detection_engine/rules/_find");
+    assert_eq!(
+        requests[1].query,
+        BTreeMap::from([
+            (
+                "filter".to_string(),
+                "alert.attributes.params.ruleSource.isCustomized: true".to_string(),
+            ),
+            ("page".to_string(), "1".to_string()),
+            ("per_page".to_string(), "1".to_string()),
+        ])
+    );
+
+    assert_eq!(requests[2].method, "PUT");
+    assert_eq!(requests[2].path, "/api/detection_engine/rules/prepackaged");
+    assert!(requests[2].query.is_empty());
+    assert_eq!(requests[2].body, serde_json::Value::Null);
+    assert_eq!(requests[2].body_text, "null");
 }
