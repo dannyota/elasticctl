@@ -92,10 +92,10 @@ fn recording_hosts() -> Vec<String> {
 /// never part of the transport URL. Removing only the host would leave those
 /// credentials in the public fixture.
 fn strip_url_userinfo(value: &str) -> String {
-    let (scheme, rest) = match value.find("://") {
-        Some(index) => value.split_at(index + 3),
-        None => ("", value),
+    let Some(scheme_end) = value.find("://") else {
+        return value.to_string();
     };
+    let (scheme, rest) = value.split_at(scheme_end + 3);
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(authority_end);
     match authority.rfind('@') {
@@ -1372,6 +1372,15 @@ mod tests {
             value["url"],
             "https://REDACTED.example.invalid/app/rules?x=1#detail"
         );
+    }
+
+    #[test]
+    fn host_scrub_leaves_plain_at_sign_text_unchanged() {
+        let mut value = json!({"note": "contact ops@example.com before recording"});
+
+        scrub_hosts(&mut value, &["cluster.example:9243".to_string()]);
+
+        assert_eq!(value["note"], "contact ops@example.com before recording");
     }
 
     #[test]
