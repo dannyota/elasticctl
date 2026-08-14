@@ -218,7 +218,11 @@ pub enum ExceptionsAction {
         namespace: Option<String>,
     },
     /// Show one container and its items.
-    Get { list_id: String },
+    Get {
+        list_id: String,
+        #[arg(long, value_parser = ["single", "agnostic"])]
+        namespace: Option<String>,
+    },
     /// Check a file without contacting the server.
     Validate {
         #[arg(long)]
@@ -231,6 +235,8 @@ pub enum ExceptionsAction {
         /// Export every list carrying this tag, in addition to any selectors.
         #[arg(long)]
         tag: Option<String>,
+        #[arg(long, value_parser = ["single", "agnostic"])]
+        namespace: Option<String>,
         /// File format: ndjson or yaml. Distinct from the global --format,
         /// which renders this command's own report, not the exported file.
         #[arg(long = "format-file", default_value = "ndjson")]
@@ -248,7 +254,11 @@ pub enum ExceptionsAction {
         skip_existing: bool,
     },
     /// Delete containers and their items.
-    Delete { list_ids: Vec<String> },
+    Delete {
+        list_ids: Vec<String>,
+        #[arg(long, value_parser = ["single", "agnostic"])]
+        namespace: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

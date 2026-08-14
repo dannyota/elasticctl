@@ -161,8 +161,8 @@ async fn main() {
                     Err(e) => Err(e),
                 }
             }
-            ExceptionsAction::Get { list_id } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::exceptions::get(&ctx, list_id).await,
+            ExceptionsAction::Get { list_id, namespace } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::exceptions::get(&ctx, list_id, namespace.as_deref()).await,
                 Err(e) => Err(e),
             },
             // Local only: no context, credential check, transport, or
@@ -171,6 +171,7 @@ async fn main() {
             ExceptionsAction::Export {
                 list_ids,
                 tag,
+                namespace,
                 format_file,
             } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
@@ -179,6 +180,7 @@ async fn main() {
                             &ctx,
                             list_ids,
                             tag.as_deref(),
+                            namespace.as_deref(),
                             args.global.out.as_deref(),
                             format,
                         )
@@ -198,12 +200,18 @@ async fn main() {
             },
             // Reject empty selectors before building a context so this cannot
             // express an unscoped mutation.
-            ExceptionsAction::Delete { list_ids } if list_ids.is_empty() => Err(Error::new(
+            ExceptionsAction::Delete {
+                list_ids,
+                namespace,
+            } if list_ids.is_empty() => Err(Error::new(
                 ErrorKind::Error,
                 "Name at least one exception list to delete",
             )),
-            ExceptionsAction::Delete { list_ids } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::exceptions::delete(&ctx, list_ids).await,
+            ExceptionsAction::Delete {
+                list_ids,
+                namespace,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::exceptions::delete(&ctx, list_ids, namespace.as_deref()).await,
                 Err(e) => Err(e),
             },
         },

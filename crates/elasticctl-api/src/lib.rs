@@ -15,7 +15,7 @@ pub mod state;
 
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
-pub use exceptions::ListFilter;
+pub use exceptions::{ListDetail, ListFilter, ListReport};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
@@ -23,8 +23,8 @@ pub use model::{
     server_defaults,
 };
 pub use normalize::{canonical, comparable, sort_rules};
-pub use ops::{DeleteOutcome, ExportOutcome, ImportReport, MutationPlan};
+pub use ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter};
-pub use rules_ops::{ImportPlan, PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
+pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
 pub use state::{DiffReport, PullReport, PushPlan, PushReport};

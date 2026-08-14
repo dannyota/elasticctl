@@ -567,3 +567,89 @@ async fn import_lists_posts_to_the_import_route() {
         .unwrap();
     assert_eq!(out["success"], true);
 }
+
+/// `--skip-existing` drops an existing container and every item inside it, and
+/// keeps a new container and its items. Spec 4.4: the dry run is honest about
+/// what would be created and what would be skipped.
+#[tokio::test]
+async fn plan_import_op_skips_an_existing_container_and_its_items() {
+    let stack = MockStack::with_exception_lists(1).await; // l0 exists
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("bundle.ndjson");
+    std::fs::write(
+        &src,
+        concat!(
+            "{\"list_id\":\"l0\",\"type\":\"detection\",\"name\":\"L0\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"i0\",\"list_id\":\"l0\",\"type\":\"simple\",\"name\":\"I0\",\"namespace_type\":\"single\"}\n",
+            "{\"list_id\":\"l9\",\"type\":\"detection\",\"name\":\"L9\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"i9\",\"list_id\":\"l9\",\"type\":\"simple\",\"name\":\"I9\",\"namespace_type\":\"single\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let plan = exceptions::plan_import_op(Some(stack.transport()), &src, false, true)
+        .await
+        .unwrap();
+
+    assert_eq!(plan.total, 4, "lists and items are both counted in-file");
+    assert_eq!(plan.skipped.len(), 1, "the existing container is skipped");
+    assert_eq!(plan.skipped[0]["list_id"], "l0");
+
+    let bundle = elasticctl_api::codec::decode_bundle(&plan.ndjson).unwrap();
+    assert_eq!(bundle.lists.len(), 1, "only the new container is kept");
+    assert_eq!(bundle.lists[0].list_id().unwrap(), "l9");
+    assert_eq!(
+        bundle.items.len(),
+        1,
+        "the skipped container's item is dropped"
+    );
+    assert_eq!(bundle.items[0].list_id().unwrap(), "l9");
+}
+
+/// An item whose list_id is unreadable has no home. `from_value` validates only
+/// item_id, so this is reachable; it must be refused, not uploaded with an
+/// empty home (spec 5.2).
+#[tokio::test]
+async fn plan_import_op_refuses_an_item_without_a_readable_list_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("bundle.ndjson");
+    std::fs::write(
+        &src,
+        "{\"item_id\":\"i0\",\"type\":\"simple\",\"name\":\"I0\",\"namespace_type\":\"single\"}\n",
+    )
+    .unwrap();
+
+    let err = exceptions::plan_import_op(None, &src, false, false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Error);
+    assert!(err.message.contains("list_id"), "{}", err.message);
+}
+
+/// An items-only file is the natural way to add exceptions to a container that
+/// already exists. The preview must count the items, not report a zero-object
+/// mutation (spec 6.1).
+#[tokio::test]
+async fn plan_import_op_counts_items_in_the_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("items.ndjson");
+    std::fs::write(
+        &src,
+        concat!(
+            "{\"item_id\":\"i0\",\"list_id\":\"l0\",\"type\":\"simple\",\"name\":\"I0\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"i1\",\"list_id\":\"l0\",\"type\":\"simple\",\"name\":\"I1\",\"namespace_type\":\"single\"}\n",
+        ),
+    )
+    .unwrap();
+
+    let plan = exceptions::plan_import_op(None, &src, false, false)
+        .await
+        .unwrap();
+    assert_eq!(plan.total, 2, "items count toward the in-file total");
+    assert!(
+        plan.preview.preview_action.contains("2 item(s)"),
+        "the preview must name the items: {}",
+        plan.preview.preview_action
+    );
+    assert_eq!(plan.preview.targets.len(), 2, "pending counts the items");
+}

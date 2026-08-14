@@ -7,7 +7,7 @@
 use crate::codec::{self, Format};
 use crate::model::{Rule, server_defaults};
 use crate::normalize;
-use crate::ops::{DeleteOutcome, ExportOutcome, ImportReport, MutationPlan};
+use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 use crate::rules::{self, BulkAction, RuleFilter};
 use crate::selection;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
@@ -32,19 +32,6 @@ pub struct SetEnabledOutcome {
     pub failed: u64,
     pub skipped: u64,
     pub total: u64,
-}
-
-/// What `plan_import` computed and `apply_import` uploads.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImportPlan {
-    pub preview: MutationPlan,
-    /// The file re-encoded as NDJSON, resolved once at plan time so
-    /// `apply_import` never re-reads the file after the guard.
-    pub ndjson: String,
-    /// Every rule in the file, before `--skip-existing`.
-    pub total: usize,
-    /// Rules the server already has, with `--skip-existing`.
-    pub skipped: Vec<Value>,
 }
 
 /// One rule's validation entry.

@@ -7,7 +7,7 @@
 use crate::codec::{self, Bundle, Format};
 use crate::model::{ExceptionItem, ExceptionList, ListKey};
 use crate::normalize;
-use crate::ops::{DeleteOutcome, ExportOutcome, ImportReport, MutationPlan};
+use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 use crate::rules::kql_escape;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde::Serialize;
@@ -269,13 +269,45 @@ pub struct ListDetail {
     pub items: Vec<ExceptionItem>,
 }
 
-/// Resolve a bare `list_id` selector to its `ListKey`.
+/// The namespaces a command scoped by `--namespace` reads, or every namespace
+/// when the flag is absent.
+fn namespaces_to_search(namespace: Option<&str>) -> Vec<&str> {
+    match namespace {
+        Some(ns) => vec![ns],
+        None => NAMESPACES.to_vec(),
+    }
+}
+
+/// Resolve a `list_id` selector to its `ListKey`.
 ///
-/// A selector is a `list_id` alone, so the namespace has to be found. A list
-/// that exists in neither namespace is refused with `not_found` naming the
-/// selector; one that exists in both is ambiguous and refused with `conflict`
-/// rather than silently picking a side (spec 4.5, 5.2).
-async fn resolve_list_key(t: &Transport, list_id: &str) -> Result<ListKey> {
+/// With `--namespace`, the selector is looked up in that namespace alone. A
+/// miss is `not_found` naming the selector. Without the flag, the namespace has
+/// to be found: a list that exists in neither is refused with `not_found`, and
+/// one that exists in both is refused with `conflict` naming `--namespace` as
+/// the remedy rather than silently picking a side (spec 4.5, 5.2).
+async fn resolve_list_key(
+    t: &Transport,
+    list_id: &str,
+    namespace: Option<&str>,
+) -> Result<ListKey> {
+    if let Some(ns) = namespace {
+        let key = ListKey {
+            list_id: list_id.to_string(),
+            namespace_type: ns.to_string(),
+        };
+        match get_list(t, &key).await {
+            Ok(_) => return Ok(key),
+            // Name the selector, not the raw server 404 (spec 4.3).
+            Err(e) if e.kind == ErrorKind::NotFound => {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    format!("exception list not found: {list_id} ({ns})"),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     let mut matches = Vec::new();
     for ns in NAMESPACES {
         let key = ListKey {
@@ -298,16 +330,16 @@ async fn resolve_list_key(t: &Transport, list_id: &str) -> Result<ListKey> {
             ErrorKind::Conflict,
             format!(
                 "exception list '{list_id}' exists in both the 'single' and 'agnostic' \
-                 namespaces; a list_id alone is ambiguous"
+                 namespaces; pass --namespace to select one"
             ),
         )),
     }
 }
 
-/// Every live container's key, across both namespaces.
-async fn all_list_keys(t: &Transport) -> Result<Vec<ListKey>> {
+/// Every live container's key, in the requested namespace or both.
+async fn all_list_keys(t: &Transport, namespace: Option<&str>) -> Result<Vec<ListKey>> {
     let mut keys = Vec::new();
-    for ns in NAMESPACES {
+    for ns in namespaces_to_search(namespace) {
         let filter = ListFilter {
             namespace: Some(ns.to_string()),
             ..Default::default()
@@ -328,6 +360,7 @@ async fn resolve_selection(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,
+    namespace: Option<&str>,
     noun: &str,
 ) -> Result<Option<Vec<ListKey>>> {
     if selectors.is_empty() && tag.is_none() {
@@ -336,12 +369,12 @@ async fn resolve_selection(
 
     let mut keys = Vec::new();
     for s in selectors {
-        keys.push(resolve_list_key(t, s).await?);
+        keys.push(resolve_list_key(t, s, namespace).await?);
     }
 
     let mut tag_matched = false;
     if let Some(tag) = tag {
-        for ns in NAMESPACES {
+        for ns in namespaces_to_search(namespace) {
             let filter = ListFilter {
                 tag: Some(tag.to_string()),
                 namespace: Some(ns.to_string()),
@@ -385,8 +418,8 @@ pub async fn list_op(t: &Transport, f: &ListFilter) -> Result<ListReport> {
 }
 
 /// Resolve a selector and fetch the container with all of its items.
-pub async fn get_op(t: &Transport, list_id: &str) -> Result<ListDetail> {
-    let key = resolve_list_key(t, list_id).await?;
+pub async fn get_op(t: &Transport, list_id: &str, namespace: Option<&str>) -> Result<ListDetail> {
+    let key = resolve_list_key(t, list_id, namespace).await?;
     let list = get_list(t, &key).await?;
     let items = find_items(t, &key).await?;
     Ok(ListDetail { list, items })
@@ -420,6 +453,7 @@ pub async fn export_op(
     t: &Transport,
     list_ids: &[String],
     tag: Option<&str>,
+    namespace: Option<&str>,
     format: Format,
 ) -> Result<ExportOutcome> {
     if format == Format::Yaml {
@@ -428,9 +462,9 @@ pub async fn export_op(
             "exception bundles have no YAML form; re-run with --format-file ndjson",
         ));
     }
-    let keys = match resolve_selection(t, list_ids, tag, "export").await? {
+    let keys = match resolve_selection(t, list_ids, tag, namespace, "export").await? {
         Some(keys) => keys,
-        None => all_list_keys(t).await?,
+        None => all_list_keys(t, namespace).await?,
     };
     let body = export_lists(t, &keys).await?;
     Ok(ExportOutcome {
@@ -440,46 +474,61 @@ pub async fn export_op(
     })
 }
 
+/// What `plan_delete_op` resolved, so the apply acts on exactly the keys the
+/// preview named rather than re-resolving a bare `list_id` after the guard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletePlan {
+    pub preview: MutationPlan,
+    pub keys: Vec<ListKey>,
+}
+
 /// Resolve every selector before previewing, so the preview is accurate and an
-/// unresolved selector fails before any write.
-pub async fn plan_delete_op(t: &Transport, list_ids: &[String]) -> Result<MutationPlan> {
+/// unresolved selector fails before any write. The resolved keys travel with
+/// the plan so the apply cannot resolve a different namespace than the preview
+/// showed.
+pub async fn plan_delete_op(
+    t: &Transport,
+    list_ids: &[String],
+    namespace: Option<&str>,
+) -> Result<DeletePlan> {
     let mut details = Vec::with_capacity(list_ids.len());
     let mut targets = Vec::with_capacity(list_ids.len());
+    let mut keys = Vec::with_capacity(list_ids.len());
     for id in list_ids {
-        let key = resolve_list_key(t, id).await?;
+        let key = resolve_list_key(t, id, namespace).await?;
         details.push(format!("{id}  ({})", key.namespace_type));
         targets.push(id.clone());
+        keys.push(key);
     }
-    Ok(MutationPlan {
-        preview_action: format!("Delete {} exception list(s)", targets.len()),
-        preview_details: details,
-        targets,
+    Ok(DeletePlan {
+        preview: MutationPlan {
+            preview_action: format!("Delete {} exception list(s)", targets.len()),
+            preview_details: details,
+            targets,
+        },
+        keys,
     })
 }
 
 /// Continue after per-container failures so the result records every deletion
-/// and every container that remains. Each target is re-resolved to its
-/// namespace at apply time, the same lookup the preview already proved.
-pub async fn apply_delete_op(t: &Transport, plan: &MutationPlan) -> Result<DeleteOutcome> {
+/// and every container that remains.
+pub async fn apply_delete_op(t: &Transport, plan: &DeletePlan) -> Result<DeleteOutcome> {
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
-    for id in &plan.targets {
-        match resolve_list_key(t, id).await {
-            Ok(key) => match delete_list(t, &key).await {
-                Ok(_) => deleted.push(json!({
-                    "list_id": id,
-                    "namespace_type": key.namespace_type,
-                })),
-                Err(e) => failed.push(json!({"list_id": id, "error": e.message})),
-            },
-            Err(e) => failed.push(json!({"list_id": id, "error": e.message})),
+    for key in &plan.keys {
+        match delete_list(t, key).await {
+            Ok(_) => deleted.push(json!({
+                "list_id": key.list_id,
+                "namespace_type": key.namespace_type,
+            })),
+            Err(e) => failed.push(json!({"list_id": key.list_id, "error": e.message})),
         }
     }
     Ok(DeleteOutcome {
         applied: true,
         deleted,
         failed,
-        total: plan.targets.len(),
+        total: plan.keys.len(),
     })
 }
 
@@ -487,14 +536,16 @@ pub async fn apply_delete_op(t: &Transport, plan: &MutationPlan) -> Result<Delet
 ///
 /// The file is decoded as a bundle, never as rules only: `decode_ndjson` drops
 /// exception lines and would leave the operator with rules referencing lists
-/// that were never created. The transport is `None` unless `skip_existing` is
-/// set, so a dry run that only reads the file never needs a credential.
+/// that were never created. The preview counts containers and items, so an
+/// items-only file previews as the non-zero mutation it is. The transport is
+/// `None` unless `skip_existing` is set, so a dry run that only reads the file
+/// never needs a credential.
 pub async fn plan_import_op(
     t: Option<&Transport>,
     path: &Path,
     overwrite: bool,
     skip_existing: bool,
-) -> Result<(MutationPlan, String)> {
+) -> Result<ImportPlan> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
 
@@ -523,6 +574,22 @@ pub async fn plan_import_op(
         ));
     }
 
+    // An item whose list_id is unreadable has no home; uploading it would
+    // strand it (spec 5.2). Refuse before any skip decision so both paths share
+    // the guard instead of one silently defaulting to an empty list_id.
+    for item in &bundle.items {
+        if item.list_id().is_err() {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!(
+                    "an exception item ('{}') has no readable list_id",
+                    item.item_id().unwrap_or("<unreadable>")
+                ),
+            ));
+        }
+    }
+
+    let total = bundle.lists.len() + bundle.items.len();
     let mut lists = bundle.lists;
     let mut items = bundle.items;
     let mut skipped: Vec<Value> = Vec::new();
@@ -560,7 +627,7 @@ pub async fn plan_import_op(
             let skip_set: std::collections::BTreeSet<ListKey> = skip_keys.into_iter().collect();
             items.retain(|i| {
                 let key = ListKey {
-                    list_id: i.list_id().unwrap_or_default().to_string(),
+                    list_id: i.list_id().expect("list_id validated above").to_string(),
                     namespace_type: i.namespace_type().to_string(),
                 };
                 !skip_set.contains(&key)
@@ -568,16 +635,27 @@ pub async fn plan_import_op(
         }
     }
 
-    let mut details: Vec<String> = lists
-        .iter()
-        .map(|l| format!("{}  {}  import", l.list_id().unwrap_or_default(), l.name()))
-        .collect();
+    let mut details = Vec::with_capacity(lists.len() + items.len() + skipped.len());
+    for l in &lists {
+        details.push(format!("{}  {}  import", l.list_id()?, l.name()));
+    }
+    for i in &items {
+        details.push(format!("{}  {}  import", i.item_id()?, i.list_id()?));
+    }
     details.extend(skipped.iter().map(|s| {
         format!(
             "{}  skip (already exists)",
             s["list_id"].as_str().unwrap_or_default()
         )
     }));
+
+    let mut targets = Vec::with_capacity(lists.len() + items.len());
+    for l in &lists {
+        targets.push(l.list_id()?.to_string());
+    }
+    for i in &items {
+        targets.push(i.item_id()?.to_string());
+    }
 
     let qualifier = if overwrite {
         ", overwriting existing".to_string()
@@ -588,15 +666,13 @@ pub async fn plan_import_op(
     };
     let preview = MutationPlan {
         preview_action: format!(
-            "Import {} exception list(s) from {}{qualifier}",
+            "Import {} exception list(s) and {} item(s) from {}{qualifier}",
             lists.len(),
+            items.len(),
             path.display()
         ),
         preview_details: details,
-        targets: lists
-            .iter()
-            .map(|l| l.list_id().map(str::to_owned))
-            .collect::<Result<_>>()?,
+        targets,
     };
 
     // Kibana's import takes NDJSON regardless of the source file's format, and
@@ -608,7 +684,12 @@ pub async fn plan_import_op(
         summary: None,
     })?;
 
-    Ok((preview, ndjson))
+    Ok(ImportPlan {
+        preview,
+        ndjson,
+        total,
+        skipped,
+    })
 }
 
 /// Upload the NDJSON `plan_import_op` prepared.

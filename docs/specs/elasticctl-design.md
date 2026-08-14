@@ -226,11 +226,11 @@ elasticctl rules prebuilt status             Installed, missing, outdated, custo
 elasticctl rules prebuilt install            Install missing and update outdated  [guarded]       0.2
 
 elasticctl exceptions list                   --type --tag --namespace                             0.2
-elasticctl exceptions get <list_id>          Container and its items                              0.2
+elasticctl exceptions get <list_id> [--namespace single|agnostic]                                 0.2
 elasticctl exceptions validate --path FILE   Local schema check, no server contact                0.2
-elasticctl exceptions export [<list_id>...] [--tag TAG] [--out FILE] [--format-file ndjson|yaml]  0.2
+elasticctl exceptions export [<list_id>...] [--tag TAG] [--namespace NS] [--format-file ndjson]   0.2
 elasticctl exceptions import --path FILE [--overwrite | --skip-existing]  [guarded]               0.2
-elasticctl exceptions delete <list_id>...    [guarded]                                            0.2
+elasticctl exceptions delete <list_id>... [--namespace single|agnostic]   [guarded]               0.2
 
 elasticctl state pull [<name|rule_id>...] [--tag TAG] [--source S] --dir config/ [--format-file ndjson|yaml]
 elasticctl state diff [<name|rule_id>...] [--tag TAG] [--source S] --dir config/  Field-level structured drift
@@ -339,6 +339,15 @@ and `push` repairs it.
 
 `namespace_type` is part of identity because `single` and `agnostic` are
 separate namespaces in which the same `list_id` may exist independently.
+
+That independence has a consequence for the command surface. A bare `list_id`
+is not a selector when the same one exists in both namespaces, so `get`,
+`export`, and `delete` each take `--namespace` to qualify it. Without the flag
+they refuse such a `list_id` with `conflict` rather than picking a side, and the
+error names `--namespace` as the remedy. Read commands default to enumerating
+both namespaces and merging, ordered by `(namespace_type, list_id)`: the route's
+own default is `single`, so a client that simply omits the parameter would show
+an operator a partial list and call it complete.
 
 ### 4.6 Prebuilt rules
 

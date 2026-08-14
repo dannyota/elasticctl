@@ -36,10 +36,10 @@ pub async fn list(ctx: &Context, filter: &ListFilter) -> Result<Value> {
     Ok(Value::Array(report.lists.iter().map(summarize).collect()))
 }
 
-pub async fn get(ctx: &Context, list_id: &str) -> Result<Value> {
+pub async fn get(ctx: &Context, list_id: &str, namespace: Option<&str>) -> Result<Value> {
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
-    let detail = exceptions::get_op(transport, list_id).await?;
+    let detail = exceptions::get_op(transport, list_id, namespace).await?;
     to_value(&detail)
 }
 
@@ -57,12 +57,13 @@ pub async fn export(
     ctx: &Context,
     list_ids: &[String],
     tag: Option<&str>,
+    namespace: Option<&str>,
     out: Option<&Path>,
     format: FileFormat,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let outcome = exceptions::export_op(t, list_ids, tag, format).await?;
+    let outcome = exceptions::export_op(t, list_ids, tag, namespace, format).await?;
 
     match out {
         Some(path) => {
@@ -82,18 +83,18 @@ pub async fn export(
     }
 }
 
-pub async fn delete(ctx: &Context, list_ids: &[String]) -> Result<Value> {
+pub async fn delete(ctx: &Context, list_ids: &[String], namespace: Option<&str>) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let plan = exceptions::plan_delete_op(t, list_ids).await?;
+    let plan = exceptions::plan_delete_op(t, list_ids, namespace).await?;
     let preview = Preview {
-        action: plan.preview_action.clone(),
-        details: plan.preview_details.clone(),
+        action: plan.preview.preview_action.clone(),
+        details: plan.preview.preview_details.clone(),
     };
     if guard::check(ctx, "exceptions delete", &preview) {
         to_value(&exceptions::apply_delete_op(t, &plan).await?)
     } else {
-        Ok(json!({"applied": false, "total": plan.targets.len()}))
+        Ok(json!({"applied": false, "total": plan.preview.targets.len()}))
     }
 }
 
@@ -112,14 +113,20 @@ pub async fn import(
     } else {
         None
     };
-    let (plan, ndjson) = exceptions::plan_import_op(t, path, overwrite, skip_existing).await?;
+    let plan = exceptions::plan_import_op(t, path, overwrite, skip_existing).await?;
 
     let preview = Preview {
-        action: plan.preview_action.clone(),
-        details: plan.preview_details.clone(),
+        action: plan.preview.preview_action.clone(),
+        details: plan.preview.preview_details.clone(),
     };
     if !guard::check(ctx, "exceptions import", &preview) {
-        return Ok(json!({"applied": false, "total": plan.targets.len()}));
+        let pending = plan.preview.targets.len();
+        return Ok(json!({
+            "applied": false,
+            "total": plan.total,
+            "skipped": plan.skipped,
+            "pending": pending,
+        }));
     }
 
     // The upload always reaches the server. The --skip-existing read already
@@ -131,10 +138,12 @@ pub async fn import(
             ctx.transport().await?
         }
     };
-    let report = exceptions::apply_import_op(t, &ndjson, overwrite).await?;
+    let report = exceptions::apply_import_op(t, &plan.ndjson, overwrite).await?;
     Ok(json!({
         "applied": true,
         "succeeded": report.succeeded,
         "failed": report.failed,
+        "skipped": plan.skipped,
+        "total": plan.total,
     }))
 }
