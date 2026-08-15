@@ -1,0 +1,9 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "search_pit_close",
+  "response": {
+    "succeeded": true,
+    "num_freed": 1
+  }
+}

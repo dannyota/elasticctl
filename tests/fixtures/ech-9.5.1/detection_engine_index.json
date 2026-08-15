@@ -1,0 +1,9 @@
+{
+  "flavor": "ech",
+  "version": "9.5.1",
+  "operation": "detection_engine_index",
+  "response": {
+    "name": ".alerts-security.alerts-default",
+    "index_mapping_outdated": false
+  }
+}

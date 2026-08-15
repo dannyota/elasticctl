@@ -1,0 +1,9 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "detection_engine_index",
+  "response": {
+    "name": ".alerts-security.alerts-default",
+    "index_mapping_outdated": false
+  }
+}

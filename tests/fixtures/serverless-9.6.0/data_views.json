@@ -1,0 +1,79 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_views",
+  "response": {
+    "data_view": [
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": false
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED",
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED",
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      }
+    ]
+  }
+}

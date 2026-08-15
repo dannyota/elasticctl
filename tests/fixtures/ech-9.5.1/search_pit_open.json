@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.1",
+  "operation": "search_pit_open",
+  "request": {
+    "index": "elasticctl-sample-search",
+    "keep_alive": "1m"
+  },
+  "response": {}
+}

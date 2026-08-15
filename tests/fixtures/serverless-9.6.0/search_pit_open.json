@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "search_pit_open",
+  "request": {
+    "index": "elasticctl-sample-search",
+    "keep_alive": "1m"
+  },
+  "response": {}
+}
