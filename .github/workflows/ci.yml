@@ -72,3 +72,5 @@ jobs:
       - uses: actions/checkout@v7
       - name: Scan recorded fixtures for identity and credentials
         run: ./scripts/check-fixtures.sh
+      - name: Validate public conformance reports
+        run: ./scripts/check-conformance-reports.sh
