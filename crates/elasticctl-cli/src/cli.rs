@@ -137,6 +137,11 @@ pub enum Command {
         #[command(subcommand)]
         action: StateAction,
     },
+    /// Run ES|QL or Query DSL against Elasticsearch data
+    Search {
+        #[command(subcommand)]
+        action: SearchAction,
+    },
     /// Generate a shell completion script
     Completion {
         #[arg(value_enum)]
@@ -338,6 +343,32 @@ pub enum StateAction {
         /// Source scope used when selectors and --tag are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SearchAction {
+    /// Run an ES|QL query
+    Esql {
+        /// The ES|QL query text
+        query: String,
+        /// Resolve a Kibana data view to an index pattern
+        #[arg(long)]
+        data_view: Option<String>,
+        /// Explicit index or alias, overrides the query's own source
+        #[arg(long)]
+        index: Option<String>,
+    },
+    /// Run a Query DSL search body
+    Dsl {
+        /// JSON body or @path
+        body: String,
+        /// Resolve a Kibana data view to an index pattern
+        #[arg(long)]
+        data_view: Option<String>,
+        /// Explicit index or alias
+        #[arg(long)]
+        index: Option<String>,
     },
 }
 

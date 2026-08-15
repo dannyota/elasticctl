@@ -6,4 +6,5 @@ pub mod exceptions;
 pub mod info;
 pub mod meta;
 pub mod rules;
+pub mod search;
 pub mod state;

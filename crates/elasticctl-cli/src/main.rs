@@ -11,7 +11,7 @@ mod resolve;
 use clap::Parser;
 use cli::{
     Cli, Command, ConfigAction, ExceptionsAction, GlobalArgs, PrebuiltAction, RulesAction,
-    SourceArg, StateAction,
+    SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::exceptions::ListFilter;
@@ -286,6 +286,28 @@ async fn main() {
                         source_to_api(*source),
                     )
                     .await
+                }
+                Err(e) => Err(e),
+            },
+        },
+        Command::Search { action } => match action {
+            SearchAction::Esql {
+                query,
+                data_view,
+                index,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::search::esql(&ctx, query, data_view.as_deref(), index.as_deref()).await
+                }
+                Err(e) => Err(e),
+            },
+            SearchAction::Dsl {
+                body,
+                data_view,
+                index,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::search::dsl(&ctx, body, data_view.as_deref(), index.as_deref()).await
                 }
                 Err(e) => Err(e),
             },
