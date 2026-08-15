@@ -11,6 +11,7 @@ pub mod prebuilt;
 pub mod report;
 pub mod rules;
 pub mod rules_ops;
+pub mod search;
 pub mod selection;
 pub mod state;
 
