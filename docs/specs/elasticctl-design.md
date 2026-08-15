@@ -1058,9 +1058,6 @@ overwrite the self-managed set. `ELASTICCTL_FIXTURE_FLAVOR` overrides the
 derived name and tags fixtures at record time. Tagging them afterwards would
 require editing recorded fixtures, which is never allowed.
 
-CI runs unit and fixture tiers on pushes to `master`, pull requests, the weekly
-schedule, and manual runs. The live tier is opt-in; run it before releases.
-
 ### 8.1 Sample corpora
 
 Rules and events are required to make a rule fire, but neither belongs in this
@@ -1079,6 +1076,28 @@ never vendors them:
 `sbousseaden/EVTX-ATTACK-SAMPLES` is excluded: the repository carries no
 license at all. `elastic/detection-rules` content is Elastic License v2 and is
 never committed here.
+
+### 8.2 CI and release preflight
+
+CI runs on pushes to `master`, pull requests, the weekly schedule, and manual
+dispatch. Every Cargo command that resolves or builds dependencies uses the
+committed lockfile. The stable job runs formatting, Clippy, workspace tests,
+and package-content checks. A separate job reads
+`workspace.package.rust-version` from `Cargo.toml` and checks every workspace
+target with that exact toolchain. Windows runs the API state and transaction
+regressions plus the full `elasticctl` package test suite, including raw export
+and report-file paths. The fixture-leak job scans recorded exchanges for
+credentials and project identity.
+
+Before a version tag, the exact `master` commit must pass CI and the manually
+dispatched release-preflight workflow. Preflight runs
+`cargo publish --workspace --dry-run --locked` from a clean checkout with
+read-only repository permission. It receives no crates.io credential and
+uploads no crate.
+
+The live tier remains opt-in. Run applicable live conformance before releases
+that change live behavior; a release limited to tests, documentation, and
+release tooling does not need it.
 
 ## 9. Local lab
 

@@ -26,16 +26,45 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    `[workspace.dependencies]`. Bumping only `[workspace.package] version`
    leaves stale `0.1.0` requirements in the dependency metadata.
 2. Add a dated entry to `CHANGELOG.md`.
-3. `cargo publish --workspace --dry-run` — confirm all three packages compile
-   and pass Cargo's publish checks.
-4. `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers
+3. Run formatting, locked Clippy, locked workspace tests, package-content and
+   fixture-leak checks, then `cargo publish --workspace --dry-run --locked`.
+4. Push `master` and require CI success for that exact commit.
+5. Dispatch `.github/workflows/release-preflight.yml` on `master` and require
+   success for that same commit.
+6. `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag triggers
    `.github/workflows/release.yml`, which builds the binary matrix and publishes
    the GitHub Release.
-5. Confirm the release carries a complete asset list. **The release ends here.**
-6. Only with the owner's explicit approval for this version:
+7. Confirm the release carries a complete asset list. **The release ends here.**
+8. Only with the owner's explicit approval for this version:
    `cargo publish --workspace`, from the tagged commit.
 
-Step 3 stays in the default path even though step 6 usually does not run. The
+The complete local gate for step 3 is:
+
+```bash
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+./scripts/check-packages.sh
+./scripts/check-fixtures.sh
+cargo publish --workspace --dry-run --locked
+```
+
+After step 4 passes CI, dispatch and identify the preflight run:
+
+```bash
+release_sha="$(git rev-parse HEAD)"
+gh workflow run release-preflight.yml --ref master
+gh run list --workflow release-preflight.yml --branch master \
+  --event workflow_dispatch --limit 5
+```
+
+The listed run's head SHA must equal `release_sha`. Once it appears, capture
+that row's numeric database ID in `preflight_run_id`, require the variable to
+be nonempty, and run
+`gh run watch "$preflight_run_id" --exit-status`. If the run has not appeared
+yet, repeat the list command before selecting it.
+
+Step 3 stays in the default path even though step 8 usually does not run. The
 dry run costs one build and catches packaging errors — a missing `include`, a
 path dependency without a version — while they are still free to fix. Finding
 them later, on the day publishing is approved, means fixing them against a
@@ -83,7 +112,7 @@ Once a release has proved an unchanged matrix, repeating that test adds little
 protection. Test it again only after the target list changes.
 
 What a candidate no longer has to insure against is the matrix itself, because
-step 4 now runs before step 6: the real tag proves the build while both the tag
+step 6 now runs before step 8: the real tag proves the build while both the tag
 and the Release are still deletable. What it *can* insure, since 0.1.3, is the
 publish. A crates.io version is permanent — yanking hides it from resolution
 but never removes it — and `cargo install elasticctl` now has users to break.
