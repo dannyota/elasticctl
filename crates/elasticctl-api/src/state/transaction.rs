@@ -20,13 +20,30 @@ pub(crate) struct PullLock {
     _lock_file: File,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 enum Phase {
     Prepared,
     BackingUp,
     BackedUp,
     Installing,
     Installed,
+}
+
+impl Phase {
+    /// Whether `next` is the single legal successor of `self`.
+    ///
+    /// The journal is append-only, so each entry must advance one phase at a
+    /// time. A record that jumps ahead is corrupt and must fail recovery rather
+    /// than roll back on a phase the transaction never reached.
+    fn can_advance_to(self, next: Phase) -> bool {
+        matches!(
+            (self, next),
+            (Phase::Prepared, Phase::BackingUp)
+                | (Phase::BackingUp, Phase::BackedUp)
+                | (Phase::BackedUp, Phase::Installing)
+                | (Phase::Installing, Phase::Installed)
+        )
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -513,6 +530,18 @@ fn read_journal(transaction: &Path) -> Result<Option<Vec<JournalEntry>>> {
                 format!("pull journal {} names an unknown entry", journal.display()),
             )
         })?;
+        if !entry.phase.can_advance_to(update.phase) {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!(
+                    "pull journal {} entry {} has an illegal phase transition {:?} -> {:?}",
+                    journal.display(),
+                    update.entry,
+                    entry.phase,
+                    update.phase
+                ),
+            ));
+        }
         entry.phase = update.phase;
     }
     Ok(Some(entries))
@@ -1272,16 +1301,27 @@ mod tests {
             phase: Phase::Prepared,
         };
         let prepared = serde_json::json!({ "entries": [entry] });
-        let update = PhaseRecord { entry: 0, phase };
-        fs::write(
-            txn.join("journal.ndjson"),
-            format!(
-                "{}\n{}\n",
-                serde_json::to_string(&prepared).unwrap(),
-                serde_json::to_string(&update).unwrap()
-            ),
-        )
-        .unwrap();
+        let mut journal = format!("{}\n", serde_json::to_string(&prepared).unwrap());
+        for update_phase in phases_through(phase) {
+            let update = PhaseRecord {
+                entry: 0,
+                phase: update_phase,
+            };
+            journal.push_str(&format!("{}\n", serde_json::to_string(&update).unwrap()));
+        }
+        fs::write(txn.join("journal.ndjson"), journal).unwrap();
+    }
+
+    /// The legal phase records from `Prepared` through `phase`.
+    fn phases_through(phase: Phase) -> Vec<Phase> {
+        use Phase::*;
+        match phase {
+            Prepared => vec![],
+            BackingUp => vec![BackingUp],
+            BackedUp => vec![BackingUp, BackedUp],
+            Installing => vec![BackingUp, BackedUp, Installing],
+            Installed => vec![BackingUp, BackedUp, Installing, Installed],
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -1360,6 +1400,58 @@ mod tests {
 
         assert!(!root.join("rules/a.ndjson").exists());
         assert!(!root.join(".elasticctl-pull-txn").exists());
+    }
+
+    #[test]
+    fn recovery_rejects_an_illegal_phase_jump_without_removing_a_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("mirror");
+        let transaction = root.join(".elasticctl-pull-txn");
+        fs::create_dir_all(transaction.join("staged")).unwrap();
+        fs::create_dir_all(transaction.join("backups")).unwrap();
+
+        // A prepared manifest for a target absent before the transaction,
+        // followed directly by an illegal Installed record that skips
+        // BackingUp, BackedUp, and Installing.
+        let entry = JournalEntry {
+            relative: "rules/a.ndjson".into(),
+            existed_before: false,
+            phase: Phase::Prepared,
+        };
+        let prepared = serde_json::json!({ "entries": [entry] });
+        let jump = PhaseRecord {
+            entry: 0,
+            phase: Phase::Installed,
+        };
+        fs::write(
+            transaction.join("journal.ndjson"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&prepared).unwrap(),
+                serde_json::to_string(&jump).unwrap()
+            ),
+        )
+        .unwrap();
+
+        // No staged file exists (this corrupt journal skips straight to
+        // Installed) and a user target is present; the illegal transition must
+        // neither remove it nor discard the journal.
+        fs::create_dir_all(root.join("rules")).unwrap();
+        fs::write(root.join("rules/a.ndjson"), b"user bytes\n").unwrap();
+
+        let lock = acquire_pull(&root).unwrap();
+        let error = recover_pull(&lock).unwrap_err();
+
+        assert!(
+            error.message.contains("phase transition"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            fs::read(root.join("rules/a.ndjson")).unwrap(),
+            b"user bytes\n"
+        );
+        assert!(transaction.join("journal.ndjson").exists());
     }
 
     #[test]
