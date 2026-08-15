@@ -51,7 +51,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked -p elasticctl-api --test state
       - run: cargo test --locked -p elasticctl-api transaction
-      - run: cargo test --locked -p elasticctl --bin elasticctl report_file
+      - run: cargo test --locked -p elasticctl
 
   # Check advisories, licences, duplicate versions, and unvetted sources from
   # deny.toml.
