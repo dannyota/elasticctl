@@ -22,7 +22,7 @@
     "actions": [],
     "exceptions_list": [
       {
-        "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+        "id": "4ec08767-43ec-4f0d-b3ad-0baea72a8dfe",
         "list_id": "elasticctl-sample-exceptions",
         "type": "detection",
         "namespace_type": "single"
@@ -36,15 +36,15 @@
     "setup": "",
     "related_integrations": [],
     "required_fields": [],
-    "id": "af6258d9-8ab9-481d-812b-b3c0674a09f9",
+    "id": "a8d344a0-2516-4a58-8fd3-8f0d5d6e3993",
     "rule_id": "elasticctl-fixture-probe",
     "immutable": false,
     "rule_source": {
       "type": "internal"
     },
-    "updated_at": "2026-08-14T18:08:48.556Z",
+    "updated_at": "2026-08-15T05:25:12.844Z",
     "updated_by": "REDACTED",
-    "created_at": "2026-08-14T18:08:48.556Z",
+    "created_at": "2026-08-15T05:25:12.844Z",
     "created_by": "REDACTED",
     "revision": 0,
     "type": "query",

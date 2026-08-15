@@ -3,7 +3,7 @@
   "version": "9.6.0",
   "operation": "exception_item_create",
   "response": {
-    "id": "084f6701-9c30-4cce-a71d-1bb88551179d",
+    "id": "fcb3dbed-1459-4c30-920d-a5e357a95cc5",
     "item_id": "elasticctl-sample-exception-item",
     "list_id": "elasticctl-sample-exceptions",
     "type": "simple",
@@ -26,9 +26,9 @@
     "comments": [],
     "_version": "REDACTED",
     "tie_breaker_id": "REDACTED",
-    "created_at": "2026-08-14T18:08:47.376Z",
+    "created_at": "2026-08-15T05:25:11.658Z",
     "created_by": "REDACTED",
-    "updated_at": "2026-08-14T18:08:47.376Z",
+    "updated_at": "2026-08-15T05:25:11.658Z",
     "updated_by": "REDACTED"
   }
 }

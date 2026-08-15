@@ -8,7 +8,7 @@
   "response": {
     "data": [
       {
-        "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+        "id": "4ec08767-43ec-4f0d-b3ad-0baea72a8dfe",
         "list_id": "elasticctl-sample-exceptions",
         "type": "detection",
         "name": "elasticctl sample exceptions",
@@ -23,9 +23,9 @@
         "version": 1,
         "_version": "REDACTED",
         "tie_breaker_id": "REDACTED",
-        "created_at": "2026-08-14T18:08:46.366Z",
+        "created_at": "2026-08-15T05:25:10.854Z",
         "created_by": "REDACTED",
-        "updated_at": "2026-08-14T18:08:46.366Z",
+        "updated_at": "2026-08-15T05:25:10.854Z",
         "updated_by": "REDACTED"
       }
     ],

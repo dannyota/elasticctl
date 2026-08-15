@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const V0_2_FIXTURES: [&str; 14] = [
+const V0_2_FIXTURES: [&str; 15] = [
     "exception_lists_find.json",
     "exception_list_get.json",
     "exception_list_items_find.json",
@@ -24,6 +24,7 @@ const V0_2_FIXTURES: [&str; 14] = [
     "prebuilt_install.json",
     "lists_index.json",
     "rules_find_source_custom.json",
+    "rules_find_source_prebuilt.json",
     "rules_find_source_customized.json",
 ];
 
@@ -253,6 +254,10 @@ fn source_find_fixtures_keep_the_exact_scoped_kql() {
             "alert.attributes.params.immutable: false AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\"",
         ),
         (
+            "rules_find_source_prebuilt.json",
+            "alert.attributes.params.immutable: true AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\"",
+        ),
+        (
             "rules_find_source_customized.json",
             "alert.attributes.params.ruleSource.isCustomized: true AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\"",
         ),
@@ -268,6 +273,27 @@ fn source_find_fixtures_keep_the_exact_scoped_kql() {
                 set.join(file).display()
             );
         }
+    }
+}
+
+#[test]
+fn source_partition_is_exhaustive_for_the_scoped_probe_corpus() {
+    for set in fixture_sets() {
+        let all = fixture_body(&set.join("rules_find.json"));
+        let custom = fixture_body(&set.join("rules_find_source_custom.json"));
+        let prebuilt = fixture_body(&set.join("rules_find_source_prebuilt.json"));
+        let total = |fixture: &Value| {
+            fixture["response"]["total"]
+                .as_u64()
+                .expect("source fixture response.total")
+        };
+
+        assert_eq!(
+            total(&custom) + total(&prebuilt),
+            total(&all),
+            "{}: immutable must partition the scoped probe corpus",
+            set.display()
+        );
     }
 }
 

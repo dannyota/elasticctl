@@ -11,7 +11,7 @@
     "total": 1,
     "data": [
       {
-        "id": "6dc8faad-3275-493c-ab4c-bc1927bbce6d",
+        "id": "e595b8ca-a3c8-498e-85a1-b5a46a0a298e",
         "rule_id": "elasticctl-fixture-probe",
         "name": "elasticctl fixture probe",
         "immutable": false,
@@ -20,9 +20,9 @@
         },
         "version": 1,
         "revision": 0,
-        "updated_at": "2026-08-14T18:17:22.980Z",
+        "updated_at": "2026-08-15T05:28:04.361Z",
         "updated_by": "REDACTED",
-        "created_at": "2026-08-14T18:17:22.980Z",
+        "created_at": "2026-08-15T05:28:04.361Z",
         "created_by": "REDACTED",
         "enabled": false,
         "interval": "5m",
@@ -48,7 +48,7 @@
         "max_signals": 100,
         "exceptions_list": [
           {
-            "id": "706cfaa8-96ea-4c82-a688-b9e4bdeda450",
+            "id": "476b38f3-6bf2-49ff-80eb-6c0b4a2375f2",
             "list_id": "elasticctl-sample-exceptions",
             "type": "detection",
             "namespace_type": "single"

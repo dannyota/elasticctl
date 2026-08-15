@@ -1,0 +1,14 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "rules_find_source_prebuilt",
+  "request": {
+    "filter": "alert.attributes.params.immutable: true AND alert.attributes.params.ruleId: \"elasticctl-fixture-probe\""
+  },
+  "response": {
+    "page": 1,
+    "perPage": 2,
+    "total": 0,
+    "data": []
+  }
+}

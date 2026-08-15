@@ -5,7 +5,7 @@
   "response": {
     "data": [
       {
-        "id": "16ef54e0-15bc-43c6-970b-210d89b43177",
+        "id": "593f20eb-3445-4585-8a86-a9d99df57b4b",
         "item_id": "elasticctl-sample-exception-item",
         "list_id": "elasticctl-sample-exceptions",
         "type": "simple",
@@ -28,9 +28,9 @@
         "comments": [],
         "_version": "REDACTED",
         "tie_breaker_id": "REDACTED",
-        "created_at": "2026-08-14T18:12:21.475Z",
+        "created_at": "2026-08-15T05:46:43.726Z",
         "created_by": "REDACTED",
-        "updated_at": "2026-08-14T18:12:21.475Z",
+        "updated_at": "2026-08-15T05:46:43.726Z",
         "updated_by": "REDACTED"
       }
     ],

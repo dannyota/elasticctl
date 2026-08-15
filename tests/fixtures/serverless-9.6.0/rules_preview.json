@@ -3,7 +3,7 @@
   "version": "9.6.0",
   "operation": "rules_preview",
   "response": {
-    "previewId": "2461f4aa-d932-4c9d-a09f-cd68bb994dc4",
+    "previewId": "c4943fa7-82d9-4301-b9e6-0b4a2deebc58",
     "logs": [
       {
         "errors": [],
@@ -11,7 +11,7 @@
           "Unable to find matching indices for rule elasticctl fixture probe. This warning will persist until one of the following occurs: a matching index is created or the rule is disabled."
         ],
         "startedAt": "2026-08-12T18:00:00.000Z",
-        "duration": 45
+        "duration": 41
       }
     ],
     "isAborted": false

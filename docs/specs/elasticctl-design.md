@@ -1278,9 +1278,12 @@ against it risks baking Serverless assumptions into code that claims to support
 self-managed. The mitigation is fixture tagging by flavor and version,
 capability-gated divergent behavior, and recordings for each flavor.
 
-All three flavors now have 28 fixtures: `serverless-9.6.0`,
+All three flavors now have 29 fixtures: `serverless-9.6.0`,
 `traditional-9.5.1`, and `ech-9.5.1`. Coverage is even, so no flavor is least
-tested.
+tested. Each set records custom and prebuilt `immutable` filters against the
+same probe rule and proves their totals sum to the unscoped total. The two
+9.5.1 sets therefore establish the rule-source compatibility floor; older
+versions remain unsupported until an equally complete recording lowers it.
 
 Both halves of the Hosted signal are now measured, not inferred. Every set
 records response headers: `traditional-9.5.1` has headers but lacks

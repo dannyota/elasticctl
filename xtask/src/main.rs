@@ -1199,6 +1199,10 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             format!("alert.attributes.params.immutable: false AND {rule_filter}"),
         ),
         (
+            "rules_find_source_prebuilt",
+            format!("alert.attributes.params.immutable: true AND {rule_filter}"),
+        ),
+        (
             "rules_find_source_customized",
             format!("alert.attributes.params.ruleSource.isCustomized: true AND {rule_filter}"),
         ),

@@ -3,7 +3,7 @@
   "version": "9.6.0",
   "operation": "rules_delete",
   "response": {
-    "id": "af6258d9-8ab9-481d-812b-b3c0674a09f9",
+    "id": "a8d344a0-2516-4a58-8fd3-8f0d5d6e3993",
     "rule_id": "elasticctl-fixture-probe",
     "name": "elasticctl fixture probe",
     "immutable": false,
@@ -12,23 +12,14 @@
     },
     "version": 1,
     "revision": 0,
-    "updated_at": "2026-08-14T18:09:03.611Z",
+    "updated_at": "2026-08-15T05:25:27.884Z",
     "updated_by": "REDACTED",
-    "created_at": "2026-08-14T18:08:48.556Z",
+    "created_at": "2026-08-15T05:25:12.844Z",
     "created_by": "REDACTED",
     "enabled": false,
     "interval": "5m",
     "from": "now-6m",
     "to": "now",
-    "execution_summary": {
-      "last_execution": {
-        "date": "2026-08-14T18:08:52.785Z",
-        "status": "failed",
-        "status_order": 30,
-        "message": "Rule failed to execute because rule ran after it was disabled.",
-        "metrics": {}
-      }
-    },
     "description": "Recorded by cargo xtask record. Safe to delete.",
     "tags": [
       "elasticctl",
@@ -49,7 +40,7 @@
     "max_signals": 100,
     "exceptions_list": [
       {
-        "id": "da641aad-916c-4e6b-b8a1-6479a712a2d2",
+        "id": "4ec08767-43ec-4f0d-b3ad-0baea72a8dfe",
         "list_id": "elasticctl-sample-exceptions",
         "type": "detection",
         "namespace_type": "single"
