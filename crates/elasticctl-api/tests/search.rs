@@ -1,4 +1,4 @@
-use elasticctl_api::search::{dsl, esql};
+use elasticctl_api::search::{dataview, dsl, esql};
 use elasticctl_core::Transport;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -135,4 +135,32 @@ async fn run_stream_pages_with_search_after() {
     .expect("stream");
     assert_eq!(hits.len(), 3);
     assert_eq!(hits[2].source, json!({"seq": 3}));
+}
+
+#[test]
+fn resolves_a_data_view_by_name_to_its_title() {
+    let body = json!({
+        "data_view": [
+            {"id": "security-solution-alert-default", "name": "Security solution alert default", "title": ".alerts-security.alerts-default", "namespaces": ["default"]}
+        ]
+    });
+    assert_eq!(
+        dataview::resolve_title(&body, "Security solution alert default").unwrap(),
+        ".alerts-security.alerts-default"
+    );
+    assert_eq!(
+        dataview::resolve_title(&body, "security-solution-alert-default").unwrap(),
+        ".alerts-security.alerts-default"
+    );
+}
+
+#[test]
+fn rejects_an_ambiguous_data_view_name() {
+    let body = json!({
+        "data_view": [
+            {"id": "a", "name": "Dup", "title": "x"},
+            {"id": "b", "name": "Dup", "title": "y"}
+        ]
+    });
+    assert!(dataview::resolve_title(&body, "Dup").is_err());
 }
