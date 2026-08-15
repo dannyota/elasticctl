@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.3 — 2026-08-15
+
+### Added
+
+- A target-neutral conformance runner now executes the same six live contracts
+  serially and publishes a report only after cleanup and baseline audits pass.
+
+### Verified
+
+- All six contracts passed on Serverless 9.6.0, Elastic Cloud Hosted 9.5.1,
+  and self-managed 9.5.1. The scrubbed
+  [findings](docs/conformance/v0.2.3/findings.md) contain the measured matrix
+  and cleanup result.
+- The run found no release-worthy 0.2 defect, so 0.2.4 is skipped and 0.3.0
+  search design is next.
+
 ## 0.2.2 — 2026-08-15
 
 ### Added
