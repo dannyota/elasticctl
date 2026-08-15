@@ -40,6 +40,51 @@ async fn mock_prebuilt_install() -> MockStack {
     .await
 }
 
+#[tokio::test]
+async fn prebuilt_feature_refuses_an_unverified_stack_before_the_route() {
+    let server = MockServer::start().await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    };
+    let transport = Transport::new(&profile).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.0", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/prepackaged/_status"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "the prebuilt route must not be called"
+        })))
+        .mount(&server)
+        .await;
+
+    let error = prebuilt::status(&transport).await.unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("prebuilt rules"), "{error}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.url.path() == "/api/detection_engine/rules/prepackaged/_status"
+            })
+            .count(),
+        0
+    );
+}
+
 /// The `customized` count is read from a filtered `_find`. This assertion does
 /// not depend on the mock honoring that filter: `MockStack`'s `_find` serves
 /// whatever `customized` it was seeded with, for any query.
@@ -110,7 +155,12 @@ async fn malformed_status_wins_over_the_dependent_customized_count_request() {
         "{err}"
     );
 
-    let requests = stack.requests().await;
+    let requests: Vec<_> = stack
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.path != "/api/status")
+        .collect();
     assert_eq!(requests.len(), 1, "{requests:#?}");
     assert_eq!(requests[0].method, "GET");
     assert_eq!(
@@ -134,6 +184,13 @@ async fn malformed_customized_find_returns_a_typed_error_instead_of_prebuilt_sta
     };
     let transport = Transport::new(&profile).unwrap();
 
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/prepackaged/_status"))
         .respond_with(
@@ -265,7 +322,12 @@ async fn prebuilt_requests_have_the_measured_methods_paths_queries_and_null_body
     prebuilt::status(stack.transport()).await.unwrap();
     prebuilt::apply_install(stack.transport()).await.unwrap();
 
-    let requests = stack.requests().await;
+    let requests: Vec<_> = stack
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.path != "/api/status")
+        .collect();
     assert_eq!(requests.len(), 3, "{requests:#?}");
 
     assert_eq!(requests[0].method, "GET");

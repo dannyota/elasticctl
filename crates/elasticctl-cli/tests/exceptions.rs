@@ -15,6 +15,18 @@ async fn mock_exception_lists(n: usize) -> MockStack {
     MockStack::with_exception_lists(n).await
 }
 
+async fn verified_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
 /// Run the binary against a mock server with a profile pointing at its URI.
 async fn run(uri: &str, args: &[&str]) -> Output {
     let dir = tempfile::tempdir().unwrap();
@@ -100,7 +112,7 @@ async fn export_without_out_writes_importable_ndjson_to_stdout() {
 /// still a file, but its trailer must make both export modes fail visibly.
 #[tokio::test]
 async fn a_deleted_exception_list_writes_the_partial_file_and_exits_one() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
         .and(query_param("list_id", "l0"))
@@ -160,7 +172,7 @@ async fn a_deleted_exception_list_writes_the_partial_file_and_exits_one() {
 /// resolved when the flag qualifies it.
 #[tokio::test]
 async fn a_list_id_in_both_namespaces_needs_the_namespace_flag() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     for ns in ["single", "agnostic"] {
         Mock::given(method("GET"))
             .and(path("/api/exception_lists"))

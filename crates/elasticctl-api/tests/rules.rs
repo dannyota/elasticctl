@@ -36,6 +36,73 @@ fn find_body(total: u64, data: Vec<serde_json::Value>) -> serde_json::Value {
     json!({"page": 1, "perPage": 10000, "total": total, "data": data})
 }
 
+#[tokio::test]
+async fn source_feature_refuses_an_unverified_stack_before_the_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.0", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "the source-filtered route must not be called"
+        })))
+        .mount(&server)
+        .await;
+
+    let error = rules::find_page(
+        &transport(&server),
+        &RuleFilter {
+            source: RuleSource::Custom,
+            ..Default::default()
+        },
+        1,
+        1,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("rule source scoping"), "{error}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/detection_engine/rules/_find")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn source_feature_does_not_gate_an_all_rules_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(find_body(0, vec![])))
+        .mount(&server)
+        .await;
+
+    let (rules, total) = rules::find_page(&transport(&server), &RuleFilter::default(), 1, 1)
+        .await
+        .unwrap();
+
+    assert!(rules.is_empty());
+    assert_eq!(total, 0);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/status")
+            .count(),
+        0
+    );
+}
+
 #[test]
 fn find_envelope_rejects_malformed_required_fields_and_count_relationships() {
     // Each case catches a decoder regression back to the old missing-field or
@@ -364,6 +431,14 @@ async fn a_scoped_partition_checks_slices_against_the_filtered_total() {
     };
 
     Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
             "filter",
@@ -673,6 +748,14 @@ async fn a_non_exhaustive_immutable_partition_is_refused() {
 #[tokio::test]
 async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
     let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
 
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))

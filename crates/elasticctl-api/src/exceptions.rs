@@ -9,7 +9,7 @@ use crate::model::{ExceptionItem, ExceptionList, ListKey};
 use crate::normalize;
 use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 use crate::rules::kql_escape;
-use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
+use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,6 +136,7 @@ fn find_field_error(field: &str, expected: &str) -> Error {
 /// read is indistinguishable from objects deleted between pages, and a mirror
 /// built on it would silently drop them.
 async fn find_paged(t: &Transport, path_for: impl Fn(u32) -> String) -> Result<Vec<Value>> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let mut out: Vec<Value> = Vec::new();
     let mut page = 1u32;
     loop {
@@ -183,6 +184,7 @@ pub async fn find_lists(t: &Transport, f: &ListFilter) -> Result<Vec<ExceptionLi
 }
 
 pub async fn get_list(t: &Transport, key: &ListKey) -> Result<ExceptionList> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let body = t
         .get(&format!(
             "{BASE}?list_id={}&namespace_type={}",
@@ -271,18 +273,21 @@ pub async fn resolve_ids(t: &Transport, keys: &[ListKey]) -> Result<BTreeMap<Lis
 }
 
 pub async fn create_list(t: &Transport, l: &ExceptionList) -> Result<ExceptionList> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let payload = normalize::canonical_list(l);
     let response = t.post(BASE, Some(&payload.into_value())).await?;
     ExceptionList::from_value(response)
 }
 
 pub async fn update_list(t: &Transport, l: &ExceptionList) -> Result<ExceptionList> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let payload = normalize::canonical_list(l);
     let response = t.put(BASE, &payload.into_value()).await?;
     ExceptionList::from_value(response)
 }
 
 pub async fn delete_list(t: &Transport, key: &ListKey) -> Result<ExceptionList> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let body = t
         .delete(&format!(
             "{BASE}?list_id={}&namespace_type={}",
@@ -294,18 +299,21 @@ pub async fn delete_list(t: &Transport, key: &ListKey) -> Result<ExceptionList> 
 }
 
 pub async fn create_item(t: &Transport, i: &ExceptionItem) -> Result<ExceptionItem> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let payload = normalize::canonical_item(i);
     let response = t.post(ITEMS, Some(&payload.into_value())).await?;
     ExceptionItem::from_value(response)
 }
 
 pub async fn update_item(t: &Transport, i: &ExceptionItem) -> Result<ExceptionItem> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let payload = normalize::canonical_item(i);
     let response = t.put(ITEMS, &payload.into_value()).await?;
     ExceptionItem::from_value(response)
 }
 
 pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Result<ExceptionItem> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let body = t
         .delete(&format!(
             "{ITEMS}?item_id={}&namespace_type={}",
@@ -399,6 +407,7 @@ fn add_missing_identity(value: &mut Value, key: &ListKey) {
 /// refused rather than skipped: a silently dropped key is a short export
 /// reported as a success.
 pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<ExportOutcome> {
+    t.require_feature(Feature::ExceptionLists).await?;
     let ids = resolve_ids(t, keys).await?;
 
     // Name every missing key at once, the way the mirror names every colliding
@@ -450,6 +459,7 @@ pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<ExportOutco
 }
 
 pub async fn import_lists(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Value> {
+    t.require_feature(Feature::ExceptionLists).await?;
     t.post_multipart_ndjson(&format!("{BASE}/_import?overwrite={overwrite}"), ndjson)
         .await
 }

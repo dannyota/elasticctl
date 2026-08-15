@@ -34,6 +34,28 @@ fn transport(server: &MockServer) -> Transport {
     Transport::new(&profile(&server.uri())).unwrap()
 }
 
+async fn verified_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn feature_requests(server: &MockServer) -> Vec<wiremock::Request> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|request| request.url.path() != "/api/status")
+        .collect()
+}
+
 fn list_json(i: usize) -> Value {
     json!({
         "id": format!("id-l{i}"),
@@ -55,6 +77,40 @@ fn item_json(i: usize) -> Value {
         "namespace_type": "single",
         "entries": []
     })
+}
+
+#[tokio::test]
+async fn exception_feature_refuses_an_unverified_stack_before_the_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.0", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/_find"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "the exception route must not be called"
+        })))
+        .mount(&server)
+        .await;
+
+    let error = exceptions::list_op(&transport(&server), &ListFilter::default())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("exception lists"), "{error}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/exception_lists/_find")
+            .count(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -81,7 +137,7 @@ async fn find_lists_rejects_every_missing_or_mistyped_envelope_field() {
             "data",
         ),
     ] {
-        let server = MockServer::start().await;
+        let server = verified_server().await;
         Mock::given(method("GET"))
             .and(path("/api/exception_lists/_find"))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
@@ -100,7 +156,7 @@ async fn find_lists_rejects_every_missing_or_mistyped_envelope_field() {
 /// complete read; accepting it hides a contradictory response.
 #[tokio::test]
 async fn find_items_rejects_a_page_that_returns_more_than_total() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists/items/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -129,7 +185,7 @@ async fn find_items_rejects_a_page_that_returns_more_than_total() {
 /// sends the measured `exception-list.attributes.*` KQL.
 #[tokio::test]
 async fn find_lists_omits_an_empty_filter_and_sends_a_populated_one() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -152,7 +208,7 @@ async fn find_lists_omits_an_empty_filter_and_sends_a_populated_one() {
     .await
     .unwrap();
 
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = feature_requests(&server).await;
     let filters: Vec<Option<String>> = reqs
         .iter()
         .map(|r| {
@@ -294,7 +350,7 @@ async fn get_list_reads_a_container_by_list_id_and_namespace() {
 /// way `rules::create` does. A stale `id` must not be re-sent as identity.
 #[tokio::test]
 async fn create_list_posts_the_container_and_strips_volatile_fields() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("POST"))
         .and(path("/api/exception_lists"))
         .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
@@ -311,9 +367,7 @@ async fn create_list_posts_the_container_and_strips_volatile_fields() {
     let created = exceptions::create_list(&t, &input).await.unwrap();
     assert_eq!(created.list_id().unwrap(), "l0");
 
-    let body: Value = server.received_requests().await.unwrap()[0]
-        .body_json()
-        .unwrap();
+    let body: Value = feature_requests(&server).await[0].body_json().unwrap();
     assert!(
         body.get("id").is_none(),
         "the volatile id is stripped: {body}"
@@ -329,7 +383,7 @@ async fn create_list_posts_the_container_and_strips_volatile_fields() {
 /// required. The wrapper must not send one.
 #[tokio::test]
 async fn update_list_puts_by_list_id_without_an_id() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("PUT"))
         .and(path("/api/exception_lists"))
         .respond_with(ResponseTemplate::new(200).set_body_json(list_json(0)))
@@ -345,9 +399,7 @@ async fn update_list_puts_by_list_id_without_an_id() {
     let updated = exceptions::update_list(&t, &input).await.unwrap();
     assert_eq!(updated.list_id().unwrap(), "l0");
 
-    let body: Value = server.received_requests().await.unwrap()[0]
-        .body_json()
-        .unwrap();
+    let body: Value = feature_requests(&server).await[0].body_json().unwrap();
     assert!(
         body.get("id").is_none(),
         "PUT resolves by list_id, no id: {body}"
@@ -357,7 +409,7 @@ async fn update_list_puts_by_list_id_without_an_id() {
 
 #[tokio::test]
 async fn delete_list_deletes_by_list_id_and_namespace() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("DELETE"))
         .and(path("/api/exception_lists"))
         .and(query_param("list_id", "l0"))
@@ -411,7 +463,7 @@ async fn deleting_the_same_selector_twice_issues_one_delete() {
 /// list_id, because the same id can exist in multiple namespaces.
 #[tokio::test]
 async fn a_failed_delete_keeps_list_id_and_namespace_type() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
         .and(query_param("list_id", "l0"))
@@ -452,7 +504,7 @@ async fn a_failed_delete_keeps_list_id_and_namespace_type() {
 
 #[tokio::test]
 async fn create_item_posts_the_item() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("POST"))
         .and(path("/api/exception_lists/items"))
         .respond_with(ResponseTemplate::new(200).set_body_json(item_json(0)))
@@ -469,9 +521,7 @@ async fn create_item_posts_the_item() {
     let created = exceptions::create_item(&t, &input).await.unwrap();
     assert_eq!(created.item_id().unwrap(), "i0");
 
-    let body: Value = server.received_requests().await.unwrap()[0]
-        .body_json()
-        .unwrap();
+    let body: Value = feature_requests(&server).await[0].body_json().unwrap();
     assert!(
         body.get("id").is_none(),
         "the volatile id is stripped: {body}"
@@ -482,7 +532,7 @@ async fn create_item_posts_the_item() {
 /// Measured: `PUT /api/exception_lists/items` updates by `item_id` alone.
 #[tokio::test]
 async fn update_item_puts_by_item_id_without_an_id() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("PUT"))
         .and(path("/api/exception_lists/items"))
         .respond_with(ResponseTemplate::new(200).set_body_json(item_json(0)))
@@ -498,9 +548,7 @@ async fn update_item_puts_by_item_id_without_an_id() {
     let updated = exceptions::update_item(&t, &input).await.unwrap();
     assert_eq!(updated.item_id().unwrap(), "i0");
 
-    let body: Value = server.received_requests().await.unwrap()[0]
-        .body_json()
-        .unwrap();
+    let body: Value = feature_requests(&server).await[0].body_json().unwrap();
     assert!(
         body.get("id").is_none(),
         "PUT resolves by item_id, no id: {body}"
@@ -509,7 +557,7 @@ async fn update_item_puts_by_item_id_without_an_id() {
 
 #[tokio::test]
 async fn delete_item_deletes_by_item_id_and_namespace() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("DELETE"))
         .and(path("/api/exception_lists/items"))
         .and(query_param("item_id", "i0"))
@@ -528,7 +576,7 @@ async fn delete_item_deletes_by_item_id_and_namespace() {
 /// `id` and pass both, without changing what identity means.
 #[tokio::test]
 async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     // get_list resolves l0 -> id-l0.
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
@@ -568,7 +616,7 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
         "the export body is NDJSON: {}",
         out.body
     );
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = feature_requests(&server).await;
     assert_eq!(reqs.len(), 2, "one resolve GET then one export POST");
     let pairs: Vec<(String, String)> = reqs[1]
         .url
@@ -589,7 +637,7 @@ async fn export_lists_resolves_ids_and_passes_them_to_the_export_route() {
 /// authoritative outcome, so its missing entry must keep the stable key.
 #[tokio::test]
 async fn export_reports_a_list_deleted_after_id_resolution_with_a_malformed_identity() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
         .and(query_param("list_id", "l0"))
@@ -625,7 +673,7 @@ async fn export_reports_a_list_deleted_after_id_resolution_with_a_malformed_iden
 /// A 200 containing data lines but no trailer is not a completed export.
 #[tokio::test]
 async fn export_rejects_a_200_without_a_valid_trailer() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
         .and(query_param("list_id", "l0"))
@@ -657,7 +705,7 @@ async fn export_rejects_a_200_without_a_valid_trailer() {
 /// export reported as a success is the failure spec 4.3 refuses.
 #[tokio::test]
 async fn export_lists_refuses_a_missing_key_and_names_it() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     // No list mocks: get_list for "missing" answers 404, so nothing resolves.
     let t = transport(&server);
 
@@ -679,7 +727,7 @@ async fn export_lists_refuses_a_missing_key_and_names_it() {
 /// partial success is the case most likely to slip through.
 #[tokio::test]
 async fn export_lists_refuses_a_partial_export() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     // Only l0 resolves.
     Mock::given(method("GET"))
         .and(path("/api/exception_lists"))
@@ -713,7 +761,7 @@ async fn export_lists_refuses_a_partial_export() {
         err.message
     );
     // Both resolve GETs ran, but no export POST was issued for the live key.
-    let reqs = server.received_requests().await.unwrap();
+    let reqs = feature_requests(&server).await;
     assert_eq!(reqs.len(), 2, "two resolve GETs, no export POST");
     assert!(reqs.iter().all(|r| r.method.as_str() == "GET"));
 }
@@ -722,7 +770,7 @@ async fn export_lists_refuses_a_partial_export() {
 /// filename pair: one refusal per run beats a re-run per missing key.
 #[tokio::test]
 async fn export_lists_names_every_missing_key() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     let t = transport(&server);
 
     let err = exceptions::export_lists(
@@ -748,7 +796,7 @@ async fn export_lists_names_every_missing_key() {
 
 #[tokio::test]
 async fn import_lists_posts_to_the_import_route() {
-    let server = MockServer::start().await;
+    let server = verified_server().await;
     Mock::given(method("POST"))
         .and(path("/api/exception_lists/_import"))
         .and(query_param("overwrite", "true"))

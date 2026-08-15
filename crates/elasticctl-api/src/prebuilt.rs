@@ -7,7 +7,7 @@
 
 use crate::ops::MutationPlan;
 use crate::rules::{self, RuleFilter, RuleSource};
-use elasticctl_core::{Error, ErrorKind, Result, Transport};
+use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -58,6 +58,7 @@ pub struct PrebuiltInstallOutcome {
 }
 
 pub async fn status(t: &Transport) -> Result<PrebuiltStatus> {
+    t.require_feature(Feature::PrebuiltRules).await?;
     let body = t.get(PREPACKAGED_STATUS).await?;
     let mut status = decode_status(body, 0)?;
     status.customized = customized_count(t).await?;
@@ -130,6 +131,7 @@ pub async fn plan_install(t: &Transport) -> Result<(MutationPlan, PrebuiltStatus
 }
 
 pub async fn apply_install(t: &Transport) -> Result<PrebuiltInstallOutcome> {
+    t.require_feature(Feature::PrebuiltRules).await?;
     // The route takes no selection, so the body is empty. `Transport::put`
     // always sends one, and `null` is the empty JSON body.
     let body = t.put(PREPACKAGED, &Value::Null).await?;

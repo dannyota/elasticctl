@@ -1861,6 +1861,13 @@ async fn malformed_source_partition_returns_a_typed_error_instead_of_an_empty_pu
         timeout_secs: 5,
     };
     let transport = elasticctl_core::Transport::new(&profile).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
     // The first custom page is an honestly empty scope. The partition check's
     // second page is malformed and must stop the pull before it writes a report.
     Mock::given(method("GET"))

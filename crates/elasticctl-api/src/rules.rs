@@ -5,7 +5,7 @@
 use crate::codec::{self, Bundle};
 use crate::model::Rule;
 use crate::normalize;
-use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
+use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -123,6 +123,9 @@ pub async fn find_page(
     page: u32,
     per_page: u32,
 ) -> Result<(Vec<Rule>, u64)> {
+    if filter.source != RuleSource::All {
+        t.require_feature(Feature::RuleSourceScoping).await?;
+    }
     let mut path = format!("{BASE}/_find?page={page}&per_page={per_page}");
     if let Some(kql) = filter.to_kql() {
         path.push_str(&format!("&filter={}", urlencode(&kql)));
