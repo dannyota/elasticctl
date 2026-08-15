@@ -112,10 +112,13 @@ impl Capabilities {
             .unwrap_or("default");
 
         // `||` checks the hostname only when the edge header is absent.
+        let host = host_of(kibana_url)
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         let cloud = cloud_edge
             || ECH_SUFFIXES
                 .iter()
-                .any(|s| host_matches(host_of(kibana_url), s));
+                .any(|suffix| host_matches(&host, suffix));
 
         let flavor = if build_flavor == "serverless" {
             Flavor::Serverless

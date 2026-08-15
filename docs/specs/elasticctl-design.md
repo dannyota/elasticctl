@@ -164,7 +164,10 @@ Does not know about detection rules.
   proxy and carries the same header. The `build_flavor` test must come first;
   reversing them would classify every Serverless project as Hosted. Hostname
   matching against known Cloud suffixes is the last resort for a deployment
-  reached through a proxy that strips the header. It is not normally needed.
+  reached through a proxy that strips the header. The extracted hostname is
+  matched case-insensitively after one final DNS dot is removed; suffix
+  boundaries still reject lookalike domains. This fallback is not normally
+  needed.
   Spaces and license tier are *not* part of this probe because each costs a
   request, and `doctor` and `config test` need neither. `info` probes them
   directly — the space list from `GET /api/spaces/space`, the license tier from

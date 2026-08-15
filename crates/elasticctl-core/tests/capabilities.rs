@@ -77,6 +77,26 @@ async fn a_default_build_flavor_on_an_elastic_cloud_host_is_ech() {
     assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
 }
 
+#[test]
+fn hosted_fallback_ignores_case_and_a_final_dns_dot() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    let caps = Capabilities::classify(&status, false, "https://ABC.KB.US-EAST-1.AWS.FOUND.IO./");
+
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[test]
+fn normalized_lookalike_domain_is_not_hosted() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    let caps = Capabilities::classify(&status, false, "https://NOTFOUND.IO./");
+
+    assert_eq!(caps.flavor, Flavor::SelfManaged);
+}
+
 #[tokio::test]
 async fn a_missing_build_flavor_falls_back_to_self_managed() {
     let server = MockServer::start().await;
