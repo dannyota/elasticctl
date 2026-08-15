@@ -2,7 +2,7 @@
 
 use elasticctl_api::rules_ops;
 use elasticctl_api::state::{self, StackIdentity};
-use elasticctl_api::{Change, Format, RuleFilter, RuleSource};
+use elasticctl_api::{Change, FieldChange, Format, ListChange, RuleFilter, RuleSource};
 use elasticctl_api_test_support::{
     MockStack, mock_empty_stack, mock_stack_with_colliding_namespaces,
     mock_stack_with_dangling_pointer, mock_stack_with_failing_item_create,
@@ -12,7 +12,7 @@ use elasticctl_api_test_support::{
     mock_stack_with_two_lists_one_mirrored,
 };
 use elasticctl_core::ErrorKind;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wiremock::matchers::{method, path};
@@ -747,10 +747,60 @@ async fn push_never_deletes_a_container_absent_locally() {
     );
 }
 
+#[tokio::test]
+async fn diff_reports_an_added_exception_list() {
+    let stack = mock_empty_stack().await;
+    let dir = mirror_with_rule_and_new_list();
+
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+        .await
+        .unwrap();
+
+    assert!(!report.clean);
+    assert_eq!(report.exceptions.local, 1);
+    assert_eq!(report.exceptions.remote, 0);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![ListChange::Added {
+            list_id: "newlist".into(),
+            name: "newlist".into(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn diff_reports_a_modified_exception_list() {
+    let stack = mock_stack_with_rule_referencing("shared").await;
+    let dir = mirror_with_rule_referencing("shared");
+    let path = dir.path().join("exceptions/shared.ndjson");
+    let mut local: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    local["description"] = json!("local description");
+    std::fs::write(&path, format!("{local}\n")).unwrap();
+
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+        .await
+        .unwrap();
+
+    assert!(!report.clean);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![ListChange::Modified {
+            list_id: "shared".into(),
+            name: "list shared".into(),
+            fields: vec![FieldChange {
+                field: "description".into(),
+                before: Value::Null,
+                after: json!("local description"),
+            }],
+        }]
+    );
+}
+
 /// A container referenced by a remote rule but absent locally is reported as
 /// RemoteOnly and never deleted.
 #[tokio::test]
-async fn a_remote_only_list_is_reported_but_never_deleted() {
+async fn diff_reports_a_remote_only_exception_list_without_planning_a_delete() {
     let stack = mock_stack_with_rule_referencing("shared").await;
     let dir = tempfile::tempdir().unwrap();
     let rules = dir.path().join("rules");
@@ -762,16 +812,16 @@ async fn a_remote_only_list_is_reported_but_never_deleted() {
     )
     .unwrap();
 
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
         .await
         .unwrap();
-    assert!(
-        d.exceptions
-            .changes
-            .iter()
-            .any(|c| matches!(c, elasticctl_api::ListChange::RemoteOnly { list_id, .. } if list_id == "shared")),
-        "a remote-only list must be reported: {:?}",
-        d.exceptions.changes
+    assert!(!report.clean);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![ListChange::RemoteOnly {
+            list_id: "shared".into(),
+            name: "list shared".into(),
+        }]
     );
 
     let plan = state::plan_push(
@@ -784,15 +834,8 @@ async fn a_remote_only_list_is_reported_but_never_deleted() {
     )
     .await
     .unwrap();
-    state::apply_push(stack.transport(), plan).await.unwrap();
-    assert!(
-        !stack
-            .write_paths()
-            .await
-            .iter()
-            .any(|p| p.starts_with("DELETE")),
-        "push never deletes a container"
-    );
+    assert_eq!(plan.summary.items_removed, 0);
+    assert!(stack.write_requests().await.is_empty());
 }
 
 /// A YAML pull must read back clean: the rule and its exception file round-trip
@@ -849,6 +892,8 @@ async fn pull_then_diff_is_clean_with_a_rule_default_list() {
     );
     assert_eq!(d.exceptions.local, 1);
     assert_eq!(d.exceptions.remote, 1);
+    assert!(d.exceptions.is_clean());
+    assert!(d.changes.is_empty());
 }
 
 /// A `rule_default` list is created like any other container before the rule
@@ -1198,6 +1243,112 @@ async fn scoped_push_checks_each_reachable_value_list_once() {
 
     assert_eq!(stack.value_list_lookups("ip-allowlist").await, 1);
     assert_eq!(stack.value_list_lookups("dns-allowlist").await, 0);
+}
+
+/// Public exception drift is part of `DiffReport`, not only the push preview.
+#[tokio::test]
+async fn diff_reports_an_added_exception_item() {
+    let stack = mock_stack_with_list_and_items("l", &[]).await;
+    let dir = mirror_with_list_items("l", &["new"]);
+
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+        .await
+        .unwrap();
+
+    assert!(!report.clean);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![
+            ListChange::Unchanged {
+                list_id: "l".into(),
+            },
+            ListChange::ItemAdded {
+                list_id: "l".into(),
+                item_id: "new".into(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn diff_reports_a_modified_exception_item() {
+    let stack = mock_stack_with_list_and_items("l", &["keep"]).await;
+    let dir = mirror_with_list_items("l", &["keep"]);
+    let path = dir.path().join("exceptions/l.ndjson");
+    let mut local: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entries = json!([{
+        "field": "host.name",
+        "type": "match",
+        "operator": "included",
+        "value": ["changed"]
+    }]);
+    local["items"][0]["entries"] = entries.clone();
+    std::fs::write(&path, format!("{local}\n")).unwrap();
+
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+        .await
+        .unwrap();
+
+    assert!(!report.clean);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![
+            ListChange::Unchanged {
+                list_id: "l".into(),
+            },
+            ListChange::ItemModified {
+                list_id: "l".into(),
+                item_id: "keep".into(),
+                fields: vec![FieldChange {
+                    field: "entries".into(),
+                    before: json!([]),
+                    after: entries,
+                }],
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn diff_reports_a_removed_exception_item() {
+    let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
+    let dir = mirror_with_list_items("l", &["keep"]);
+
+    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
+        .await
+        .unwrap();
+
+    assert!(!report.clean);
+    assert_eq!(
+        report.exceptions.changes,
+        vec![
+            ListChange::Unchanged {
+                list_id: "l".into(),
+            },
+            ListChange::ItemRemoved {
+                list_id: "l".into(),
+                item_id: "drop".into(),
+            },
+        ]
+    );
+
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        plan.preview_action.contains("1 item deletion(s)"),
+        "{}",
+        plan.preview_action
+    );
+    assert_eq!(plan.summary.items_removed, 0, "the plan has not applied it");
+    assert!(stack.write_requests().await.is_empty());
 }
 
 /// Spec 5.4. The single delete path in the tool's state engine.
