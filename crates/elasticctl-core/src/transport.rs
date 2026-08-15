@@ -186,7 +186,11 @@ impl Transport {
     ///
     /// Keeping `debug` as a `bool` prevents CLI `clap` types entering `-core`.
     pub fn with_debug(profile: &Profile, debug: bool) -> Result<Transport> {
-        let credential = Credential::from_profile(profile)?;
+        // Scrub URL userinfo before deriving any base URL or logging, so a
+        // credential embedded in a URL never reaches a request or debug line.
+        let mut profile = profile.clone();
+        profile.strip_userinfo();
+        let credential = Credential::from_profile(&profile)?;
         let client = Client::builder()
             .timeout(Duration::from_secs(profile.timeout_secs))
             .danger_accept_invalid_certs(!profile.verify)

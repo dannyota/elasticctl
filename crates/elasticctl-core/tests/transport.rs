@@ -342,6 +342,37 @@ fn urlencode_escapes_what_breaks_a_url_and_leaves_the_rest() {
     );
 }
 
+#[cfg_attr(not(unix), ignore = "stderr capture uses Unix file descriptors")]
+#[tokio::test]
+async fn debug_output_never_shows_url_userinfo() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/scrub"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .mount(&server)
+        .await;
+
+    // Insert dummy userinfo after the scheme, before the host.
+    let uri = server.uri();
+    let with_userinfo = uri.replacen("://", "://dummyuser:dummypass@", 1);
+    let t = Transport::with_debug(&profile_for_url(with_userinfo), true).unwrap();
+    #[cfg(unix)]
+    let _stderr_guard = STDERR_LOCK.lock().await;
+    #[cfg(unix)]
+    let capture = StderrCapture::start();
+
+    let body = t.get("/api/scrub").await.unwrap();
+    assert_eq!(body["ok"], true);
+
+    #[cfg(unix)]
+    let debug = capture.finish();
+    #[cfg(unix)]
+    {
+        assert!(!debug.contains("dummyuser"), "debug output: {debug}");
+        assert!(!debug.contains("dummypass"), "debug output: {debug}");
+    }
+}
+
 #[tokio::test]
 async fn post_absolute_es_sends_the_body_to_the_es_host() {
     let server = MockServer::start().await;

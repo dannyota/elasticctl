@@ -162,6 +162,48 @@ fn config_init_writes_an_owner_only_file() {
 }
 
 #[test]
+fn config_init_rejects_an_invalid_environment_timeout_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    bin()
+        .args(["config", "init", "--from-env", "--json", "--config"])
+        .arg(&path)
+        .env("ELASTICCTL_KIBANA_URL", "https://kb.example.com")
+        .env("ELASTICCTL_API_KEY", "dummy")
+        .env("ELASTICCTL_TIMEOUT", "not-a-number")
+        .assert()
+        .failure();
+    assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn config_init_rejects_non_utf8_environment_without_writing() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let out = bin()
+        .args(["config", "init", "--from-env", "--json", "--config"])
+        .arg(&path)
+        .env("ELASTICCTL_KIBANA_URL", OsString::from_vec(vec![0xff]))
+        .env("ELASTICCTL_API_KEY", "dummy")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ELASTICCTL_KIBANA_URL"),
+        "error must name the variable: {stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{fffd}'),
+        "error must not print the raw bytes: {stderr}"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
 fn init_never_writes_userinfo_into_the_config_file() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("config.toml");

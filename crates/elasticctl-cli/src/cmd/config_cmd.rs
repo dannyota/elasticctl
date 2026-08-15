@@ -37,7 +37,6 @@ pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<V
     let mut config = Config::load(&path)?;
     let name = name.unwrap_or("default").to_string();
 
-    let env = Overrides::from_env();
     if !from_env {
         return Err(Error::new(
             ErrorKind::Error,
@@ -46,13 +45,15 @@ pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<V
         ));
     }
 
+    let env = Overrides::try_from_env()?;
+
     let kibana_url = env
         .kibana_url
         .ok_or_else(|| Error::new(ErrorKind::Error, "ELASTICCTL_KIBANA_URL is not set"))?;
 
     let profile = Profile {
         kibana_url,
-        es_url: std::env::var("ELASTICCTL_ES_URL").ok(),
+        es_url: env.es_url,
         api_key: env.api_key,
         username: None,
         password: None,

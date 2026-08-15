@@ -18,6 +18,22 @@ fn is_identity_override(ov: &Overrides) -> bool {
     ov.kibana_url.is_some() || ov.es_url.is_some() || ov.api_key.is_some()
 }
 
+/// Read an environment variable, distinguishing absence from invalid Unicode.
+///
+/// The error names the variable but never includes its raw bytes, so a binary
+/// value cannot leak into a message or log.
+fn checked_env(name: &str) -> Result<Option<String>> {
+    match std::env::var_os(name) {
+        None => Ok(None),
+        Some(value) => value.into_string().map(Some).map_err(|_| {
+            Error::new(
+                ErrorKind::Error,
+                format!("{name} contains invalid Unicode; set it to valid UTF-8"),
+            )
+        }),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub kibana_url: String,
@@ -50,22 +66,28 @@ fn default_timeout() -> u64 {
 impl Profile {
     /// Return a copy safe to print.
     ///
-    /// Secrets become `***`; absent values remain absent.
+    /// Secrets become `***`; absent values remain absent. URL userinfo is
+    /// stripped too, so a credential embedded in a URL never leaks.
     pub fn redacted(&self) -> Profile {
+        let mut scrubbed = self.clone();
+        scrubbed.strip_userinfo();
         Profile {
             api_key: self.api_key.as_ref().map(|_| REDACTED.to_string()),
             password: self.password.as_ref().map(|_| REDACTED.to_string()),
-            ..self.clone()
+            ..scrubbed
         }
     }
 
     /// Return the Kibana URL host for banners.
     ///
-    /// Return the original URL when no host can be parsed.
+    /// Userinfo is stripped first, then the host is parsed. Return the scrubbed
+    /// URL when no host can be parsed.
     pub fn host(&self) -> String {
+        // Strip userinfo so a credential in the URL never reaches a banner.
+        let url = strip_userinfo(&self.kibana_url);
         // Use the last scheme separator to handle doubled schemes.
-        if let Some(pos) = self.kibana_url.rfind("://") {
-            let after_scheme = &self.kibana_url[pos + 3..];
+        if let Some(pos) = url.rfind("://") {
+            let after_scheme = &url[pos + 3..];
             // Drop the path and query after the first slash.
             let host_part = after_scheme.split('/').next().unwrap_or("");
             // Use the parsed host when present.
@@ -73,8 +95,8 @@ impl Profile {
                 return host_part.to_string();
             }
         }
-        // Preserve the original URL when parsing finds no host.
-        self.kibana_url.clone()
+        // Preserve the scrubbed URL when parsing finds no host.
+        url
     }
 
     /// Remove userinfo from `kibana_url` and `es_url`.
@@ -164,6 +186,31 @@ impl Overrides {
         }
     }
 
+    /// Read `ELASTICCTL_*` environment variables as overrides, failing on
+    /// invalid input.
+    ///
+    /// Unlike `from_env`, this distinguishes an absent variable from invalid
+    /// Unicode and rejects a non-integer timeout instead of silently dropping
+    /// it.
+    pub fn try_from_env() -> Result<Overrides> {
+        let timeout = match checked_env("ELASTICCTL_TIMEOUT")? {
+            None => None,
+            Some(value) => Some(value.parse::<u64>().map_err(|error| {
+                Error::new(
+                    ErrorKind::Error,
+                    format!("ELASTICCTL_TIMEOUT must be an unsigned integer: {error}"),
+                )
+            })?),
+        };
+        Ok(Overrides {
+            kibana_url: checked_env("ELASTICCTL_KIBANA_URL")?,
+            es_url: checked_env("ELASTICCTL_ES_URL")?,
+            api_key: checked_env("ELASTICCTL_API_KEY")?,
+            space: checked_env("ELASTICCTL_SPACE")?,
+            timeout_secs: timeout,
+        })
+    }
+
     /// Merge overrides, preferring `self` over `lower`.
     pub fn merge_over(self, lower: Overrides) -> Overrides {
         Overrides {
@@ -236,7 +283,13 @@ impl Config {
                 format!("creating {}: {e}", parent.display()),
             )
         })?;
-        let body = toml::to_string_pretty(self)
+        // Strip userinfo from every profile before serializing, so a credential
+        // embedded in a URL is never written to disk by a direct library caller.
+        let mut scrubbed = self.clone();
+        for profile in scrubbed.profiles.values_mut() {
+            profile.strip_userinfo();
+        }
+        let body = toml::to_string_pretty(&scrubbed)
             .map_err(|e| Error::new(ErrorKind::Error, format!("serializing config: {e}")))?;
 
         // Write to a same-directory temporary file, then rename it over the
@@ -260,20 +313,21 @@ impl Config {
                 })?;
         }
         use std::io::Write;
-        pending
-            .write_all(body.as_bytes())
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
-        pending
-            .as_file()
-            .sync_all()
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
-        pending
-            .persist(path)
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
+        pending.write_all(body.as_bytes()).map_err(|e| {
+            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+        })?;
+        pending.as_file().sync_all().map_err(|e| {
+            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+        })?;
+        pending.persist(path).map_err(|e| {
+            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+        })?;
         #[cfg(unix)]
         fs::File::open(parent)
             .and_then(|f| f.sync_all())
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
+            .map_err(|e| {
+                Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+            })?;
         Ok(())
     }
 
@@ -415,7 +469,28 @@ mod tests {
         sample().save(&path).unwrap();
 
         assert_eq!(fs::read_to_string(&target).unwrap(), "do not replace\n");
-        assert!(!fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn save_never_writes_userinfo_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let cfg = with_urls(
+            "https://user:pass@kb.example.com",
+            Some("https://user:pass@es.example.com"),
+        );
+        cfg.save(&path).unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("user:pass"), "{body}");
+        assert!(!body.contains("user:"), "{body}");
+        assert!(body.contains("https://kb.example.com"), "{body}");
+        assert!(body.contains("https://es.example.com"), "{body}");
     }
 
     #[test]
@@ -558,6 +633,17 @@ mod tests {
     }
 
     #[test]
+    fn redacted_strips_userinfo_from_both_urls() {
+        let mut p = sample().profiles["default"].clone();
+        p.kibana_url = "https://user:pass@kb.example.com".into();
+        p.es_url = Some("https://user:pass@es.example.com".into());
+        let r = p.redacted();
+        assert_eq!(r.kibana_url, "https://kb.example.com");
+        assert_eq!(r.es_url.as_deref(), Some("https://es.example.com"));
+        assert_eq!(r.api_key.as_deref(), Some("***"), "secrets still redact");
+    }
+
+    #[test]
     fn banner_names_profile_host_and_space() {
         let r = sample()
             .resolve(Some("prod"), &Overrides::default())
@@ -693,6 +779,12 @@ mod tests {
             timeout_secs: 30,
         };
         assert_eq!(p.host(), "", "empty falls back to original");
+    }
+
+    #[test]
+    fn host_never_shows_userinfo() {
+        let p = with_urls("https://user:pass@kb.example.com", None).profiles["default"].clone();
+        assert_eq!(p.host(), "kb.example.com");
     }
 
     #[test]
