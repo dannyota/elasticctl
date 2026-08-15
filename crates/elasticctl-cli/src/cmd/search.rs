@@ -4,23 +4,30 @@ use crate::context::Context;
 use elasticctl_api::search::{dsl, esql};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Convert ES|QL `columns`+`values` into an array of row objects for the
 /// render layer (serialization, so it lives in `-cli`).
 fn esql_rows(resp: &esql::EsqlResponse) -> Value {
-    let mut seen = HashMap::<String, usize>::new();
+    let mut used = HashSet::<String>::new();
     let names: Vec<String> = resp
         .columns
         .iter()
         .map(|c| {
-            let count = seen.entry(c.name.clone()).or_insert(0);
-            let n = *count;
-            *count += 1;
-            if n == 0 {
-                c.name.clone()
-            } else {
-                format!("{}.{}", c.name, n)
+            if used.insert(c.name.clone()) {
+                return c.name.clone();
+            }
+            // Disambiguate a duplicate name with a `.N` suffix. Check the
+            // candidate against every name already emitted, not just this
+            // column's duplicates, so a generated `field.N` never collides
+            // with a literal column already named `field.N`.
+            let mut n = 1;
+            loop {
+                let candidate = format!("{}.{}", c.name, n);
+                if used.insert(candidate.clone()) {
+                    return candidate;
+                }
+                n += 1;
             }
         })
         .collect();
@@ -118,5 +125,45 @@ pub async fn dsl(
             eprintln!("capped at {cap} rows");
         }
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::esql_rows;
+    use elasticctl_api::search::esql::{EsqlColumn, EsqlResponse};
+    use serde_json::json;
+
+    #[test]
+    fn disambiguates_suffix_collisions_with_literal_names() {
+        let resp = EsqlResponse {
+            columns: vec![
+                EsqlColumn {
+                    name: "message".into(),
+                    r#type: "text".into(),
+                },
+                EsqlColumn {
+                    name: "message.keyword".into(),
+                    r#type: "keyword".into(),
+                },
+                EsqlColumn {
+                    name: "message.keyword".into(),
+                    r#type: "keyword".into(),
+                },
+                EsqlColumn {
+                    name: "message.keyword.1".into(),
+                    r#type: "keyword".into(),
+                },
+            ],
+            values: vec![vec![json!("a"), json!("b"), json!("c"), json!("d")]],
+            is_partial: false,
+        };
+        let row = esql_rows(&resp);
+        let obj = row.as_array().unwrap()[0].as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert!(obj.contains_key("message"));
+        assert!(obj.contains_key("message.keyword"));
+        assert!(obj.contains_key("message.keyword.1"));
+        assert!(obj.contains_key("message.keyword.1.1"));
     }
 }

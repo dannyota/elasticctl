@@ -93,12 +93,19 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
             &serde_json::json!({ "query": query, "wait_for_completion_timeout": "1ms", "columnar": false }),
         )
         .await?;
-    let id = start
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::new(ErrorKind::Http, "decoding async esql response field `id`"))?
-        .to_string();
-    loop {
+    // A query finishing within wait_for_completion_timeout returns the inline
+    // result with is_running: false and no `id`; decode it directly.
+    let id = match start.get("id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None => return decode(&start),
+    };
+    if start.get("is_running").and_then(Value::as_bool) == Some(false) {
+        return decode(&start);
+    }
+
+    // Poll at most 30 times; an async query that never finishes is a timeout,
+    // not an infinite loop. Clean up on the way out either way.
+    for _ in 0..30 {
         let resp = t
             .get_absolute_es(&format!(
                 "/_query/async/{id}?wait_for_completion_timeout=10s"
@@ -109,4 +116,9 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
             return decode(&resp);
         }
     }
+    let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+    Err(Error::new(
+        ErrorKind::Timeout,
+        format!("async query {id} still running after 30 polls"),
+    ))
 }

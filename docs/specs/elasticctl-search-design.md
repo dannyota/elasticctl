@@ -61,7 +61,8 @@ Exactly one source names the index/alias/pattern list, in this order:
 1. `--index NAME` — explicit, wins over everything.
 2. `--data-view NAME` — resolved through the Kibana data views API to its
    `title`, which is the comma-separated index pattern.
-3. The query's own source — ES|QL `FROM <source>`, or a DSL body's `_index`.
+3. The query's own source — ES|QL `FROM <source>`. DSL has no in-body
+   source: its target is the search path (`POST /<pattern>/_search`).
 4. Default — the space's alerts index, `.alerts-security.alerts-default`,
    read from `GET /api/detection_engine/index`.
 
@@ -117,9 +118,10 @@ A **bulk export** (`--out`) streams pages to the file:
   `wait_for_completion_timeout` returns `{id, is_running: true}`, polled at
   `GET /_query/async/<id>` until `is_running: false`, then `DELETE
   /_query/async/<id>`. The full result arrives in one response — there is no
-  page-by-page stream — so the client asks for `columnar: true` (column-major
-  `values`) or `format: csv` (direct CSV with a header row) to keep the payload
-  and memory footprint low, and writes it to `--out`.
+  page-by-page stream — and the client fetches it as row-major JSON and writes
+  it to `--out`. `columnar: true` (column-major `values`) or `format: csv`
+  (direct CSV with a header row) are future optimizations to keep the payload
+  and memory footprint low.
 
 Export writes NDJSON (JSONL) by default because it is streaming-friendly; the
 operator can override with `--format`.

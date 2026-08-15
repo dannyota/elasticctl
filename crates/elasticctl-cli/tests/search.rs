@@ -100,3 +100,84 @@ async fn search_esql_out_writes_jsonl_by_default() {
     );
     assert!(lines[0].contains("\"seq\":1"), "{text}");
 }
+
+#[tokio::test]
+async fn search_dsl_renders_sources_as_a_table() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/idx/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_index": "idx", "_id": "a", "_source": {"seq": 1}},
+                {"_index": "idx", "_id": "b", "_source": {"seq": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args([
+            "search",
+            "dsl",
+            "{\"query\": {\"match_all\": {}}}",
+            "--index",
+            "idx",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("seq"), "{stdout}");
+    assert!(stdout.contains("1"), "{stdout}");
+    assert!(stdout.contains("2"), "{stdout}");
+}
+
+#[tokio::test]
+async fn search_dsl_out_writes_jsonl_by_default() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let out_path = dir.path().join("results.ndjson");
+
+    Mock::given(method("POST"))
+        .and(path("/idx/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
+        .mount(&server)
+        .await;
+    // A single page whose hits carry no `sort` ends the stream after one request.
+    Mock::given(method("POST"))
+        .and(path("/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_source": {"seq": 1}},
+                {"_source": {"seq": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"succeeded": true})))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "dsl", "{\"query\": {\"match_all\": {}}}", "--out"])
+        .arg(&out_path)
+        .args(["--index", "idx"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = fs::read_to_string(&out_path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines.iter().all(|l| l.starts_with('{') && l.ends_with('}')),
+        "{text}"
+    );
+    assert!(lines[0].contains("\"seq\":1"), "{text}");
+}

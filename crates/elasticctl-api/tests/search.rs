@@ -187,6 +187,52 @@ async fn run_async_polls_until_complete() {
     assert_eq!(resp.values.len(), 2);
 }
 
+#[tokio::test]
+async fn run_async_decodes_an_inline_complete_response_without_id() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "is_running": false, "is_partial": false,
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1], [2]]
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect("async");
+    assert_eq!(resp.values.len(), 2);
+}
+
+#[tokio::test]
+async fn run_async_times_out_after_30_polls() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    // Every poll reports still-running, so the runner exhausts its 30-poll cap.
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+
+    let err = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect_err("must time out");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);
+}
+
 #[test]
 fn resolves_a_data_view_by_name_to_its_title() {
     let body = json!({

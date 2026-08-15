@@ -69,7 +69,9 @@ pub async fn run_stream(
     let result = page_loop(t, &pit_id, query, sort, limit).await;
 
     // Close the PIT on every path. The `_pit` delete takes the id in the
-    // request body, so it uses the body-carrying DELETE.
+    // request body, so it uses the body-carrying DELETE. The `let _` swallow is
+    // deliberate: the PIT self-expires after `keep_alive`, and any `page_loop`
+    // error is the error to surface, not a best-effort close failure.
     let _ = t
         .delete_absolute_es_json("/_pit", &json!({ "id": pit_id }))
         .await;
