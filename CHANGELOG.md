@@ -6,8 +6,8 @@
 
 - `config init` no longer reports failure on macOS: the post-rename directory
   sync now runs only on Linux, where directory `fsync` is supported.
-- A doubled-scheme URL with userinfo (`https://https://user:pass@host`) is now
-  scrubbed consistently with `host()`, so a credential never reaches a banner.
+- A doubled-scheme URL whose authority carries userinfo is now scrubbed
+  consistently with `host()`, so a credential never reaches a banner.
 - `config list` scrubs URL userinfo from `kibana_url` instead of echoing a
   credential embedded in a hand-edited or pre-0.2.4 config file.
 - `doctor` fails a malformed identity whose `username` or
