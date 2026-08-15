@@ -18,7 +18,6 @@ Guidance precedence is: the user's current instruction, the spec, then this file
 | Task | Read first |
 | --- | --- |
 | Any behavior change | `docs/specs/elasticctl-design.md` |
-| What to work on next | the newest `docs/plans/*-backlog.md`, else the newest plan |
 | Releasing | `docs/releasing.md` |
 | Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
 
@@ -49,14 +48,15 @@ Dependency direction is strictly one way and must not be broken:
 ```
 elasticctl-cli  →  elasticctl-api  →  elasticctl-core
 ```
+`-core` owns config, transport, auth, and errors; `-api` owns the model and the
+rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and the dry-run guard.
 - **API orchestration returns typed values.** CLI adapters handle command context and mutation
   guards, then serialize values for `elasticctl-cli::render`. This keeps a future MCP server
   additive: it calls the same API functions and serializes the same structs. A command that prints
   gives MCP only a string to re-parse.
 - **Orchestration belongs in `-api`.** `cli/cmd/` adapters must not own stack orchestration; MCP
-  cannot depend on `-cli`. v0.1 does not meet this — 1,528 lines sit in `cmd/` and most functions
-  return `serde_json::Value`. 0.2 retrofits all of it before any 0.2 feature, with snapshots
-  proving byte-identical output first. Building features on the old shape would write each twice.
+  cannot depend on `-cli`. Moving orchestration must preserve byte-identical output, proven by
+  snapshots.
 - **`clap` types never appear in `-api` or `-core`.** Pass a value, not a parsed arg struct.
 - Flavor differences use the runtime capability probe, not compile-time traits or per-flavor
   modules.
@@ -127,6 +127,9 @@ ELASTICCTL_LIVE=1 cargo test -- --ignored     # live suite against a real stack
 cargo xtask record                            # re-record fixtures from a live stack
 cargo fmt --all --check                       # the CI gate, alongside:
 cargo clippy --workspace --all-targets -- -D warnings
+cargo deny check advisories bans licenses sources
+./scripts/check-packages.sh && ./scripts/check-fixtures.sh && ./scripts/check-conformance-reports.sh
+cargo publish --workspace --dry-run --locked  # release preflight, no upload
 ```
 
 The test harness runs one thread per logical core. Cap it per run with

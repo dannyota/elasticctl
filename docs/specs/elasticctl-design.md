@@ -1269,8 +1269,8 @@ boundaries. The near-term evidence ladder is:
 4. 0.3.0 delivers the complete ES|QL and Query DSL search vertical. Later minor
    capability areas begin only after 0.3 is complete and trial time remains.
 
-`docs/plans/v0.2.x-release-ladder-design.md` defines the privacy, cleanup,
-evidence, and release gates for this sequence.
+The privacy, cleanup, evidence, and release gates for this sequence are defined
+in §8.3, §11.2, and §12.
 
 MCP holds its own band rather than landing at 1.0, because a 1.0 that
 introduces the MCP server would declare the surface stable in the same release
