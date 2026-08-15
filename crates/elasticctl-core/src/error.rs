@@ -74,12 +74,18 @@ impl Error {
     ///
     /// Kibana returns `{"statusCode":..,"error":..,"message":..}`. The Elastic
     /// Cloud edge proxy returns `{"ok":false,"message":".."}`. The latter also
-    /// appears when a project rename leaves a hostname unresolved.
+    /// appears when a project rename leaves a hostname unresolved. Elasticsearch
+    /// returns `{"error":{"reason":"..","type":".."},"status":<int>}`.
     pub fn from_response_body(status: u16, body: &str) -> Self {
         let kind = ErrorKind::from_status(status);
         let message = serde_json::from_str::<Value>(body)
             .ok()
-            .and_then(|v| v.get("message")?.as_str().map(str::to_owned))
+            .and_then(|v| {
+                v.get("message")
+                    .or_else(|| v.get("error").and_then(|e| e.get("reason")))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| {
                 let trimmed = body.trim();
                 if trimmed.is_empty() {
@@ -151,6 +157,19 @@ mod tests {
         let err = Error::from_response_body(404, body);
         assert_eq!(err.kind, ErrorKind::NotFound);
         assert_eq!(err.message, "Unknown resource.");
+    }
+
+    // Elasticsearch error envelope: {"error":{"reason":"..."},"status":<int>}.
+    #[test]
+    fn parses_the_elasticsearch_error_envelope() {
+        let body = r#"{"error":{"root_cause":[{"type":"x_content_parse_exception","reason":"[1:68] [esql/query] unknown field [search_after]"}],"type":"x_content_parse_exception","reason":"[1:68] [esql/query] unknown field [search_after]"},"status":400}"#;
+        let err = Error::from_response_body(400, body);
+        assert_eq!(err.kind, ErrorKind::Http);
+        assert_eq!(err.http_status, Some(400));
+        assert_eq!(
+            err.message,
+            "[1:68] [esql/query] unknown field [search_after]"
+        );
     }
 
     #[test]
