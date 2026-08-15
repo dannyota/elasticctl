@@ -1,0 +1,45 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "esql_query",
+  "response": {
+    "columns": [
+      {
+        "name": "marker",
+        "type": "text"
+      },
+      {
+        "name": "marker.keyword",
+        "type": "keyword"
+      },
+      {
+        "name": "message",
+        "type": "text"
+      },
+      {
+        "name": "message.keyword",
+        "type": "keyword"
+      },
+      {
+        "name": "seq",
+        "type": "long"
+      }
+    ],
+    "values": [
+      [
+        "elasticctl-sample",
+        "elasticctl-sample",
+        "elasticctl sample search document 1",
+        "elasticctl sample search document 1",
+        1
+      ],
+      [
+        "elasticctl-sample",
+        "elasticctl-sample",
+        "elasticctl sample search document 2",
+        "elasticctl sample search document 2",
+        2
+      ]
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "search_pit_page",
+  "request": {
+    "size": 2,
+    "sort": [
+      {
+        "seq": "asc"
+      },
+      {
+        "_shard_doc": "asc"
+      }
+    ],
+    "pit": {
+      "keep_alive": "1m"
+    },
+    "query": {
+      "match_all": {}
+    }
+  },
+  "response": {
+    "timed_out": false,
+    "hits": {
+      "total": {
+        "value": 3,
+        "relation": "eq"
+      },
+      "max_score": null,
+      "hits": [
+        {
+          "_index": "elasticctl-sample-search",
+          "_id": "1",
+          "_source": {
+            "seq": 1,
+            "message": "elasticctl sample search document 1",
+            "marker": "elasticctl-sample"
+          }
+        },
+        {
+          "_index": "elasticctl-sample-search",
+          "_id": "2",
+          "_source": {
+            "seq": 2,
+            "message": "elasticctl sample search document 2",
+            "marker": "elasticctl-sample"
+          }
+        }
+      ]
+    }
+  }
+}

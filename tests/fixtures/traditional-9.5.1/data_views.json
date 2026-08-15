@@ -1,0 +1,29 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "data_views",
+  "response": {
+    "data_view": [
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED",
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED",
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "timeFieldName": "@timestamp",
+        "managed": true
+      }
+    ]
+  }
+}
