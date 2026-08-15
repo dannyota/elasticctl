@@ -404,7 +404,7 @@ pub(crate) async fn exception_plan(
         }
     }
 
-    let local_items = group_items(mirror_items);
+    let local_items = group_items(mirror_items)?;
     let mut remote_items: BTreeMap<ListKey, Vec<ExceptionItem>> = BTreeMap::new();
     for key in &both {
         remote_items.insert(key.clone(), exceptions::find_items(t, key).await?);
@@ -435,14 +435,12 @@ pub(crate) async fn exception_plan(
     })
 }
 
-fn group_items(items: Vec<ExceptionItem>) -> BTreeMap<ListKey, Vec<ExceptionItem>> {
+fn group_items(items: Vec<ExceptionItem>) -> Result<BTreeMap<ListKey, Vec<ExceptionItem>>> {
     let mut map: BTreeMap<ListKey, Vec<ExceptionItem>> = BTreeMap::new();
     for item in items {
-        let Ok(list_id) = item.list_id() else {
-            continue;
-        };
+        validate_grouped_item(&item)?;
         let key = ListKey {
-            list_id: list_id.to_string(),
+            list_id: item.list_id()?.to_string(),
             namespace_type: item.namespace_type().to_string(),
         };
         map.entry(key).or_default().push(item);
@@ -450,5 +448,50 @@ fn group_items(items: Vec<ExceptionItem>) -> BTreeMap<ListKey, Vec<ExceptionItem
     for grouped in map.values_mut() {
         normalize::sort_items(grouped);
     }
-    map
+    Ok(map)
+}
+
+fn validate_grouped_item(item: &ExceptionItem) -> Result<()> {
+    let item_id = item.item_id()?;
+    if item_id.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "exception item field item_id must be a non-empty string",
+        ));
+    }
+    let list_id = item.list_id()?;
+    if list_id.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "exception item field list_id must be a non-empty string",
+        ));
+    }
+    match item.as_map().get("namespace_type") {
+        None => Ok(()),
+        Some(Value::String(value)) if !value.is_empty() => Ok(()),
+        Some(_) => Err(Error::new(
+            ErrorKind::Error,
+            "exception item field namespace_type must be a non-empty string",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grouping_rejects_an_item_without_a_list_id() {
+        let item = ExceptionItem::from_value(serde_json::json!({
+            "item_id": "orphan",
+            "type": "simple",
+            "entries": [],
+        }))
+        .unwrap();
+
+        let error = group_items(vec![item]).unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(error.message.contains("list_id"), "{}", error.message);
+    }
 }

@@ -1191,6 +1191,49 @@ async fn an_item_absent_locally_is_deleted() {
     assert!(entry.error.is_none());
 }
 
+/// A standalone export item without a list identity must not make the valid
+/// mirrored list look empty and therefore authorize a remote item removal.
+#[tokio::test]
+async fn malformed_top_level_exception_item_cannot_plan_remote_deletion() {
+    let stack = mock_stack_with_list_and_items("l", &["drop"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "r",
+        concat!(
+            "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[{\"id\":\"id-l\",\"list_id\":\"l\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
+            "{\"id\":\"id-l\",\"list_id\":\"l\",\"type\":\"detection\",\"name\":\"list l\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"orphan\",\"type\":\"simple\",\"namespace_type\":\"single\",\"entries\":[]}\n",
+        ),
+    );
+
+    let error = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(error.message.contains("list_id"), "{}", error.message);
+    assert!(
+        !stack
+            .requests()
+            .await
+            .iter()
+            .any(|request| request.path == "/api/exception_lists/items/_find"),
+        "malformed input must stop before exception-item reconciliation"
+    );
+    assert!(
+        stack.write_requests().await.is_empty(),
+        "malformed input must issue no POST, PUT, or DELETE"
+    );
+}
+
 #[tokio::test]
 async fn push_refuses_a_non_array_items_field_before_any_item_delete() {
     let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;

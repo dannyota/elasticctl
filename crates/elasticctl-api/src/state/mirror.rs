@@ -35,6 +35,9 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
                 mirror.lists.push(list);
                 mirror.items.extend(list_items);
             }
+            for item in &items {
+                validate_top_level_item(item)?;
+            }
             mirror.items.extend(items);
         }
     }
@@ -56,6 +59,31 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     normalize::sort_lists(&mut mirror.lists);
     normalize::sort_items(&mut mirror.items);
     Ok(mirror)
+}
+
+fn validate_top_level_item(item: &ExceptionItem) -> Result<()> {
+    let item_id = item.item_id()?;
+    if item_id.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "exception item field item_id must be a non-empty string",
+        ));
+    }
+    let list_id = item.list_id()?;
+    if list_id.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "exception item field list_id must be a non-empty string",
+        ));
+    }
+    match item.as_map().get("namespace_type") {
+        None => Ok(()),
+        Some(Value::String(value)) if !value.is_empty() => Ok(()),
+        Some(_) => Err(Error::new(
+            ErrorKind::Error,
+            "exception item field namespace_type must be a non-empty string",
+        )),
+    }
 }
 
 /// `read_mirror`'s rules, for the rules-only callers.
