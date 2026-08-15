@@ -226,53 +226,54 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                Error::new(
-                    ErrorKind::Error,
-                    format!("creating {}: {e}", parent.display()),
-                )
-            })?;
-        }
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|e| {
+            Error::new(
+                ErrorKind::Error,
+                format!("creating {}: {e}", parent.display()),
+            )
+        })?;
         let body = toml::to_string_pretty(self)
             .map_err(|e| Error::new(ErrorKind::Error, format!("serializing config: {e}")))?;
-        Self::write_config_file(path, &body)?;
-        // Restrict an existing file that had looser permissions.
-        Self::restrict_permissions(path)
-    }
 
-    #[cfg(unix)]
-    fn write_config_file(path: &Path, body: &str) -> Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
+        // Write to a same-directory temporary file, then rename it over the
+        // destination. This replaces the file atomically instead of truncating
+        // it in place, so an existing loose-permission file or a symlink is
+        // never written through.
+        let mut pending = tempfile::Builder::new()
+            .prefix(".elasticctl-config-")
+            .tempfile_in(parent)
             .map_err(|e| {
                 Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
             })?;
-        f.write_all(body.as_bytes())
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))
-    }
-
-    #[cfg(not(unix))]
-    fn write_config_file(path: &Path, body: &str) -> Result<()> {
-        fs::write(path, body)
-            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))
-    }
-
-    #[cfg(unix)]
-    fn restrict_permissions(path: &Path) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| Error::new(ErrorKind::Error, format!("chmod {}: {e}", path.display())))
-    }
-
-    #[cfg(not(unix))]
-    fn restrict_permissions(_path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            pending
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|e| {
+                    Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+                })?;
+        }
+        use std::io::Write;
+        pending
+            .write_all(body.as_bytes())
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
+        pending
+            .as_file()
+            .sync_all()
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
+        pending
+            .persist(path)
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
+        #[cfg(unix)]
+        fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display())))?;
         Ok(())
     }
 
@@ -381,6 +382,40 @@ mod tests {
         sample().save(&path).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "config must not be readable by group or other");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_atomically_replaces_a_permissive_existing_file() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "old\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let old_inode = fs::metadata(&path).unwrap().ino();
+
+        sample().save(&path).unwrap();
+
+        let metadata = fs::metadata(&path).unwrap();
+        assert_ne!(metadata.ino(), old_inode, "save must replace, not truncate");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(Config::load(&path).unwrap().current, "default");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_a_symlink_without_writing_its_target() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.toml");
+        let path = dir.path().join("config.toml");
+        fs::write(&target, "do not replace\n").unwrap();
+        symlink(&target, &path).unwrap();
+
+        sample().save(&path).unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "do not replace\n");
+        assert!(!fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
     }
 
     #[test]
