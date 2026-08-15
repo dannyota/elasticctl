@@ -306,8 +306,14 @@ async fn main() {
     match args.first().map(String::as_str) {
         Some("record") => record().await,
         Some("seed") => seed().await,
+        Some("conformance") => {
+            if let Err(error) = conformance::run(&args[1..]).await {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask [record|seed]");
+            eprintln!("usage: cargo xtask [record|seed|conformance]");
             std::process::exit(2);
         }
     }
