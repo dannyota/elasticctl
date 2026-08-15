@@ -1,0 +1,36 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "contracts": [
+    {
+      "contract": "diagnostics",
+      "result": "pass",
+      "error_class": null
+    },
+    {
+      "contract": "pull_diff",
+      "result": "pass",
+      "error_class": null
+    },
+    {
+      "contract": "exception_round_trip",
+      "result": "pass",
+      "error_class": null
+    },
+    {
+      "contract": "stale_pointer_repair",
+      "result": "pass",
+      "error_class": null
+    },
+    {
+      "contract": "source_scoping",
+      "result": "pass",
+      "error_class": null
+    },
+    {
+      "contract": "rule_round_trip",
+      "result": "pass",
+      "error_class": null
+    }
+  ]
+}
