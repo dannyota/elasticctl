@@ -6,7 +6,6 @@ use crate::error::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const REDACTED: &str = "***";
@@ -244,6 +243,7 @@ impl Config {
 
     #[cfg(unix)]
     fn write_config_file(path: &Path, body: &str) -> Result<()> {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)

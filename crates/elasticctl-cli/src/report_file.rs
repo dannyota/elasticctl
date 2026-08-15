@@ -82,7 +82,7 @@ impl FileOps for FsFileOps {
     }
 
     fn sync_file(&self, path: &Path) -> io::Result<()> {
-        File::open(path)?.sync_all()
+        OpenOptions::new().write(true).open(path)?.sync_all()
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
@@ -1146,7 +1146,7 @@ mod tests {
 
         fn sync_file(&self, path: &Path) -> io::Result<()> {
             self.fail("sync_file")?;
-            File::open(path)?.sync_all()
+            OpenOptions::new().write(true).open(path)?.sync_all()
         }
 
         fn sync_dir(&self, path: &Path) -> io::Result<()> {
