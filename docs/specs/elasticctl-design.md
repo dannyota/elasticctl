@@ -1099,6 +1099,39 @@ The live tier remains opt-in. Run applicable live conformance before releases
 that change live behavior; a release limited to tests, documentation, and
 release tooling does not need it.
 
+### 8.3 Cross-flavor live conformance
+
+The target-neutral release-evidence entrypoint is:
+
+```bash
+cargo xtask conformance --flavor <serverless|ech|traditional> \
+  --report-dir <path>
+```
+
+It runs the same six contracts serially against each target: diagnostics,
+pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
+repair, source scoping, and rule export/import round-trip. Before the first
+mutation, it captures custom, prebuilt, and customized rule counts and refuses
+a target with existing live-marker objects. It checks marker cleanup after
+every contract and compares the final rule partitions with that baseline.
+
+An ordinary contract failure is valid 0.2.3 evidence when cleanup succeeds. A
+cleanup, harness, or baseline failure invalidates the run and blocks further
+mutation on that target. A capability skip is explicit: it names the
+unsupported feature and the verified 9.5.1 floor.
+
+The runner writes one deterministic JSON report per target only after the
+final cleanup audit. The only allowed keys are `flavor`, `version`,
+`contracts`, `contract`, `result`, and `error_class`. Raw output stays under
+the ignored `target/conformance-private/` directory. Reports never contain a
+target URL, deployment or account identifier, credential, location, user
+identity, live object content, or raw failure.
+
+The release matrix is Elastic Cloud Serverless, Elastic Cloud Hosted, and a
+disposable self-managed 9.5.1 lab. The Cloud targets come from ignored local
+configuration. The lab installs its complete prebuilt pack before baseline
+capture and is destroyed with its volumes after the run.
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day
