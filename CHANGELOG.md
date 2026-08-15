@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 — 2026-08-15
+
+### Added
+
+- A manual release preflight now packages and verifies all three publishable
+  crates without credentials or uploads before a version tag.
+
+### Changed
+
+- CI now resolves the committed dependency graph, proves every workspace
+  target with Rust 1.97.1, and retains the stable-toolchain checks.
+- Windows now runs the full CLI package test suite, including raw export and
+  report-file paths, in addition to the API transaction regressions.
+
 ## 0.2.1 — 2026-08-15
 
 ### Fixed
