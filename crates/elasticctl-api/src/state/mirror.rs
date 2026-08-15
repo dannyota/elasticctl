@@ -23,8 +23,8 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     };
 
     let rules_path = super::rules_dir(dir);
-    if rules_path.exists() {
-        for path in mirror_files(&rules_path)? {
+    if let Some(paths) = mirror_root_files(&rules_path)? {
+        for path in paths {
             let body = std::fs::read_to_string(&path).map_err(|e| {
                 Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
             })?;
@@ -43,8 +43,8 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     }
 
     let lists_path = super::exceptions_dir(dir);
-    if lists_path.exists() {
-        for path in mirror_files(&lists_path)? {
+    if let Some(paths) = mirror_root_files(&lists_path)? {
+        for path in paths {
             let body = std::fs::read_to_string(&path).map_err(|e| {
                 Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
             })?;
@@ -91,19 +91,68 @@ pub fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     Ok(read_mirror(dir)?.rules)
 }
 
+/// The files in a mirror root directory, or `None` when the root is absent.
+///
+/// A root that exists but is a symlink or a non-directory fails closed, so an
+/// escaped mirror cannot start a destructive plan.
+fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::new(
+            ErrorKind::Error,
+            format!("reading {}: {e}", dir.display()),
+        )),
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    format!("mirror directory {} is not a real directory", dir.display()),
+                ));
+            }
+            Ok(Some(mirror_files(dir)?))
+        }
+    }
+}
+
 /// The files in a mirror directory that look like rule or list files.
 fn mirror_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", dir.display())))?;
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && super::is_rule_file(&path) {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", dir.display())))?
+    {
+        if let Some(path) = mirror_entry_path(dir, entry)? {
             out.push(path);
         }
     }
     out.sort();
     Ok(out)
+}
+
+/// Classify one directory entry into a path to read, `None` to ignore, or an
+/// error. A read error, symlink, or directory on a recognized extension fails
+/// closed; unrecognized entries are ignored without opening them.
+fn mirror_entry_path(
+    dir: &Path,
+    entry: std::io::Result<std::fs::DirEntry>,
+) -> Result<Option<PathBuf>> {
+    let entry = entry
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", dir.display())))?;
+    let path = entry.path();
+    if !super::is_rule_file(&path) {
+        return Ok(None);
+    }
+    // A recognized extension must be a regular file, never a symlink (which
+    // could escape the mirror) or a directory.
+    let file_type = entry
+        .file_type()
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
+    if !file_type.is_file() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!("mirror entry {} is not a regular file", path.display()),
+        ));
+    }
+    Ok(Some(path))
 }
 
 /// Decode a rule file: one or more rules, optionally followed by the
@@ -246,4 +295,24 @@ fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
             Ok(item)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_entry_path_reports_a_directory_read_error() {
+        let dir = Path::new("/mirror");
+        let err = mirror_entry_path(
+            dir,
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            )),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Error);
+        assert!(err.message.contains("/mirror"), "{}", err.message);
+    }
 }

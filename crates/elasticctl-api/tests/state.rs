@@ -953,6 +953,92 @@ async fn read_mirror_tolerates_an_export_trailer_in_a_rule_file() {
     assert_eq!(mirror.rules[0].rule_id().unwrap(), "r");
 }
 
+/// A symlinked `rules` directory could read rules from outside the mirror, so
+/// it must be refused rather than followed.
+#[cfg(unix)]
+#[test]
+fn read_mirror_refuses_a_symlinked_rules_directory() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(external.path().join("rules")).unwrap();
+    std::fs::write(
+        external.path().join("rules/a.ndjson"),
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+    symlink(external.path().join("rules"), dir.path().join("rules")).unwrap();
+
+    let err = state::read_mirror(dir.path()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Error);
+    assert!(
+        err.message.contains("not a real directory"),
+        "{}",
+        err.message
+    );
+}
+
+/// A recognized rule file that is actually a symlink could escape the mirror,
+/// so it must be refused rather than followed.
+#[cfg(unix)]
+#[test]
+fn read_mirror_refuses_a_symlinked_rule_file() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::fs::write(
+        external.path().join("a.ndjson"),
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+    symlink(external.path().join("a.ndjson"), rules.join("a.ndjson")).unwrap();
+
+    let err = state::read_mirror(dir.path()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Error);
+    assert!(
+        err.message.contains("not a regular file"),
+        "{}",
+        err.message
+    );
+}
+
+/// An escaped mirror must fail `plan_push` before any write is issued.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_rule_file_blocks_push_before_any_write() {
+    use std::os::unix::fs::symlink;
+    let stack = MockStack::with_rules(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join("rules");
+    std::fs::create_dir_all(&rules).unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::fs::write(
+        external.path().join("a.ndjson"),
+        "{\"rule_id\":\"a\",\"name\":\"A\",\"type\":\"query\"}\n",
+    )
+    .unwrap();
+    symlink(external.path().join("a.ndjson"), rules.join("a.ndjson")).unwrap();
+
+    let err = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Error);
+    assert!(
+        stack.write_requests().await.is_empty(),
+        "an escaped mirror must issue no POST, PUT, or DELETE"
+    );
+}
+
 /// A local mirror with a rule `r` referencing `list_id` and the container file
 /// itself, so the list is present on both sides of the diff.
 fn mirror_with_rule_referencing(list_id: &str) -> tempfile::TempDir {
