@@ -473,6 +473,13 @@ impl Transport {
         self.send_absolute_es(Method::DELETE, path, None).await
     }
 
+    /// DELETE from Elasticsearch with a JSON body. The PIT close needs one;
+    /// the plain `delete_absolute_es` sends no body.
+    pub async fn delete_absolute_es_json(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_absolute_es(Method::DELETE, path, Some(body))
+            .await
+    }
+
     async fn send_absolute_es(
         &self,
         method: Method,
