@@ -11,3 +11,8 @@ was found, so 0.2.4 is skipped and the next design is 0.3.0 search.
 
 No contract failed or skipped. Cleanup audits passed after every contract and
 the final rule partitions matched each target's captured baseline.
+
+> Note (2026-08-15): a later static review of the post-0.2.3 codebase, not
+> this live conformance run, justified 0.2.4. The live matrix above stays
+> authoritative for cross-flavor behavior; 0.2.4 fixes boundary defects that
+> no live contract exercises.

@@ -109,8 +109,13 @@ long.
 Does not know about detection rules.
 
 - **`config`** — profiles in `~/.elasticctl/config.toml`, `0600` enforced on
-  write and warned on read. Resolution order: flags → environment
-  (`ELASTICCTL_*`) → profile → defaults. Returns the effective config *and its
+  write and warned on read. Writes go through a same-directory temporary file
+  and an atomic rename, so a save never truncates an existing file in place or
+  writes through a symlink. Resolution order: flags → environment
+  (`ELASTICCTL_*`) → profile → defaults. The CLI reads `ELASTICCTL_*` through a
+  checked loader that fails on invalid Unicode and a non-integer timeout
+  instead of silently dropping the value; `from_env` remains the lossy loader
+  for direct library callers. Returns the effective config *and its
   provenance*, so the guard banner can name the profile about to be mutated.
   `kibana_url` and `es_url` are both identity: on a Cloud deployment they are
   two hosts of one stack, and on self-managed `es_url` is absent and the Kibana
@@ -123,7 +128,11 @@ Does not know about detection rules.
   resolution and before a profile is written. Credentials come from `api_key`
   or `username`/`password`; a URL has never been an authentication channel
   here. A URL carrying userinfo would surface in the guard banner and every
-  `--debug` line.
+  `--debug` line. Scrubbing is enforced at every public sink, not only at
+  resolution: `Profile::redacted`, `Profile::host`, `Config::save`, and
+  `Transport::with_debug` each strip userinfo before deriving output, so a
+  direct library caller that constructs a `Profile` with embedded userinfo
+  cannot leak it.
 - **`auth`** — `ApiKey` (`Authorization: ApiKey <base64(id:key)>`) or `Basic`.
   API key is the default; basic auth exists for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
@@ -733,6 +742,33 @@ failures the classifier could not place, which is a different thing.
 
 Exit codes: `0` success, `1` error, `2` usage.
 
+### 6.3 Fail-closed boundaries
+
+A success-shaped response or a readable local file is not evidence that the
+content is trustworthy. The client fails closed at each boundary rather than
+coercing a malformed value to zero, "unknown", or an empty result:
+
+- **Mutation outcomes.** `_bulk_action` requires an object summary with four
+  unsigned counters whose total equals `succeeded + failed + skipped`; import
+  responses require a numeric `success_count` and an `errors` array. A
+  contradictory or missing counter is an `http` error, never "nothing
+  happened".
+- **Read outcomes.** A recognized export trailer decodes or fails with its
+  line number; a preview-hits body requires `hits.total.value` and
+  `hits.hits`; an `_authenticate` body requires `username` and
+  `authentication_realm.type`. The live `preview_hits` and `doctor` paths use
+  the checked decoders; the tolerant `decode_preview_hits` wrapper remains for
+  offline callers.
+- **Mirror reads.** The `rules` and `exceptions` roots must be real
+  directories, never symlinks. A recognized extension must be a regular file,
+  never a symlink or directory, and a lost `read_dir` entry fails rather than
+  being skipped. An incomplete or escaped mirror cannot start a destructive
+  `push`.
+- **Pull-journal recovery.** Each journal entry advances one phase at a time
+  (`Prepared` → `BackingUp` → `BackedUp` → `Installing` → `Installed`). A
+  record that jumps ahead is corrupt and fails recovery without touching the
+  target or discarding the journal.
+
 ## 7. Verified API facts
 
 Probed against a trial Elastic Cloud Serverless Security project on 2026-08-13.
@@ -1082,7 +1118,10 @@ never committed here.
 CI runs on pushes to `master`, pull requests, the weekly schedule, and manual
 dispatch. Every Cargo command that resolves or builds dependencies uses the
 committed lockfile. The stable job runs formatting, Clippy, workspace tests,
-and package-content checks. A separate job reads
+and package-content checks. Package-content checks inspect every publishable
+crate — `elasticctl-core`, `elasticctl-api`, and `elasticctl` — and fail if any
+packages its integration tests or the private test-support crate. A separate
+job reads
 `workspace.package.rust-version` from `Cargo.toml` and checks every workspace
 target with that exact toolchain. Windows runs the API state and transaction
 regressions plus the full `elasticctl` package test suite, including raw export
@@ -1141,8 +1180,9 @@ The 0.2.3 measured matrix is:
 | Self-managed | 9.5.1 | 6 pass | Verified | [report](../conformance/v0.2.3/traditional-9.5.1.json) |
 
 All 18 contract rows passed with no skip. The validated
-[findings](../conformance/v0.2.3/findings.md) therefore skip 0.2.4 and select
-the 0.3.0 search design as the next release work.
+[findings](../conformance/v0.2.3/findings.md) therefore justify no live defect,
+while a later static review justified the bounded 0.2.4 patch; the 0.3.0 search
+design is the next capability-area work.
 
 ## 9. Local lab
 
@@ -1224,8 +1264,8 @@ boundaries. The near-term evidence ladder is:
    and non-publishing package preflight.
 2. 0.2.3 runs the guarded 0.2 live contracts across Serverless, Hosted, and the
    self-managed 9.5.1 compatibility floor.
-3. 0.2.4 is conditional and contains only fixes or small existing-command
-   improvements proved by 0.2.3. Skip it when there is no release-worthy work.
+3. 0.2.4 ships the bounded post-release review patch: the boundary defects found
+   by a static review of the post-0.2.3 codebase, each with a regression.
 4. 0.3.0 delivers the complete ES|QL and Query DSL search vertical. Later minor
    capability areas begin only after 0.3 is complete and trial time remains.
 

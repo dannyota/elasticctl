@@ -649,11 +649,11 @@ mod tests {
             "--flavor".into(),
             "ech".into(),
             "--report-dir".into(),
-            "docs/conformance/v0.2.3".into(),
+            "docs/conformance/v0.2.4".into(),
         ])
         .unwrap();
         assert_eq!(args.flavor, FlavorLabel::Ech);
-        assert_eq!(args.report_dir, PathBuf::from("docs/conformance/v0.2.3"));
+        assert_eq!(args.report_dir, PathBuf::from("docs/conformance/v0.2.4"));
     }
 
     #[test]

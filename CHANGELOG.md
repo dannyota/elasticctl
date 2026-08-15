@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.4 — 2026-08-15
+
+### Fixed
+
+- Config saves now replace the file atomically through a same-directory
+  temporary file, so a save never truncates an existing file in place or
+  writes through a symlink, and always lands with `0600` permissions.
+- The CLI rejects invalid `ELASTICCTL_*` input — non-UTF-8 values and a
+  non-integer timeout — instead of silently dropping it, and URL userinfo is
+  scrubbed at every public sink (`redacted`, `host`, `save`, and `--debug`).
+- Malformed mutation responses (`_bulk_action` summaries and import reports)
+  now fail as `http` errors rather than reading as zero success.
+- Malformed export trailers, preview-hits bodies, and identity responses now
+  fail closed instead of being discarded or read as zero or "unknown".
+- Mirror reads refuse symlinked `rules`/`exceptions` roots and symlinked rule
+  or list files, and a lost directory entry fails instead of being skipped.
+- Pull-journal recovery validates phase transitions and refuses a record that
+  jumps ahead without touching the target or discarding the journal.
+
+### Verified
+
+- Package-content checks now inspect every publishable crate —
+  `elasticctl-core`, `elasticctl-api`, and `elasticctl` — so none packages its
+  integration tests or the private test-support crate.
+
 ## 0.2.3 — 2026-08-15
 
 ### Added
