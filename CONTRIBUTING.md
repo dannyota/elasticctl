@@ -56,6 +56,13 @@ unscoped `_find` or `_export` writes real rule content into a public
 repository. Scrub identity (`username`, `full_name`, `email`, `created_by`,
 `updated_by`) and every credential.
 
+After sourcing `.env`, `cargo xtask record` reads the generic
+`ELASTICCTL_*` target. A second Hosted target may use `ELASTICCTL_ECH_*`
+names in `.env`, but the recorder does not read those names directly. Map its
+Kibana URL, Elasticsearch URL, and API key to the generic names and set
+`ELASTICCTL_FIXTURE_FLAVOR=ech` for that command. The exact example is in
+`.env.example`.
+
 ## What review will hold you to
 
 The reasoning is in the spec, sections 3 and 6. The rules themselves:
@@ -77,9 +84,10 @@ The reasoning is in the spec, sections 3 and 6. The rules themselves:
 
 ## Credentials
 
-`.env` is gitignored and mode `0600`. Never commit it, never copy its contents
-into a tracked file, and never echo a key into terminal output or a commit
-message. `.env.example` is the committed template and holds placeholders only.
+`.env` is gitignored and mode `0600`. Never commit it or copy its contents into
+a tracked file. Keep real test-system URLs, deployment IDs, account data, and
+credentials out of terminal output and commit messages. `.env.example` is the
+committed template and holds placeholders only.
 
 ## Releasing
 
@@ -87,5 +95,6 @@ Maintainers only: [`docs/releasing.md`](docs/releasing.md).
 
 ## Agents
 
-`CLAUDE.md` carries these same rules in the form Claude Code reads. If you
-change a rule here, change it there too.
+Maintainer-local agent instructions live in globally ignored `AGENTS.md`.
+Durable project rules belong in this file or the design spec, where every
+contributor can read them.

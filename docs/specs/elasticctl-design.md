@@ -735,9 +735,9 @@ Exit codes: `0` success, `1` error, `2` usage.
 
 ## 7. Verified API facts
 
-Probed against Elastic Cloud Serverless Security project `elasticctl-f0d4d3`
-(aws, ap-southeast-1) on 2026-08-13. Elasticsearch and Kibana both 9.6.0,
-`build_flavor: serverless`.
+Probed against a trial Elastic Cloud Serverless Security project on 2026-08-13.
+Deployment identity and location are omitted. Elasticsearch and Kibana both
+reported 9.6.0 with `build_flavor: serverless`.
 
 | Fact | Detail |
 |---|---|
