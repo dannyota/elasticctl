@@ -139,7 +139,8 @@ fn replace_bounded_authority(value: &str, authority: &str) -> String {
         let before_is_safe =
             index == 0 || (!is_authority_char(bytes[index - 1]) && bytes[index - 1] != b'@');
         let end = index + authority.len();
-        let after_is_safe = end == bytes.len() || !is_authority_char(bytes[end]);
+        let after_is_safe =
+            end == bytes.len() || (!is_authority_char(bytes[end]) && bytes[end] != b'@');
 
         if before_is_safe && after_is_safe && bytes[index..end].eq_ignore_ascii_case(authority) {
             scrubbed.push_str(&value[copied_end..index]);
@@ -1618,33 +1619,33 @@ fn scrub_hosts_handles_authority_boundaries() {
         ),
         (
             "single-quoted authority",
-            "'https://cluster.example:9243/app'",
-            "cluster.example:9243",
-            "'https://REDACTED.example.invalid/app'",
+            "https://internal.example:0443'",
+            "internal.example:443",
+            "https://REDACTED.example.invalid'",
         ),
         (
             "double-quoted authority",
-            "\"https://cluster.example:9243/app\"",
-            "cluster.example:9243",
-            "\"https://REDACTED.example.invalid/app\"",
+            "http://internal.example:0080\"",
+            "internal.example:80",
+            "http://REDACTED.example.invalid\"",
         ),
         (
             "parenthesized authority",
-            "(https://cluster.example:9243/app)",
-            "cluster.example:9243",
-            "(https://REDACTED.example.invalid/app)",
+            "https://internal.example:0443)",
+            "internal.example:443",
+            "https://REDACTED.example.invalid)",
         ),
         (
             "angle-bracketed authority",
-            "<https://cluster.example:9243/app>",
-            "cluster.example:9243",
-            "<https://REDACTED.example.invalid/app>",
+            "http://internal.example:0080>",
+            "internal.example:80",
+            "http://REDACTED.example.invalid>",
         ),
         (
             "square-bracketed authority",
-            "[https://cluster.example:9243/app]",
-            "cluster.example:9243",
-            "[https://REDACTED.example.invalid/app]",
+            "https://internal.example:0443]",
+            "internal.example:443",
+            "https://REDACTED.example.invalid]",
         ),
         (
             "whitespace-separated authorities",
@@ -1695,10 +1696,28 @@ fn scrub_hosts_handles_authority_boundaries() {
             "https://cluster.example/app",
         ),
         (
+            "bare HTTPS default host is redacted",
+            "https://internal.example/app",
+            "internal.example:443",
+            "https://REDACTED.example.invalid/app",
+        ),
+        (
+            "bare HTTP default host is redacted",
+            "http://internal.example/app",
+            "internal.example:80",
+            "http://REDACTED.example.invalid/app",
+        ),
+        (
             "plain at-sign text remains visible",
             "contact ops@example.com before recording",
             "example.com",
             "contact ops@example.com before recording",
+        ),
+        (
+            "plain authority followed by at-sign remains visible",
+            "example.com@ops.invalid",
+            "example.com",
+            "example.com@ops.invalid",
         ),
     ];
 
