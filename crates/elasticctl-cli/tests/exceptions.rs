@@ -7,7 +7,7 @@ use elasticctl_api_test_support::MockStack;
 use serde_json::{Value, json};
 use std::process::Output;
 use wiremock::matchers::{method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 mod common;
 
@@ -38,6 +38,102 @@ async fn run(uri: &str, args: &[&str]) -> Output {
         .args(args)
         .output()
         .unwrap()
+}
+
+fn uploaded_ndjson(request: &Request) -> String {
+    let body = String::from_utf8(request.body.clone()).unwrap();
+    let start = body.find("\r\n\r\n").expect("multipart headers") + 4;
+    let end = body.rfind("\r\n--").expect("multipart closing boundary");
+    body[start..end].to_string()
+}
+
+#[tokio::test]
+async fn list_forwards_type_tag_and_namespace_filters() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "id": "id-prod",
+                "list_id": "prod-list",
+                "type": "detection",
+                "name": "Production",
+                "namespace_type": "agnostic",
+                "tags": ["prod"]
+            }],
+            "page": 1,
+            "per_page": 1,
+            "total": 1
+        })))
+        .mount(&server)
+        .await;
+
+    let out = run(
+        &server.uri(),
+        &[
+            "exceptions",
+            "list",
+            "--type",
+            "detection",
+            "--tag",
+            "prod",
+            "--namespace",
+            "agnostic",
+            "--json",
+        ],
+    )
+    .await;
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report.as_array().unwrap().len(), 1);
+    assert_eq!(report[0]["list_id"], "prod-list");
+    assert_eq!(report[0]["namespace_type"], "agnostic");
+    let requests = server.received_requests().await.unwrap();
+    let find = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/exception_lists/_find")
+        .unwrap();
+    let query: std::collections::BTreeMap<_, _> = find.url.query_pairs().into_owned().collect();
+    assert_eq!(query["namespace_type"], "agnostic");
+    assert_eq!(
+        query["filter"],
+        "exception-list-agnostic.attributes.type: \"detection\" AND exception-list-agnostic.attributes.tags: \"prod\""
+    );
+}
+
+#[test]
+fn validate_is_offline_and_counts_lists_and_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("exceptions.ndjson");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"list_id\":\"l0\",\"type\":\"detection\",\"name\":\"L0\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"i0\",\"list_id\":\"l0\",\"type\":\"simple\",\"name\":\"I0\",\"namespace_type\":\"single\",\"entries\":[]}\n",
+        ),
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["exceptions", "validate", "--path"])
+        .arg(&path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report, json!({"valid": true, "lists": 1, "items": 1}));
 }
 
 /// Spec 4.3, applied to lists: an empty selection is never widened.
@@ -230,4 +326,175 @@ async fn a_list_id_in_both_namespaces_needs_the_namespace_flag() {
     );
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["list"]["namespace_type"], "agnostic");
+}
+
+#[tokio::test]
+async fn a_partial_import_failure_exits_one_and_keeps_valid_ndjson() {
+    let server = verified_server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_import"))
+        .and(query_param("overwrite", "false"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": false,
+            "success_count": 1,
+            "errors": [{
+                "list_id": "rejected",
+                "namespace_type": "single",
+                "error": {"status_code": 409, "message": "already exists"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("import.ndjson");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"list_id\":\"accepted\",\"type\":\"detection\",\"name\":\"Accepted\",\"namespace_type\":\"single\"}\n",
+            "{\"list_id\":\"rejected\",\"type\":\"detection\",\"name\":\"Rejected\",\"namespace_type\":\"single\"}\n",
+        ),
+    )
+    .unwrap();
+    let cfg = common::config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["exceptions", "import", "--path"])
+        .arg(&path)
+        .args(["--yes", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["succeeded"], 1);
+    assert_eq!(report["failed"][0]["list_id"], "rejected");
+    assert_eq!(report["failed"][0]["namespace_type"], "single");
+    let requests = server.received_requests().await.unwrap();
+    let upload = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/exception_lists/_import")
+        .unwrap();
+    let ndjson = uploaded_ndjson(upload);
+    let bundle = elasticctl_api::codec::decode_bundle(&ndjson).unwrap();
+    assert_eq!(bundle.lists.len(), 2);
+    assert!(bundle.items.is_empty());
+}
+
+#[tokio::test]
+async fn skip_existing_uploads_only_the_absent_list_and_its_items() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "existing"))
+        .and(query_param("namespace_type", "single"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "id-existing",
+            "list_id": "existing",
+            "type": "detection",
+            "name": "Existing",
+            "namespace_type": "single"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "success_count": 2,
+            "errors": []
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("import.ndjson");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"list_id\":\"existing\",\"type\":\"detection\",\"name\":\"Existing\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"old-item\",\"list_id\":\"existing\",\"type\":\"simple\",\"name\":\"Old\",\"namespace_type\":\"single\",\"entries\":[]}\n",
+            "{\"list_id\":\"absent\",\"type\":\"detection\",\"name\":\"Absent\",\"namespace_type\":\"single\"}\n",
+            "{\"item_id\":\"new-item\",\"list_id\":\"absent\",\"type\":\"simple\",\"name\":\"New\",\"namespace_type\":\"single\",\"entries\":[]}\n",
+        ),
+    )
+    .unwrap();
+    let cfg = common::config_for(dir.path(), &server.uri());
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["exceptions", "import", "--path"])
+        .arg(&path)
+        .args(["--skip-existing", "--yes", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["succeeded"], 2);
+    assert_eq!(report["skipped"].as_array().unwrap().len(), 1);
+    assert_eq!(report["skipped"][0]["list_id"], "existing");
+    assert_eq!(report["total"], 4);
+    let requests = server.received_requests().await.unwrap();
+    let upload = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/exception_lists/_import")
+        .unwrap();
+    let ndjson = uploaded_ndjson(upload);
+    let bundle = elasticctl_api::codec::decode_bundle(&ndjson).unwrap();
+    assert_eq!(bundle.lists.len(), 1);
+    assert_eq!(bundle.lists[0].list_id().unwrap(), "absent");
+    assert_eq!(bundle.items.len(), 1);
+    assert_eq!(bundle.items[0].item_id().unwrap(), "new-item");
+}
+
+#[tokio::test]
+async fn a_qualified_delete_failure_keeps_the_full_identity() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "agnostic"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "id-l0",
+            "list_id": "l0",
+            "type": "detection",
+            "name": "L0",
+            "namespace_type": "agnostic"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/exception_lists"))
+        .and(query_param("list_id", "l0"))
+        .and(query_param("namespace_type", "agnostic"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "delete failed"
+        })))
+        .mount(&server)
+        .await;
+
+    let out = run(
+        &server.uri(),
+        &[
+            "exceptions",
+            "delete",
+            "l0",
+            "--namespace",
+            "agnostic",
+            "--yes",
+            "--json",
+        ],
+    )
+    .await;
+
+    assert_eq!(out.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["failed"][0]["list_id"], "l0");
+    assert_eq!(report["failed"][0]["namespace_type"], "agnostic");
 }
