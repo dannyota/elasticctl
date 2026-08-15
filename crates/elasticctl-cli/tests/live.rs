@@ -14,6 +14,26 @@ type TestResult<T = ()> = std::result::Result<T, String>;
 
 const LIVE_PREFIX: &str = "elasticctl-live-";
 const LIVE_TAG: &str = "elasticctl-live-marker";
+const CONFORMANCE_CLASS_PREFIX: &str = "elasticctl-conformance-class:";
+
+#[derive(Clone, Copy)]
+enum ConformanceFailureClass {
+    Contract,
+    Cleanup,
+    Harness,
+}
+
+fn conformance_marker(class: ConformanceFailureClass) -> &'static str {
+    match class {
+        ConformanceFailureClass::Contract => "elasticctl-conformance-class:contract",
+        ConformanceFailureClass::Cleanup => "elasticctl-conformance-class:cleanup",
+        ConformanceFailureClass::Harness => "elasticctl-conformance-class:harness",
+    }
+}
+
+fn panic_conformance(class: ConformanceFailureClass, detail: impl std::fmt::Display) -> ! {
+    panic!("{}\n{detail}", conformance_marker(class));
+}
 /// Fact G, measured on Serverless 9.6.0: runtime exception matching follows
 /// `list_id`, so replacing only the saved-object pointer still suppresses the
 /// matching event.
@@ -439,12 +459,12 @@ fn assert_clean_baseline(
 
 fn conclude<T>(result: TestResult<T>, cleanup: &mut LiveCleanup, baseline: LiveBaseline) -> T {
     if let Err(error) = cleanup.finish() {
-        panic!("{error}");
+        panic_conformance(ConformanceFailureClass::Cleanup, error);
     }
     if let Err(error) = assert_clean_baseline(&cleanup.config, cleanup, baseline) {
-        panic!("{error}");
+        panic_conformance(ConformanceFailureClass::Cleanup, error);
     }
-    result.unwrap_or_else(|error| panic!("{error}"))
+    result.unwrap_or_else(|error| panic_conformance(ConformanceFailureClass::Contract, error))
 }
 
 fn exception_bundle(list_id: &str, item_id: &str, entries: Value) -> String {
@@ -653,6 +673,48 @@ fn stored_pointer(rule: &elasticctl_api::model::Rule) -> TestResult<&str> {
         .and_then(|references| references.first())
         .and_then(|reference| reference["id"].as_str())
         .ok_or_else(|| "stored rule has no exception pointer".to_string())
+}
+
+fn panic_payload_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    "non-string panic".to_string()
+}
+
+#[test]
+fn conformance_failure_marker_names_only_the_stable_class() {
+    assert!(
+        conformance_marker(ConformanceFailureClass::Contract).starts_with(CONFORMANCE_CLASS_PREFIX)
+    );
+    assert_eq!(
+        conformance_marker(ConformanceFailureClass::Contract),
+        "elasticctl-conformance-class:contract"
+    );
+    assert_eq!(
+        conformance_marker(ConformanceFailureClass::Cleanup),
+        "elasticctl-conformance-class:cleanup"
+    );
+    assert_eq!(
+        conformance_marker(ConformanceFailureClass::Harness),
+        "elasticctl-conformance-class:harness"
+    );
+}
+
+#[test]
+fn conformance_panic_keeps_private_detail_outside_the_class_marker() {
+    let payload = std::panic::catch_unwind(|| {
+        panic_conformance(ConformanceFailureClass::Contract, "private detail")
+    })
+    .expect_err("classified failure must panic");
+    let message = panic_payload_text(payload);
+    let mut lines = message.lines();
+    assert_eq!(lines.next(), Some("elasticctl-conformance-class:contract"));
+    assert_eq!(lines.next(), Some("private detail"));
+    assert_eq!(lines.next(), None);
 }
 
 /// A guard has to know every identity before a mutation starts, otherwise a
