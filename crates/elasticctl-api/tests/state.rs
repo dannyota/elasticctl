@@ -341,6 +341,29 @@ async fn pull_writes_the_referenced_lists_and_no_others() {
     );
 }
 
+/// Pull reports the operator's spelling rather than the resolved lock path.
+#[tokio::test]
+async fn requested_pull_path_is_preserved() {
+    let stack = mock_stack_with_rule_referencing("shared").await;
+    let dir = tempfile::tempdir().unwrap();
+    let mirror = dir.path().join("mirror");
+    std::fs::create_dir(&mirror).unwrap();
+    let requested = mirror.join(".");
+
+    let report = state::pull(
+        stack.transport(),
+        &requested,
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.dir, requested.join("rules").display().to_string());
+}
+
 /// Pull replaces only the planned files. A scoped update must not infer that
 /// files outside its selection, local notes, or unrelated exception lists are
 /// stale and delete them.

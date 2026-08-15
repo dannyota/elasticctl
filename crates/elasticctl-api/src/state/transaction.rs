@@ -117,14 +117,18 @@ impl FileOps for FsFileOps {
     }
 }
 
-pub(crate) fn acquire_pull(root: &Path) -> Result<PullLock> {
-    let parent = mirror_parent(root)?;
-    let mirror_name = root.file_name().ok_or_else(|| {
-        Error::new(
-            ErrorKind::Error,
-            format!("mirror path {} has no final component", root.display()),
-        )
-    })?;
+pub(crate) fn acquire_pull(requested: &Path) -> Result<PullLock> {
+    let current_dir = std::env::current_dir()
+        .map_err(|error| filesystem_error("reading current directory", Path::new("."), error))?;
+    acquire_pull_from(requested, &current_dir)
+}
+
+fn acquire_pull_from(requested: &Path, current_dir: &Path) -> Result<PullLock> {
+    let root = resolve_mirror_root(requested, current_dir)?;
+    let parent = mirror_parent(&root)?;
+    let mirror_name = root
+        .file_name()
+        .expect("resolved mirror roots always have a final component");
     let mut lock_name = OsString::from(".");
     lock_name.push(mirror_name);
     lock_name.push(".elasticctl-pull.lock");
@@ -142,9 +146,44 @@ pub(crate) fn acquire_pull(root: &Path) -> Result<PullLock> {
         )
     })?;
     Ok(PullLock {
-        root: root.to_path_buf(),
+        root,
         _lock_file: lock_file,
     })
+}
+
+fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> {
+    let absolute = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        current_dir.join(requested)
+    };
+    if absolute.exists() {
+        let resolved = fs::canonicalize(&absolute)
+            .map_err(|error| filesystem_error("resolving mirror path", &absolute, error))?;
+        if resolved.file_name().is_none() {
+            return Err(filesystem_root_error(requested));
+        }
+        return Ok(resolved);
+    }
+    let name = absolute
+        .file_name()
+        .ok_or_else(|| filesystem_root_error(requested))?;
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| filesystem_root_error(requested))?;
+    let resolved_parent = fs::canonicalize(parent)
+        .map_err(|error| filesystem_error("resolving mirror parent", parent, error))?;
+    Ok(resolved_parent.join(name))
+}
+
+fn filesystem_root_error(requested: &Path) -> Error {
+    Error::new(
+        ErrorKind::Error,
+        format!(
+            "filesystem root has no safe sibling lock: mirror path {}",
+            requested.display()
+        ),
+    )
 }
 
 pub(crate) fn recover_pull(lock: &PullLock) -> Result<()> {
@@ -859,6 +898,110 @@ mod tests {
         StagedFile {
             relative: relative.into(),
             bytes: bytes.to_vec(),
+        }
+    }
+
+    fn pull_lock_error(requested: &Path, current_dir: &Path) -> Error {
+        match acquire_pull_from(requested, current_dir) {
+            Ok(_) => panic!("expected pull lock acquisition to fail"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn pull_lock_aliases_conflict_on_the_same_resolved_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let current_dir = dir.path().join("current");
+        fs::create_dir(&current_dir).unwrap();
+
+        let lock = acquire_pull_from(Path::new("."), &current_dir).unwrap();
+        let error = pull_lock_error(&current_dir, &current_dir);
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        drop(lock);
+
+        let lock = acquire_pull_from(Path::new("./"), &current_dir).unwrap();
+        let error = pull_lock_error(Path::new("."), &current_dir);
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        drop(lock);
+
+        let existing = current_dir.join("existing");
+        fs::create_dir(&existing).unwrap();
+        let _lock = acquire_pull_from(Path::new("existing/.."), &current_dir).unwrap();
+        let error = pull_lock_error(&current_dir, &current_dir);
+        assert_eq!(error.kind, ErrorKind::Conflict);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pull_lock_symlink_aliases_conflict_on_the_same_resolved_mirror() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_parent = dir.path().join("canonical");
+        let alias_parent = dir.path().join("alias");
+        fs::create_dir(&canonical_parent).unwrap();
+        symlink(&canonical_parent, &alias_parent).unwrap();
+
+        let existing = canonical_parent.join("existing");
+        fs::create_dir(&existing).unwrap();
+        let lock = acquire_pull_from(&alias_parent.join("existing"), dir.path()).unwrap();
+        let error = pull_lock_error(&existing, dir.path());
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        drop(lock);
+
+        let _lock = acquire_pull_from(&alias_parent.join("missing"), dir.path()).unwrap();
+        let error = pull_lock_error(&canonical_parent.join("missing"), dir.path());
+        assert_eq!(error.kind, ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn pull_lock_requires_an_existing_immediate_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let requested = dir.path().join("missing-parent/mirror");
+
+        let error = pull_lock_error(&requested, dir.path());
+
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(
+            error.message.contains("resolving mirror parent"),
+            "{}",
+            error.message
+        );
+        assert!(!requested.parent().unwrap().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pull_lock_rejects_a_filesystem_root() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let error = pull_lock_error(Path::new("/"), dir.path());
+
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(
+            error
+                .message
+                .contains("filesystem root has no safe sibling lock"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pull_lock_rejects_windows_filesystem_roots() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for root in [Path::new(r"C:\"), Path::new(r"\\server\share\")] {
+            let error = pull_lock_error(root, dir.path());
+            assert_eq!(error.kind, ErrorKind::Error);
+            assert!(
+                error
+                    .message
+                    .contains("filesystem root has no safe sibling lock"),
+                "{}",
+                error.message
+            );
         }
     }
 
