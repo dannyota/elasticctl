@@ -1167,7 +1167,8 @@ async fn record_search(
         ));
     }
     session.ownership.search_index = true;
-    t.post_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_refresh"), &json!({}))
+    // `_refresh` rejects a body, so use the GET form, which sends none.
+    t.get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_refresh"))
         .await?;
 
     let esql_query = format!("FROM {SEARCH_PROBE_INDEX} | SORT seq ASC | LIMIT 2");
