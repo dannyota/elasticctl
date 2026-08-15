@@ -464,8 +464,9 @@ Every rule `_find` response is decoded as a strict envelope: a JSON object
 with array `data`, unsigned integer `total`, positive integer `page`, and
 positive integer `perPage`. `perPage` is the spelling in every recorded rule
 response. Exception-list `_find` keeps its separate `per_page` contract. Rule
-decoding accepts unknown fields but does not accept both page-size spellings
-without a measured compatibility requirement.
+decoding requires the exact `perPage` field: `per_page` cannot substitute when
+`perPage` is absent. Unknown fields remain accepted, so a present `per_page`
+field is ignored when `perPage` is also present.
 
 Malformed envelopes are not converted to an empty result. Missing or mistyped
 fields, `data.len() > total`, and `data.len() > perPage` return
@@ -624,7 +625,7 @@ items and YAML top-level items are validated before they enter the mirror.
 This stricter rule is contextual. A nested item inside a container may omit
 `list_id`, because splitting the container assigns the authoritative parent
 `list_id` and `namespace_type`. Item grouping validates the same identity again
-before any remote item read or reconciliation, so a malformed item returns
+before item reconciliation, so a malformed item returns
 `ErrorKind::Error` instead of planning a remote item deletion. Empty fields use
 the messages `exception item field item_id must be a non-empty string`,
 `exception item field list_id must be a non-empty string`, and `exception item
