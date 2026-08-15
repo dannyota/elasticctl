@@ -1,4 +1,4 @@
-use elasticctl_core::{Profile, Transport};
+use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
 #[cfg(unix)]
 use std::fs::File;
@@ -166,6 +166,43 @@ async fn get_sends_the_authorization_and_version_headers() {
 
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert_eq!(t.get("/api/thing").await.unwrap()["ok"], true);
+}
+
+#[tokio::test]
+async fn out_of_range_json_integer_is_a_transport_http_parse_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/overflow"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("{\"total\":18446744073709551616}"),
+        )
+        .mount(&server)
+        .await;
+
+    let err = Transport::new(&profile_for(&server))
+        .unwrap()
+        .get("/api/overflow")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http, "{err}");
+    assert!(err.message.contains("parsing response JSON"), "{err}");
+}
+
+#[tokio::test]
+async fn a_large_json_float_remains_a_valid_transport_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/large-float"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"ratio\":1e100}"))
+        .mount(&server)
+        .await;
+
+    let body = Transport::new(&profile_for(&server))
+        .unwrap()
+        .get("/api/large-float")
+        .await
+        .unwrap();
+    assert!(body["ratio"].is_f64());
 }
 
 #[tokio::test]

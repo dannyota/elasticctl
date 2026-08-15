@@ -135,13 +135,56 @@ pub async fn find_page(
 /// Decode a `_find` response into rules and a total. Fixtures use this same
 /// path offline.
 pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
-    let total = body["total"].as_u64().unwrap_or(0);
-    let data = body["data"].as_array().cloned().unwrap_or_default();
+    let map = body
+        .as_object()
+        .ok_or_else(|| find_error("response", "must be a JSON object"))?;
+    let data = map
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| find_error("data", "must be an array"))?;
+    let total = required_u64(map, "total")?;
+    let page = required_u64(map, "page")?;
+    if page == 0 {
+        return Err(find_error("page", "must be greater than zero"));
+    }
+    let per_page = required_u64(map, "perPage")?;
+    if per_page == 0 {
+        return Err(find_error("perPage", "must be greater than zero"));
+    }
+
+    let data_len = data.len() as u64;
+    if data_len > total {
+        return Err(find_error(
+            "data.len() > total",
+            format!("{data_len} returned records exceed total {total}"),
+        ));
+    }
+    if data_len > per_page {
+        return Err(find_error(
+            "data.len() > perPage",
+            format!("{data_len} returned records exceed perPage {per_page}"),
+        ));
+    }
+
     let rules = data
-        .into_iter()
+        .iter()
+        .cloned()
         .map(Rule::from_value)
         .collect::<Result<Vec<_>>>()?;
     Ok((rules, total))
+}
+
+fn find_error(field: &str, detail: impl std::fmt::Display) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("decoding rule _find response field {field}: {detail}"),
+    )
+}
+
+fn required_u64(map: &serde_json::Map<String, Value>, field: &str) -> Result<u64> {
+    map.get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| find_error(field, "must be an unsigned integer"))
 }
 
 /// The three totals that prove `immutable` divides the complete rule corpus.

@@ -14,6 +14,32 @@ use elasticctl_api_test_support::{
 use elasticctl_core::ErrorKind;
 use serde_json::json;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+struct FirstEmptyThenMalformedSourcePage(AtomicUsize);
+
+impl Respond for FirstEmptyThenMalformedSourcePage {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let is_custom = request.url.query_pairs().any(|(key, value)| {
+            key == "filter" && value == "alert.attributes.params.immutable: false"
+        });
+        if is_custom && self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": [], "total": 0, "page": 1, "perPage": 10000,
+            }))
+        } else if is_custom {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": [], "page": 1, "perPage": 1,
+            }))
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": [], "total": 0, "page": 1, "perPage": 1,
+            }))
+        }
+    }
+}
 
 fn identity() -> StackIdentity {
     StackIdentity {
@@ -1796,4 +1822,45 @@ async fn a_prebuilt_only_stack_has_a_valid_empty_custom_scope() {
     .unwrap();
 
     assert_eq!(report.pulled, 0);
+}
+
+#[tokio::test]
+async fn malformed_source_partition_returns_a_typed_error_instead_of_an_empty_pull_report() {
+    let server = MockServer::start().await;
+    let profile = elasticctl_core::Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    };
+    let transport = elasticctl_core::Transport::new(&profile).unwrap();
+    // The first custom page is an honestly empty scope. The partition check's
+    // second page is malformed and must stop the pull before it writes a report.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(FirstEmptyThenMalformedSourcePage(AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let err = state::pull(
+        &transport,
+        dir.path(),
+        Format::Yaml,
+        &[],
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::Http, "{err}");
+    assert!(
+        err.message.contains("rule _find") && err.message.contains("total"),
+        "{err}"
+    );
 }

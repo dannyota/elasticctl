@@ -4,8 +4,10 @@ use std::collections::BTreeMap;
 
 use elasticctl_api::prebuilt;
 use elasticctl_api_test_support::MockStack;
-use elasticctl_core::ErrorKind;
+use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Measured 2026-08-14, verbatim.
 const STATUS_BODY: &str = r#"{"rules_custom_installed":0,"rules_installed":2066,
@@ -114,6 +116,45 @@ async fn malformed_status_wins_over_the_dependent_customized_count_request() {
     assert_eq!(
         requests[0].path,
         "/api/detection_engine/rules/prepackaged/_status"
+    );
+}
+
+#[tokio::test]
+async fn malformed_customized_find_returns_a_typed_error_instead_of_prebuilt_status() {
+    let server = MockServer::start().await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    };
+    let transport = Transport::new(&profile).unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/prepackaged/_status"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::from_str::<serde_json::Value>(STATUS_BODY).unwrap()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [], "page": 1, "perPage": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    let err = prebuilt::status(&transport).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http, "{err}");
+    assert!(
+        err.message.contains("rule _find") && err.message.contains("total"),
+        "{err}"
     );
 }
 

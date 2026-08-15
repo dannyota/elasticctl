@@ -36,6 +36,162 @@ fn find_body(total: u64, data: Vec<serde_json::Value>) -> serde_json::Value {
     json!({"page": 1, "perPage": 10000, "total": total, "data": data})
 }
 
+#[test]
+fn find_envelope_rejects_malformed_required_fields_and_count_relationships() {
+    // Each case catches a decoder regression back to the old missing-field or
+    // wrong-type fallback behavior.
+    struct Case {
+        name: &'static str,
+        body: serde_json::Value,
+        field_or_relation: &'static str,
+    }
+
+    let valid = || json!({"data": [], "total": 0, "page": 1, "perPage": 1});
+    let mut cases = vec![
+        Case {
+            name: "response is not an object",
+            body: json!([]),
+            field_or_relation: "response",
+        },
+        Case {
+            name: "data is missing",
+            body: json!({"total": 0, "page": 1, "perPage": 1}),
+            field_or_relation: "data",
+        },
+        Case {
+            name: "data is a scalar",
+            body: json!({"data": "not an array", "total": 0, "page": 1, "perPage": 1}),
+            field_or_relation: "data",
+        },
+        Case {
+            name: "data is an object",
+            body: json!({"data": {}, "total": 0, "page": 1, "perPage": 1}),
+            field_or_relation: "data",
+        },
+    ];
+
+    for field in ["total", "page", "perPage"] {
+        let mut missing = valid();
+        missing.as_object_mut().unwrap().remove(field);
+        cases.push(Case {
+            name: match field {
+                "total" => "total is missing",
+                "page" => "page is missing",
+                "perPage" => "perPage is missing",
+                _ => unreachable!(),
+            },
+            body: missing,
+            field_or_relation: field,
+        });
+
+        for (name, value) in [
+            ("a scalar", json!("not a number")),
+            ("an object", json!({})),
+            ("an array", json!([])),
+            ("negative", json!(-1)),
+            ("floating", json!(1.5)),
+        ] {
+            let mut body = valid();
+            body[field] = value;
+            cases.push(Case {
+                name: match (field, name) {
+                    ("total", "a scalar") => "total is a scalar",
+                    ("total", "an object") => "total is an object",
+                    ("total", "an array") => "total is an array",
+                    ("total", "negative") => "total is negative",
+                    ("total", "floating") => "total is floating",
+                    ("page", "a scalar") => "page is a scalar",
+                    ("page", "an object") => "page is an object",
+                    ("page", "an array") => "page is an array",
+                    ("page", "negative") => "page is negative",
+                    ("page", "floating") => "page is floating",
+                    ("perPage", "a scalar") => "perPage is a scalar",
+                    ("perPage", "an object") => "perPage is an object",
+                    ("perPage", "an array") => "perPage is an array",
+                    ("perPage", "negative") => "perPage is negative",
+                    ("perPage", "floating") => "perPage is floating",
+                    _ => unreachable!(),
+                },
+                body,
+                field_or_relation: field,
+            });
+        }
+    }
+
+    let mut per_page_alias = valid();
+    per_page_alias.as_object_mut().unwrap().remove("perPage");
+    per_page_alias["per_page"] = json!(1);
+    cases.push(Case {
+        name: "per_page does not alias perPage",
+        body: per_page_alias,
+        field_or_relation: "perPage",
+    });
+
+    let mut zero_page = valid();
+    zero_page["page"] = json!(0);
+    cases.push(Case {
+        name: "page is zero",
+        body: zero_page,
+        field_or_relation: "page",
+    });
+
+    let mut zero_per_page = valid();
+    zero_per_page["perPage"] = json!(0);
+    cases.push(Case {
+        name: "perPage is zero",
+        body: zero_per_page,
+        field_or_relation: "perPage",
+    });
+
+    cases.extend([
+        Case {
+            name: "data is longer than total",
+            body: json!({
+                "data": [rule_json("too-many-total")],
+                "total": 0,
+                "page": 1,
+                "perPage": 1,
+            }),
+            field_or_relation: "data.len() > total",
+        },
+        Case {
+            name: "data is longer than perPage",
+            body: json!({
+                "data": [rule_json("too-many-per-page-a"), rule_json("too-many-per-page-b")],
+                "total": 2,
+                "page": 1,
+                "perPage": 1,
+            }),
+            field_or_relation: "data.len() > perPage",
+        },
+    ]);
+
+    for case in cases {
+        let err = rules::decode_find(&case.body).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Http, "{}: {err}", case.name);
+        assert!(
+            err.message.contains("rule _find") && err.message.contains(case.field_or_relation),
+            "{}: {err}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn find_envelope_accepts_unknown_fields() {
+    let body = json!({
+        "data": [],
+        "total": 0,
+        "page": 1,
+        "perPage": 1,
+        "a_new_server_field": {"is": "ignored"},
+    });
+
+    let (rules, total) = rules::decode_find(&body).unwrap();
+    assert!(rules.is_empty());
+    assert_eq!(total, 0);
+}
+
 /// `count` rules named `{prefix}-0` through `{prefix}-{count - 1}`. The slice
 /// data matches its total exactly.
 fn rules_of(prefix: &str, count: u64) -> Vec<serde_json::Value> {

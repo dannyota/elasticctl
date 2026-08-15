@@ -28,6 +28,94 @@ const CAPTURED_HEADERS: [&str; 3] = [
     "x-elastic-product",
 ];
 
+/// Parse a JSON response without letting serde_json coerce an out-of-range
+/// integer literal into an imprecise floating-point number.
+fn parse_response_json(text: &str) -> Result<Value> {
+    validate_json_integer_ranges(text)?;
+    serde_json::from_str(text)
+        .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
+}
+
+/// Reject integer lexemes that cannot be represented as `u64`. Numbers with a
+/// decimal point or exponent remain floating-point JSON values, even when
+/// their magnitude is greater than `u64::MAX`.
+fn validate_json_integer_ranges(text: &str) -> Result<()> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'"' {
+            index += 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\\' => index += 2,
+                    b'"' => {
+                        index += 1;
+                        break;
+                    }
+                    _ => index += 1,
+                }
+            }
+            continue;
+        }
+
+        if bytes[index] != b'-' && !bytes[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        if bytes[index] == b'-' {
+            index += 1;
+        }
+        if index == bytes.len() || !bytes[index].is_ascii_digit() {
+            index = start + 1;
+            continue;
+        }
+
+        if bytes[index] == b'0' {
+            index += 1;
+        } else {
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+
+        let mut is_integer = true;
+        if bytes.get(index) == Some(&b'.') {
+            is_integer = false;
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+        if matches!(bytes.get(index), Some(b'e' | b'E')) {
+            is_integer = false;
+            index += 1;
+            if matches!(bytes.get(index), Some(b'+' | b'-')) {
+                index += 1;
+            }
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+
+        if is_integer {
+            let number = &text[start..index];
+            if number.parse::<u64>().is_err() {
+                return Err(Error::new(
+                    ErrorKind::Http,
+                    format!(
+                        "parsing response JSON: integer {number} is outside unsigned 64-bit range"
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// A response body and its captured headers.
 ///
 /// Hosted and self-managed stacks return the same `/api/status` body. An
@@ -288,8 +376,7 @@ impl Transport {
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_str(&text)
-            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
+        parse_response_json(&text)
     }
 
     pub async fn get(&self, path: &str) -> Result<Value> {
@@ -318,8 +405,7 @@ impl Transport {
         let body = if text.trim().is_empty() {
             Value::Null
         } else {
-            serde_json::from_str(&text)
-                .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))?
+            parse_response_json(&text)?
         };
 
         Ok(Responded { body, headers })
@@ -386,8 +472,7 @@ impl Transport {
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_str(&text)
-            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
+        parse_response_json(&text)
     }
 
     /// POST and return the raw body for NDJSON endpoints.
@@ -423,7 +508,6 @@ impl Transport {
             .await?;
 
         let text = self.response_text(&method, &url, response).await?;
-        serde_json::from_str(&text)
-            .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
+        parse_response_json(&text)
     }
 }
