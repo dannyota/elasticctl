@@ -51,6 +51,14 @@ async fn server_with(rules: Vec<Value>) -> MockServer {
     let server = MockServer::start().await;
     let total = rules.len();
 
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+
     for rule in &rules {
         let id = rule["rule_id"].as_str().unwrap().to_string();
         Mock::given(method("GET"))

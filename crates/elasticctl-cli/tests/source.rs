@@ -28,6 +28,17 @@ fn find_body(rule: Value) -> Value {
     json!({"page": 1, "perPage": 10000, "total": 1, "data": [rule]})
 }
 
+async fn mount_capability_probe(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
 fn run(args: &[&std::ffi::OsStr]) -> std::process::Output {
     Command::cargo_bin("elasticctl")
         .unwrap()
@@ -40,6 +51,7 @@ fn run(args: &[&std::ffi::OsStr]) -> std::process::Output {
 #[tokio::test]
 async fn state_pull_defaults_to_the_custom_immutable_filter() {
     let server = MockServer::start().await;
+    mount_capability_probe(&server).await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
@@ -115,6 +127,7 @@ async fn state_pull_source_all_sends_no_source_filter() {
 #[tokio::test]
 async fn rules_list_source_prebuilt_sends_the_measured_kql() {
     let server = MockServer::start().await;
+    mount_capability_probe(&server).await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
@@ -152,6 +165,7 @@ async fn rules_list_source_prebuilt_sends_the_measured_kql() {
 #[tokio::test]
 async fn rules_export_source_customized_sends_the_measured_kql() {
     let server = MockServer::start().await;
+    mount_capability_probe(&server).await;
     let rule = remote_rule("customized", true);
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))

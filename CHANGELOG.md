@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.1 — 2026-08-15
+
+### Fixed
+
+- Transaction durability now opens staged files and pull journals with write
+  access before syncing them. Windows rejected the previous read-only handle
+  with `Access is denied`, which failed the transaction test job.
+- Exception-list, prebuilt-rule, and source-filtered rule routes now probe and
+  cache stack capabilities before their first request. Versions older than the
+  verified 9.5.1 floor return a typed `unsupported` error instead of a generic
+  route failure.
+- Elastic Cloud Hosted hostname fallback matching is now case-insensitive and
+  accepts a final DNS dot without matching lookalike domains.
+
+### Documented
+
+- Public state-diff and CLI tests now cover exception container and item drift,
+  list filters, offline validation, partial imports, skip-existing uploads, and
+  qualified delete failures.
+- All three deployment flavors now have 29 scrubbed fixtures. Their recorded
+  custom and prebuilt source filters prove the source partition at the 9.5.1
+  compatibility floor.
+
 ## 0.2.0 — 2026-08-14
 
 ### Breaking

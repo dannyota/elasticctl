@@ -26,6 +26,13 @@ async fn server_with(rules: Vec<serde_json::Value>) -> MockServer {
     let server = MockServer::start().await;
     let total = rules.len();
     Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "page": 1, "perPage": 100, "total": total, "data": rules
