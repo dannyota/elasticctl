@@ -1257,6 +1257,9 @@ Planned shape. 0.2 is fixed; the order after it is not:
 | `0.9` | Mutation through plan-and-confirm |
 | `1.0` | Everything stable |
 
+The 0.3 search capability area is specified in
+[`elasticctl-search-design.md`](elasticctl-search-design.md).
+
 The temporary trial-deployment window changes execution order, not capability
 boundaries. The near-term evidence ladder is:
 
