@@ -14,6 +14,11 @@
 - Windows now runs the full CLI package test suite, including raw export and
   report-file paths, in addition to the API transaction regressions.
 
+### Fixed
+
+- POSIX permission-mode tests now run only on Unix, so the full CLI suite also
+  compiles on Windows.
+
 ## 0.2.1 — 2026-08-15
 
 ### Fixed

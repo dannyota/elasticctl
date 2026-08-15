@@ -137,6 +137,7 @@ fn a_missing_config_file_reports_no_profiles_rather_than_crashing() {
     assert!(v.as_array().unwrap().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn config_init_writes_an_owner_only_file() {
     use std::os::unix::fs::PermissionsExt;

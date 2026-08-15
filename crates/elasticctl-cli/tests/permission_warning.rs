@@ -3,6 +3,8 @@
 //! envelope on stderr, matching errors so stderr remains parseable JSON;
 //! `doctor` includes the warning in its report instead.
 
+#![cfg(unix)]
+
 use assert_cmd::Command;
 use std::fs;
 
