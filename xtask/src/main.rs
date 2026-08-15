@@ -300,6 +300,44 @@ fn strip_volatile(v: &mut Value, fields: &[&str]) {
     }
 }
 
+/// Remove the per-run PIT token wherever a search exchange stores it.
+///
+/// The `_pit` open response carries the token as `id` and the `_search`
+/// request as `pit.id`; the `_search` response carries it as `pit_id`, which
+/// `DSL_VOLATILE_FIELDS` already drops. Strip the two named forms so a
+/// re-record of the same data is byte-identical (spec §8).
+fn strip_pit_token(v: &mut Value) {
+    let Some(map) = v.as_object_mut() else {
+        return;
+    };
+    map.remove("id");
+    if let Some(Value::Object(pit)) = map.get_mut("pit") {
+        pit.remove("id");
+    }
+}
+
+/// Data-view fields that name the deployment's real views. `scrub` handles
+/// operator identity, but these identify the project and must not leave the
+/// fixture. Only their values are redacted; the rest of the view keeps its
+/// shape so the fixture still proves the endpoint's structure.
+const DATA_VIEW_IDENTITY_FIELDS: &[&str] = &["id", "title", "name", "namespaces"];
+
+fn redact_data_views(v: &mut Value) {
+    let Some(views) = v.get_mut("data_view").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for view in views.iter_mut() {
+        let Some(map) = view.as_object_mut() else {
+            continue;
+        };
+        for field in DATA_VIEW_IDENTITY_FIELDS {
+            if let Some(value) = map.get_mut(*field) {
+                redact(value);
+            }
+        }
+    }
+}
+
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
 /// response as an opaque string, so parse and reserialize each line before
 /// applying the same redaction used for parsed bodies.
@@ -1151,11 +1189,12 @@ async fn record_search(
             &json!({}),
         )
         .await?;
-    strip_volatile(&mut pit_open, DSL_VOLATILE_FIELDS);
     let pit_id = pit_open["id"]
         .as_str()
         .ok_or_else(|| recording_error("pit open response is missing id"))?
         .to_string();
+    strip_volatile(&mut pit_open, DSL_VOLATILE_FIELDS);
+    strip_pit_token(&mut pit_open);
     recording.fixtures.push(exchange_fixture(
         "search_pit_open",
         flavor,
@@ -1164,7 +1203,7 @@ async fn record_search(
         pit_open,
     ));
 
-    let pit_page_request = json!({
+    let mut pit_page_request = json!({
         "size": 2,
         "sort": [{"seq": "asc"}, {"_shard_doc": "asc"}],
         "pit": {"id": pit_id, "keep_alive": "1m"},
@@ -1172,6 +1211,7 @@ async fn record_search(
     });
     let mut pit_page = t.post_absolute_es("/_search", &pit_page_request).await?;
     strip_volatile(&mut pit_page, DSL_VOLATILE_FIELDS);
+    strip_pit_token(&mut pit_page_request);
     recording.fixtures.push(exchange_fixture(
         "search_pit_page",
         flavor,
@@ -1191,11 +1231,13 @@ async fn record_search(
         None,
     ));
 
+    let mut data_views = t.get("/api/data_views").await?;
+    redact_data_views(&mut data_views);
     recording.fixtures.push(response_fixture(
         "data_views",
         flavor,
         version,
-        t.get("/api/data_views").await?,
+        data_views,
         None,
     ));
     recording.fixtures.push(response_fixture(
@@ -1997,6 +2039,64 @@ mod tests {
                 "keep": "me",
                 "hits": {"hits": [{"_source": {"seq": 1}}]},
                 "nested": [{"value": 3}]
+            })
+        );
+    }
+
+    #[test]
+    fn strip_pit_token_removes_the_token_from_open_response_and_page_request() {
+        let mut open = json!({"id": "opaque-token", "_shards": {"total": 1}});
+        strip_pit_token(&mut open);
+        assert_eq!(open, json!({"_shards": {"total": 1}}));
+
+        let mut request = json!({
+            "size": 2,
+            "sort": [{"seq": "asc"}, {"_shard_doc": "asc"}],
+            "pit": {"id": "opaque-token", "keep_alive": "1m"},
+            "query": {"match_all": {}}
+        });
+        strip_pit_token(&mut request);
+        assert_eq!(
+            request,
+            json!({
+                "size": 2,
+                "sort": [{"seq": "asc"}, {"_shard_doc": "asc"}],
+                "pit": {"keep_alive": "1m"},
+                "query": {"match_all": {}}
+            })
+        );
+    }
+
+    #[test]
+    fn redact_data_views_redacts_identity_but_keeps_configuration() {
+        let mut value = json!({
+            "data_view": [
+                {
+                    "id": "security-solution-alert-default",
+                    "title": ".alerts-security.alerts-default",
+                    "name": "Security solution alert default",
+                    "namespaces": ["default"],
+                    "allowNoIndex": false,
+                    "timeFieldName": "@timestamp"
+                }
+            ]
+        });
+
+        redact_data_views(&mut value);
+
+        assert_eq!(
+            value,
+            json!({
+                "data_view": [
+                    {
+                        "id": "REDACTED",
+                        "title": "REDACTED",
+                        "name": "REDACTED",
+                        "namespaces": ["REDACTED"],
+                        "allowNoIndex": false,
+                        "timeFieldName": "@timestamp"
+                    }
+                ]
             })
         );
     }
