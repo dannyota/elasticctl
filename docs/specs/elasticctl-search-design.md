@@ -69,7 +69,7 @@ Exactly one source names the index/alias/pattern list, in this order:
 Injection is language-specific:
 
 - **DSL** — the resolved pattern becomes the search path
-  (`POST /<pattern>/_search`), or the body's `_index` is replaced.
+  (`POST /<pattern>/_search`).
 - **ES|QL** — the query already begins with a source command (`FROM`, `ROW`,
   `SHOW`, `METRICS`); if it does not, `FROM <pattern>` is prepended. A query
   that already names a source is passed through untouched unless `--index` or
