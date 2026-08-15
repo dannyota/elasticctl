@@ -3,6 +3,8 @@
 //! Fixtures capture what Elastic sent. Hand-written mocks capture assumptions,
 //! which is where API bugs hide.
 
+mod conformance;
+
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
