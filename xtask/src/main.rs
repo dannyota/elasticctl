@@ -86,10 +86,79 @@ fn recording_hosts() -> Vec<String> {
     .collect()
 }
 
-fn url_authority_end(value: &str) -> usize {
-    value
-        .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_ascii_whitespace())
-        .unwrap_or(value.len())
+fn is_authority_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'[' | b']')
+}
+
+fn authority_token_end(bytes: &[u8], start: usize) -> usize {
+    let mut index = start;
+    let mut in_ipv6 = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'[' => in_ipv6 = true,
+            b']' if in_ipv6 => in_ipv6 = false,
+            byte if !in_ipv6
+                && (byte.is_ascii_whitespace()
+                    || matches!(
+                        byte,
+                        b'/' | b'?'
+                            | b'#'
+                            | b','
+                            | b';'
+                            | b'\''
+                            | b'"'
+                            | b'('
+                            | b')'
+                            | b'<'
+                            | b'>'
+                            | b'['
+                            | b']'
+                    )) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    index
+}
+
+fn replace_bounded_authority(value: &str, authority: &str) -> String {
+    if authority.is_empty() {
+        return value.to_string();
+    }
+
+    let bytes = value.as_bytes();
+    let authority = authority.as_bytes();
+    let mut scrubbed = String::with_capacity(value.len());
+    let mut copied_end = 0;
+    let mut index = 0;
+
+    while index + authority.len() <= bytes.len() {
+        let before_is_safe =
+            index == 0 || (!is_authority_char(bytes[index - 1]) && bytes[index - 1] != b'@');
+        let end = index + authority.len();
+        let after_is_safe = end == bytes.len() || !is_authority_char(bytes[end]);
+
+        if before_is_safe && after_is_safe && bytes[index..end].eq_ignore_ascii_case(authority) {
+            scrubbed.push_str(&value[copied_end..index]);
+            scrubbed.push_str("REDACTED.example.invalid");
+            copied_end = end;
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+
+    scrubbed.push_str(&value[copied_end..]);
+    scrubbed
+}
+
+fn default_port_host(authority: &str, default_port: u16) -> Option<&str> {
+    authority.rsplit_once(':').and_then(|(host, port)| {
+        (!host.is_empty() && port.parse::<u16>().ok() == Some(default_port)).then_some(host)
+    })
 }
 
 /// Remove userinfo from a URL authority without changing its path or query.
@@ -106,7 +175,7 @@ fn strip_url_userinfo(value: &str) -> String {
         scrubbed.push_str(&remaining[..authority_start]);
         remaining = &remaining[authority_start..];
 
-        let authority_end = url_authority_end(remaining);
+        let authority_end = authority_token_end(remaining.as_bytes(), 0);
         let (authority, tail) = remaining.split_at(authority_end);
         scrubbed.push_str(
             authority
@@ -139,20 +208,24 @@ fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> St
         scrubbed.push_str(&remaining[..authority_start]);
         remaining = &remaining[authority_start..];
 
-        let authority_end = url_authority_end(remaining);
+        let authority_end = authority_token_end(remaining.as_bytes(), 0);
         let (authority, tail) = remaining.split_at(authority_end);
-        let normalized_default = configured_authority
-            .rsplit_once(':')
-            .filter(|(hostname, port)| {
-                let port = port.parse::<u16>().ok();
-                !hostname.is_empty()
-                    && ((scheme.eq_ignore_ascii_case("https") && port == Some(443))
-                        || (scheme.eq_ignore_ascii_case("http") && port == Some(80)))
+        let default_port = if scheme.eq_ignore_ascii_case("https") {
+            Some(443)
+        } else if scheme.eq_ignore_ascii_case("http") {
+            Some(80)
+        } else {
+            None
+        };
+        let normalized_default = default_port.and_then(|port| {
+            default_port_host(configured_authority, port).map(|configured_host| {
+                authority.eq_ignore_ascii_case(configured_host)
+                    || default_port_host(authority, port)
+                        .is_some_and(|host| host.eq_ignore_ascii_case(configured_host))
             })
-            .map(|(hostname, _)| hostname);
+        });
 
-        if authority.eq_ignore_ascii_case(configured_authority)
-            || normalized_default.is_some_and(|host| authority.eq_ignore_ascii_case(host))
+        if authority.eq_ignore_ascii_case(configured_authority) || normalized_default == Some(true)
         {
             scrubbed.push_str("REDACTED.example.invalid");
         } else {
@@ -174,9 +247,7 @@ fn scrub_hosts(v: &mut Value, hosts: &[String]) {
         Value::String(s) => {
             *s = strip_url_userinfo(s);
             for h in hosts {
-                if s.contains(h.as_str()) {
-                    *s = s.replace(h.as_str(), "REDACTED.example.invalid");
-                }
+                *s = replace_bounded_authority(s, h);
                 *s = scrub_recording_authority_urls(s, h);
             }
         }
@@ -1381,7 +1452,7 @@ async fn seed() {
 }
 
 #[cfg(test)]
-mod tests {
+mod scrub_tests {
     use super::*;
 
     #[test]
@@ -1512,6 +1583,135 @@ mod tests {
 
         assert_eq!(value["note"], "contact ops@example.com before recording");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn scrub_hosts_handles_authority_boundaries() {
+    // This fails if a configured authority is matched case-sensitively,
+    // extends into an adjacent authority character, or does not recognize
+    // punctuation-delimited default-port URL authorities.
+    let cases = [
+        (
+            "comma-delimited HTTPS canonical default port",
+            "https://internal.example:443,",
+            "internal.example:443",
+            "https://REDACTED.example.invalid,",
+        ),
+        (
+            "comma-delimited HTTPS default port",
+            "https://internal.example:0443,",
+            "internal.example:443",
+            "https://REDACTED.example.invalid,",
+        ),
+        (
+            "semicolon-delimited HTTP canonical default port",
+            "http://internal.example:80;",
+            "internal.example:80",
+            "http://REDACTED.example.invalid;",
+        ),
+        (
+            "semicolon-delimited HTTP default port",
+            "http://internal.example:0080;",
+            "internal.example:80",
+            "http://REDACTED.example.invalid;",
+        ),
+        (
+            "single-quoted authority",
+            "'https://cluster.example:9243/app'",
+            "cluster.example:9243",
+            "'https://REDACTED.example.invalid/app'",
+        ),
+        (
+            "double-quoted authority",
+            "\"https://cluster.example:9243/app\"",
+            "cluster.example:9243",
+            "\"https://REDACTED.example.invalid/app\"",
+        ),
+        (
+            "parenthesized authority",
+            "(https://cluster.example:9243/app)",
+            "cluster.example:9243",
+            "(https://REDACTED.example.invalid/app)",
+        ),
+        (
+            "angle-bracketed authority",
+            "<https://cluster.example:9243/app>",
+            "cluster.example:9243",
+            "<https://REDACTED.example.invalid/app>",
+        ),
+        (
+            "square-bracketed authority",
+            "[https://cluster.example:9243/app]",
+            "cluster.example:9243",
+            "[https://REDACTED.example.invalid/app]",
+        ),
+        (
+            "whitespace-separated authorities",
+            "https://cluster.example:9243 https://cluster.example:9243/b",
+            "cluster.example:9243",
+            "https://REDACTED.example.invalid https://REDACTED.example.invalid/b",
+        ),
+        (
+            "mixed-case authority",
+            "https://CLUSTER.ExAmPlE:9243/app",
+            "cluster.example:9243",
+            "https://REDACTED.example.invalid/app",
+        ),
+        (
+            "userinfo authority",
+            "https://alice:secret@cluster.example:9243/app",
+            "cluster.example:9243",
+            "https://REDACTED.example.invalid/app",
+        ),
+        (
+            "bracketed IPv6 authority",
+            "https://[2001:DB8::1]:0443/app",
+            "[2001:db8::1]:443",
+            "https://REDACTED.example.invalid/app",
+        ),
+        (
+            "exact authority in plain text",
+            "Connect to CLUSTER.example:9243 now",
+            "cluster.example:9243",
+            "Connect to REDACTED.example.invalid now",
+        ),
+        (
+            "longer hostname remains visible",
+            "https://cluster.example:9243.evil/app",
+            "cluster.example:9243",
+            "https://cluster.example:9243.evil/app",
+        ),
+        (
+            "prefixed hostname remains visible",
+            "https://evilcluster.example:9243/app",
+            "cluster.example:9243",
+            "https://evilcluster.example:9243/app",
+        ),
+        (
+            "bare nondefault host remains visible",
+            "https://cluster.example/app",
+            "cluster.example:9243",
+            "https://cluster.example/app",
+        ),
+        (
+            "plain at-sign text remains visible",
+            "contact ops@example.com before recording",
+            "example.com",
+            "contact ops@example.com before recording",
+        ),
+    ];
+
+    for (name, input, host, expected) in cases {
+        let mut value = json!(input);
+        scrub_hosts(&mut value, &[host.to_string()]);
+        assert_eq!(value, json!(expected), "{name}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[test]
     fn ndjson_scrub_redacts_identity_and_recording_hosts() {
