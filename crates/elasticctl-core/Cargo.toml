@@ -12,6 +12,7 @@ repository.workspace = true
 base64 = "0.23.1"
 directories = "6.0.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "multipart"] }
+semver.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json.workspace = true
 thiserror = "2.0.20"

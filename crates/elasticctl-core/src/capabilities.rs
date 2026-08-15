@@ -4,6 +4,7 @@
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::transport::Transport;
+use semver::Version;
 use serde_json::Value;
 
 /// Hostname suffixes used by Elastic Cloud Hosted deployments.
@@ -46,6 +47,25 @@ pub enum Flavor {
     SelfManaged,
     ElasticCloudHosted,
     Serverless,
+}
+
+/// Public feature areas whose availability depends on the measured stack
+/// contract rather than on the existence of one object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    ExceptionLists,
+    PrebuiltRules,
+    RuleSourceScoping,
+}
+
+impl Feature {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExceptionLists => "exception lists",
+            Self::PrebuiltRules => "prebuilt rules",
+            Self::RuleSourceScoping => "rule source scoping",
+        }
+    }
 }
 
 impl Flavor {
@@ -119,6 +139,26 @@ impl Capabilities {
             format!(
                 "{feature} is not available on {} deployments",
                 self.flavor.as_str()
+            ),
+        ))
+    }
+
+    /// Require a feature only on stack versions for which this client has
+    /// complete fixture evidence.
+    pub fn require_feature(&self, feature: Feature) -> Result<()> {
+        let floor = Version::new(9, 5, 1);
+        let supported = Version::parse(&self.version).is_ok_and(|version| version >= floor);
+        if supported {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "{} is not verified on {} {}; elasticctl requires Kibana {} or newer for this feature",
+                feature.label(),
+                self.flavor.as_str(),
+                self.version,
+                floor
             ),
         ))
     }

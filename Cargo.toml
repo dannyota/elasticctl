@@ -26,6 +26,7 @@ elasticctl-api-test-support = { path = "crates/elasticctl-api/tests/support" }
 # Declare this once so every crate uses the same map semantics. Insertion order
 # drives table and CSV columns; alphabetical order would change field order.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
+semver = "1.0.28"
 
 # Profile used by `dist`.
 [profile.dist]

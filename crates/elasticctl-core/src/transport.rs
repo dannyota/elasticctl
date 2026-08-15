@@ -2,6 +2,7 @@
 //! classification.
 
 use crate::auth::Credential;
+use crate::capabilities::{Capabilities, Feature};
 use crate::config::Profile;
 use crate::error::{Error, ErrorKind, Result};
 use reqwest::{Client, Method, Response, StatusCode};
@@ -9,6 +10,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 /// Version of the public API this client targets.
 const API_VERSION: &str = "2023-10-31";
@@ -172,6 +174,7 @@ pub struct Transport {
     space: String,
     auth_header: String,
     debug: bool,
+    capabilities: OnceCell<Capabilities>,
 }
 
 impl Transport {
@@ -207,6 +210,7 @@ impl Transport {
             space: profile.space.clone(),
             auth_header: credential.header_value(),
             debug,
+            capabilities: OnceCell::new(),
         })
     }
 
@@ -267,6 +271,18 @@ impl Transport {
     /// The Kibana URL this transport targets, exactly as configured.
     pub fn kibana_url(&self) -> &str {
         &self.kibana_url
+    }
+
+    /// Probe deployment capabilities once for this transport.
+    pub async fn capabilities(&self) -> Result<&Capabilities> {
+        self.capabilities
+            .get_or_try_init(|| Capabilities::probe(self, self.kibana_url()))
+            .await
+    }
+
+    /// Refuse an unverified feature before its public route is called.
+    pub async fn require_feature(&self, feature: Feature) -> Result<()> {
+        self.capabilities().await?.require_feature(feature)
     }
 
     fn url(&self, path: &str) -> String {

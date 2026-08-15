@@ -16,7 +16,6 @@ pub struct Context {
     pub resolved: Resolved,
     pub global: GlobalArgs,
     transport: OnceCell<Transport>,
-    caps: OnceCell<Capabilities>,
 }
 
 impl Context {
@@ -40,7 +39,6 @@ impl Context {
             resolved,
             global: global.clone(),
             transport: OnceCell::new(),
-            caps: OnceCell::new(),
         })
     }
 
@@ -59,11 +57,7 @@ impl Context {
     /// avoid the request.
     pub async fn capabilities(&self) -> Result<&Capabilities> {
         let transport = self.transport().await?;
-        self.caps
-            .get_or_try_init(|| async {
-                Capabilities::probe(transport, &self.resolved.profile.kibana_url).await
-            })
-            .await
+        transport.capabilities().await
     }
 
     /// Fail early when the selected profile has no credential.
@@ -115,7 +109,6 @@ mod tests {
             },
             global: GlobalArgs::default(),
             transport: OnceCell::new(),
-            caps: OnceCell::new(),
         }
     }
 

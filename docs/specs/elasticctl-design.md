@@ -143,10 +143,14 @@ Does not know about detection rules.
   `capabilities` below. They are carried, never logged: `--debug` still prints
   no header because headers carry credentials.
 - **`capabilities`** — one probe at connect time reading `GET /api/status`.
-  Yields `Capabilities { flavor, version }`. Commands that call this probe
-  return a typed `Unsupported` error naming the flavor instead of a confusing
-  404. Other feature routes preserve the server's classified error in 0.2;
-  their typed capability handling is deferred to 0.2.1.
+  Yields `Capabilities { flavor, version }` and is cached once per transport.
+  Exception-list, prebuilt-rule, and rule-source routes require the feature's
+  verified version before their first request. In 0.2.1 all three floors are
+  9.5.1, the oldest version with complete fixtures; an older or unreadable
+  version returns a typed `Unsupported` error naming the feature, flavor,
+  reported version, and floor instead of the server's generic 404. An
+  all-rules query does not gain a source-scoping requirement, and local-only
+  validate or dry-run work does not pay for the probe.
   Flavor is decided in this order, and the order is load-bearing:
 
   1. `version.build_flavor == "serverless"` → Serverless.

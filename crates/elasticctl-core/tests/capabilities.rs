@@ -1,4 +1,4 @@
-use elasticctl_core::{Capabilities, ErrorKind, Flavor, Profile, Transport};
+use elasticctl_core::{Capabilities, ErrorKind, Feature, Flavor, Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -233,6 +233,81 @@ fn require_passes_when_the_feature_is_supported() {
         version: "9.5.1".into(),
     };
     assert!(caps.require("anything", true).is_ok());
+}
+
+#[test]
+fn verified_features_reject_a_stack_below_9_5_1() {
+    let caps = Capabilities {
+        flavor: Flavor::SelfManaged,
+        version: "9.5.0".into(),
+    };
+
+    let error = caps.require_feature(Feature::ExceptionLists).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        error.message.contains("exception lists"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("self-managed 9.5.0"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("9.5.1"), "{}", error.message);
+}
+
+#[test]
+fn verified_features_accept_9_5_1_and_newer() {
+    for version in ["9.5.1", "9.6.0", "10.0.0"] {
+        let caps = Capabilities {
+            flavor: Flavor::Serverless,
+            version: version.into(),
+        };
+        for feature in [
+            Feature::ExceptionLists,
+            Feature::PrebuiltRules,
+            Feature::RuleSourceScoping,
+        ] {
+            caps.require_feature(feature).unwrap();
+        }
+    }
+}
+
+#[test]
+fn an_unreadable_feature_version_is_unsupported() {
+    let caps = Capabilities {
+        flavor: Flavor::ElasticCloudHosted,
+        version: "unknown".into(),
+    };
+
+    let error = caps.require_feature(Feature::PrebuiltRules).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        error.message.contains("elastic-cloud-hosted unknown"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn transport_caches_one_status_probe() {
+    let server = server_reporting("traditional", "9.5.1").await;
+    let transport = Transport::new(&profile_for(&server.uri())).unwrap();
+
+    transport.capabilities().await.unwrap();
+    transport.capabilities().await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/status")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
