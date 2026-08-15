@@ -189,6 +189,44 @@ async fn out_of_range_json_integer_is_a_transport_http_parse_error() {
 }
 
 #[tokio::test]
+async fn signed_json_integers_remain_valid_transport_responses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/signed-integers"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"offset\":-1,\"zero\":-0}"))
+        .mount(&server)
+        .await;
+
+    let body = Transport::new(&profile_for(&server))
+        .unwrap()
+        .get("/api/signed-integers")
+        .await
+        .unwrap();
+    assert_eq!(body["offset"].as_i64(), Some(-1));
+    assert_eq!(body["zero"].as_f64(), Some(-0.0));
+}
+
+#[tokio::test]
+async fn integer_below_i64_min_is_a_transport_http_parse_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/underflow"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("{\"offset\":-9223372036854775809}"),
+        )
+        .mount(&server)
+        .await;
+
+    let err = Transport::new(&profile_for(&server))
+        .unwrap()
+        .get("/api/underflow")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http, "{err}");
+    assert!(err.message.contains("parsing response JSON"), "{err}");
+}
+
+#[tokio::test]
 async fn a_large_json_float_remains_a_valid_transport_response() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -36,9 +36,10 @@ fn parse_response_json(text: &str) -> Result<Value> {
         .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
 }
 
-/// Reject integer lexemes that cannot be represented as `u64`. Numbers with a
-/// decimal point or exponent remain floating-point JSON values, even when
-/// their magnitude is greater than `u64::MAX`.
+/// Reject positive integer lexemes above `u64::MAX` and negative integer
+/// lexemes below `i64::MIN`. Numbers with a decimal point or exponent remain
+/// floating-point JSON values, even when their magnitude is greater than
+/// `u64::MAX`.
 fn validate_json_integer_ranges(text: &str) -> Result<()> {
     let bytes = text.as_bytes();
     let mut index = 0;
@@ -102,11 +103,16 @@ fn validate_json_integer_ranges(text: &str) -> Result<()> {
 
         if is_integer {
             let number = &text[start..index];
-            if number.parse::<u64>().is_err() {
+            let in_range = if bytes[start] == b'-' {
+                number.parse::<i64>().is_ok()
+            } else {
+                number.parse::<u64>().is_ok()
+            };
+            if !in_range {
                 return Err(Error::new(
                     ErrorKind::Http,
                     format!(
-                        "parsing response JSON: integer {number} is outside unsigned 64-bit range"
+                        "parsing response JSON: integer {number} is outside supported integer range"
                     ),
                 ));
             }
