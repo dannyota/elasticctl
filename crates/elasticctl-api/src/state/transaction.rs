@@ -152,12 +152,26 @@ fn acquire_pull_from(requested: &Path, current_dir: &Path) -> Result<PullLock> {
 }
 
 fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    if is_windows_drive_relative(requested) {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "drive-relative mirror path {} is ambiguous; use an absolute drive path",
+                requested.display()
+            ),
+        ));
+    }
+
     let absolute = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
         current_dir.join(requested)
     };
-    if absolute.exists() {
+    let exists = absolute
+        .try_exists()
+        .map_err(|error| filesystem_error("checking mirror path", &absolute, error))?;
+    if exists {
         let resolved = fs::canonicalize(&absolute)
             .map_err(|error| filesystem_error("resolving mirror path", &absolute, error))?;
         if resolved.file_name().is_none() {
@@ -174,6 +188,11 @@ fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> 
     let resolved_parent = fs::canonicalize(parent)
         .map_err(|error| filesystem_error("resolving mirror parent", parent, error))?;
     Ok(resolved_parent.join(name))
+}
+
+#[cfg(windows)]
+fn is_windows_drive_relative(path: &Path) -> bool {
+    matches!(path.components().next(), Some(Component::Prefix(_))) && !path.has_root()
 }
 
 fn filesystem_root_error(requested: &Path) -> Error {
@@ -954,6 +973,27 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Conflict);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pull_lock_rejects_a_symlink_loop_before_creating_a_sibling_lock() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let requested = dir.path().join("loop");
+        let lock_path = dir.path().join(".loop.elasticctl-pull.lock");
+        symlink("loop", &requested).unwrap();
+
+        let error = pull_lock_error(&requested, dir.path());
+
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(
+            error.message.contains("checking mirror path"),
+            "{}",
+            error.message
+        );
+        assert!(!lock_path.exists());
+    }
+
     #[test]
     fn pull_lock_requires_an_existing_immediate_parent() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,6 +1043,23 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pull_lock_rejects_a_drive_relative_path_before_creating_a_sibling_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let requested = Path::new(r"C:mirror");
+
+        let error = pull_lock_error(requested, dir.path());
+
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(
+            error.message.contains("drive-relative mirror path"),
+            "{}",
+            error.message
+        );
+        assert!(!dir.path().join(".mirror.elasticctl-pull.lock").exists());
     }
 
     #[derive(Debug, Eq, PartialEq)]
