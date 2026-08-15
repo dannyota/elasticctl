@@ -152,8 +152,20 @@ async fn run_async_polls_until_complete() {
         )
         .mount(&server)
         .await;
-    // Terminal poll: `is_running: false` with the result. Mounted first, so it
-    // is lower priority than the running mock above it.
+    // First poll: still running, served exactly once. Mounted before the
+    // terminal mock, so at equal priority wiremock matches it first (FIFO);
+    // `up_to_n_times(1)` exhausts it and the second poll falls through to the
+    // terminal mock. A runner with no loop would decode this body (no
+    // `columns`/`values`) and fail.
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // Terminal poll: `is_running: false` with the result.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -161,16 +173,6 @@ async fn run_async_polls_until_complete() {
             "columns": [{"name": "seq", "type": "long"}],
             "values": [[1], [2]]
         })))
-        .mount(&server)
-        .await;
-    // First poll: still running, served exactly once. A runner with no loop
-    // would decode this body (no `columns`/`values`) and fail.
-    Mock::given(method("GET"))
-        .and(path("/_query/async/a1"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
-        )
-        .up_to_n_times(1)
         .mount(&server)
         .await;
     Mock::given(method("DELETE"))
