@@ -1,4 +1,4 @@
-use elasticctl_api::search::{dataview, dsl, esql};
+use elasticctl_api::search::{dataview, dsl, esql, rewrite_from};
 use elasticctl_core::Transport;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -213,4 +213,24 @@ fn rejects_an_ambiguous_data_view_name() {
         ]
     });
     assert!(dataview::resolve_title(&body, "Dup").is_err());
+}
+
+#[test]
+fn rewrite_from_replaces_a_leading_from_source() {
+    assert_eq!(
+        rewrite_from("FROM logs-* | LIMIT 10", "new-index"),
+        "FROM new-index | LIMIT 10"
+    );
+    assert_eq!(rewrite_from("from logs-*", "new-index"), "FROM new-index");
+    assert_eq!(
+        rewrite_from("  FROM a, b | WHERE x", "new-index"),
+        "  FROM new-index | WHERE x"
+    );
+}
+
+#[test]
+fn rewrite_from_passes_through_queries_without_a_from_clause() {
+    assert_eq!(rewrite_from("ROW a = 1", "new-index"), "ROW a = 1");
+    assert_eq!(rewrite_from("SHOW INFO", "new-index"), "SHOW INFO");
+    assert_eq!(rewrite_from("METRICS idx", "new-index"), "METRICS idx");
 }

@@ -353,10 +353,10 @@ pub enum SearchAction {
         /// The ES|QL query text
         query: String,
         /// Resolve a Kibana data view to an index pattern
-        #[arg(long)]
+        #[arg(long, conflicts_with = "index")]
         data_view: Option<String>,
         /// Explicit index or alias, overrides the query's own source
-        #[arg(long)]
+        #[arg(long, conflicts_with = "data_view")]
         index: Option<String>,
         /// Cap the number of result rows
         #[arg(long)]
@@ -367,10 +367,10 @@ pub enum SearchAction {
         /// JSON body or @path
         body: String,
         /// Resolve a Kibana data view to an index pattern
-        #[arg(long)]
+        #[arg(long, conflicts_with = "index")]
         data_view: Option<String>,
         /// Explicit index or alias
-        #[arg(long)]
+        #[arg(long, conflicts_with = "data_view")]
         index: Option<String>,
         /// Cap the number of result rows
         #[arg(long)]

@@ -32,12 +32,40 @@ pub fn prepend_from(query: &str, pattern: &str) -> String {
     }
 }
 
+/// Rewrite an ES|QL query's source to `pattern`, used when `--index` or
+/// `--data-view` is given. A leading `FROM <source>` becomes `FROM <pattern>`
+/// with any `| …` pipeline kept; `ROW`/`SHOW`/`METRICS` pass through untouched;
+/// a query with no source command gets `FROM <pattern>` prepended.
+pub fn rewrite_from(query: &str, pattern: &str) -> String {
+    let trimmed = query.trim_start();
+    let leading = &query[..query.len() - trimmed.len()];
+    let word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let word = &trimmed[..word_end];
+    if word.eq_ignore_ascii_case("from") {
+        let after = &trimmed[word_end..];
+        let source_end = after.find('|').unwrap_or(after.len());
+        let pipeline = &after[source_end..];
+        if pipeline.is_empty() {
+            format!("{leading}FROM {pattern}")
+        } else {
+            format!("{leading}FROM {pattern} {pipeline}")
+        }
+    } else if word.eq_ignore_ascii_case("row")
+        || word.eq_ignore_ascii_case("show")
+        || word.eq_ignore_ascii_case("metrics")
+    {
+        query.to_string()
+    } else {
+        format!("FROM {pattern} {query}")
+    }
+}
+
 /// Resolve an ES|QL query's source: `--index` wins, then `--data-view`, then
 /// the query's own source, then the space's default alerts index.
 pub async fn resolve_esql_query(t: &Transport, query: &str, req: &SearchRequest) -> Result<String> {
     match (&req.index, &req.data_view) {
-        (Some(i), _) => Ok(prepend_from(query, i)),
-        (_, Some(dv)) => Ok(prepend_from(query, &dataview::resolve(t, dv).await?)),
+        (Some(i), _) => Ok(rewrite_from(query, i)),
+        (_, Some(dv)) => Ok(rewrite_from(query, &dataview::resolve(t, dv).await?)),
         _ => {
             if has_source(query) {
                 Ok(query.to_string())

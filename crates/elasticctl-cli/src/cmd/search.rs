@@ -59,7 +59,17 @@ pub async fn esql(
         esql::run_sync(t, &resolved).await?
     };
     let mut rows = esql_rows(&resp);
-    truncate(&mut rows, limit);
+    if ctx.global.out.is_some() {
+        // A bulk export is uncapped unless the operator set --limit.
+        truncate(&mut rows, limit);
+    } else {
+        // A peek defaults to 100 rows and reports the client-side cap.
+        let cap = limit.unwrap_or(100);
+        if rows.as_array().is_some_and(|items| items.len() > cap) {
+            truncate(&mut rows, Some(cap));
+            eprintln!("capped at {cap} rows");
+        }
+    }
     Ok(rows)
 }
 
@@ -101,7 +111,12 @@ pub async fn dsl(
     } else {
         let page = dsl::run_sync(t, &resolved_index, &body).await?;
         let mut rows = Value::Array(page.hits.into_iter().map(|h| h.source).collect());
-        truncate(&mut rows, limit);
+        // A peek defaults to 100 rows and reports the client-side cap.
+        let cap = limit.unwrap_or(100);
+        if rows.as_array().is_some_and(|items| items.len() > cap) {
+            truncate(&mut rows, Some(cap));
+            eprintln!("capped at {cap} rows");
+        }
         Ok(rows)
     }
 }

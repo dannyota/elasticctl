@@ -10,7 +10,7 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    Cli, Command, ConfigAction, ExceptionsAction, GlobalArgs, PrebuiltAction, RulesAction,
+    Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction, RulesAction,
     SearchAction, SourceArg, StateAction,
 };
 use context::Context;
@@ -370,13 +370,21 @@ async fn main() {
                     action: ExceptionsAction::Export { .. }
                 }
             ) && args.global.out.is_some();
-            let render_global = if out_already_written {
-                GlobalArgs {
-                    out: None,
-                    ..args.global.clone()
+            let render_global = {
+                let mut g = args.global.clone();
+                if out_already_written {
+                    g.out = None;
                 }
-            } else {
-                args.global.clone()
+                // `search --out` writes NDJSON (JSONL) by default; `--format`
+                // or `--json` still override it.
+                if matches!(&args.command, Command::Search { .. })
+                    && args.global.out.is_some()
+                    && args.global.format.is_none()
+                    && !args.global.json
+                {
+                    g.format = Some(Format::Jsonl);
+                }
+                g
             };
 
             match render::emit(&value, &render_global) {
