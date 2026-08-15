@@ -500,11 +500,8 @@ pub async fn apply_import(t: &Transport, ndjson: &str, overwrite: bool) -> Resul
     let response = rules::import(t, ndjson, overwrite).await?;
 
     // Normalize Kibana's response to the bulk-action shape so partial imports
-    // use the existing exit-code rule.
-    let succeeded = response.get("success_count").cloned().unwrap_or(json!(0));
-    let failed = response.get("errors").cloned().unwrap_or_else(|| json!([]));
-
-    Ok(ImportReport { succeeded, failed })
+    // use the existing exit-code rule, refusing a malformed success body.
+    crate::ops::decode_import_report(&response, "rules")
 }
 
 /// Retry once only when the first search finds no hits.

@@ -916,9 +916,7 @@ pub async fn apply_import_op(t: &Transport, ndjson: &str, overwrite: bool) -> Re
     }
 
     let response = import_lists(t, ndjson, overwrite).await?;
-    let succeeded = response.get("success_count").cloned().unwrap_or(json!(0));
-    let failed = response.get("errors").cloned().unwrap_or_else(|| json!([]));
-    Ok(ImportReport { succeeded, failed })
+    crate::ops::decode_import_report(&response, "exceptions")
 }
 
 #[cfg(test)]

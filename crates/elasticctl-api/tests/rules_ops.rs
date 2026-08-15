@@ -3,7 +3,10 @@
 use elasticctl_api::model::Rule;
 use elasticctl_api::{codec, rules_ops};
 use elasticctl_api_test_support::MockStack;
+use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn mock_stack_with_one_rule() -> MockStack {
     MockStack::with_rules(vec![json!({
@@ -75,6 +78,37 @@ async fn plan_import_sends_no_write_request_and_names_skips() {
         stack.write_requests().await.is_empty(),
         "planning must issue no write request"
     );
+}
+
+/// A success body missing its required counters must not read as "nothing
+/// succeeded": that would silently drop a partial upload.
+#[tokio::test]
+async fn malformed_import_response_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true
+        })))
+        .mount(&server)
+        .await;
+
+    let transport = Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .unwrap();
+
+    let err = rules_ops::apply_import(&transport, "{\"rule_id\":\"a\"}\n", false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
 }
 
 /// An import whose rules all already exist must not upload anything. The

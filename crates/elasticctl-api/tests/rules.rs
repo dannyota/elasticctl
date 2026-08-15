@@ -980,6 +980,37 @@ async fn bulk_with_no_targets_makes_no_request() {
     );
 }
 
+#[test]
+fn bulk_outcome_rejects_malformed_success_bodies() {
+    for body in [
+        json!({}),
+        json!({"attributes":{"summary":{"succeeded":1}}}),
+        json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":"1"}}}),
+        json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":2}}}),
+    ] {
+        let error = rules::decode_bulk_outcome(&body).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn bulk_by_rule_ids_rejects_a_malformed_success_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/_bulk_action"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "attributes": {"summary": {"succeeded": 1, "failed": 0, "skipped": 0, "total": 2}}
+        })))
+        .mount(&server)
+        .await;
+
+    let ids = vec!["a".to_string()];
+    let err = rules::bulk_by_rule_ids(&transport(&server), BulkAction::Delete, &ids, false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
+}
+
 #[tokio::test]
 async fn export_separates_rules_from_the_trailer() {
     let server = MockServer::start().await;

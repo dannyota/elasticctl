@@ -813,6 +813,26 @@ async fn import_lists_posts_to_the_import_route() {
     assert_eq!(out["success"], true);
 }
 
+/// A success body missing its required counters must not read as "nothing
+/// succeeded": that would silently drop a partial upload.
+#[tokio::test]
+async fn malformed_import_response_is_rejected() {
+    let server = verified_server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/exception_lists/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true
+        })))
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+
+    let err = exceptions::apply_import_op(&t, "{\"list_id\":\"l0\"}", false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
+}
+
 /// `--skip-existing` drops an existing container and every item inside it, and
 /// keeps a new container and its items. Spec 4.4: the dry run is honest about
 /// what would be created and what would be skipped.

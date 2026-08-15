@@ -467,6 +467,56 @@ pub struct BulkOutcome {
     pub total: u64,
 }
 
+/// Decode a `_bulk_action` response summary, refusing a malformed success body.
+///
+/// A missing or mistyped counter, or a total that contradicts the per-outcome
+/// counters, must fail rather than read as "nothing happened".
+pub fn decode_bulk_outcome(body: &Value) -> Result<BulkOutcome> {
+    let map = body
+        .as_object()
+        .ok_or_else(|| bulk_error("response", "must be a JSON object"))?;
+    let summary = map
+        .get("attributes")
+        .and_then(|attributes| attributes.get("summary"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| bulk_error("attributes.summary", "must be an object"))?;
+    let succeeded = bulk_u64(summary, "succeeded")?;
+    let failed = bulk_u64(summary, "failed")?;
+    let skipped = bulk_u64(summary, "skipped")?;
+    let total = bulk_u64(summary, "total")?;
+    let applied = succeeded
+        .checked_add(failed)
+        .and_then(|count| count.checked_add(skipped))
+        .ok_or_else(|| bulk_error("total", "counter sum overflows u64"))?;
+    if applied != total {
+        return Err(bulk_error(
+            "total",
+            format!(
+                "{total} does not equal succeeded {succeeded} + failed {failed} + skipped {skipped}"
+            ),
+        ));
+    }
+    Ok(BulkOutcome {
+        succeeded,
+        failed,
+        skipped,
+        total,
+    })
+}
+
+fn bulk_error(field: &str, detail: impl std::fmt::Display) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("decoding rule _bulk_action response field {field}: {detail}"),
+    )
+}
+
+fn bulk_u64(map: &serde_json::Map<String, Value>, field: &str) -> Result<u64> {
+    map.get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bulk_error(field, "must be an unsigned integer"))
+}
+
 pub async fn bulk_by_rule_ids(
     t: &Transport,
     action: BulkAction,
@@ -486,13 +536,7 @@ pub async fn bulk_by_rule_ids(
     let body = json!({ "action": action.as_str(), "query": rule_id_query(rule_ids) });
 
     let response = t.post(&path, Some(&body)).await?;
-    let s = &response["attributes"]["summary"];
-    Ok(BulkOutcome {
-        succeeded: s["succeeded"].as_u64().unwrap_or(0),
-        failed: s["failed"].as_u64().unwrap_or(0),
-        skipped: s["skipped"].as_u64().unwrap_or(0),
-        total: s["total"].as_u64().unwrap_or(0),
-    })
+    decode_bulk_outcome(&response)
 }
 
 /// Export every rule, or exactly the named ones.
