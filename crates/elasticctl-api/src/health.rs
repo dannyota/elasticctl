@@ -8,8 +8,9 @@
 
 use crate::rules::{self, RuleFilter};
 use elasticctl_core::capabilities::{probe_license_tier, probe_spaces};
-use elasticctl_core::{Capabilities, Result, Transport};
+use elasticctl_core::{Capabilities, Error, ErrorKind, Result, Transport};
 use serde::Serialize;
+use serde_json::Value;
 
 /// The outcome of one `doctor` check.
 ///
@@ -122,12 +123,33 @@ fn short_identity(value: &str) -> String {
 /// Reads the username and authentication realm from Elasticsearch.
 async fn identity(t: &Transport) -> Result<(String, String)> {
     let body = t.get_absolute_es("/_security/_authenticate").await?;
-    let username = body["username"].as_str().unwrap_or("unknown").to_string();
-    let realm = body["authentication_realm"]["type"]
-        .as_str()
-        .unwrap_or("unknown")
+    decode_identity(&body)
+}
+
+/// Decode an `_authenticate` response, refusing a malformed success body.
+///
+/// A missing or mistyped `username` or `authentication_realm.type` must fail
+/// the auth check rather than read as an "unknown" realm.
+fn decode_identity(body: &Value) -> Result<(String, String)> {
+    let username = body
+        .get("username")
+        .and_then(Value::as_str)
+        .ok_or_else(|| identity_error("username", "must be a string"))?
+        .to_string();
+    let realm = body
+        .get("authentication_realm")
+        .and_then(|realm| realm.get("type"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| identity_error("authentication_realm.type", "must be a string"))?
         .to_string();
     Ok((username, realm))
+}
+
+fn identity_error(field: &str, detail: impl std::fmt::Display) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("decoding identity response field {field}: {detail}"),
+    )
 }
 
 /// The value-list data streams (`/api/lists/index`) bootstrapping check.
@@ -272,9 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn key_scope_check_names_the_unknown_realm_from_a_parse_failure() {
-        // `identity()` returns "unknown" for an unexpected response. Do not
-        // report that as an API key.
+    fn key_scope_check_names_an_unclassifiable_realm() {
+        // A realm string that is neither API-key type is reported by name, not
+        // claimed as an API key.
         let c = key_scope_check("unknown");
         assert_eq!(c.status, Status::Ok);
         assert!(c.detail.contains("unknown"));

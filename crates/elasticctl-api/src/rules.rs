@@ -697,27 +697,52 @@ pub async fn preview_hits(
         .post_absolute_es(&format!("/{index}/_search?ignore_unavailable=true"), &body)
         .await?;
 
-    Ok(decode_preview_hits(&response))
+    decode_preview_hits_checked(&response)
 }
 
-/// Decode a preview-hits response. Fixtures use this same path offline.
-pub fn decode_preview_hits(response: &Value) -> PreviewHits {
-    let total = response["hits"]["total"]["value"].as_u64().unwrap_or(0);
-    let sample = response["hits"]["hits"]
-        .as_array()
-        .map(|hits| {
-            hits.iter()
-                .map(|h| {
-                    json!({
-                        "_id": h.get("_id").cloned().unwrap_or(Value::Null),
-                        "_source": h.get("_source").cloned().unwrap_or(Value::Null),
-                    })
-                })
-                .collect()
+/// Decode a preview-hits response, refusing a malformed success body.
+pub fn decode_preview_hits_checked(response: &Value) -> Result<PreviewHits> {
+    let map = response
+        .as_object()
+        .ok_or_else(|| preview_error("response", "must be a JSON object"))?;
+    let hits = map
+        .get("hits")
+        .and_then(Value::as_object)
+        .ok_or_else(|| preview_error("hits", "must be an object"))?;
+    let total = hits
+        .get("total")
+        .and_then(|total| total.get("value"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| preview_error("hits.total.value", "must be an unsigned integer"))?;
+    let sample = hits
+        .get("hits")
+        .and_then(Value::as_array)
+        .ok_or_else(|| preview_error("hits.hits", "must be an array"))?
+        .iter()
+        .map(|h| {
+            json!({
+                "_id": h.get("_id").cloned().unwrap_or(Value::Null),
+                "_source": h.get("_source").cloned().unwrap_or(Value::Null),
+            })
         })
-        .unwrap_or_default();
+        .collect();
 
-    PreviewHits { total, sample }
+    Ok(PreviewHits { total, sample })
+}
+
+fn preview_error(field: &str, detail: impl std::fmt::Display) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("decoding preview-hits response field {field}: {detail}"),
+    )
+}
+
+/// Decode a preview-hits response, tolerating a malformed body as empty.
+///
+/// Fixtures and offline callers use this path; the live `preview_hits` uses the
+/// checked decoder so a malformed success body fails instead of reading as zero.
+pub fn decode_preview_hits(response: &Value) -> PreviewHits {
+    decode_preview_hits_checked(response).unwrap_or_default()
 }
 
 #[cfg(test)]

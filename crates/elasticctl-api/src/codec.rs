@@ -95,7 +95,12 @@ pub fn decode_bundle(body: &str) -> Result<Bundle> {
             Some(Line::Item) => out
                 .items
                 .push(ExceptionItem::from_value(value).map_err(at)?),
-            Some(Line::Trailer) => out.summary = serde_json::from_value(value).ok(),
+            Some(Line::Trailer) => {
+                out.summary =
+                    Some(serde_json::from_value(value).map_err(|e| {
+                        Error::new(ErrorKind::Error, format!("line {}: {e}", i + 1))
+                    })?);
+            }
             None => {
                 return Err(Error::new(
                     ErrorKind::Error,
@@ -381,6 +386,12 @@ mod tests {
         assert!(err.message.contains("no rule_id"), "{}", err.message);
         assert!(err.message.contains("no list_id"), "{}", err.message);
         assert!(err.message.contains("no item_id"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_recognized_malformed_trailer_is_not_discarded() {
+        let error = decode_bundle("{\"exported_count\":\"one\"}\n").unwrap_err();
+        assert!(error.message.contains("line 1"), "{}", error.message);
     }
 
     #[test]

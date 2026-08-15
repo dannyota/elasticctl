@@ -329,6 +329,19 @@ impl MockStack {
         stack
     }
 
+    /// A stack whose identity endpoint returns `body` instead of the baseline
+    /// identity. The higher priority beats the baseline's default-priority mock.
+    pub async fn with_identity(body: Value) -> MockStack {
+        let stack = Self::with_rules(vec![]).await;
+        Mock::given(method("GET"))
+            .and(path("/_security/_authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .with_priority(1)
+            .mount(&stack.server)
+            .await;
+        stack
+    }
+
     /// A stack whose value-list data streams are absent: `GET /api/lists/index`
     /// answers 404, the route's way of saying "not bootstrapped" (fact 21).
     /// Built on an empty rule corpus so both `doctor` and `state push` have a

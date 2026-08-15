@@ -1408,3 +1408,37 @@ async fn preview_hits_treats_an_empty_space_as_default() {
         0
     );
 }
+
+#[tokio::test]
+async fn preview_hits_rejects_a_malformed_success_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.preview.alerts-security.alerts-default/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": "1"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    let mut profile = profile_for(&server);
+    profile.es_url = Some(server.uri());
+    let t = Transport::new(&profile).unwrap();
+
+    let err = rules::preview_hits(&t, "default", "pv-1", 0)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Http);
+}
+
+#[test]
+fn decode_preview_hits_checked_rejects_malformed_bodies() {
+    for body in [
+        json!({}),
+        json!({"hits": {"total": {"value": "1"}, "hits": []}}),
+        json!({"hits": {"total": {}, "hits": []}}),
+        json!({"hits": {"total": {"value": 1}}}),
+        json!({"hits": {"total": {"value": 1}, "hits": "not-an-array"}}),
+    ] {
+        let error = rules::decode_preview_hits_checked(&body).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
