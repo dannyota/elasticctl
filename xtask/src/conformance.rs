@@ -106,7 +106,7 @@ const PREBUILT_RULES: RequiredFeature = RequiredFeature {
     label: "prebuilt-rules",
 };
 
-const CONTRACTS: [Contract; 6] = [
+const CONTRACTS: [Contract; 7] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -135,6 +135,11 @@ const CONTRACTS: [Contract; 6] = [
     Contract {
         name: "rule_round_trip",
         test: "a_rule_survives_a_create_export_import_round_trip",
+        features: &[],
+    },
+    Contract {
+        name: "search",
+        test: "search_reads_marked_documents_through_esql_and_dsl",
         features: &[],
     },
 ];
@@ -657,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_six_in_order() {
+    fn contract_table_is_the_approved_seven_in_order() {
         assert_eq!(
             CONTRACTS.map(|contract| contract.name),
             [
@@ -667,6 +672,7 @@ mod tests {
                 "stale_pointer_repair",
                 "source_scoping",
                 "rule_round_trip",
+                "search",
             ]
         );
     }

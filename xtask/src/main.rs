@@ -281,6 +281,25 @@ fn redact(val: &mut Value) {
     }
 }
 
+/// Drop fields that vary on every run from a recorded search response.
+///
+/// This is separate from `scrub`, which redacts identity in place. Volatile
+/// fields are removed, not redacted: a search fixture that kept `took` or a hit
+/// `sort` array would make every re-record a false diff without proving
+/// anything. The operator's request keeps its own deterministic `sort`.
+fn strip_volatile(v: &mut Value, fields: &[&str]) {
+    match v {
+        Value::Object(m) => {
+            m.retain(|key, _| !fields.contains(&key.as_str()));
+            for value in m.values_mut() {
+                strip_volatile(value, fields);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| strip_volatile(x, fields)),
+        _ => {}
+    }
+}
+
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
 /// response as an opaque string, so parse and reserialize each line before
 /// applying the same redaction used for parsed bodies.
@@ -464,6 +483,31 @@ const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
 const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
 const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
 
+/// Scratch index queried by the search probe. Like `PREVIEW_PROBE_INDEX`, it
+/// avoids the `logs-` prefix; each document carries the `elasticctl-sample`
+/// marker in its `marker` field.
+const SEARCH_PROBE_INDEX: &str = "elasticctl-sample-search";
+/// Value of the `marker` field every search probe document carries.
+const SEARCH_MARKER: &str = "elasticctl-sample";
+/// ES|QL response fields that vary per run. They are dropped before writing a
+/// fixture so a re-record of the same data is byte-identical (spec §8).
+const ESQL_VOLATILE_FIELDS: &[&str] = &[
+    "took",
+    "start_time_in_millis",
+    "completion_time_in_millis",
+    "expiration_time_in_millis",
+    "cpu_nanos",
+    "read_nanos",
+    "bytes_read",
+    "values_loaded",
+    "documents_found",
+    "rows_emitted",
+    "is_partial",
+    "is_running",
+];
+/// Query DSL response fields that vary per run (spec §8).
+const DSL_VOLATILE_FIELDS: &[&str] = &["took", "_shards", "_score", "sort", "pit_id"];
+
 /// Return a per-run suffix so a re-record cannot match leftover preview alerts.
 fn run_token() -> String {
     std::time::SystemTime::now()
@@ -494,6 +538,7 @@ struct CleanupOwnership {
     item: bool,
     list: bool,
     scratch_index: bool,
+    search_index: bool,
 }
 
 #[derive(Default)]
@@ -544,6 +589,10 @@ fn owns_item(value: &Value) -> bool {
 
 fn owns_scratch_index(value: &Value) -> bool {
     value["_source"][SCRATCH_MARKER].as_bool() == Some(true)
+}
+
+fn owns_search_index(value: &Value) -> bool {
+    value["_source"]["marker"].as_str() == Some(SEARCH_MARKER)
 }
 
 async fn require_absent_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
@@ -597,6 +646,18 @@ async fn require_absent_scratch_index(
     match t.get_absolute_es(&format!("/{PREVIEW_PROBE_INDEX}")).await {
         Ok(_) => Err(recording_error(format!(
             "refusing to record: scratch index {PREVIEW_PROBE_INDEX} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_search_index(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    match t.get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}")).await {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: scratch index {SEARCH_PROBE_INDEX} already exists and is not cleanup-owned"
         ))),
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -831,6 +892,38 @@ impl RecordingSession<'_> {
             }
         }
 
+        if self.ownership.search_index {
+            match self
+                .transport
+                .get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_doc/1"))
+                .await
+            {
+                Ok(document) if owns_search_index(&document) => {
+                    match self
+                        .transport
+                        .delete_absolute_es(&format!("/{SEARCH_PROBE_INDEX}"))
+                        .await
+                    {
+                        Ok(_) => self.ownership.search_index = false,
+                        Err(error) => errors.push(format!(
+                            "deleting scratch index {SEARCH_PROBE_INDEX}: {}",
+                            error.message
+                        )),
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete scratch index {SEARCH_PROBE_INDEX}: its marker field no longer matches"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.search_index = false;
+                }
+                Err(error) => errors.push(format!(
+                    "checking scratch index {SEARCH_PROBE_INDEX}: {}",
+                    error.message
+                )),
+            }
+        }
+
         if errors.is_empty() {
             Ok(responses)
         } else {
@@ -1004,6 +1097,116 @@ fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Result<bool> {
             })?;
         Ok(current && count == 0)
     })
+}
+
+/// Record the search probe: a marker-scoped scratch index seeded with three
+/// documents, the ES|QL and Query DSL exchanges over them, then the Kibana
+/// data-view and default-index lookups. The index is deleted by `cleanup`.
+async fn record_search(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+) -> elasticctl_core::Result<()> {
+    require_absent_search_index(session.transport).await?;
+    let t = session.transport;
+
+    for (id, seq) in [("1", 1_i64), ("2", 2), ("3", 3)] {
+        let doc = json!({
+            "seq": seq,
+            "message": format!("elasticctl sample search document {seq}"),
+            "marker": SEARCH_MARKER,
+        });
+        t.post_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_doc/{id}"), &doc)
+            .await?;
+    }
+    let proof = t
+        .get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_doc/1"))
+        .await?;
+    if !owns_search_index(&proof) {
+        return Err(recording_error(
+            "search index write did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.search_index = true;
+    t.post_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_refresh"), &json!({}))
+        .await?;
+
+    let esql_query = format!("FROM {SEARCH_PROBE_INDEX} | SORT seq ASC | LIMIT 2");
+    let mut esql_response = t
+        .post_absolute_es("/_query", &json!({"query": esql_query}))
+        .await?;
+    strip_volatile(&mut esql_response, ESQL_VOLATILE_FIELDS);
+    recording.fixtures.push(response_fixture(
+        "esql_query",
+        flavor,
+        version,
+        esql_response,
+        None,
+    ));
+
+    let mut pit_open = t
+        .post_absolute_es(
+            &format!("/{SEARCH_PROBE_INDEX}/_pit?keep_alive=1m"),
+            &json!({}),
+        )
+        .await?;
+    strip_volatile(&mut pit_open, DSL_VOLATILE_FIELDS);
+    let pit_id = pit_open["id"]
+        .as_str()
+        .ok_or_else(|| recording_error("pit open response is missing id"))?
+        .to_string();
+    recording.fixtures.push(exchange_fixture(
+        "search_pit_open",
+        flavor,
+        version,
+        json!({"index": SEARCH_PROBE_INDEX, "keep_alive": "1m"}),
+        pit_open,
+    ));
+
+    let pit_page_request = json!({
+        "size": 2,
+        "sort": [{"seq": "asc"}, {"_shard_doc": "asc"}],
+        "pit": {"id": pit_id, "keep_alive": "1m"},
+        "query": {"match_all": {}}
+    });
+    let mut pit_page = t.post_absolute_es("/_search", &pit_page_request).await?;
+    strip_volatile(&mut pit_page, DSL_VOLATILE_FIELDS);
+    recording.fixtures.push(exchange_fixture(
+        "search_pit_page",
+        flavor,
+        version,
+        pit_page_request,
+        pit_page,
+    ));
+
+    let pit_close = t
+        .delete_absolute_es_json("/_pit", &json!({"id": pit_id}))
+        .await?;
+    recording.fixtures.push(response_fixture(
+        "search_pit_close",
+        flavor,
+        version,
+        pit_close,
+        None,
+    ));
+
+    recording.fixtures.push(response_fixture(
+        "data_views",
+        flavor,
+        version,
+        t.get("/api/data_views").await?,
+        None,
+    ));
+    recording.fixtures.push(response_fixture(
+        "detection_engine_index",
+        flavor,
+        version,
+        t.get("/api/detection_engine/index").await?,
+        None,
+    ));
+
+    Ok(())
 }
 
 async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
@@ -1371,6 +1574,8 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         )
         .await?,
     ));
+
+    record_search(session, &mut recording, &flavor, &version).await?;
 
     Ok(recording)
 }
@@ -1772,6 +1977,27 @@ mod tests {
         assert_eq!(
             value["kibana.alert.url"],
             "https://REDACTED.example.invalid/app"
+        );
+    }
+
+    #[test]
+    fn strip_volatile_drops_only_the_named_fields_everywhere() {
+        let mut value = json!({
+            "took": 1,
+            "keep": "me",
+            "hits": {"hits": [{"_source": {"seq": 1}, "_score": 1.0, "sort": [1, 0]}]},
+            "nested": [{"took": 2, "value": 3}]
+        });
+
+        strip_volatile(&mut value, &["took", "_score", "sort"]);
+
+        assert_eq!(
+            value,
+            json!({
+                "keep": "me",
+                "hits": {"hits": [{"_source": {"seq": 1}}]},
+                "nested": [{"value": 3}]
+            })
         );
     }
 }

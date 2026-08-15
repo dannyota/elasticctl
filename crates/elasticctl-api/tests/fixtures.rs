@@ -28,6 +28,17 @@ const V0_2_FIXTURES: [&str; 15] = [
     "rules_find_source_customized.json",
 ];
 
+/// Search fixtures added in 0.3. They are recorded together by the search
+/// probe; the decode test below reads their responses.
+const V0_3_SEARCH_FIXTURES: [&str; 6] = [
+    "esql_query.json",
+    "search_pit_open.json",
+    "search_pit_page.json",
+    "search_pit_close.json",
+    "data_views.json",
+    "detection_engine_index.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -80,6 +91,20 @@ fn every_fixture_parses_and_carries_its_metadata() {
                 );
             }
         }
+
+        // The search fixtures are recorded as a set; a set missing any of them
+        // predates the search probe.
+        let missing: Vec<&str> = V0_3_SEARCH_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks search fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
     }
 }
 
@@ -514,5 +539,65 @@ fn the_spaces_probe_returns_ids() {
                 set.display()
             );
         }
+    }
+}
+
+#[test]
+fn search_fixtures_decode_through_the_production_paths() {
+    for set in fixture_sets() {
+        let esql_value = fixture_body(&set.join("esql_query.json"));
+        let esql = elasticctl_api::search::esql::decode(&esql_value["response"])
+            .expect("decode esql_query response");
+        let seq = esql
+            .columns
+            .iter()
+            .position(|column| column.name == "seq")
+            .unwrap_or_else(|| panic!("{}: esql_query has no seq column", set.display()));
+        assert_eq!(
+            esql.values.len(),
+            2,
+            "{}: LIMIT 2 must return two rows",
+            set.display()
+        );
+        assert_eq!(
+            esql.values[0][seq].as_i64(),
+            Some(1),
+            "{}: sorted ascending",
+            set.display()
+        );
+        assert_eq!(
+            esql.values[1][seq].as_i64(),
+            Some(2),
+            "{}: sorted ascending",
+            set.display()
+        );
+
+        let page_value = fixture_body(&set.join("search_pit_page.json"));
+        assert!(
+            page_value["request"]["pit"].is_object()
+                && page_value["request"]["sort"].is_array()
+                && page_value["request"]["query"].is_object(),
+            "{}: search_pit_page must retain its exchange request",
+            set.display()
+        );
+        let page = elasticctl_api::search::dsl::decode(&page_value["response"])
+            .expect("decode search_pit_page response");
+        assert_eq!(
+            page.total,
+            Some(3),
+            "{}: three seeded documents",
+            set.display()
+        );
+        assert_eq!(
+            page.hits.len(),
+            2,
+            "{}: a size-2 page returns two hits",
+            set.display()
+        );
+        assert!(
+            page.hits.iter().all(|hit| hit.source["seq"].is_number()),
+            "{}: hits must carry their seq source",
+            set.display()
+        );
     }
 }

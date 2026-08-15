@@ -1329,3 +1329,120 @@ fn a_rule_survives_a_create_export_import_round_trip() {
     })();
     conclude(result, &mut cleanup, baseline);
 }
+
+/// Seed three marker-scoped documents and read them back through the ES|QL and
+/// Query DSL production paths. The index uses the `elasticctl-live-` prefix so
+/// the cleanup audit catches any leak.
+fn search_probe(profile: &Profile, index: &str) -> TestResult {
+    let profile = profile.clone();
+    let index = index.to_string();
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("building search runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building search transport: {}", e.message))?;
+
+        for seq in 1..=3_i64 {
+            transport
+                .post_absolute_es(
+                    &format!("/{index}/_doc?refresh=wait_for"),
+                    &json!({
+                        "seq": seq,
+                        "message": format!("elasticctl live search {seq}"),
+                        "marker": LIVE_TAG,
+                    }),
+                )
+                .await
+                .map_err(|e| format!("seeding search document {seq}: {}", e.message))?;
+        }
+
+        let request = elasticctl_api::search::SearchRequest {
+            index: Some(index.clone()),
+            data_view: None,
+            limit: None,
+        };
+
+        let query = elasticctl_api::search::resolve_esql_query(
+            &transport,
+            "SORT seq ASC | LIMIT 2",
+            &request,
+        )
+        .await
+        .map_err(|e| format!("resolving esql query: {}", e.message))?;
+        let sync = elasticctl_api::search::esql::run_sync(&transport, &query)
+            .await
+            .map_err(|e| format!("esql sync: {}", e.message))?;
+        if sync.values.len() != 2 {
+            return Err(format!(
+                "esql sync must return 2 rows, got {}",
+                sync.values.len()
+            ));
+        }
+        let async_rows = elasticctl_api::search::esql::run_async(&transport, &query)
+            .await
+            .map_err(|e| format!("esql async: {}", e.message))?;
+        if async_rows.values.len() != 2 {
+            return Err(format!(
+                "esql async must return 2 rows, got {}",
+                async_rows.values.len()
+            ));
+        }
+
+        let dsl_index = elasticctl_api::search::resolve_dsl_index(&transport, &request)
+            .await
+            .map_err(|e| format!("resolving dsl index: {}", e.message))?;
+        let page = elasticctl_api::search::dsl::run_sync(
+            &transport,
+            &dsl_index,
+            &json!({"query": {"match_all": {}}}),
+        )
+        .await
+        .map_err(|e| format!("dsl sync: {}", e.message))?;
+        if page.total != Some(3) || page.hits.len() != 3 {
+            return Err(format!(
+                "dsl sync must return 3 hits, got total {:?} and {} hits",
+                page.total,
+                page.hits.len()
+            ));
+        }
+        let streamed = elasticctl_api::search::dsl::run_stream(
+            &transport,
+            &dsl_index,
+            &json!({"match_all": {}}),
+            &json!([{"seq": "asc"}, {"_shard_doc": "asc"}]),
+            None,
+        )
+        .await
+        .map_err(|e| format!("dsl stream: {}", e.message))?;
+        if streamed.len() != 3 {
+            return Err(format!(
+                "dsl stream must return 3 hits, got {}",
+                streamed.len()
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+#[test]
+#[ignore = "requires a live stack"]
+fn search_reads_marked_documents_through_esql_and_dsl() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serial = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config).unwrap();
+    let index = unique_name("search");
+    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
+    cleanup.index(index.clone());
+
+    let result = (|| -> TestResult {
+        search_probe(&profile, &index)?;
+        Ok(())
+    })();
+    conclude(result, &mut cleanup, baseline);
+}
