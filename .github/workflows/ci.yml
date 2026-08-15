@@ -24,15 +24,16 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: ./scripts/check-packages.sh
 
   transaction-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p elasticctl-api --test state
-      - run: cargo test -p elasticctl-api transaction
-      - run: cargo test -p elasticctl --bin elasticctl report_file
+      - run: cargo test --locked -p elasticctl-api --test state
+      - run: cargo test --locked -p elasticctl-api transaction
+      - run: cargo test --locked -p elasticctl --bin elasticctl report_file
 
   # Check advisories, licences, duplicate versions, and unvetted sources from
   # deny.toml.

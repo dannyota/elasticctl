@@ -1,6 +1,7 @@
 [package]
 name = "elasticctl-api"
 publish = true
+exclude = ["tests/**"]
 description = "Typed detection-rule model and endpoint wrappers for Elastic Security."
 version.workspace = true
 edition.workspace = true
