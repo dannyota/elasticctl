@@ -22,9 +22,27 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
       - run: ./scripts/check-packages.sh
+
+  declared-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read declared Rust version
+        id: rust_version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          test -n "$version"
+          test "$(printf '%s\n' "$version" | wc -l)" -eq 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust_version.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --workspace --all-targets
 
   transaction-windows:
     runs-on: windows-latest
