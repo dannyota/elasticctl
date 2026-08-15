@@ -1719,6 +1719,18 @@ fn scrub_hosts_handles_authority_boundaries() {
             "example.com",
             "example.com@ops.invalid",
         ),
+        (
+            "configured default authority does not scrub plain email text",
+            "ops@example.com",
+            "example.com:443",
+            "ops@example.com",
+        ),
+        (
+            "configured default authority does not scrub trailing at-sign text",
+            "example.com@ops.invalid",
+            "example.com:443",
+            "example.com@ops.invalid",
+        ),
     ];
 
     for (name, input, host, expected) in cases {
