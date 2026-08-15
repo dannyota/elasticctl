@@ -778,7 +778,9 @@ fn filesystem_error(action: &str, path: &Path, error: io::Error) -> Error {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
-    use std::fs::{self, File, OpenOptions};
+    #[cfg(not(windows))]
+    use std::fs::File;
+    use std::fs::{self, OpenOptions};
     use std::io::{self, Write};
     use std::path::Path;
 
@@ -1167,10 +1169,10 @@ mod tests {
     #[test]
     fn transaction_syncs_each_new_directory_from_parent_to_child_and_after_removal() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("mirror");
-        let transaction = root.join(".elasticctl-pull-txn");
+        let lock = acquire_pull(&dir.path().join("mirror")).unwrap();
+        let root = lock.root.clone();
+        let transaction = transaction_dir(&lock);
         let rules = root.join("rules");
-        let lock = acquire_pull(&root).unwrap();
         let ops = RecordingFileOps::new();
 
         replace_staged_files_with(&lock, &[staged("rules/nested/a.ndjson", b"new\n")], &ops)
@@ -1180,7 +1182,7 @@ mod tests {
         assert_eq!(
             &synced[..4],
             [
-                dir.path().to_path_buf(),
+                root.parent().unwrap().to_path_buf(),
                 root.clone(),
                 transaction.clone(),
                 transaction.clone(),
