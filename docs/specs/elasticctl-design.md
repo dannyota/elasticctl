@@ -899,9 +899,9 @@ run.
 
 ### 7.6 Elastic Cloud Hosted, measured
 
-Probed against a Hosted deployment in `gcp-asia-southeast1`, Elasticsearch and
-Kibana both 9.5.1, on 2026-08-13. The full fixture set is recorded under
-`tests/fixtures/ech-9.5.1`.
+Probed against a trial Hosted deployment on 2026-08-13; deployment identity and
+location are omitted. Elasticsearch and Kibana were both 9.5.1. The full
+fixture set is recorded under `tests/fixtures/ech-9.5.1`.
 
 | Fact | Detail |
 |---|---|
@@ -1152,6 +1152,21 @@ Planned shape. 0.2 is fixed; the order after it is not:
 | `0.8` | Task-shaped and cross-vertical tools; resources and prompts |
 | `0.9` | Mutation through plan-and-confirm |
 | `1.0` | Everything stable |
+
+The temporary trial-deployment window changes execution order, not capability
+boundaries. The near-term evidence ladder is:
+
+1. 0.2.2 hardens locked CI, declared-toolchain proof, Windows smoke coverage,
+   and non-publishing package preflight.
+2. 0.2.3 runs the guarded 0.2 live contracts across Serverless, Hosted, and the
+   self-managed 9.5.1 compatibility floor.
+3. 0.2.4 is conditional and contains only fixes or small existing-command
+   improvements proved by 0.2.3. Skip it when there is no release-worthy work.
+4. 0.3.0 delivers the complete ES|QL and Query DSL search vertical. Later minor
+   capability areas begin only after 0.3 is complete and trial time remains.
+
+`docs/plans/v0.2.x-release-ladder-design.md` defines the privacy, cleanup,
+evidence, and release gates for this sequence.
 
 MCP holds its own band rather than landing at 1.0, because a 1.0 that
 introduces the MCP server would declare the surface stable in the same release
