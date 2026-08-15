@@ -358,6 +358,9 @@ pub enum SearchAction {
         /// Explicit index or alias, overrides the query's own source
         #[arg(long)]
         index: Option<String>,
+        /// Cap the number of result rows
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Run a Query DSL search body
     Dsl {
@@ -369,6 +372,9 @@ pub enum SearchAction {
         /// Explicit index or alias
         #[arg(long)]
         index: Option<String>,
+        /// Cap the number of result rows
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 

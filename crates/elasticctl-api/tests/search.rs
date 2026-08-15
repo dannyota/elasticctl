@@ -4,6 +4,20 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn test_transport(uri: &str) -> Transport {
+    Transport::new(&elasticctl_core::Profile {
+        kibana_url: uri.to_string(),
+        es_url: Some(uri.to_string()),
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .expect("transport")
+}
+
 #[test]
 fn decodes_a_sync_esql_response() {
     let body = json!({
@@ -57,17 +71,7 @@ fn decodes_a_search_hit_page() {
 #[tokio::test]
 async fn run_stream_pages_with_search_after() {
     let server = MockServer::start().await;
-    let t = Transport::new(&elasticctl_core::Profile {
-        kibana_url: server.uri(),
-        es_url: Some(server.uri()),
-        api_key: Some("essu_test".into()),
-        username: None,
-        password: None,
-        space: "default".into(),
-        verify: true,
-        timeout_secs: 5,
-    })
-    .expect("transport");
+    let t = test_transport(&server.uri());
 
     Mock::given(method("POST"))
         .and(path("/idx/_pit"))
@@ -135,6 +139,38 @@ async fn run_stream_pages_with_search_after() {
     .expect("stream");
     assert_eq!(hits.len(), 3);
     assert_eq!(hits[2].source, json!({"seq": 3}));
+}
+
+#[tokio::test]
+async fn run_async_polls_until_complete() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "is_running": false, "is_partial": false,
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1], [2]]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+
+    let resp = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect("async");
+    assert_eq!(resp.values.len(), 2);
 }
 
 #[test]

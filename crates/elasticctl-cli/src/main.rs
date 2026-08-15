@@ -295,9 +295,11 @@ async fn main() {
                 query,
                 data_view,
                 index,
+                limit,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
-                    cmd::search::esql(&ctx, query, data_view.as_deref(), index.as_deref()).await
+                    cmd::search::esql(&ctx, query, data_view.as_deref(), index.as_deref(), *limit)
+                        .await
                 }
                 Err(e) => Err(e),
             },
@@ -305,9 +307,11 @@ async fn main() {
                 body,
                 data_view,
                 index,
+                limit,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
-                    cmd::search::dsl(&ctx, body, data_view.as_deref(), index.as_deref()).await
+                    cmd::search::dsl(&ctx, body, data_view.as_deref(), index.as_deref(), *limit)
+                        .await
                 }
                 Err(e) => Err(e),
             },

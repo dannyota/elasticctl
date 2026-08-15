@@ -1,14 +1,13 @@
 //! Adapters for `search esql` and `search dsl`. Read-only: no mutation guard.
 
 use crate::context::Context;
-use elasticctl_api::search::{dataview, dsl, esql};
+use elasticctl_api::search::{dsl, esql};
 use elasticctl_core::{Error, ErrorKind, Result};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Convert ES|QL `columns`+`values` into an array of row objects for the
-/// render layer. Column order comes from `columns`; a duplicate name (a `text`
-/// field emits `message` and `message.keyword`) is disambiguated by suffix.
+/// render layer (serialization, so it lives in `-cli`).
 fn esql_rows(resp: &esql::EsqlResponse) -> Value {
     let mut seen = HashMap::<String, usize>::new();
     let names: Vec<String> = resp
@@ -33,17 +32,9 @@ fn esql_rows(resp: &esql::EsqlResponse) -> Value {
     )
 }
 
-/// Prepend `FROM <pattern>` unless the query already names a source command.
-fn prepend_from(query: &str, pattern: &str) -> String {
-    let first = query
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if matches!(first.as_str(), "from" | "row" | "show" | "metrics") {
-        query.to_string()
-    } else {
-        format!("FROM {pattern} {query}")
+fn truncate(rows: &mut Value, limit: Option<usize>) {
+    if let (Some(limit), Value::Array(items)) = (limit, rows) {
+        items.truncate(limit);
     }
 }
 
@@ -52,16 +43,24 @@ pub async fn esql(
     query: &str,
     data_view: Option<&str>,
     index: Option<&str>,
+    limit: Option<usize>,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let resolved_query = match (index, data_view) {
-        (Some(i), _) => prepend_from(query, i),
-        (_, Some(dv)) => prepend_from(query, &dataview::resolve(t, dv).await?),
-        _ => query.to_string(),
+    let req = elasticctl_api::search::SearchRequest {
+        index: index.map(str::to_owned),
+        data_view: data_view.map(str::to_owned),
+        limit,
     };
-    let resp = esql::run_sync(t, &resolved_query).await?;
-    Ok(esql_rows(&resp))
+    let resolved = elasticctl_api::search::resolve_esql_query(t, query, &req).await?;
+    let resp = if ctx.global.out.is_some() {
+        esql::run_async(t, &resolved).await?
+    } else {
+        esql::run_sync(t, &resolved).await?
+    };
+    let mut rows = esql_rows(&resp);
+    truncate(&mut rows, limit);
+    Ok(rows)
 }
 
 pub async fn dsl(
@@ -69,6 +68,7 @@ pub async fn dsl(
     body: &str,
     data_view: Option<&str>,
     index: Option<&str>,
+    limit: Option<usize>,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
@@ -81,18 +81,27 @@ pub async fn dsl(
         serde_json::from_str(body)
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing body: {e}")))?
     };
-    let index = match (index, data_view) {
-        (Some(i), _) => i.to_string(),
-        (_, Some(dv)) => dataview::resolve(t, dv).await?,
-        _ => {
-            return Err(Error::new(
-                ErrorKind::Error,
-                "dsl requires --index or --data-view; the body carries the query, not the index",
-            ));
-        }
+    let req = elasticctl_api::search::SearchRequest {
+        index: index.map(str::to_owned),
+        data_view: data_view.map(str::to_owned),
+        limit,
     };
-    let page = dsl::run_sync(t, &index, &body).await?;
-    Ok(Value::Array(
-        page.hits.into_iter().map(|h| h.source).collect(),
-    ))
+    let resolved_index = elasticctl_api::search::resolve_dsl_index(t, &req).await?;
+    if ctx.global.out.is_some() {
+        let sort = body
+            .get("sort")
+            .cloned()
+            .unwrap_or_else(|| json!([{"_shard_doc": "asc"}]));
+        let query = body
+            .get("query")
+            .cloned()
+            .unwrap_or_else(|| json!({"match_all": {}}));
+        let hits = dsl::run_stream(t, &resolved_index, &query, &sort, limit).await?;
+        Ok(Value::Array(hits.into_iter().map(|h| h.source).collect()))
+    } else {
+        let page = dsl::run_sync(t, &resolved_index, &body).await?;
+        let mut rows = Value::Array(page.hits.into_iter().map(|h| h.source).collect());
+        truncate(&mut rows, limit);
+        Ok(rows)
+    }
 }

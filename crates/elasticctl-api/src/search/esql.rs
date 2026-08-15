@@ -83,3 +83,30 @@ pub async fn run_sync(t: &Transport, query: &str) -> Result<EsqlResponse> {
     let response = t.post_absolute_es("/_query", &body).await?;
     decode(&response)
 }
+
+/// Run a query through the async API and poll until complete. ES|QL has no
+/// page-by-page cursor; the full result returns in one response.
+pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
+    let start = t
+        .post_absolute_es(
+            "/_query/async",
+            &serde_json::json!({ "query": query, "wait_for_completion_timeout": "1ms", "columnar": false }),
+        )
+        .await?;
+    let id = start
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::new(ErrorKind::Http, "decoding async esql response field `id`"))?
+        .to_string();
+    loop {
+        let resp = t
+            .get_absolute_es(&format!(
+                "/_query/async/{id}?wait_for_completion_timeout=10s"
+            ))
+            .await?;
+        if resp.get("is_running").and_then(Value::as_bool) == Some(false) {
+            let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+            return decode(&resp);
+        }
+    }
+}
