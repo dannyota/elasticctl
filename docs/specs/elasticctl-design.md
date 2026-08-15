@@ -1132,6 +1132,18 @@ disposable self-managed 9.5.1 lab. The Cloud targets come from ignored local
 configuration. The lab installs its complete prebuilt pack before baseline
 capture and is destroyed with its volumes after the run.
 
+The 0.2.3 measured matrix is:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 6 pass | Verified | [report](../conformance/v0.2.3/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.1 | 6 pass | Verified | [report](../conformance/v0.2.3/ech-9.5.1.json) |
+| Self-managed | 9.5.1 | 6 pass | Verified | [report](../conformance/v0.2.3/traditional-9.5.1.json) |
+
+All 18 contract rows passed with no skip. The validated
+[findings](../conformance/v0.2.3/findings.md) therefore skip 0.2.4 and select
+the 0.3.0 search design as the next release work.
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day
