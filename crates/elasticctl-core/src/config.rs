@@ -112,9 +112,11 @@ impl Profile {
 
 /// Remove userinfo from a URL authority without changing other bytes.
 ///
-/// Paths and queries may legitimately contain `@`.
+/// Paths and queries may legitimately contain `@`. Uses the last `://` so a
+/// doubled scheme (e.g. `https://https://host`) is handled the same way as in
+/// `Profile::host`.
 fn strip_userinfo(url: &str) -> String {
-    let (scheme, rest) = match url.find("://") {
+    let (scheme, rest) = match url.rfind("://") {
         Some(i) => url.split_at(i + 3),
         None => ("", url),
     };
@@ -193,20 +195,42 @@ impl Overrides {
     /// Unicode and rejects a non-integer timeout instead of silently dropping
     /// it.
     pub fn try_from_env() -> Result<Overrides> {
-        let timeout = match checked_env("ELASTICCTL_TIMEOUT")? {
-            None => None,
-            Some(value) => Some(value.parse::<u64>().map_err(|error| {
-                Error::new(
-                    ErrorKind::Error,
-                    format!("ELASTICCTL_TIMEOUT must be an unsigned integer: {error}"),
-                )
-            })?),
+        Self::try_from_env_with_flags(&Overrides::default())
+    }
+
+    /// Read `ELASTICCTL_*` as overrides, failing on invalid input for every
+    /// field the given flags do not already override.
+    ///
+    /// A flag overrides its environment variable, so a stale invalid value in
+    /// an overridden field must not fail the command. `Context::build` passes
+    /// the CLI flags here; `config init --from-env` uses the strict
+    /// `try_from_env` because the environment is its source of truth.
+    pub fn try_from_env_with_flags(flags: &Overrides) -> Result<Overrides> {
+        let timeout = if flags.timeout_secs.is_some() {
+            std::env::var("ELASTICCTL_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        } else {
+            match checked_env("ELASTICCTL_TIMEOUT")? {
+                None => None,
+                Some(value) => Some(value.parse::<u64>().map_err(|error| {
+                    Error::new(
+                        ErrorKind::Error,
+                        format!("ELASTICCTL_TIMEOUT must be an unsigned integer: {error}"),
+                    )
+                })?),
+            }
+        };
+        let space = if flags.space.is_some() {
+            std::env::var("ELASTICCTL_SPACE").ok()
+        } else {
+            checked_env("ELASTICCTL_SPACE")?
         };
         Ok(Overrides {
             kibana_url: checked_env("ELASTICCTL_KIBANA_URL")?,
             es_url: checked_env("ELASTICCTL_ES_URL")?,
             api_key: checked_env("ELASTICCTL_API_KEY")?,
-            space: checked_env("ELASTICCTL_SPACE")?,
+            space,
             timeout_secs: timeout,
         })
     }
@@ -322,7 +346,9 @@ impl Config {
         pending.persist(path).map_err(|e| {
             Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
         })?;
-        #[cfg(unix)]
+        // Sync the directory so the rename is durable. Only Linux supports
+        // directory fsync; macOS and BSD return EINVAL on a directory fd.
+        #[cfg(target_os = "linux")]
         fs::File::open(parent)
             .and_then(|f| f.sync_all())
             .map_err(|e| {
@@ -915,4 +941,21 @@ mod tests {
         p.strip_userinfo();
         assert_eq!(p.kibana_url, "https://kb.example.com/a@b?user=x@y");
     }
+
+    #[test]
+    fn a_doubled_scheme_with_userinfo_is_stripped() {
+        // `host()` handles doubled schemes via the last `://`; the scrubber must
+        // match so userinfo after the last scheme is not leaked into the banner.
+        let mut p =
+            with_urls("https://https://user:pass@kb.example.com", None).profiles["default"].clone();
+        p.strip_userinfo();
+        assert_eq!(p.kibana_url, "https://https://kb.example.com");
+        assert_eq!(p.host(), "kb.example.com");
+    }
+
+    // `try_from_env_with_flags` and `try_from_env` read the process
+    // environment, which cannot be mutated here because this crate forbids
+    // `unsafe` blocks. Their flag-override behavior is exercised end-to-end by
+    // the `config_cmd` integration test
+    // `a_timeout_flag_supersedes_an_invalid_environment_timeout`.
 }

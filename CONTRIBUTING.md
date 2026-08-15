@@ -39,7 +39,7 @@ opt-in:
 ```bash
 ELASTICCTL_LIVE=1 cargo test --locked --test live -- --ignored --test-threads=1
 cargo xtask conformance --flavor serverless \
-  --report-dir docs/conformance/v0.2.3
+  --report-dir docs/conformance/v0.2.5
 ```
 
 A live run creates only objects marked `elasticctl-sample` and verifies the

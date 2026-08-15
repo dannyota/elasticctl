@@ -31,7 +31,8 @@ impl Context {
             timeout_secs: global.timeout,
             ..Default::default()
         };
-        let overrides = flags.merge_over(Overrides::try_from_env()?);
+        let env = Overrides::try_from_env_with_flags(&flags)?;
+        let overrides = flags.merge_over(env);
 
         let resolved = config.resolve(global.profile.as_deref(), &overrides)?;
 

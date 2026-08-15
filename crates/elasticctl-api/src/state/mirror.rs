@@ -25,9 +25,7 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     let rules_path = super::rules_dir(dir);
     if let Some(paths) = mirror_root_files(&rules_path)? {
         for path in paths {
-            let body = std::fs::read_to_string(&path).map_err(|e| {
-                Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
-            })?;
+            let body = read_regular_file(&path)?;
             let (mut rules, lists, items) = decode_rule_file(&body, Format::from_path(&path))?;
             mirror.rules.append(&mut rules);
             for mut list in lists {
@@ -45,9 +43,7 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     let lists_path = super::exceptions_dir(dir);
     if let Some(paths) = mirror_root_files(&lists_path)? {
         for path in paths {
-            let body = std::fs::read_to_string(&path).map_err(|e| {
-                Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display()))
-            })?;
+            let body = read_regular_file(&path)?;
             let mut list = decode_list_file(&body, Format::from_path(&path))?;
             let items = split_items(&mut list)?;
             mirror.lists.push(list);
@@ -94,7 +90,12 @@ pub fn read_local(dir: &Path) -> Result<Vec<Rule>> {
 /// The files in a mirror root directory, or `None` when the root is absent.
 ///
 /// A root that exists but is a symlink or a non-directory fails closed, so an
-/// escaped mirror cannot start a destructive plan.
+/// escaped mirror cannot start a destructive plan. The root check is a static
+/// `symlink_metadata`; `read_dir` cannot carry `O_NOFOLLOW`, so a concurrent
+/// swap of the root itself for a symlink is not guarded atomically. That swap
+/// already requires write access to the mirror directory, whose owner could
+/// edit the rule files directly, so the tighter boundary is the file read in
+/// `read_regular_file`.
 fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -153,6 +154,33 @@ fn mirror_entry_path(
         ));
     }
     Ok(Some(path))
+}
+
+/// Read a mirror file, refusing to follow a symlink.
+///
+/// `O_NOFOLLOW` makes the refusal atomic: a file swapped for a symlink between
+/// enumeration and read is rejected at the open, not after the read has already
+/// followed it. This is the content boundary, so it must be as tight as the
+/// static `DirEntry::file_type()` check in `mirror_entry_path`.
+#[cfg(unix)]
+fn read_regular_file(path: &Path) -> Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
+    let mut body = String::new();
+    file.read_to_string(&mut body)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
+    Ok(body)
+}
+
+#[cfg(not(unix))]
+fn read_regular_file(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))
 }
 
 /// Decode a rule file: one or more rules, optionally followed by the
@@ -301,8 +329,12 @@ fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
 mod tests {
     use super::*;
 
+    // The `Ok(None)` (unrecognized extension) and symlink/directory-rejection
+    // arms are covered by the `read_local_skips_non_rule_files...` test in
+    // `state/mod.rs` and the `#[cfg(unix)]` symlink tests in `tests/state.rs`;
+    // only the injected-error arm is reachable from a bare `io::Result`.
     #[test]
-    fn mirror_entry_path_reports_a_directory_read_error() {
+    fn mirror_entry_path_reports_an_entry_read_error_naming_the_directory() {
         let dir = Path::new("/mirror");
         let err = mirror_entry_path(
             dir,

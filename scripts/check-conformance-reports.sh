@@ -8,6 +8,12 @@ FLAVORS=(serverless ech traditional)
 
 shopt -s nullglob
 dirs=(docs/conformance/v0.2.*)
+# Keep only directories: the glob would otherwise match a stray regular file.
+filtered=()
+for candidate in "${dirs[@]}"; do
+  [ -d "$candidate" ] && filtered+=("$candidate")
+done
+dirs=("${filtered[@]}")
 [ "${#dirs[@]}" -gt 0 ] || {
   echo "FAIL: no docs/conformance/v0.2.* directories found"
   exit 1
@@ -73,7 +79,7 @@ scan_for() {
   local description=$1
   local pattern=$2
   shift 2
-  if rg --pcre2 -l "$pattern" "$@" >/dev/null; then
+  if grep -P -l "$pattern" "$@" >/dev/null; then
     echo "FAIL: $description in a conformance report"
     return 1
   fi

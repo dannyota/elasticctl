@@ -83,3 +83,22 @@ async fn doctor_reports_a_malformed_identity_as_failed() {
         check.detail
     );
 }
+
+/// An empty realm string is as broken as a missing one: it must fail, not
+/// report an empty realm as a valid authentication source.
+#[tokio::test]
+async fn doctor_reports_an_empty_identity_realm_as_failed() {
+    let stack = MockStack::with_identity(serde_json::json!({
+        "username": "elastic",
+        "authentication_realm": {"type": ""}
+    }))
+    .await;
+    let r = health::doctor(stack.transport()).await.unwrap();
+    let check = r.checks.iter().find(|c| c.name == "auth").unwrap();
+    assert_eq!(check.status, Status::Fail);
+    assert!(
+        check.detail.contains("authentication_realm.type"),
+        "{}",
+        check.detail
+    );
+}

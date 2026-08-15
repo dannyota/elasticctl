@@ -134,13 +134,15 @@ fn decode_identity(body: &Value) -> Result<(String, String)> {
     let username = body
         .get("username")
         .and_then(Value::as_str)
-        .ok_or_else(|| identity_error("username", "must be a string"))?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| identity_error("username", "must be a non-empty string"))?
         .to_string();
     let realm = body
         .get("authentication_realm")
         .and_then(|realm| realm.get("type"))
         .and_then(Value::as_str)
-        .ok_or_else(|| identity_error("authentication_realm.type", "must be a string"))?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| identity_error("authentication_realm.type", "must be a non-empty string"))?
         .to_string();
     Ok((username, realm))
 }

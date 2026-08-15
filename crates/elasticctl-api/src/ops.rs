@@ -107,6 +107,10 @@ mod tests {
             json!({"success_count": "1", "errors": []}),
             json!({"success_count": 1}),
             json!({"success_count": 1, "errors": "not-an-array"}),
+            // Negative, floating, and null counters must all refuse.
+            json!({"success_count": -1, "errors": []}),
+            json!({"success_count": 1.5, "errors": []}),
+            json!({"success_count": null, "errors": []}),
         ] {
             let error = decode_import_report(&body, "rules").unwrap_err();
             assert_eq!(error.kind, ErrorKind::Http);

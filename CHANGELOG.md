@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.5 — 2026-08-15
+
+### Fixed
+
+- `config init` no longer reports failure on macOS: the post-rename directory
+  sync now runs only on Linux, where directory `fsync` is supported.
+- A doubled-scheme URL with userinfo (`https://https://user:pass@host`) is now
+  scrubbed consistently with `host()`, so a credential never reaches a banner.
+- `config list` scrubs URL userinfo from `kibana_url` instead of echoing a
+  credential embedded in a hand-edited or pre-0.2.4 config file.
+- `doctor` fails a malformed identity whose `username` or
+  `authentication_realm.type` is an empty string, not just a missing field.
+- A `--timeout` (or `--space`) flag now supersedes an invalid
+  `ELASTICCTL_TIMEOUT` / `ELASTICCTL_SPACE`, matching flag-over-env precedence
+  instead of failing before the flag applies.
+- Mirror file reads now open with `O_NOFOLLOW`, so a file swapped for a symlink
+  between enumeration and read is refused atomically rather than followed.
+- The conformance-report leak scan now uses `grep -P` instead of `rg`, so it
+  actually runs on a release box that lacks ripgrep instead of silently passing.
+
 ## 0.2.4 — 2026-08-15
 
 ### Fixed

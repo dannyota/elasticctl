@@ -987,10 +987,29 @@ fn bulk_outcome_rejects_malformed_success_bodies() {
         json!({"attributes":{"summary":{"succeeded":1}}}),
         json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":"1"}}}),
         json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":2}}}),
+        // Negative, floating, null, and non-object counters must all refuse.
+        json!({"attributes":{"summary":{"succeeded":-1,"failed":0,"skipped":0,"total":0}}}),
+        json!({"attributes":{"summary":{"succeeded":1.5,"failed":0,"skipped":0,"total":1}}}),
+        json!({"attributes":{"summary":{"succeeded":null,"failed":0,"skipped":0,"total":0}}}),
+        json!({"attributes":{"summary":"not-an-object"}}),
     ] {
         let error = rules::decode_bulk_outcome(&body).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Http);
     }
+}
+
+/// The `total = succeeded + failed + skipped` invariant must hold when some
+/// rules were skipped (already in the requested state), not only at zero.
+#[test]
+fn bulk_outcome_accepts_a_summary_with_a_nonzero_skip() {
+    let outcome = rules::decode_bulk_outcome(&json!({
+        "attributes": {"summary": {"succeeded": 3, "failed": 1, "skipped": 2, "total": 6}}
+    }))
+    .unwrap();
+    assert_eq!(outcome.succeeded, 3);
+    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.skipped, 2);
+    assert_eq!(outcome.total, 6);
 }
 
 #[tokio::test]
@@ -1437,6 +1456,11 @@ fn decode_preview_hits_checked_rejects_malformed_bodies() {
         json!({"hits": {"total": {}, "hits": []}}),
         json!({"hits": {"total": {"value": 1}}}),
         json!({"hits": {"total": {"value": 1}, "hits": "not-an-array"}}),
+        // Negative, floating, null, and non-object counters must all refuse.
+        json!({"hits": {"total": {"value": -1}, "hits": []}}),
+        json!({"hits": {"total": {"value": 1.5}, "hits": []}}),
+        json!({"hits": {"total": {"value": null}, "hits": []}}),
+        json!({"hits": "not-an-object"}),
     ] {
         let error = rules::decode_preview_hits_checked(&body).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Http);

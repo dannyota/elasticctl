@@ -95,6 +95,37 @@ fn config_list_never_prints_any_profiles_key() {
 }
 
 #[test]
+fn config_list_never_prints_url_userinfo() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"
+current = "default"
+
+[profiles.default]
+kibana_url = "https://user:hunter2@kb.example.com"
+api_key = "essu_t"
+space = "default"
+verify = true
+timeout_secs = 30
+"#,
+    )
+    .unwrap();
+    let out = bin()
+        .args(["config", "list", "--json", "--config"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("hunter2") && !text.contains("user:"),
+        "a credential in the URL must never reach list output: {text}"
+    );
+    assert!(text.contains("https://kb.example.com"), "{text}");
+}
+
+#[test]
 fn config_show_honours_the_profile_flag() {
     let dir = tempfile::tempdir().unwrap();
     let path = write_config(dir.path());
@@ -226,4 +257,43 @@ fn init_never_writes_userinfo_into_the_config_file() {
         "a credential in the URL must never reach disk: {body}"
     );
     assert!(body.contains("https://kb.example.com"), "{body}");
+}
+
+/// A `--timeout` flag supersedes `ELASTICCTL_TIMEOUT`, so a stale invalid
+/// environment value must not fail a command whose flag already decides it.
+#[test]
+fn a_timeout_flag_supersedes_an_invalid_environment_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"
+current = "default"
+
+[profiles.default]
+kibana_url = "https://kb.example.com"
+space = "default"
+verify = true
+timeout_secs = 30
+"#,
+    )
+    .unwrap();
+
+    // `config test` reaches `require_credential` (which fails "no credential")
+    // only if `Context::build` parsed the environment first.
+    let out = bin()
+        .args(["config", "test", "--json", "--timeout", "60", "--config"])
+        .arg(&path)
+        .env("ELASTICCTL_TIMEOUT", "not-a-number")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("ELASTICCTL_TIMEOUT"),
+        "the flag must supersede the invalid env value: {stderr}"
+    );
+    assert!(
+        stderr.contains("no credential"),
+        "the command should reach the credential check, not fail on env parsing: {stderr}"
+    );
 }

@@ -12,11 +12,15 @@ pub fn list(global: &GlobalArgs) -> Result<Value> {
         .profiles
         .iter()
         .map(|(name, p)| {
+            // Scrub URL userinfo so a credential embedded in a URL never
+            // reaches `config list` output.
+            let mut scrubbed = p.clone();
+            scrubbed.strip_userinfo();
             json!({
                 "name": name,
                 "current": *name == config.current,
-                "kibana_url": p.kibana_url,
-                "space": p.space,
+                "kibana_url": scrubbed.kibana_url,
+                "space": scrubbed.space,
             })
         })
         .collect();
