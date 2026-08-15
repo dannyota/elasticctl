@@ -1,6 +1,7 @@
 [package]
 name = "elasticctl-core"
 publish = true
+exclude = ["tests/**"]
 description = "Core types, configuration, and transport for Elastic Security rule operations."
 version.workspace = true
 edition.workspace = true

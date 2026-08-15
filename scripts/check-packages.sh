@@ -22,5 +22,6 @@ check_package() {
   done
 }
 
+check_package elasticctl-core src/lib.rs
 check_package elasticctl-api src/lib.rs
 check_package elasticctl src/main.rs
