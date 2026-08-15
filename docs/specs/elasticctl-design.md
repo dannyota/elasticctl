@@ -409,6 +409,25 @@ the tool whose preview is client-computed, and the banner names both counts.
 `push` **never deletes remote rules.** A rule missing locally is not a delete
 instruction. Deletion is always the explicit `rules delete`.
 
+### 5.0 Pull path identity and locking
+
+Before it acquires a lock or begins transaction recovery, `pull` resolves the
+requested mirror path to one filesystem identity. An existing mirror is fully
+canonicalized. For a new mirror, its immediate parent must already exist and
+is canonicalized before the one final mirror-name component is appended.
+`pull` never creates a missing parent chain; a missing immediate parent returns
+the existing typed filesystem error that names that parent.
+
+This resolves `.` and existing `..` components and follows existing symlink
+aliases without lexically rewriting a path across a symlink. The resolved root
+is used for the sibling lock and every transaction filesystem operation. The
+requested spelling is retained only for user-facing output and errors.
+
+The sibling lock is `.<mirror-name>.elasticctl-pull.lock`. A filesystem root
+has no safe sibling lock and is refused with `ErrorKind::Error`; its message
+contains `filesystem root has no safe sibling lock`. This applies to Unix `/`,
+Windows drive roots, and UNC share roots.
+
 ### 5.1 Server-applied defaults
 
 Creating a rule with 13 fields returns 36. The server adds 16 defaults and 7
@@ -440,6 +459,21 @@ A corpus larger than 10,000 rules cannot be read through one `_find` by any
 combination of `page` and `per_page`, because the limit applies to their sum
 rather than to either one. Paging smaller does not evade it and neither does
 concurrency. Above the window the corpus is read by partitioning instead.
+
+Every rule `_find` response is decoded as a strict envelope: a JSON object
+with array `data`, unsigned integer `total`, positive integer `page`, and
+positive integer `perPage`. `perPage` is the spelling in every recorded rule
+response. Exception-list `_find` keeps its separate `per_page` contract. Rule
+decoding accepts unknown fields but does not accept both page-size spellings
+without a measured compatibility requirement.
+
+Malformed envelopes are not converted to an empty result. Missing or mistyped
+fields, `data.len() > total`, and `data.len() > perPage` return
+`ErrorKind::Http` messages beginning `decoding rule _find response field` and
+naming the invalid field or relationship. Transport JSON-number parse failures
+remain transport `ErrorKind::Http` errors rather than envelope errors. All
+callers share this decoder, so source-partition verification and prebuilt
+customized counts also fail closed on API drift.
 
 `rules export` must not be offered as an escape hatch. It has its own 10,000
 cap from `xpack.securitySolution.maxRuleImportExportSize` and returns `Can't
@@ -579,6 +613,22 @@ exception file may contain one NDJSON object. An omitted `items` field means an
 empty hand-authored set, but a present `items` field must be an array. Multiple
 objects or a non-array value are refused before remote reconciliation, so
 malformed input cannot widen into item deletion.
+
+A standalone top-level exception item in a rule file or export bundle must
+have readable, non-empty string `item_id` and `list_id` values. Its absent
+`namespace_type` retains the `single` default; if present it must be a
+non-empty string. Unknown non-empty namespace strings remain valid so a future
+server value can round-trip without being treated as `single`. NDJSON bundle
+items and YAML top-level items are validated before they enter the mirror.
+
+This stricter rule is contextual. A nested item inside a container may omit
+`list_id`, because splitting the container assigns the authoritative parent
+`list_id` and `namespace_type`. Item grouping validates the same identity again
+before any remote item read or reconciliation, so a malformed item returns
+`ErrorKind::Error` instead of planning a remote item deletion. Empty fields use
+the messages `exception item field item_id must be a non-empty string`,
+`exception item field list_id must be a non-empty string`, and `exception item
+field namespace_type must be a non-empty string`.
 
 `diff` gains an `exceptions` block mirroring the rules block, and `clean` is
 true only when both are.
@@ -982,6 +1032,17 @@ recording host in configured-authority and normalized-default-port forms,
 using URL hostname case-insensitive matching. Each fixture records its
 deployment flavor and stack version so drift is visible.
 
+Fixture scrubbing treats every configured recording authority as sensitive.
+Matching is ASCII case-insensitive, including exact authorities in plain text.
+For HTTP port 80 and HTTPS port 443, zero-padded forms included, the matching
+bare host is also scrubbed. A non-default port never creates a bare-host alias.
+Authority-safe boundaries prevent a configured host from being replaced inside
+a longer hostname or `ops@example.com` text. URL token scanning recognises
+commas, semicolons, quotes, parentheses, angle and square brackets, and
+whitespace as delimiters; it consumes a complete bracketed IPv6 literal and
+optional port before treating `]` as a delimiter. Userinfo is removed from
+every URL token before the authority is replaced.
+
 The directory is `tests/fixtures/<flavor>-<version>`, where flavor is the
 *deployment* flavor, not the value a stack reports. Hosted and self-managed
 both report `build_flavor: "traditional"`, so a Hosted recording would
@@ -1130,6 +1191,17 @@ All three crates are publishable and publish together with
 temporary registry before uploading any. Otherwise, a failure partway through
 could strand a crate on crates.io, where a version can be yanked but never
 deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
+
+`elasticctl-api-test-support` remains private and unpublished. The published
+`elasticctl-api` and `elasticctl` manifests exclude `tests/**`, because Cargo
+cannot resolve those integration tests after it omits their path-only private
+dev-dependency from the package. Inline unit tests under `src/` remain in the
+archives. `scripts/check-packages.sh` runs the locked, allow-dirty
+`cargo package --package <name> --list` check separately for those two crates.
+It rejects every `tests/` entry and every `elasticctl-api-test-support` path,
+and requires `Cargo.toml`, `Cargo.toml.orig`, `Cargo.lock`, plus `src/lib.rs`
+for the API crate or `src/main.rs` for the CLI crate. Cargo's package list is
+the archive-content authority for this release gate.
 
 Publishing was deferred through 0.1.2 because a crates.io version is forever
 while a tag costs nothing. Publishing `elasticctl-core` and `elasticctl-api`
