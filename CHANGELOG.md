@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.1 — 2026-08-16
+
+### Added
+
+- `--search` narrows `rules list` and `exceptions list` by name substring and
+  tag, and `state pull`, `state diff`, and `state push` to the matching rules.
+  It is mutually exclusive with `--filter` on `rules list`.
+- `search dsl --with-meta` surfaces each hit's `_id`, `_index`, and `_score`
+  alongside the source document; without the flag output is unchanged.
+- ES|QL bulk export requests columnar results and renders CSV client-side,
+  lowering memory for large exports.
+- The `search` conformance contract is published for all three deployment
+  flavors.
+
+### Fixed
+
+- A URL with a doubled scheme or an empty-port host could leave credential
+  userinfo embedded in output. Userinfo is now stripped from those URLs too.
+- An empty `--search` value selected every rule instead of narrowing; it is now
+  rejected.
+- `search esql` without `--out` again reports `capped at N rows` when it
+  truncates a peek.
+
 ## 0.3.0 — 2026-08-16
 
 ### Added
