@@ -114,17 +114,26 @@ impl Profile {
 ///
 /// The scheme is normally the first `://`. A doubled scheme
 /// (`https://https://host`) puts a second `://` inside the authority, so the
-/// first `/` after the first `://` is itself part of that `://`; anchor on the
-/// last `://` then so the authority after it parses correctly. A `://` in the
+/// first `/` after the first `://` is itself part of that `://`; anchor on that
+/// second `://` then so the authority after it parses correctly. A `://` in the
 /// path, query, or fragment never becomes the anchor.
 fn scheme_anchor(url: &str) -> Option<usize> {
     let first = url.find("://")?;
     let after = &url[first + 3..];
-    let doubled = after
-        .find(['/', '?', '#'])
-        .is_some_and(|end| end > 0 && after.as_bytes()[end - 1] == b':');
-    if doubled {
-        url.rfind("://").map(|i| i + 3)
+    let Some(delim) = after.find(['/', '?', '#']) else {
+        return Some(first + 3);
+    };
+    // A doubled scheme is the only case where the first delimiter is itself the
+    // `/` of a second `://`. An empty port (`https://host:/path`) also ends the
+    // authority in `:`, but the bytes after it are not `//`, so it is not
+    // doubled and must anchor on the first scheme.
+    if delim >= 1
+        && after.as_bytes()[delim - 1] == b':'
+        && after.get(delim..delim + 2) == Some("//")
+    {
+        // Anchor just past the second `://`, never on a later `://` in the
+        // path, query, or fragment.
+        Some(first + 3 + delim + 2)
     } else {
         Some(first + 3)
     }
@@ -789,7 +798,7 @@ mod tests {
                 timeout_secs: 30,
             }
         };
-        // A doubled scheme anchors on the last `://`, so the host is the
+        // A doubled scheme anchors on the second `://`, so the host is the
         // authority after it.
         assert_eq!(p.host(), "kb.example.com");
     }
@@ -993,13 +1002,41 @@ mod tests {
 
     #[test]
     fn a_doubled_scheme_with_userinfo_is_stripped() {
-        // A doubled scheme anchors on the last `://`, so the `user:pass@` in the
-        // authority after it is still stripped.
+        // A doubled scheme anchors on the second `://`, so the `user:pass@` in
+        // the authority after it is still stripped.
         let mut p =
             with_urls("https://https://user:pass@kb.example.com", None).profiles["default"].clone();
         p.strip_userinfo();
         assert_eq!(p.kibana_url, "https://https://kb.example.com");
         assert_eq!(p.host(), "kb.example.com");
+    }
+
+    #[test]
+    fn a_doubled_scheme_with_userinfo_and_a_query_scheme_strips_the_userinfo() {
+        // A doubled scheme plus a later `://` in the query must anchor on the
+        // second scheme, not the query's `://`, or `user:pass@` leaks.
+        let mut p = with_urls(
+            "https://https://user:pass@kb.example.com/?next=https://idp",
+            None,
+        )
+        .profiles["default"]
+            .clone();
+        p.strip_userinfo();
+        assert_eq!(
+            p.kibana_url,
+            "https://https://kb.example.com/?next=https://idp"
+        );
+    }
+
+    #[test]
+    fn an_empty_port_does_not_defeat_userinfo_stripping() {
+        // `host:` is an empty port, not a doubled scheme; the userinfo before it
+        // must still be stripped even when the query carries a later `://`.
+        let mut p =
+            with_urls("https://user:pass@host:/path?next=https://idp", None).profiles["default"]
+                .clone();
+        p.strip_userinfo();
+        assert_eq!(p.kibana_url, "https://host:/path?next=https://idp");
     }
 
     // `try_from_env_with_flags` and `try_from_env` read the process
