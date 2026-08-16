@@ -336,7 +336,7 @@ fn a_search_filter_produces_the_parenthesized_name_and_tag_clause() {
     };
     assert_eq!(
         f.to_kql().unwrap(),
-        "(alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+        "(alert.attributes.name: \"*PowerShell*\" OR alert.attributes.tags: \"PowerShell\")"
     );
 }
 
@@ -352,7 +352,7 @@ fn a_search_filter_combines_with_the_structured_filters() {
         f.to_kql().unwrap(),
         "alert.attributes.params.immutable: false AND \
          alert.attributes.params.severity: \"high\" AND \
-         (alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+         (alert.attributes.name: \"*PowerShell*\" OR alert.attributes.tags: \"PowerShell\")"
     );
 }
 
@@ -366,7 +366,7 @@ fn a_search_filter_escapes_wildcards_in_the_name_but_not_the_exact_tag() {
     };
     assert_eq!(
         f.to_kql().unwrap(),
-        "(alert.attributes.name: *a\\*b\\?c* OR alert.attributes.tags: \"a*b?c\")"
+        "(alert.attributes.name: \"*a\\*b\\?c*\" OR alert.attributes.tags: \"a*b?c\")"
     );
 }
 
@@ -855,7 +855,7 @@ async fn a_search_clause_does_not_trigger_the_empty_scope_guard() {
         .and(query_param(
             "filter",
             "alert.attributes.params.immutable: false AND \
-             (alert.attributes.name: *nomatch* OR alert.attributes.tags: \"nomatch\")",
+             (alert.attributes.name: \"*nomatch*\" OR alert.attributes.tags: \"nomatch\")",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "page": 1, "perPage": 10000, "total": 0, "data": []

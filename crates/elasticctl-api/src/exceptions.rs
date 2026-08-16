@@ -67,7 +67,7 @@ impl ListFilter {
         }
         if let Some(search) = &self.search {
             parts.push(format!(
-                "{object_type}.attributes.name: *{}*",
+                "{object_type}.attributes.name: \"*{}*\"",
                 kql_escape_wildcard(search)
             ));
         }
@@ -1081,7 +1081,10 @@ mod tests {
             search: Some("Sub".into()),
             ..Default::default()
         };
-        assert_eq!(f.to_kql().unwrap(), "exception-list.attributes.name: *Sub*");
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.name: \"*Sub*\""
+        );
     }
 
     #[test]
@@ -1093,7 +1096,7 @@ mod tests {
         };
         assert_eq!(
             f.to_kql().unwrap(),
-            "exception-list-agnostic.attributes.name: *Sub*"
+            "exception-list-agnostic.attributes.name: \"*Sub*\""
         );
     }
 
@@ -1107,7 +1110,7 @@ mod tests {
         assert_eq!(
             f.to_kql().unwrap(),
             "exception-list.attributes.type: \"detection\" AND \
-             exception-list.attributes.name: *Sub*"
+             exception-list.attributes.name: \"*Sub*\""
         );
     }
 
@@ -1119,7 +1122,7 @@ mod tests {
         };
         assert_eq!(
             f.to_kql().unwrap(),
-            "exception-list.attributes.name: *a\\*b\\?c*"
+            "exception-list.attributes.name: \"*a\\*b\\?c*\""
         );
     }
 

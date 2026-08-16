@@ -95,7 +95,7 @@ impl RuleFilter {
         }
         if let Some(v) = &self.search {
             parts.push(format!(
-                "(alert.attributes.name: *{}* OR alert.attributes.tags: \"{}\")",
+                "(alert.attributes.name: \"*{}*\" OR alert.attributes.tags: \"{}\")",
                 kql_escape_wildcard(v),
                 kql_escape(v)
             ));

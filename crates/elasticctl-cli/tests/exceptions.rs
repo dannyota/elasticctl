@@ -157,7 +157,7 @@ async fn list_forwards_search_as_a_name_substring_filter() {
     let query: std::collections::BTreeMap<_, _> = find.url.query_pairs().into_owned().collect();
     assert_eq!(
         query["filter"],
-        "exception-list.attributes.name: *Subdomain*"
+        "exception-list.attributes.name: \"*Subdomain*\""
     );
 }
 

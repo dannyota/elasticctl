@@ -105,7 +105,7 @@ async fn rules_list_forwards_search_as_a_parenthesized_filter() {
     let query: std::collections::BTreeMap<_, _> = find.url.query_pairs().into_owned().collect();
     assert_eq!(
         query["filter"],
-        "(alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+        "(alert.attributes.name: \"*PowerShell*\" OR alert.attributes.tags: \"PowerShell\")"
     );
 }
 
