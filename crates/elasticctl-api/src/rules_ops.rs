@@ -89,6 +89,7 @@ fn is_unselected_source_query(filter: &RuleFilter) -> bool {
         && filter.tag.is_none()
         && filter.name.is_none()
         && filter.query.is_none()
+        && filter.search.is_none()
 }
 
 /// Resolve a selector and fetch the rule, canonicalized so output is stable.

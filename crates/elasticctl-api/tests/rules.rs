@@ -326,6 +326,50 @@ fn a_name_filter_combines_with_the_others() {
     assert!(kql.contains(" AND "), "{kql}");
 }
 
+/// Spec 4.7: `--search` is one parenthesized name-substring plus exact-tag
+/// clause, so its `OR` cannot leak across the `AND` join.
+#[test]
+fn a_search_filter_produces_the_parenthesized_name_and_tag_clause() {
+    let f = RuleFilter {
+        search: Some("PowerShell".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        f.to_kql().unwrap(),
+        "(alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+    );
+}
+
+#[test]
+fn a_search_filter_combines_with_the_structured_filters() {
+    let f = RuleFilter {
+        source: RuleSource::Custom,
+        severity: Some("high".into()),
+        search: Some("PowerShell".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        f.to_kql().unwrap(),
+        "alert.attributes.params.immutable: false AND \
+         alert.attributes.params.severity: \"high\" AND \
+         (alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+    );
+}
+
+/// Name is a wildcard substring, so `*` and `?` in the search text must be
+/// neutralized; tags stay exact and quoted, so they are not.
+#[test]
+fn a_search_filter_escapes_wildcards_in_the_name_but_not_the_exact_tag() {
+    let f = RuleFilter {
+        search: Some("a*b?c".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        f.to_kql().unwrap(),
+        "(alert.attributes.name: *a\\*b\\?c* OR alert.attributes.tags: \"a*b?c\")"
+    );
+}
+
 #[tokio::test]
 async fn find_page_returns_rules_and_the_total() {
     let server = MockServer::start().await;
@@ -790,6 +834,43 @@ async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
     let report = rules_ops::list(&transport(&server), &filter).await.unwrap();
 
     assert_eq!(report.total, 0, "the tag missed, so nothing is listed");
+}
+
+/// Like the tag guard: a `--search` that matches nothing is an honest empty
+/// result, not an `immutable` partition failure.
+#[tokio::test]
+async fn a_search_clause_does_not_trigger_the_empty_scope_guard() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.1", "build_flavor": "traditional"}
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.immutable: false AND \
+             (alert.attributes.name: *nomatch* OR alert.attributes.tags: \"nomatch\")",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 0, "data": []
+        })))
+        .mount(&server)
+        .await;
+
+    let filter = RuleFilter {
+        source: RuleSource::Custom,
+        search: Some("nomatch".into()),
+        ..Default::default()
+    };
+    let report = rules_ops::list(&transport(&server), &filter).await.unwrap();
+
+    assert_eq!(report.total, 0, "the search missed, so nothing is listed");
 }
 
 #[tokio::test]

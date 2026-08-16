@@ -67,6 +67,68 @@ async fn rules_list_prints_the_summarized_rules() {
 }
 
 #[tokio::test]
+async fn rules_list_forwards_search_as_a_parenthesized_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 100, "total": 1, "data": [rule_json("a", "PowerShell")]
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), &server.uri());
+    let out = bin()
+        .args([
+            "rules",
+            "list",
+            "--search",
+            "PowerShell",
+            "--json",
+            "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let requests = server.received_requests().await.unwrap();
+    let find = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/detection_engine/rules/_find")
+        .unwrap();
+    let query: std::collections::BTreeMap<_, _> = find.url.query_pairs().into_owned().collect();
+    assert_eq!(
+        query["filter"],
+        "(alert.attributes.name: *PowerShell* OR alert.attributes.tags: \"PowerShell\")"
+    );
+}
+
+#[test]
+fn rules_list_rejects_search_and_filter_together() {
+    let dir = tempfile::tempdir().unwrap();
+    // A missing config proves clap rejects the conflict before config loading.
+    let config = dir.path().join("absent.toml");
+    let out = bin()
+        .args([
+            "rules", "list", "--search", "x", "--filter", "y", "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2), "clap exits 2 on a usage error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--search"), "{stderr}");
+    assert!(stderr.contains("--filter"), "{stderr}");
+}
+
+#[tokio::test]
 async fn rules_list_rejects_enabled_and_disabled_together() {
     let dir = tempfile::tempdir().unwrap();
     // This missing config proves validation runs before config loading or I/O.

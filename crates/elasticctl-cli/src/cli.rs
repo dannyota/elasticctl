@@ -168,6 +168,9 @@ pub enum RulesAction {
         /// Raw KQL, combined with the other filters
         #[arg(long)]
         filter: Option<String>,
+        /// Friendly name-substring + tag search, mutually exclusive with --filter
+        #[arg(long, conflicts_with = "filter")]
+        search: Option<String>,
         /// Which rules to list: custom, customized, prebuilt, or all
         #[arg(long, value_enum, default_value = "all")]
         source: SourceArg,
@@ -250,6 +253,9 @@ pub enum ExceptionsAction {
         tag: Option<String>,
         #[arg(long, value_parser = ["single", "agnostic"])]
         namespace: Option<String>,
+        /// Friendly name-substring search
+        #[arg(long)]
+        search: Option<String>,
     },
     /// Show one container and its items
     Get {

@@ -52,6 +52,7 @@ async fn main() {
                 severity,
                 tag,
                 filter,
+                search,
                 source,
             } => {
                 if *enabled && *disabled {
@@ -74,6 +75,7 @@ async fn main() {
                         tag: tag.clone(),
                         name: None,
                         query: filter.clone(),
+                        search: search.clone(),
                     };
                     match Context::build(&args.global) {
                         Ok(ctx) => cmd::rules::list(&ctx, &f).await,
@@ -168,11 +170,13 @@ async fn main() {
                 list_type,
                 tag,
                 namespace,
+                search,
             } => {
                 let f = ListFilter {
                     list_type: list_type.clone(),
                     tag: tag.clone(),
                     namespace: namespace.clone(),
+                    search: search.clone(),
                 };
                 match Context::build(&args.global) {
                     Ok(ctx) => cmd::exceptions::list(&ctx, &f).await,

@@ -106,6 +106,61 @@ async fn list_forwards_type_tag_and_namespace_filters() {
     );
 }
 
+#[tokio::test]
+async fn list_forwards_search_as_a_name_substring_filter() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exception_lists/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "id": "id-sub",
+                "list_id": "sub-list",
+                "type": "detection",
+                "name": "Subdomain List",
+                "namespace_type": "single",
+                "tags": []
+            }],
+            "page": 1,
+            "per_page": 1,
+            "total": 1
+        })))
+        .mount(&server)
+        .await;
+
+    let out = run(
+        &server.uri(),
+        &[
+            "exceptions",
+            "list",
+            "--search",
+            "Subdomain",
+            "--namespace",
+            "single",
+            "--json",
+        ],
+    )
+    .await;
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report.as_array().unwrap().len(), 1);
+    assert_eq!(report[0]["list_id"], "sub-list");
+    let requests = server.received_requests().await.unwrap();
+    let find = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/exception_lists/_find")
+        .unwrap();
+    let query: std::collections::BTreeMap<_, _> = find.url.query_pairs().into_owned().collect();
+    assert_eq!(
+        query["filter"],
+        "exception-list.attributes.name: *Subdomain*"
+    );
+}
+
 #[test]
 fn validate_is_offline_and_counts_lists_and_items() {
     let dir = tempfile::tempdir().unwrap();

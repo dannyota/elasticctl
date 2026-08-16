@@ -60,6 +60,9 @@ pub struct RuleFilter {
     pub name: Option<String>,
     /// A raw KQL fragment, combined with the structured filters above.
     pub query: Option<String>,
+    /// Friendly name-substring plus exact-tag search (spec 4.7). Distinct from
+    /// `name` (exact) and `query` (raw KQL).
+    pub search: Option<String>,
 }
 
 impl RuleFilter {
@@ -90,6 +93,13 @@ impl RuleFilter {
         if let Some(v) = &self.tag {
             parts.push(format!("alert.attributes.tags: \"{}\"", kql_escape(v)));
         }
+        if let Some(v) = &self.search {
+            parts.push(format!(
+                "(alert.attributes.name: *{}* OR alert.attributes.tags: \"{}\")",
+                kql_escape_wildcard(v),
+                kql_escape(v)
+            ));
+        }
         if let Some(v) = &self.query {
             parts.push(v.clone());
         }
@@ -106,6 +116,16 @@ impl RuleFilter {
 /// divergence silently matches the wrong objects.
 pub(crate) fn kql_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Escape a value for a wildcard-wrapped KQL substring term (`*<value>*`).
+///
+/// Builds on `kql_escape`, then escapes the KQL wildcards `*` and `?` so a
+/// search text cannot inject its own wildcards and widen the match. Shared
+/// with the exceptions vertical: the two filter builders must not diverge,
+/// because a divergence silently matches the wrong objects.
+pub(crate) fn kql_escape_wildcard(value: &str) -> String {
+    kql_escape(value).replace('*', "\\*").replace('?', "\\?")
 }
 
 /// KQL selecting exactly the given stable rule ids.
@@ -791,6 +811,15 @@ mod tests {
         expected.push('"');
         expected.push('b');
         assert_eq!(kql_escape("a\"b"), expected);
+    }
+
+    /// The wildcard pass runs after `kql_escape`, escaping `*` and `?` without
+    /// undoing the backslash and quote escaping.
+    #[test]
+    fn kql_escape_wildcard_escapes_kql_wildcards_after_kql_escape() {
+        assert_eq!(kql_escape_wildcard("*"), "\\*");
+        assert_eq!(kql_escape_wildcard("?"), "\\?");
+        assert_eq!(kql_escape_wildcard("a\\b\"c"), kql_escape("a\\b\"c"));
     }
 
     /// A backslash before a quote tests escape order. Escaping quotes first

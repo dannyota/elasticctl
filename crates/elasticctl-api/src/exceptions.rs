@@ -8,7 +8,7 @@ use crate::codec::{self, Bundle, Format};
 use crate::model::{ExceptionItem, ExceptionList, ListKey};
 use crate::normalize;
 use crate::ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
-use crate::rules::kql_escape;
+use crate::rules::{kql_escape, kql_escape_wildcard};
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,6 +37,8 @@ pub struct ListFilter {
     pub list_type: Option<String>,
     pub tag: Option<String>,
     pub namespace: Option<String>,
+    /// Friendly name-substring search (spec 4.7).
+    pub search: Option<String>,
 }
 
 impl ListFilter {
@@ -61,6 +63,12 @@ impl ListFilter {
             parts.push(format!(
                 "{object_type}.attributes.tags: \"{}\"",
                 kql_escape(tag)
+            ));
+        }
+        if let Some(search) = &self.search {
+            parts.push(format!(
+                "{object_type}.attributes.name: *{}*",
+                kql_escape_wildcard(search)
             ));
         }
         (!parts.is_empty()).then(|| parts.join(" AND "))
@@ -1064,6 +1072,54 @@ mod tests {
             f.to_kql().unwrap(),
             "exception-list.attributes.type: \"detection\" AND \
              exception-list.attributes.tags: \"alpha\""
+        );
+    }
+
+    #[test]
+    fn to_kql_search_matches_name_substring_over_the_measured_prefix() {
+        let f = ListFilter {
+            search: Some("Sub".into()),
+            ..Default::default()
+        };
+        assert_eq!(f.to_kql().unwrap(), "exception-list.attributes.name: *Sub*");
+    }
+
+    #[test]
+    fn to_kql_search_uses_the_agnostic_saved_object_type_for_that_namespace() {
+        let f = ListFilter {
+            search: Some("Sub".into()),
+            namespace: Some("agnostic".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list-agnostic.attributes.name: *Sub*"
+        );
+    }
+
+    #[test]
+    fn to_kql_search_combines_with_other_clauses() {
+        let f = ListFilter {
+            list_type: Some("detection".into()),
+            search: Some("Sub".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.type: \"detection\" AND \
+             exception-list.attributes.name: *Sub*"
+        );
+    }
+
+    #[test]
+    fn to_kql_search_escapes_wildcards_in_the_name() {
+        let f = ListFilter {
+            search: Some("a*b?c".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_kql().unwrap(),
+            "exception-list.attributes.name: *a\\*b\\?c*"
         );
     }
 
