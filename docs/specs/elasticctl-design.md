@@ -249,7 +249,7 @@ elasticctl config list | show | test         Inspect profiles; secrets always re
 elasticctl doctor                            Configuration, connectivity, flavor, auth, key scope, rule access
 elasticctl info                              Stack version, flavor, license tier, spaces
 
-elasticctl rules list                        --enabled/--disabled --type --severity --tag --filter --source
+elasticctl rules list                        --enabled/--disabled --type --severity --tag --filter --search --source
 elasticctl rules get <name|rule_id>
 elasticctl rules validate --path FILE        Local schema check, no server contact
 elasticctl rules enable  <name|rule_id>...   [guarded]
@@ -261,16 +261,16 @@ elasticctl rules preview <file|name|rule_id> [--invocations N] [--sample N]
 elasticctl rules prebuilt status             Installed, missing, outdated, customized             0.2
 elasticctl rules prebuilt install            Install missing and update outdated  [guarded]       0.2
 
-elasticctl exceptions list                   --type --tag --namespace                             0.2
+elasticctl exceptions list                   --type --tag --namespace --search                    0.2
 elasticctl exceptions get <list_id> [--namespace single|agnostic]                                 0.2
 elasticctl exceptions validate --path FILE   Local schema check, no server contact                0.2
 elasticctl exceptions export [<list_id>...] [--tag TAG] [--namespace NS] [--format-file ndjson]   0.2
 elasticctl exceptions import --path FILE [--overwrite | --skip-existing]  [guarded]               0.2
 elasticctl exceptions delete <list_id>... [--namespace single|agnostic]   [guarded]               0.2
 
-elasticctl state pull [<name|rule_id>...] [--tag TAG] [--source S] --dir config/ [--format-file ndjson|yaml]
-elasticctl state diff [<name|rule_id>...] [--tag TAG] [--source S] --dir config/  Field-level structured drift
-elasticctl state push [<name|rule_id>...] [--tag TAG] [--source S] --dir config/ [--report FILE]  [guarded]
+elasticctl state pull [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/ [--format-file ndjson|yaml]
+elasticctl state diff [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/  Field-level structured drift
+elasticctl state push [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/ [--report FILE]  [guarded]
 
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands                          Machine-readable command tree
@@ -406,6 +406,16 @@ internal search route.
 The preview is computed from `_status` rather than from a server dry run,
 because this route takes no `dry_run` parameter. It is the only guarded path in
 the tool whose preview is client-computed, and the banner names both counts.
+
+### 4.7 Object search
+
+`rules list` gains `--search`, a friendly query over the public `_find` filter
+fields — name substring plus tags, and `description` and `query` if that filter
+reaches them (verify before build). It is sugar over the same filter as
+`--filter` (raw KQL, unchanged); the two are mutually exclusive. `exceptions
+list` gains name-substring search through the same flag. `--search` widens list
+discovery only. Selector resolution stays exact (§4.1), and `state` gains the
+flag through §5.3. The internal `_search` route is not used (§5.2).
 
 ## 5. State engine
 
@@ -558,7 +568,7 @@ agree or survive an upgrade.
 ### 5.3 Scoped state operations
 
 `pull`, `diff`, and `push` take the same positional selectors and `--tag`
-filter as `rules export`, described in 4.3. Given neither, they act on
+filter as `rules export` (4.3), plus `--search` (4.7). Given neither, they act on
 everything inside the active `--source` scope, which from 0.2 is the space's
 custom rules rather than the whole space. Section 5.5 covers that change.
 
@@ -1281,8 +1291,12 @@ boundaries. The near-term evidence ladder is:
    self-managed 9.5.1 compatibility floor.
 3. 0.2.4 ships the bounded post-release review patch: the boundary defects found
    by a static review of the post-0.2.3 codebase, each with a regression.
-4. 0.3.0 delivers the complete ES|QL and Query DSL search vertical. Later minor
-   capability areas begin only after 0.3 is complete and trial time remains.
+4. 0.3.0 delivers the complete ES|QL and Query DSL search vertical.
+5. 0.3.1 publishes the search conformance matrix and completes the deferred
+   search items: ES|QL export payload, DSL hit metadata, and object search
+   (`--search` and substring name matching) over rules, exceptions, and state.
+   Later minor capability areas begin only after 0.3 is complete and
+   trial time remains.
 
 The privacy, cleanup, evidence, and release gates for this sequence are defined
 in §8.3, §11.2, and §12.

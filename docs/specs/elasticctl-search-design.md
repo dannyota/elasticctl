@@ -39,7 +39,7 @@ elasticctl search esql '<query>'
 
 elasticctl search dsl '<json|@file>'
     [--index NAME] [--data-view NAME] [--limit N]
-    [--format table|json|yaml|csv|jsonl] [--fields a,b] [--out FILE]
+    [--format table|json|yaml|csv|jsonl] [--fields a,b] [--out FILE] [--with-meta]
     [--profile --config --space --timeout --debug --json]
 ```
 
@@ -92,9 +92,9 @@ suffix when rendered.
 **DSL** returns `{hits: {hits: [{_index, _id, _score, _source, sort}, …],
 total: {value, relation}}}`. The rendered row is the `_source` object; `_index`,
 `_id`, `_score`, and `sort` are dropped, because `_score`, `_id`, and `sort` are
-per-run noise in a bulk export. Hit metadata is not surfaced in 0.3.0.
-`--fields` projects the `_source` row, which is what makes `--format csv`
-meaningful for documents.
+per-run noise in a bulk export. Hit metadata is opt-in from 0.3.1: `--with-meta`
+surfaces `_id`, `_index`, and `_score` as extra fields. `--fields` projects the
+`_source` row, which is what makes `--format csv` meaningful for documents.
 
 ## 6. Pagination and export
 
@@ -123,7 +123,7 @@ A **bulk export** (`--out`) streams pages to the file:
   /_query/async/<id>`. The full result arrives in one response — there is no
   page-by-page stream — and the client fetches it as row-major JSON and writes
   it to `--out`. `columnar: true` (column-major `values`) or `format: csv`
-  (direct CSV with a header row) are future optimizations to keep the payload
+  (direct CSV with a header row) ship in 0.3.1 to keep the payload
   and memory footprint low.
 
 Export writes NDJSON (JSONL) by default because it is streaming-friendly; the
@@ -193,12 +193,11 @@ Elasticsearch API key.
 | Direct ES auth | `Authorization: ApiKey <key>` alone is sufficient for `/_query` and `/_search`; no `kbn-xsrf`, no `elastic-api-version` |
 | Hosted parity | Elastic Cloud Hosted 9.5.1 (`build_flavor: "default"`) returns the same default alerts index, the same data-view `{id, name, title}` shape, and the same ES|QL sync/async contract (no cursor; body `wait_for_completion_timeout` → `{id, is_running: true}`) |
 
-## 10. Open questions
+## 10. Resolution notes
 
-One item remains, resolved during self-managed fixture recording before the
-implementation plan's live phase:
-
-1. **Self-managed ES|QL parity** — Serverless 9.6.0 and Hosted 9.5.1 both
-   confirm the async contract and the absence of any cursor. The self-managed
-   stack (reporting `build_flavor: "traditional"`) is assumed identical; the
-   lab recording verifies it.
+The single open question from the design phase is closed. The self-managed
+recording (the `traditional-9.5.1` fixture set) confirms the ES|QL sync shape
+(`columns`/`values`, no cursor) and the DSL PIT page-and-close contract on a
+stack reporting `build_flavor: "traditional"`. §9 records the same shapes on
+Serverless and Hosted, including the async contract and the absence of any
+cursor, so all three flavors now agree and nothing remains open.
