@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Validate every tracked v0.2.* conformance report without exposing matched data.
+# Validate every tracked conformance report without exposing matched data.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONTRACTS='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip"]'
+CONTRACTS_V2='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip"]'
+CONTRACTS_V3='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search"]'
 FLAVORS=(serverless ech traditional)
 
 shopt -s nullglob
-dirs=(docs/conformance/v0.2.*)
+dirs=(docs/conformance/v0.2.* docs/conformance/v0.3.*)
 # Keep only directories: the glob would otherwise match a stray regular file.
 filtered=()
 for candidate in "${dirs[@]}"; do
@@ -15,7 +16,7 @@ for candidate in "${dirs[@]}"; do
 done
 dirs=("${filtered[@]}")
 [ "${#dirs[@]}" -gt 0 ] || {
-  echo "FAIL: no docs/conformance/v0.2.* directories found"
+  echo "FAIL: no docs/conformance/v0.2.* or v0.3.* directories found"
   exit 1
 }
 
@@ -27,6 +28,13 @@ for dir in "${dirs[@]}"; do
     echo "FAIL: expected exactly three conformance reports in $dir"
     exit 1
   }
+
+  # 0.3 added the search contract to the runner's seven; 0.2 reported six.
+  if [[ "$dir" == */v0.3.* ]]; then
+    contracts="$CONTRACTS_V3"
+  else
+    contracts="$CONTRACTS_V2"
+  fi
 
   for flavor in "${FLAVORS[@]}"; do
     matches=("$dir/$flavor-"*.json)
@@ -45,13 +53,13 @@ for dir in "${dirs[@]}"; do
     }
 
     jq -e --arg flavor "$flavor" --arg version "$version" \
-      --argjson contracts "$CONTRACTS" '
+      --argjson contracts "$contracts" '
         (type == "object") and
         (keys == ["contracts", "flavor", "version"]) and
         (.flavor == $flavor) and
         (.version == $version) and
         (.contracts | type == "array") and
-        (.contracts | length == 6) and
+        (.contracts | length == ($contracts | length)) and
         ([.contracts[].contract] == $contracts) and
         all(.contracts[];
           (type == "object") and
