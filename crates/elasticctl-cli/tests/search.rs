@@ -446,3 +446,59 @@ async fn search_dsl_out_writes_jsonl_by_default() {
     );
     assert!(lines[0].contains("\"seq\":1"), "{text}");
 }
+
+/// The bulk-export (PIT) path must surface hit metadata too, not only the
+/// one-request peek. `--with-meta` merges `_id`, `_index`, and `_score` into
+/// each written row alongside its `_source` fields.
+#[tokio::test]
+async fn search_dsl_out_with_meta_writes_hit_metadata() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let out_path = dir.path().join("results.ndjson");
+
+    Mock::given(method("POST"))
+        .and(path("/idx/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
+        .mount(&server)
+        .await;
+    // A single page whose hits carry no `sort` ends the stream after one request.
+    Mock::given(method("POST"))
+        .and(path("/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_index": "idx", "_id": "a", "_score": 1.5, "_source": {"seq": 1}},
+                {"_index": "idx", "_id": "b", "_score": 2.5, "_source": {"seq": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"succeeded": true})))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "dsl", "{\"query\": {\"match_all\": {}}}", "--out"])
+        .arg(&out_path)
+        .args(["--index", "idx", "--with-meta"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = fs::read_to_string(&out_path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    let rows: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            json!({"seq": 1, "_id": "a", "_index": "idx", "_score": 1.5}),
+            json!({"seq": 2, "_id": "b", "_index": "idx", "_score": 2.5})
+        ]
+    );
+}

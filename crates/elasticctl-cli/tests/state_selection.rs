@@ -354,3 +354,136 @@ async fn a_scoped_pull_resolves_a_display_name_against_the_stack() {
     assert_eq!(v["pulled"], 1);
     assert_eq!(v["selected"], 1);
 }
+
+/// `--search` narrows `pull` before the remote read: the scoped `_find` carries
+/// the name-substring KQL filter, and only the matched rule is written.
+#[tokio::test]
+async fn a_search_scoped_pull_writes_only_the_matching_rule() {
+    let server = MockServer::start().await;
+    // Discovery: the `--search` KQL filter returns only the matching rule.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "(alert.attributes.name: \"*Rule a*\" OR alert.attributes.tags: \"Rule a\")",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 1, "data": [remote_rule("a", 21)]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The scoped remote read then fetches exactly the selected rule_id.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.ruleId: \"a\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 1, "data": [remote_rule("a", 21)]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+
+    let out = run(&[
+        "state".as_ref(),
+        "pull".as_ref(),
+        "--config".as_ref(),
+        cfg.as_os_str(),
+        "--dir".as_ref(),
+        state.as_os_str(),
+        "--json".as_ref(),
+        "--search".as_ref(),
+        "Rule a".as_ref(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(state.join("rules").join("a.ndjson").exists());
+    assert!(
+        !state.join("rules").join("b.ndjson").exists(),
+        "the non-matching rule must not be pulled"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["pulled"], 1);
+    assert_eq!(v["selected"], 1);
+}
+
+/// `--search` narrows `diff` on both sides: only the matching rule is compared,
+/// and a drifted non-matching local rule is not reported.
+#[tokio::test]
+async fn a_search_scoped_diff_reports_only_the_matching_rule() {
+    let server = MockServer::start().await;
+    // Discovery: the `--search` KQL filter returns only the matching rule.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "(alert.attributes.name: \"*Rule a*\" OR alert.attributes.tags: \"Rule a\")",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 1, "data": [remote_rule("a", 21)]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The scoped remote read then fetches exactly the selected rule_id.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .and(query_param(
+            "filter",
+            "alert.attributes.params.ruleId: \"a\"",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 10000, "total": 1, "data": [remote_rule("a", 21)]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    // "a" matches the search and is drifted; "b" would drift too if selected.
+    write_local(&state, "a", 99);
+    write_local(&state, "b", 999);
+
+    let out = run(&[
+        "state".as_ref(),
+        "diff".as_ref(),
+        "--config".as_ref(),
+        cfg.as_os_str(),
+        "--dir".as_ref(),
+        state.as_os_str(),
+        "--json".as_ref(),
+        "--search".as_ref(),
+        "Rule a".as_ref(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["selected"], 1);
+    assert_eq!(v["local"], 1, "the local side must be narrowed too");
+    assert_eq!(v["local_total"], 2, "the unscoped local count is reported");
+    assert_eq!(v["clean"], false);
+    let changes = v["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "only the matching rule may drift: {v}");
+    assert_eq!(changes[0]["rule_id"], "a");
+    assert!(
+        changes.iter().all(|c| c["rule_id"] != "b"),
+        "the non-matching rule must not be reported as drift: {v}"
+    );
+}
