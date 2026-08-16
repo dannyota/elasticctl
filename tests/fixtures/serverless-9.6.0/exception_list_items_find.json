@@ -5,7 +5,6 @@
   "response": {
     "data": [
       {
-        "id": "fcb3dbed-1459-4c30-920d-a5e357a95cc5",
         "item_id": "elasticctl-sample-exception-item",
         "list_id": "elasticctl-sample-exceptions",
         "type": "simple",
@@ -28,9 +27,7 @@
         "comments": [],
         "_version": "REDACTED",
         "tie_breaker_id": "REDACTED",
-        "created_at": "2026-08-15T05:25:11.658Z",
         "created_by": "REDACTED",
-        "updated_at": "2026-08-15T05:25:11.658Z",
         "updated_by": "REDACTED"
       }
     ],

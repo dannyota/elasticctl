@@ -56,6 +56,9 @@ fn is_sensitive(key: &str) -> bool {
     let leaf = lower.rsplit('.').next().unwrap_or(&lower);
     lower.contains("api_key")
         || lower.contains("apikey")
+        // The preview rule id is per-run; the preview-hits test asserts it is
+        // present and matches the query, so redact rather than strip it.
+        || lower == "kibana.alert.rule.uuid"
         || matches!(leaf, "authorization" | "password" | "encoded")
         || SCRUB_FIELDS.contains(&leaf)
 }
@@ -351,6 +354,7 @@ fn scrub_ndjson(text: &str, hosts: &[String]) -> String {
         let mut v: Value = serde_json::from_str(line).expect("export line is JSON");
         scrub(&mut v);
         scrub_hosts(&mut v, hosts);
+        strip_volatile(&mut v, RULE_VOLATILE_FIELDS);
         out.push_str(&serde_json::to_string(&v).expect("encode scrubbed export line"));
         out.push('\n');
     }
@@ -458,6 +462,56 @@ fn exchange_fixture(
     }
 }
 
+/// Record a rule, list, or item response, stripping the volatile server-owned
+/// fields so a re-record of the same object is byte-identical.
+fn rule_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut body: Value,
+) -> RecordedFixture {
+    strip_volatile(&mut body, RULE_VOLATILE_FIELDS);
+    response_fixture(name, flavor, version, body, None)
+}
+
+/// Record a rule, list, or item exchange, stripping the same volatile fields
+/// from the response body.
+fn rule_exchange_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    request: Value,
+    mut body: Value,
+) -> RecordedFixture {
+    strip_volatile(&mut body, RULE_VOLATILE_FIELDS);
+    exchange_fixture(name, flavor, version, request, body)
+}
+
+/// Record a preview response, stripping the per-run preview fields.
+fn preview_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut body: Value,
+) -> RecordedFixture {
+    strip_volatile(&mut body, PREVIEW_VOLATILE_FIELDS);
+    response_fixture(name, flavor, version, body, None)
+}
+
+/// Record a preview-hits exchange, stripping per-run fields from both the
+/// request (the preview id in the query) and the response (the alert hits).
+fn preview_exchange_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut request: Value,
+    mut body: Value,
+) -> RecordedFixture {
+    strip_volatile(&mut request, PREVIEW_VOLATILE_FIELDS);
+    strip_volatile(&mut body, PREVIEW_VOLATILE_FIELDS);
+    exchange_fixture(name, flavor, version, request, body)
+}
+
 /// Record a classified endpoint error without inventing a success body.
 fn error_fixture(
     name: &'static str,
@@ -545,6 +599,32 @@ const ESQL_VOLATILE_FIELDS: &[&str] = &[
 ];
 /// Query DSL response fields that vary per run (spec §8).
 const DSL_VOLATILE_FIELDS: &[&str] = &["took", "_shards", "_score", "sort", "pit_id"];
+/// Server-owned fields on rules, lists, and items that change on every create:
+/// the saved-object `id` and the `created_at`/`updated_at` timestamps. They must
+/// not survive a fixture (spec §8). A space or data-view `id` is stable and
+/// meaningful, so this strip applies only to rule, list, and item fixtures.
+const RULE_VOLATILE_FIELDS: &[&str] = &["id", "created_at", "updated_at", "execution_summary"];
+/// Per-run fields in a preview and its alert hits: the preview id, execution
+/// timestamps and uuids, the generated rule id, and the per-run name/reason
+/// suffix. A preview writes fresh alerts each run, so these must not survive a
+/// fixture (spec §8); the fixture keeps the alert structure and hit count.
+const PREVIEW_VOLATILE_FIELDS: &[&str] = &[
+    "previewId",
+    "duration",
+    "_id",
+    "rule_id",
+    "kibana.alert.uuid",
+    "kibana.alert.rule.rule_id",
+    "kibana.alert.rule.execution.uuid",
+    "kibana.alert.rule.execution.timestamp",
+    "kibana.alert.rule.created_at",
+    "kibana.alert.rule.updated_at",
+    "kibana.alert.rule.name",
+    "kibana.alert.reason",
+    "kibana.alert.url",
+    "kibana.alert.start",
+    "kibana.alert.last_detected",
+];
 
 /// Return a per-run suffix so a re-record cannot match leftover preview alerts.
 fn run_token() -> String {
@@ -1365,29 +1445,23 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         .as_str()
         .ok_or_else(|| recording_error("exception list create response is missing id"))?
         .to_string();
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "exception_list_create",
         &flavor,
         &version,
         list,
-        None,
     ));
     let item = create_marked_item(session).await?;
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "exception_item_create",
         &flavor,
         &version,
         item,
-        None,
     ));
     let (rule_body, rule) = create_marked_rule(session, &list_server_id).await?;
-    recording.fixtures.push(response_fixture(
-        "rules_create",
-        &flavor,
-        &version,
-        rule,
-        None,
-    ));
+    recording
+        .fixtures
+        .push(rule_fixture("rules_create", &flavor, &version, rule));
 
     let list_filter = format!("exception-list.attributes.list_id: \"{LIST_ID}\"");
     let lists_find = t
@@ -1396,14 +1470,14 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             urlencode(&list_filter)
         ))
         .await?;
-    recording.fixtures.push(exchange_fixture(
+    recording.fixtures.push(rule_exchange_fixture(
         "exception_lists_find",
         &flavor,
         &version,
         json!({"filter": list_filter}),
         lists_find,
     ));
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "exception_list_get",
         &flavor,
         &version,
@@ -1412,9 +1486,8 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             urlencode(LIST_ID)
         ))
         .await?,
-        None,
     ));
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "exception_list_items_find",
         &flavor,
         &version,
@@ -1423,7 +1496,6 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             urlencode(LIST_ID)
         ))
         .await?,
-        None,
     ));
 
     let rule_filter = format!("alert.attributes.params.ruleId: \"{RULE_ID}\"");
@@ -1433,15 +1505,11 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             urlencode(&rule_filter)
         ))
         .await?;
-    recording.fixtures.push(response_fixture(
-        "rules_find",
-        &flavor,
-        &version,
-        rules_find,
-        None,
-    ));
+    recording
+        .fixtures
+        .push(rule_fixture("rules_find", &flavor, &version, rules_find));
     let name_filter = "alert.attributes.name: \"elasticctl fixture probe\"";
-    recording.fixtures.push(exchange_fixture(
+    recording.fixtures.push(rule_exchange_fixture(
         "rules_find_by_name",
         &flavor,
         &version,
@@ -1472,7 +1540,7 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
                 urlencode(&source_filter)
             ))
             .await?;
-        recording.fixtures.push(exchange_fixture(
+        recording.fixtures.push(rule_exchange_fixture(
             name,
             &flavor,
             &version,
@@ -1481,15 +1549,14 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         ));
     }
 
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "rules_get",
         &flavor,
         &version,
         t.get(&format!("/api/detection_engine/rules?rule_id={RULE_ID}"))
             .await?,
-        None,
     ));
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "rules_patch",
         &flavor,
         &version,
@@ -1498,9 +1565,8 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             &json!({"rule_id": RULE_ID, "enabled": true}),
         )
         .await?,
-        None,
     ));
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(rule_fixture(
         "rules_bulk_disable",
         &flavor,
         &version,
@@ -1509,7 +1575,6 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
             Some(&json!({"action": "disable", "query": rule_filter})),
         )
         .await?,
-        None,
     ));
 
     let preview_body = {
@@ -1522,17 +1587,16 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         body.insert("timeframeEnd".into(), json!(PREVIEW_TIMEFRAME_END));
         Value::Object(body)
     };
-    recording.fixtures.push(response_fixture(
+    recording.fixtures.push(preview_fixture(
         "rules_preview",
         &flavor,
         &version,
         t.post("/api/detection_engine/rules/preview", Some(&preview_body))
             .await?,
-        None,
     ));
     let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".into());
     let preview_hits = record_preview_hits(session, &space).await?;
-    recording.fixtures.push(exchange_fixture(
+    recording.fixtures.push(preview_exchange_fixture(
         "rules_preview_hits",
         &flavor,
         &version,
@@ -1565,7 +1629,7 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         json!({"ndjson": scrub_ndjson(&exception_export, &hosts)}),
         None,
     ));
-    recording.fixtures.push(exchange_fixture(
+    recording.fixtures.push(rule_exchange_fixture(
         "exception_list_import",
         &flavor,
         &version,
@@ -1611,7 +1675,7 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         json!({"ndjson": scrubbed_rule_export}),
         None,
     ));
-    recording.fixtures.push(exchange_fixture(
+    recording.fixtures.push(rule_exchange_fixture(
         "rules_import_bundle",
         &flavor,
         &version,
@@ -1653,13 +1717,9 @@ async fn record() {
                     .unwrap_or("unknown")
                     .to_string();
                 let mut recording = recording;
-                recording.fixtures.push(response_fixture(
-                    "rules_delete",
-                    &flavor,
-                    &version,
-                    rule,
-                    None,
-                ));
+                recording
+                    .fixtures
+                    .push(rule_fixture("rules_delete", &flavor, &version, rule));
                 recording
             } else {
                 recording

@@ -159,6 +159,12 @@ that strips `execution_summary` from rule exports:
   `_shard_doc`), and any `pit_id` (opaque per run).
 - **Status** — the `metrics` object (a runtime snapshot: load, memory, uptime,
   cpu counters, `last_updated`).
+- **Rule/list/item** — the saved-object `id`, `created_at`, `updated_at`, and
+  `execution_summary`. A space or data-view `id` is stable and stays.
+- **Preview** — `previewId`, `duration`, the hit `_id`, the generated `rule_id`,
+  and the per-run `kibana.alert.*` uuids, timestamps, name, reason, and url.
+  `kibana.alert.rule.uuid` is redacted, not stripped, because the preview-hits
+  test asserts it is present and matches the query.
 
 Unit tests run offline against recorded fixtures. Live tests follow the existing
 conformance discipline: every object is marker-scoped, the run ends by
