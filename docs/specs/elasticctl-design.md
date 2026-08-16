@@ -417,12 +417,15 @@ NOT exist in alert saved object index patterns`). `--search <text>` therefore
 narrows to name substring plus tags:
 
 ```
-(alert.attributes.name: *<text>* OR alert.attributes.tags: "<text>")
+(alert.attributes.name: "*<text>*" OR alert.attributes.tags: "<text>")
 ```
 
 The parenthesized clause is ANDed with the structured filters, so `--search`
 never widens a scoped `_find` past its other clauses. Name is substring-matched
-by wildcard; tags are exact, as in `--tag`. It is sugar over the same filter as
+by a quoted wildcard term; tags are exact, as in `--tag`. The quotes are
+load-bearing: measured 2026-08-16, an unquoted `name: *a b*` matches names
+containing both words in any order (a token AND), while the quoted `name: "*a
+b*"` matches only the contiguous substring. It is sugar over the same filter as
 `--filter` (raw KQL, unchanged); the two are mutually exclusive. `exceptions
 list` gains name-substring search through the same flag, over
 `exception-list.attributes.name` (or its `-agnostic` counterpart). `--search`
