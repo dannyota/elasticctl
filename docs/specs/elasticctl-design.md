@@ -422,7 +422,10 @@ narrows to name substring plus tags:
 
 The parenthesized clause is ANDed with the structured filters, so `--search`
 never widens a scoped `_find` past its other clauses. Name is substring-matched
-by a quoted wildcard term; tags are exact, as in `--tag`. The quotes are
+by a quoted wildcard term and matches case-insensitively (measured 2026-08-16
+against Serverless 9.6.0: `--search "PowerShell"` and `--search "powershell"`
+return the same rules); tags are exact, as in `--tag`, and case-sensitive. The
+quotes are
 load-bearing: measured 2026-08-16, an unquoted `name: *a b*` matches names
 containing both words in any order (a token AND), while the quoted `name: "*a
 b*"` matches only the contiguous substring. It is sugar over the same filter as
@@ -1185,11 +1188,11 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same six contracts serially against each target: diagnostics,
+It runs the same seven contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
-repair, source scoping, and rule export/import round-trip. Before the first
-mutation, it captures custom, prebuilt, and customized rule counts and refuses
-a target with existing live-marker objects. It checks marker cleanup after
+repair, source scoping, rule export/import round-trip, and search. Before the
+first mutation, it captures custom, prebuilt, and customized rule counts and
+refuses a target with existing live-marker objects. It checks marker cleanup after
 every contract and compares the final rule partitions with that baseline.
 
 An ordinary contract failure is valid 0.2.3 evidence when cleanup succeeds. A
@@ -1221,6 +1224,15 @@ All 18 contract rows passed with no skip. The validated
 [findings](../conformance/v0.2.3/findings.md) therefore justify no live defect,
 while a later static review justified the bounded 0.2.4 patch; the 0.3.0 search
 design is the next capability-area work.
+
+The 0.3.1 measured matrix adds the `search` contract; all seven pass on every
+target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 7 pass | Verified | [report](../conformance/v0.3.1/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.1 | 7 pass | Verified | [report](../conformance/v0.3.1/ech-9.5.1.json) |
+| Self-managed | 9.5.1 | 7 pass | Verified | [report](../conformance/v0.3.1/traditional-9.5.1.json) |
 
 ## 9. Local lab
 

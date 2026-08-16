@@ -87,10 +87,13 @@ scan_for() {
   local description=$1
   local pattern=$2
   shift 2
-  if grep -P -l "$pattern" "$@" >/dev/null; then
-    echo "FAIL: $description in a conformance report"
-    return 1
-  fi
+  local status=0
+  grep -P -l "$pattern" "$@" >/dev/null || status=$?
+  case "$status" in
+    0) echo "FAIL: $description in a conformance report"; return 1 ;;
+    1) return 0 ;;
+    *) echo "FAIL: leak scan for $description could not run (grep -P exited $status)"; return 1 ;;
+  esac
 }
 
 scan_for "credential material" \

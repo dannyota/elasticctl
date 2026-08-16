@@ -161,6 +161,10 @@ installed. Kibana's entrypoint maps only `UPPER_SNAKE` environment variable name
 `xpack.encryptedSavedObjects.encryptionKey` form is silently ignored, so every rule creation
 fails.
 
+Live testing against the trial Serverless and Hosted stacks is always permitted: probe them
+read-only or run a marker-scoped mutation without asking first. The marker and baseline rules
+below still apply.
+
 The Serverless dev project holds ~2,066 Elastic prebuilt rules for scale testing. They are
 read-only ground truth: never mutate an untagged rule. Every object a live test creates carries
 the `elasticctl-sample` marker: a `rule_id` prefix and tag for rules, and
