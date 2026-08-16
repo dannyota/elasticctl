@@ -238,8 +238,22 @@ struct TargetState {
     marked_indices: usize,
 }
 
+/// Whether a feature is available on the measured target.
+///
+/// This mirrors the per-contract skip gate exactly: both use the same
+/// `Capabilities::require_feature` floor. A below-floor target reports every
+/// feature as unavailable, so `TargetState::capture` defaults the gated
+/// partitions to 0 instead of failing the baseline before the skip
+/// classification can run.
+fn feature_available(capabilities: &Capabilities, feature: Feature) -> bool {
+    capabilities.require_feature(feature).is_ok()
+}
+
 impl TargetState {
-    async fn capture(transport: &Transport) -> elasticctl_core::Result<Self> {
+    async fn capture(
+        transport: &Transport,
+        capabilities: &Capabilities,
+    ) -> elasticctl_core::Result<Self> {
         async fn rule_total(
             transport: &Transport,
             source: RuleSource,
@@ -259,23 +273,38 @@ impl TargetState {
             Ok(total)
         }
 
-        let custom = rule_total(transport, RuleSource::Custom, None).await?;
-        let prebuilt = rule_total(transport, RuleSource::Prebuilt, None).await?;
-        let customized = rule_total(transport, RuleSource::Customized, None).await?;
+        let source_scoped = feature_available(capabilities, Feature::RuleSourceScoping);
+        let custom = if source_scoped {
+            rule_total(transport, RuleSource::Custom, None).await?
+        } else {
+            0
+        };
+        let prebuilt = if source_scoped {
+            rule_total(transport, RuleSource::Prebuilt, None).await?
+        } else {
+            0
+        };
+        let customized = if source_scoped {
+            rule_total(transport, RuleSource::Customized, None).await?
+        } else {
+            0
+        };
         let marked_rules =
             rule_total(transport, RuleSource::All, Some("elasticctl-live-marker")).await?;
         let mut marked_lists = 0;
-        for namespace in ["single", "agnostic"] {
-            marked_lists += elasticctl_api::exceptions::find_lists(
-                transport,
-                &ListFilter {
-                    tag: Some("elasticctl-live-marker".to_string()),
-                    namespace: Some(namespace.to_string()),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .len();
+        if feature_available(capabilities, Feature::ExceptionLists) {
+            for namespace in ["single", "agnostic"] {
+                marked_lists += elasticctl_api::exceptions::find_lists(
+                    transport,
+                    &ListFilter {
+                        tag: Some("elasticctl-live-marker".to_string()),
+                        namespace: Some(namespace.to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .len();
+            }
         }
         let marked_indices = match transport
             .get_absolute_es("/_resolve/index/elasticctl-live-*")
@@ -511,11 +540,12 @@ fn private_audit_failure(
 
 async fn capture_state(
     transport: &Transport,
+    capabilities: &Capabilities,
     workspace: &std::path::Path,
     flavor: FlavorLabel,
     stage: &str,
 ) -> Result<TargetState, String> {
-    TargetState::capture(transport)
+    TargetState::capture(transport, capabilities)
         .await
         .map_err(|error| private_failure(workspace, flavor, stage, error.message.as_bytes()))
 }
@@ -536,7 +566,14 @@ pub async fn run(values: &[String]) -> Result<(), String> {
             .map_err(|_| "conformance could not clear the previous report".to_string())?;
     }
 
-    let baseline = capture_state(&transport, &workspace, args.flavor, "baseline").await?;
+    let baseline = capture_state(
+        &transport,
+        &capabilities,
+        &workspace,
+        args.flavor,
+        "baseline",
+    )
+    .await?;
     baseline.assert_clean_start()?;
     let mut report = Report {
         flavor: args.flavor.as_str().to_string(),
@@ -559,9 +596,16 @@ pub async fn run(values: &[String]) -> Result<(), String> {
                 capabilities.version,
                 contract.name
             );
-            let state = TargetState::capture(&transport).await.map_err(|error| {
-                private_audit_failure(&workspace, args.flavor, contract, error.message.as_bytes())
-            })?;
+            let state = TargetState::capture(&transport, &capabilities)
+                .await
+                .map_err(|error| {
+                    private_audit_failure(
+                        &workspace,
+                        args.flavor,
+                        contract,
+                        error.message.as_bytes(),
+                    )
+                })?;
             state.assert_clean_against(&baseline).map_err(|safe| {
                 let detail = format!("{safe}\nbaseline: {baseline:?}\nafter: {state:?}");
                 private_audit_failure(&workspace, args.flavor, contract, detail.as_bytes())
@@ -585,9 +629,11 @@ pub async fn run(values: &[String]) -> Result<(), String> {
             &private,
         )?;
         let class = (!output.status.success()).then(|| classify_failure(&private));
-        let state = TargetState::capture(&transport).await.map_err(|error| {
-            private_audit_failure(&workspace, args.flavor, contract, error.message.as_bytes())
-        })?;
+        let state = TargetState::capture(&transport, &capabilities)
+            .await
+            .map_err(|error| {
+                private_audit_failure(&workspace, args.flavor, contract, error.message.as_bytes())
+            })?;
         state.assert_clean_against(&baseline).map_err(|safe| {
             let detail = format!("{safe}\nbaseline: {baseline:?}\nafter: {state:?}");
             private_audit_failure(&workspace, args.flavor, contract, detail.as_bytes())
@@ -633,7 +679,14 @@ pub async fn run(values: &[String]) -> Result<(), String> {
         }
     }
 
-    let final_state = capture_state(&transport, &workspace, args.flavor, "final-audit").await?;
+    let final_state = capture_state(
+        &transport,
+        &capabilities,
+        &workspace,
+        args.flavor,
+        "final-audit",
+    )
+    .await?;
     write_report_if_clean(&report, &baseline, &final_state, &path)?;
     println!(
         "{} {} conformance report written",
@@ -803,6 +856,25 @@ mod tests {
         let baseline = clean_state();
         assert_eq!(baseline.assert_clean_start(), Ok(()));
         assert_eq!(baseline.assert_clean_against(&baseline), Ok(()));
+    }
+
+    #[test]
+    fn feature_gating_defaults_below_the_verified_floor() {
+        let below = elasticctl_core::Capabilities {
+            flavor: elasticctl_core::Flavor::SelfManaged,
+            version: "9.5.0".to_string(),
+        };
+        assert!(!feature_available(&below, Feature::RuleSourceScoping));
+        assert!(!feature_available(&below, Feature::ExceptionLists));
+        assert!(!feature_available(&below, Feature::PrebuiltRules));
+
+        let floor = elasticctl_core::Capabilities {
+            flavor: elasticctl_core::Flavor::SelfManaged,
+            version: "9.5.1".to_string(),
+        };
+        assert!(feature_available(&floor, Feature::RuleSourceScoping));
+        assert!(feature_available(&floor, Feature::ExceptionLists));
+        assert!(feature_available(&floor, Feature::PrebuiltRules));
     }
 
     #[test]

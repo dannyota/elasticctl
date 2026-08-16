@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn bin() -> Command {
@@ -53,6 +53,78 @@ async fn search_esql_renders_columns_as_a_table() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("seq"));
     assert!(stdout.contains("1"));
+}
+
+#[tokio::test]
+async fn search_esql_peek_appends_server_limit() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query"))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 100"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1]],
+            "is_partial": false
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[tokio::test]
+async fn search_esql_peek_appends_server_limit_from_flag() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query"))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 7"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1]],
+            "is_partial": false
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x", "--limit", "7"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[tokio::test]
+async fn search_esql_peek_keeps_existing_limit_unchanged() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query"))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 2"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1]],
+            "is_partial": false
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x | LIMIT 2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
 }
 
 #[tokio::test]

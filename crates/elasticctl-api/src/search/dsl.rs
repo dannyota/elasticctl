@@ -47,9 +47,29 @@ pub async fn run_sync(t: &Transport, index: &str, body: &Value) -> Result<DslPag
     decode(&response)
 }
 
+/// Normalize `sort` to a total order by appending `_shard_doc` (ascending)
+/// when absent. A non-total sort makes `search_after` skip or repeat documents
+/// across pages, so every export pages over a total order.
+fn total_sort(sort: &Value) -> Value {
+    let mut entries = match sort {
+        Value::Array(items) => items.clone(),
+        other => vec![other.clone()],
+    };
+    let has_tiebreaker = entries.iter().any(|entry| {
+        entry
+            .as_object()
+            .is_some_and(|obj| obj.contains_key("_shard_doc"))
+    });
+    if !has_tiebreaker {
+        entries.push(json!({"_shard_doc": "asc"}));
+    }
+    Value::Array(entries)
+}
+
 /// Open a point-in-time on `index` and page it fully with `search_after`.
-/// `query` is the operator's filter; `sort` must be a total order ending in
-/// `_shard_doc`. The PIT is closed on every exit path, success or error.
+/// `query` is the operator's filter; `sort` is normalized to a total order by
+/// appending `_shard_doc` when absent. The PIT is closed on every exit path,
+/// success or error.
 pub async fn run_stream(
     t: &Transport,
     index: &str,
@@ -66,7 +86,8 @@ pub async fn run_stream(
         .ok_or_else(|| Error::new(ErrorKind::Http, "decoding _pit open response field `id`"))?
         .to_string();
 
-    let result = page_loop(t, &pit_id, query, sort, limit).await;
+    let sort = total_sort(sort);
+    let result = page_loop(t, &pit_id, query, &sort, limit).await;
 
     // Close the PIT on every path. The `_pit` delete takes the id in the
     // request body, so it uses the body-carrying DELETE. The `let _` swallow is
@@ -87,9 +108,10 @@ async fn page_loop(
 ) -> Result<Vec<DslHit>> {
     let mut all = Vec::new();
     let mut search_after: Option<Vec<Value>> = None;
+    let size = limit.map_or(1000, |n| n.min(1000));
     loop {
         let mut body = json!({
-            "size": 1000,
+            "size": size,
             "sort": sort,
             "pit": { "id": pit_id, "keep_alive": "1m" },
             "query": query

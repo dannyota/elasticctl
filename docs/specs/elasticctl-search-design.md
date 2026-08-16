@@ -98,21 +98,24 @@ meaningful for documents.
 
 ## 6. Pagination and export
 
-A **peek** (no `--out`) runs one request and renders what comes back, capped
-client-side at `--limit`. The cap is reported — "capped at N rows" — the same
-way §4.1 of the main spec reports a capped rule-name search. It never claims a
-complete result when it truncated one.
+A **peek** (no `--out`) runs one request and renders what comes back, capped at
+`--limit` (default 100). For ES|QL the client appends a server-side `LIMIT` so
+a large result is never downloaded and discarded; for DSL the operator's body
+is sent verbatim. The client still truncates and reports "capped at N rows"
+the same way §4.1 of the main spec reports a capped rule-name search. It never
+claims a complete result when it truncated one.
 
 A **bulk export** (`--out`) streams pages to the file:
 
 - **DSL** — open a point-in-time (`POST /<index>/_pit?keep_alive=1m`), then
-  page with `search_after` over a deterministic `sort`, then close the PIT
-  (`DELETE /_pit`). The page `size` is 1000; `--limit` caps the total. If the
-  operator's body carries a `sort`, it is used and must include a total-order
-  tiebreaker; otherwise the client injects `sort: [{"_shard_doc": "asc"}]`, a
-  total order available on every index. A meaningful field order is the
-  operator's `sort`, which must carry a `_shard_doc` tiebreaker. A PIT is
-  opened once and closed on every exit path, success or error.
+  page with `search_after` over a total-order `sort`, then close the PIT
+  (`DELETE /_pit`). The page `size` is 1000, capped by `--limit`. If the
+  operator's body carries a `sort`, the client appends `_shard_doc` (ascending)
+  when it is absent so the page order is total; otherwise the client injects
+  `sort: [{"_shard_doc": "asc"}]`, a total order available on every index. A
+  non-total `sort` makes `search_after` skip or repeat documents across pages,
+  so the client never pages over an operator `sort` unchanged. A PIT is opened
+  once and closed on every exit path, success or error.
 - **ES|QL** — there is no cursor on any flavor (§9), so bulk export runs the
   query through the async API: `POST /_query/async` with a short
   `wait_for_completion_timeout` returns `{id, is_running: true}`, polled at

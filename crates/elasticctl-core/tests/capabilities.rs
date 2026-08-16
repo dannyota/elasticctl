@@ -88,6 +88,21 @@ fn hosted_fallback_ignores_case_and_a_final_dns_dot() {
 }
 
 #[test]
+fn a_query_string_scheme_does_not_defeat_hostname_detection() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    // The hostname, not a `://` inside the query, decides the flavor.
+    let caps = Capabilities::classify(
+        &status,
+        false,
+        "https://abc.kb.us-east-1.aws.found.io/?next=https://idp.example",
+    );
+
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[test]
 fn normalized_lookalike_domain_is_not_hosted() {
     let status = json!({
         "version": {"number": "9.5.1", "build_flavor": "traditional"}
@@ -293,6 +308,35 @@ fn verified_features_accept_9_5_1_and_newer() {
             caps.require_feature(feature).unwrap();
         }
     }
+}
+
+#[test]
+fn verified_features_ignore_a_v_prefix_and_a_prerelease_suffix() {
+    for version in ["9.5.1-SNAPSHOT", "v9.5.1", "V9.5.1", "9.5.1-beta"] {
+        let caps = Capabilities {
+            flavor: Flavor::SelfManaged,
+            version: version.into(),
+        };
+        caps.require_feature(Feature::ExceptionLists).unwrap();
+    }
+}
+
+#[test]
+fn verified_features_reject_a_two_component_version_below_the_floor() {
+    let caps = Capabilities {
+        flavor: Flavor::SelfManaged,
+        version: "8.15".into(),
+    };
+
+    let error = caps.require_feature(Feature::ExceptionLists).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        error.message.contains("self-managed 8.15"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("9.5.1"), "{}", error.message);
 }
 
 #[test]

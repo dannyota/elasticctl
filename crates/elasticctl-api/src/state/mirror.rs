@@ -158,10 +158,12 @@ fn mirror_entry_path(
 
 /// Read a mirror file, refusing to follow a symlink.
 ///
-/// `O_NOFOLLOW` makes the refusal atomic: a file swapped for a symlink between
-/// enumeration and read is rejected at the open, not after the read has already
-/// followed it. This is the content boundary, so it must be as tight as the
-/// static `DirEntry::file_type()` check in `mirror_entry_path`.
+/// On unix, `O_NOFOLLOW` makes the refusal atomic: a file swapped for a symlink
+/// between enumeration and read is rejected at the open, not after the read has
+/// already followed it. Elsewhere the refusal is a non-atomic
+/// `symlink_metadata` check, the same strength as the static check. This is the
+/// content boundary, so it must be as tight as the static
+/// `DirEntry::file_type()` check in `mirror_entry_path`.
 #[cfg(unix)]
 fn read_regular_file(path: &Path) -> Result<String> {
     use std::io::Read;
@@ -179,6 +181,14 @@ fn read_regular_file(path: &Path) -> Result<String> {
 
 #[cfg(not(unix))]
 fn read_regular_file(path: &Path) -> Result<String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
+    if metadata.file_type().is_symlink() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!("mirror entry {} is not a regular file", path.display()),
+        ));
+    }
     std::fs::read_to_string(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))
 }

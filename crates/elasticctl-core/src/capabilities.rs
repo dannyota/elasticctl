@@ -27,7 +27,9 @@ const CLOUD_EDGE_HEADER: &str = "x-found-handling-cluster";
 /// Matching the full URL would treat a suffix in its path or query as a
 /// deployment signal.
 fn host_of(url: &str) -> &str {
-    let after_scheme = match url.rfind("://") {
+    // The scheme is the first `://`; a later `://` in the path or query is not
+    // the scheme and must not be mistaken for it.
+    let after_scheme = match url.find("://") {
         Some(i) => &url[i + 3..],
         None => url,
     };
@@ -82,6 +84,20 @@ impl Flavor {
 pub struct Capabilities {
     pub flavor: Flavor,
     pub version: String,
+}
+
+/// Parse the numeric `major.minor.patch` from a reported version string.
+///
+/// A leading `v` and any pre-release or build suffix are ignored, so a lab or
+/// snapshot build is not refused. A version with no numeric
+/// `major.minor.patch` is unreadable.
+fn numeric_version(version: &str) -> Option<Version> {
+    let numeric = version
+        .trim_start_matches(&['v', 'V'][..])
+        .split(&['-', '+'][..])
+        .next()
+        .unwrap_or_default();
+    Version::parse(numeric).ok()
 }
 
 impl Capabilities {
@@ -150,7 +166,7 @@ impl Capabilities {
     /// complete fixture evidence.
     pub fn require_feature(&self, feature: Feature) -> Result<()> {
         let floor = Version::new(9, 5, 1);
-        let supported = Version::parse(&self.version).is_ok_and(|version| version >= floor);
+        let supported = numeric_version(&self.version).is_some_and(|version| version >= floor);
         if supported {
             return Ok(());
         }

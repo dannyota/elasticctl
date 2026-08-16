@@ -45,6 +45,16 @@ fn truncate(rows: &mut Value, limit: Option<usize>) {
     }
 }
 
+/// True when `query` already carries a standalone ES|QL `LIMIT` command, so a
+/// peek does not append a second one. The match is case-insensitive and requires
+/// the token to be bounded by non-word characters, so a longer identifier such
+/// as `myLIMIT` or `LIMIT_10` does not match.
+fn has_limit(query: &str) -> bool {
+    query
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|token| token.eq_ignore_ascii_case("limit"))
+}
+
 pub async fn esql(
     ctx: &Context,
     query: &str,
@@ -60,10 +70,19 @@ pub async fn esql(
         limit,
     };
     let resolved = elasticctl_api::search::resolve_esql_query(t, query, &req).await?;
+    let cap = limit.unwrap_or(100);
     let resp = if ctx.global.out.is_some() {
         esql::run_async(t, &resolved).await?
     } else {
-        esql::run_sync(t, &resolved).await?
+        // A peek appends a server-side LIMIT so a large result is never
+        // downloaded and discarded. The client-side truncation below remains a
+        // safety net.
+        let peek_query = if has_limit(&resolved) {
+            resolved
+        } else {
+            format!("{resolved} | LIMIT {cap}")
+        };
+        esql::run_sync(t, &peek_query).await?
     };
     let mut rows = esql_rows(&resp);
     if ctx.global.out.is_some() {
@@ -71,7 +90,6 @@ pub async fn esql(
         truncate(&mut rows, limit);
     } else {
         // A peek defaults to 100 rows and reports the client-side cap.
-        let cap = limit.unwrap_or(100);
         if rows.as_array().is_some_and(|items| items.len() > cap) {
             truncate(&mut rows, Some(cap));
             eprintln!("capped at {cap} rows");

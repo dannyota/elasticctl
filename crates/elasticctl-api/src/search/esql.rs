@@ -2,6 +2,7 @@
 
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EsqlColumn {
@@ -56,12 +57,19 @@ pub fn decode(value: &Value) -> Result<EsqlResponse> {
         .ok_or_else(|| Error::new(ErrorKind::Http, "decoding esql response field `values`"))?
         .iter()
         .map(|row| {
-            row.as_array().cloned().ok_or_else(|| {
+            let cells = row.as_array().ok_or_else(|| {
                 Error::new(
                     ErrorKind::Http,
                     "decoding esql response: `values` rows must be arrays",
                 )
-            })
+            })?;
+            if cells.len() != columns.len() {
+                return Err(Error::new(
+                    ErrorKind::Http,
+                    "decoding esql response: `values` row width does not match `columns`",
+                ));
+            }
+            Ok(cells.clone())
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -99,22 +107,28 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
         Some(id) => id.to_string(),
         None => return decode(&start),
     };
+    // The start response can also carry both an `id` and an inline result.
+    // Clean the id up before decoding either way.
     if start.get("is_running").and_then(Value::as_bool) == Some(false) {
+        let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
         return decode(&start);
     }
 
     // Poll at most 30 times; an async query that never finishes is a timeout,
     // not an infinite loop. Clean up on the way out either way.
     for _ in 0..30 {
-        let resp = t
-            .get_absolute_es(&format!(
-                "/_query/async/{id}?wait_for_completion_timeout=10s"
-            ))
-            .await?;
+        let resp = match t.get_absolute_es(&format!("/_query/async/{id}")).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+                return Err(err);
+            }
+        };
         if resp.get("is_running").and_then(Value::as_bool) == Some(false) {
             let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
             return decode(&resp);
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
     Err(Error::new(

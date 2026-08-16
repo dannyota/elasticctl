@@ -85,11 +85,11 @@ impl Profile {
     pub fn host(&self) -> String {
         // Strip userinfo so a credential in the URL never reaches a banner.
         let url = strip_userinfo(&self.kibana_url);
-        // Use the last scheme separator to handle doubled schemes.
-        if let Some(pos) = url.rfind("://") {
-            let after_scheme = &url[pos + 3..];
-            // Drop the path and query after the first slash.
-            let host_part = after_scheme.split('/').next().unwrap_or("");
+        // Parse the authority host. `scheme_anchor` handles a doubled scheme;
+        // the split drops the path, query, and fragment.
+        if let Some(pos) = scheme_anchor(&url) {
+            let after_scheme = &url[pos..];
+            let host_part = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
             // Use the parsed host when present.
             if !host_part.is_empty() {
                 return host_part.to_string();
@@ -110,16 +110,38 @@ impl Profile {
     }
 }
 
+/// Return the byte index just past the scheme's `://`.
+///
+/// The scheme is normally the first `://`. A doubled scheme
+/// (`https://https://host`) puts a second `://` inside the authority, so the
+/// first `/` after the first `://` is itself part of that `://`; anchor on the
+/// last `://` then so the authority after it parses correctly. A `://` in the
+/// path, query, or fragment never becomes the anchor.
+fn scheme_anchor(url: &str) -> Option<usize> {
+    let first = url.find("://")?;
+    let after = &url[first + 3..];
+    let doubled = after
+        .find(['/', '?', '#'])
+        .is_some_and(|end| end > 0 && after.as_bytes()[end - 1] == b':');
+    if doubled {
+        url.rfind("://").map(|i| i + 3)
+    } else {
+        Some(first + 3)
+    }
+}
+
 /// Remove userinfo from a URL authority without changing other bytes.
 ///
-/// Paths and queries may legitimately contain `@`. Uses the last `://` so a
-/// doubled scheme (e.g. `https://https://host`) is handled the same way as in
-/// `Profile::host`.
+/// Userinfo is the `user:password@` in the authority, delimited by the scheme's
+/// `://` and the first `/`, `?`, or `#` after it. Paths and queries may
+/// legitimately contain `@`; only an `@` inside the authority is userinfo. A
+/// `://` in the path, query, or fragment is not the scheme and must not defeat
+/// the strip, while a doubled scheme still strips its userinfo.
 fn strip_userinfo(url: &str) -> String {
-    let (scheme, rest) = match url.rfind("://") {
-        Some(i) => url.split_at(i + 3),
-        None => ("", url),
+    let Some(scheme_end) = scheme_anchor(url) else {
+        return url.to_string();
     };
+    let (scheme, rest) = url.split_at(scheme_end);
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(authority_end);
     match authority.rfind('@') {
@@ -767,11 +789,9 @@ mod tests {
                 timeout_secs: 30,
             }
         };
-        assert_eq!(
-            p.host(),
-            "kb.example.com",
-            "must extract host after last :// to avoid reporting wrong scheme as host"
-        );
+        // A doubled scheme anchors on the last `://`, so the host is the
+        // authority after it.
+        assert_eq!(p.host(), "kb.example.com");
     }
 
     #[test]
@@ -943,9 +963,38 @@ mod tests {
     }
 
     #[test]
+    fn a_query_string_scheme_without_userinfo_is_left_exactly_as_written() {
+        // A later `://` in the query is not the scheme, so it must not disturb
+        // a URL that carries no userinfo at all.
+        let mut p =
+            with_urls("https://kb.example.com/?next=https://idp", None).profiles["default"].clone();
+        p.strip_userinfo();
+        assert_eq!(p.kibana_url, "https://kb.example.com/?next=https://idp");
+    }
+
+    #[test]
+    fn userinfo_is_stripped_when_a_query_contains_a_scheme() {
+        // The first `://` delimits the scheme; the `://` inside the query must
+        // not defeat the strip of the authority's userinfo.
+        let mut p = with_urls("https://user:pass@kb.example.com/?next=https://idp", None).profiles
+            ["default"]
+            .clone();
+        p.strip_userinfo();
+        assert_eq!(p.kibana_url, "https://kb.example.com/?next=https://idp");
+    }
+
+    #[test]
+    fn host_uses_the_authority_when_a_query_contains_a_scheme() {
+        let p = with_urls("https://user:pass@kb.example.com/?next=https://idp", None)
+            .profiles["default"]
+            .clone();
+        assert_eq!(p.host(), "kb.example.com");
+    }
+
+    #[test]
     fn a_doubled_scheme_with_userinfo_is_stripped() {
-        // `host()` handles doubled schemes via the last `://`; the scrubber must
-        // match so userinfo after the last scheme is not leaked into the banner.
+        // A doubled scheme anchors on the last `://`, so the `user:pass@` in the
+        // authority after it is still stripped.
         let mut p =
             with_urls("https://https://user:pass@kb.example.com", None).profiles["default"].clone();
         p.strip_userinfo();

@@ -126,6 +126,43 @@ timeout_secs = 30
 }
 
 #[test]
+fn config_list_and_show_never_print_url_userinfo_with_a_scheme_in_the_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"
+current = "default"
+
+[profiles.default]
+kibana_url = "https://user:hunter2@kb.example.com/?next=https://idp"
+api_key = "essu_t"
+space = "default"
+verify = true
+timeout_secs = 30
+"#,
+    )
+    .unwrap();
+
+    for subcommand in ["list", "show"] {
+        let out = bin()
+            .args(["config", subcommand, "--json", "--config"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("hunter2") && !text.contains("user:"),
+            "a credential in the URL must never reach {subcommand} output: {text}"
+        );
+        assert!(
+            text.contains("https://kb.example.com/?next=https://idp"),
+            "the query must survive the scrub: {text}"
+        );
+    }
+}
+
+#[test]
 fn config_show_honours_the_profile_flag() {
     let dir = tempfile::tempdir().unwrap();
     let path = write_config(dir.path());

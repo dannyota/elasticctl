@@ -1,8 +1,8 @@
-use elasticctl_api::search::{dataview, dsl, esql, rewrite_from};
+use elasticctl_api::search::{dataview, dsl, esql, has_source, prepend_from, rewrite_from};
 use elasticctl_core::Transport;
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn test_transport(uri: &str) -> Transport {
     Transport::new(&elasticctl_core::Profile {
@@ -41,6 +41,21 @@ fn decodes_a_sync_esql_response() {
 #[test]
 fn rejects_a_response_without_columns() {
     let body = json!({"values": [[1]]});
+    let err = esql::decode(&body).expect_err("must fail");
+    assert!(
+        err.to_envelope()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("decoding esql response")
+    );
+}
+
+#[test]
+fn rejects_a_values_row_whose_width_mismatches_columns() {
+    let body = json!({
+        "columns": [{"name": "seq", "type": "long"}],
+        "values": [[1, 2]]
+    });
     let err = esql::decode(&body).expect_err("must fail");
     assert!(
         err.to_envelope()["error"]["message"]
@@ -142,6 +157,92 @@ async fn run_stream_pages_with_search_after() {
 }
 
 #[tokio::test]
+async fn run_stream_appends_a_shard_doc_tiebreaker() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/idx/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
+        .mount(&server)
+        .await;
+
+    // The operator's sort is a single object with no `_shard_doc`; the client
+    // must page over a total order, so the _search body carries the tiebreaker.
+    Mock::given(method("POST"))
+        .and(path("/_search"))
+        .and(body_partial_json(
+            json!({"sort": [{"seq": "asc"}, {"_shard_doc": "asc"}]}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/_pit"))
+        .and(body_partial_json(json!({"id": "pit-1"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"succeeded": true, "num_freed": 1})),
+        )
+        .mount(&server)
+        .await;
+
+    let hits = dsl::run_stream(
+        &t,
+        "idx",
+        &json!({"match_all": {}}),
+        &json!({"seq": "asc"}),
+        None,
+    )
+    .await
+    .expect("stream");
+    assert!(hits.is_empty());
+}
+
+#[tokio::test]
+async fn run_stream_uses_the_limit_as_the_page_size() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/idx/_pit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/_search"))
+        .and(body_partial_json(json!({"size": 5})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/_pit"))
+        .and(body_partial_json(json!({"id": "pit-1"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"succeeded": true, "num_freed": 1})),
+        )
+        .mount(&server)
+        .await;
+
+    let hits = dsl::run_stream(
+        &t,
+        "idx",
+        &json!({"match_all": {}}),
+        &json!([{"seq": "asc"}, {"_shard_doc": "asc"}]),
+        Some(5),
+    )
+    .await
+    .expect("stream");
+    assert!(hits.is_empty());
+}
+
+#[tokio::test]
 async fn run_async_polls_until_complete() {
     let server = MockServer::start().await;
     let t = test_transport(&server.uri());
@@ -159,6 +260,7 @@ async fn run_async_polls_until_complete() {
     // `columns`/`values`) and fail.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
+        .and(|req: &Request| req.url.query().is_none())
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
         )
@@ -168,6 +270,7 @@ async fn run_async_polls_until_complete() {
     // Terminal poll: `is_running: false` with the result.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
+        .and(|req: &Request| req.url.query().is_none())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "is_running": false, "is_partial": false,
             "columns": [{"name": "seq", "type": "long"}],
@@ -205,6 +308,61 @@ async fn run_async_decodes_an_inline_complete_response_without_id() {
         .await
         .expect("async");
     assert_eq!(resp.values.len(), 2);
+}
+
+#[tokio::test]
+async fn run_async_deletes_the_id_from_an_inline_complete_start() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "a1", "is_running": false, "is_partial": false,
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1], [2]]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let resp = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect("async");
+    assert_eq!(resp.values.len(), 2);
+}
+
+#[tokio::test]
+async fn run_async_deletes_on_a_poll_error() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect_err("must fail");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Http);
 }
 
 #[tokio::test]
@@ -290,5 +448,31 @@ fn rewrite_from_prepends_a_pipe_for_a_command_fragment() {
     assert_eq!(
         rewrite_from("| SORT seq ASC", "new-index"),
         "FROM new-index | SORT seq ASC"
+    );
+}
+
+#[test]
+fn comment_prefixed_queries_classify_their_real_source() {
+    assert!(has_source("// hunt note\nFROM logs-* | LIMIT 10"));
+    assert!(has_source("/* hunt note */ FROM logs-*"));
+    assert_eq!(
+        prepend_from("// hunt note\nFROM logs-* | LIMIT 10", "new-index"),
+        "// hunt note\nFROM logs-* | LIMIT 10"
+    );
+    assert_eq!(
+        prepend_from("/* hunt note */ FROM logs-*", "new-index"),
+        "/* hunt note */ FROM logs-*"
+    );
+}
+
+#[test]
+fn rewrite_from_rewrites_a_comment_prefixed_from() {
+    assert_eq!(
+        rewrite_from("// hunt note\nFROM logs-* | LIMIT 10", "new-index"),
+        "// hunt note\nFROM new-index | LIMIT 10"
+    );
+    assert_eq!(
+        rewrite_from("/* hunt note */ FROM logs-*", "new-index"),
+        "/* hunt note */ FROM new-index"
     );
 }

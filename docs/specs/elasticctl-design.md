@@ -132,7 +132,13 @@ Does not know about detection rules.
   resolution: `Profile::redacted`, `Profile::host`, `Config::save`, and
   `Transport::with_debug` each strip userinfo before deriving output, so a
   direct library caller that constructs a `Profile` with embedded userinfo
-  cannot leak it.
+  cannot leak it. Userinfo is the `user:password@` in the authority, delimited
+  by the scheme's `://` and the first `/`, `?`, or `#` after it. A later `://`
+  in the path, query, or fragment is not the scheme and must not defeat the
+  strip: `https://user:pass@kb.example.com/?next=https://idp` scrubs to
+  `https://kb.example.com/?next=https://idp`. A doubled scheme
+  (`https://https://user:pass@kb.example.com`, a copy-paste slip) anchors on its
+  last `://` and scrubs the same way rather than leaking.
 - **`auth`** — `ApiKey` (`Authorization: ApiKey <base64(id:key)>`) or `Basic`.
   API key is the default; basic auth exists for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
@@ -155,9 +161,13 @@ Does not know about detection rules.
   Yields `Capabilities { flavor, version }` and is cached once per transport.
   Exception-list, prebuilt-rule, and rule-source routes require the feature's
   verified version before their first request. In 0.2.1 all three floors are
-  9.5.1, the oldest version with complete fixtures; an older or unreadable
-  version returns a typed `Unsupported` error naming the feature, flavor,
-  reported version, and floor instead of the server's generic 404. An
+  9.5.1, the oldest version with complete fixtures; an older version returns a
+  typed `Unsupported` error naming the feature, flavor, reported version, and
+  floor instead of the server's generic 404. The comparison is on the numeric
+  `major.minor.patch`: a leading `v` and a pre-release or build suffix
+  (`-SNAPSHOT`, `-beta`, `-rc`) are ignored, so a 9.5.1 lab or snapshot build
+  is not refused, and a version with no numeric `major.minor.patch` is
+  unreadable and fails the same way. An
   all-rules query does not gain a source-scoping requirement, and local-only
   validate or dry-run work does not pay for the probe.
   Flavor is decided in this order, and the order is load-bearing:

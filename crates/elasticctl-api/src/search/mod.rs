@@ -12,14 +12,31 @@ pub struct SearchRequest {
     pub limit: Option<usize>,
 }
 
+/// Return `query` with leading whitespace and ES|QL comments (`// …` to end of
+/// line, `/* … */` blocks) stripped, so classification reads the first real
+/// token rather than a comment.
+fn skip_leading_comments(query: &str) -> &str {
+    let mut rest = query;
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with("//") {
+            rest = &rest[rest.find('\n').map_or(rest.len(), |end| end + 1)..];
+        } else if rest.starts_with("/*") {
+            let Some(end) = rest.find("*/") else {
+                return "";
+            };
+            rest = &rest[end + 2..];
+        } else {
+            return rest;
+        }
+    }
+}
+
 pub fn has_source(query: &str) -> bool {
+    let rest = skip_leading_comments(query);
+    let word = &rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())];
     matches!(
-        query
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
+        word.to_ascii_lowercase().as_str(),
         "from" | "row" | "show" | "metrics"
     )
 }
@@ -39,12 +56,12 @@ pub fn prepend_from(query: &str, pattern: &str) -> String {
 /// with any `| …` pipeline kept; `ROW`/`SHOW`/`METRICS` pass through untouched;
 /// a query with no source command gets `FROM <pattern>` prepended.
 pub fn rewrite_from(query: &str, pattern: &str) -> String {
-    let trimmed = query.trim_start();
-    let leading = &query[..query.len() - trimmed.len()];
-    let word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-    let word = &trimmed[..word_end];
+    let rest = skip_leading_comments(query);
+    let leading = &query[..query.len() - rest.len()];
+    let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let word = &rest[..word_end];
     if word.eq_ignore_ascii_case("from") {
-        let after = &trimmed[word_end..];
+        let after = &rest[word_end..];
         let source_end = after.find('|').unwrap_or(after.len());
         let pipeline = &after[source_end..];
         if pipeline.is_empty() {
