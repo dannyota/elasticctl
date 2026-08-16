@@ -1,5 +1,6 @@
 //! Adapters for `search esql` and `search dsl`. Read-only: no mutation guard.
 
+use crate::cli::Format;
 use crate::context::Context;
 use elasticctl_api::search::{dsl, esql};
 use elasticctl_core::{Error, ErrorKind, Result};
@@ -70,6 +71,16 @@ pub async fn esql(
         limit,
     };
     let resolved = elasticctl_api::search::resolve_esql_query(t, query, &req).await?;
+    if ctx.global.out.is_some() && ctx.global.effective_format() == Format::Csv {
+        // A CSV export streams the server's CSV text straight to `--out`
+        // without decoding it into row objects or re-encoding it.
+        let csv = esql::run_async_csv(t, &resolved).await?;
+        let path = ctx.global.out.as_deref().expect("--out is present");
+        std::fs::write(path, csv).map_err(|e| {
+            Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
+        })?;
+        return Ok(json!({ "path": path.display().to_string() }));
+    }
     let cap = limit.unwrap_or(100);
     let resp = if ctx.global.out.is_some() {
         esql::run_async(t, &resolved).await?

@@ -39,6 +39,27 @@ fn decodes_a_sync_esql_response() {
 }
 
 #[test]
+fn decodes_a_columnar_esql_response_into_row_objects() {
+    let body = json!({
+        "is_partial": false,
+        "columns": [
+            {"name": "seq", "type": "long"},
+            {"name": "message", "type": "text"}
+        ],
+        "values": [
+            [1, 2, 3],
+            ["a", "b", "c"]
+        ]
+    });
+    let decoded = esql::decode_columnar(&body).expect("decode columnar");
+    assert_eq!(decoded.columns.len(), 2);
+    assert_eq!(decoded.values.len(), 3);
+    assert_eq!(decoded.values[0], vec![json!(1), json!("a")]);
+    assert_eq!(decoded.values[1], vec![json!(2), json!("b")]);
+    assert_eq!(decoded.values[2], vec![json!(3), json!("c")]);
+}
+
+#[test]
 fn rejects_a_response_without_columns() {
     let body = json!({"values": [[1]]});
     let err = esql::decode(&body).expect_err("must fail");
@@ -243,6 +264,69 @@ async fn run_stream_uses_the_limit_as_the_page_size() {
 }
 
 #[tokio::test]
+async fn run_async_sends_columnar() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .and(body_partial_json(json!({"columnar": true})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "is_running": false, "is_partial": false,
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": [[1, 2]]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+
+    let resp = esql::run_async(&t, "FROM x | LIMIT 2")
+        .await
+        .expect("async");
+    assert_eq!(resp.values.len(), 2);
+}
+
+#[tokio::test]
+async fn run_async_csv_returns_the_raw_body() {
+    let server = MockServer::start().await;
+    let t = test_transport(&server.uri());
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .and(body_partial_json(json!({"format": "csv"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("seq,message\n1,hello\n"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let csv = esql::run_async_csv(&t, "FROM x | LIMIT 2")
+        .await
+        .expect("csv");
+    assert_eq!(csv, "seq,message\n1,hello\n");
+}
+
+#[tokio::test]
 async fn run_async_polls_until_complete() {
     let server = MockServer::start().await;
     let t = test_transport(&server.uri());
@@ -274,7 +358,7 @@ async fn run_async_polls_until_complete() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "is_running": false, "is_partial": false,
             "columns": [{"name": "seq", "type": "long"}],
-            "values": [[1], [2]]
+            "values": [[1, 2]]
         })))
         .mount(&server)
         .await;
@@ -299,7 +383,7 @@ async fn run_async_decodes_an_inline_complete_response_without_id() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "is_running": false, "is_partial": false,
             "columns": [{"name": "seq", "type": "long"}],
-            "values": [[1], [2]]
+            "values": [[1, 2]]
         })))
         .mount(&server)
         .await;
@@ -319,7 +403,7 @@ async fn run_async_deletes_the_id_from_an_inline_complete_start() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "a1", "is_running": false, "is_partial": false,
             "columns": [{"name": "seq", "type": "long"}],
-            "values": [[1], [2]]
+            "values": [[1, 2]]
         })))
         .mount(&server)
         .await;

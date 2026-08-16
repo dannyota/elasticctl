@@ -146,7 +146,7 @@ async fn search_esql_out_writes_jsonl_by_default() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "is_running": false, "is_partial": false,
             "columns": [{"name": "seq", "type": "long"}],
-            "values": [[1], [2]]
+            "values": [[1, 2]]
         })))
         .mount(&server)
         .await;
@@ -171,6 +171,49 @@ async fn search_esql_out_writes_jsonl_by_default() {
         "{text}"
     );
     assert!(lines[0].contains("\"seq\":1"), "{text}");
+}
+
+#[tokio::test]
+async fn search_esql_out_csv_writes_raw_csv_without_decoding() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let out_path = dir.path().join("results.csv");
+
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .and(body_partial_json(json!({"format": "csv"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("seq,message\n1,hello\n2,world\n"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x | LIMIT 2", "--out"])
+        .arg(&out_path)
+        .args(["--format", "csv"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert_eq!(text, "seq,message\n1,hello\n2,world\n");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("seq,message"),
+        "stdout must not reprint the CSV file: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[tokio::test]

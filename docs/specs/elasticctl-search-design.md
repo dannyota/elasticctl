@@ -121,10 +121,14 @@ A **bulk export** (`--out`) streams pages to the file:
   `wait_for_completion_timeout` returns `{id, is_running: true}`, polled at
   `GET /_query/async/<id>` until `is_running: false`, then `DELETE
   /_query/async/<id>`. The full result arrives in one response — there is no
-  page-by-page stream — and the client fetches it as row-major JSON and writes
-  it to `--out`. `columnar: true` (column-major `values`) or `format: csv`
-  (direct CSV with a header row) ship in 0.3.1 to keep the payload
-  and memory footprint low.
+  page-by-page stream. The request sends `columnar: true`, so `values` is
+  column-major (one array per column); the client transposes it to row objects
+  and writes them to `--out`. When the effective output format is CSV, the
+  request sends `format: csv` instead — an alternative to `columnar`, never
+  combined with it — and the raw CSV text (header row included) is written to
+  `--out` verbatim, never decoded as `{columns, values}`. Both keep the
+  payload and memory footprint low. `--limit` does not truncate the raw CSV
+  text; the query's own `LIMIT` still governs what the server returns.
 
 Export writes NDJSON (JSONL) by default because it is streaming-friendly; the
 operator can override with `--format`.

@@ -361,19 +361,34 @@ async fn main() {
                 std::process::exit(render::exit_code_for_value(&value));
             }
             // Export already wrote the file. Render its confirmation to stdout
-            // so the normal `--out` path cannot overwrite it.
-            let out_already_written = matches!(
+            // so the normal `--out` path cannot overwrite it. A CSV ES|QL
+            // export also writes its raw text straight to `--out` in the
+            // command adapter, so its confirmation follows the same path.
+            let search_csv_export = matches!(
+                &args.command,
+                Command::Search {
+                    action: SearchAction::Esql { .. }
+                }
+            ) && args.global.out.is_some()
+                && args.global.effective_format() == Format::Csv;
+            let out_already_written = (matches!(
                 &args.command,
                 Command::Rules {
                     action: RulesAction::Export { .. }
                 } | Command::Exceptions {
                     action: ExceptionsAction::Export { .. }
                 }
-            ) && args.global.out.is_some();
+            ) || search_csv_export)
+                && args.global.out.is_some();
             let render_global = {
                 let mut g = args.global.clone();
                 if out_already_written {
                     g.out = None;
+                }
+                if search_csv_export {
+                    // `--format csv` targets the search results, not the
+                    // write confirmation; report the path as a table.
+                    g.format = None;
                 }
                 // `search --out` writes NDJSON (JSONL) by default; `--format`
                 // or `--json` still override it.
