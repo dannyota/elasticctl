@@ -123,12 +123,12 @@ A **bulk export** (`--out`) streams pages to the file:
   /_query/async/<id>`. The full result arrives in one response — there is no
   page-by-page stream. The request sends `columnar: true`, so `values` is
   column-major (one array per column); the client transposes it to row objects
-  and writes them to `--out`. When the effective output format is CSV, the
-  request sends `format: csv` instead — an alternative to `columnar`, never
-  combined with it — and the raw CSV text (header row included) is written to
-  `--out` verbatim, never decoded as `{columns, values}`. Both keep the
-  payload and memory footprint low. `--limit` does not truncate the raw CSV
-  text; the query's own `LIMIT` still governs what the server returns.
+  and writes them to `--out`. The async API rejects the `format` body field
+  (400 `unknown field [format]`, measured 2026-08-16), so CSV export is
+  client-side: the transposed rows render as CSV through the shared render
+  layer, never as a raw server CSV. `columnar: true` alone keeps the payload
+  and memory footprint low, and `--limit` still truncates the transposed rows
+  before they render.
 
 Export writes NDJSON (JSONL) by default because it is streaming-friendly; the
 operator can override with `--format`.
@@ -187,7 +187,7 @@ Elasticsearch API key.
 | ES|QL `size` body param | Rejected: `{"query": "…", "size": 2}` returns a 400 with `{error, status}` |
 | ES|QL async | `POST /_query/async` with body `wait_for_completion_timeout` set short returns `{id, is_running: true}`; `GET /_query/async/<id>` returns the full result (no cursor) with `is_running: false`; `DELETE /_query/async/<id>` cleans up. A fast query with no timeout returns the inline result with `is_running: false` and no `id` |
 | ES|QL body params | `columnar`, `wait_for_completion_timeout`, `time_zone`, `locale`, `params`, and `filter` are request-body fields, not query-string params. A URL-placed `columnar` or `wait_for_completion_timeout` is a 400 `unrecognized parameter` |
-| ES|QL response formats | `format=csv` (and `tsv`/`txt`) on `/_query` returns CSV directly with a header row; `columnar: true` returns `values` column-major instead of row-major |
+| ES|QL response formats | `format=csv` (and `tsv`/`txt`) on the sync `/_query` returns CSV directly with a header row; `columnar: true` returns `values` column-major instead of row-major. The async `/_query/async` accepts `columnar: true` but rejects `format` with a 400 `unknown field [format]`, so `format=csv` is sync-only |
 | DSL envelope | `{took, timed_out, _shards, hits: {hits: [{_index, _id, _score, _source, sort}], max_score, total: {value, relation}}}`. `pit_id` appears only with a PIT |
 | DSL PIT | `POST /<index>/_pit?keep_alive=1m` → `{id, _shards}`; `DELETE /_pit {id}` → `{succeeded, num_freed}`. Search with `pit` + `sort` + `search_after` pages cleanly; `search_after` takes the last hit's flat `sort` array |
 | Data views | `GET /api/data_views` → `{data_view: [{id, title, namespaces, …}]}`. `title` is the comma-separated index pattern, e.g. `security-solution-alert-default` → `.alerts-security.alerts-default`. Serverless reports 7 data views |
