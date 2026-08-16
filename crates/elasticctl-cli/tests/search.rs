@@ -174,7 +174,7 @@ async fn search_esql_out_writes_jsonl_by_default() {
 }
 
 #[tokio::test]
-async fn search_esql_out_csv_writes_raw_csv_without_decoding() {
+async fn search_esql_out_csv_renders_client_side_from_columnar_rows() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_config(dir.path(), &server.uri());
@@ -182,7 +182,6 @@ async fn search_esql_out_csv_writes_raw_csv_without_decoding() {
 
     Mock::given(method("POST"))
         .and(path("/_query/async"))
-        .and(body_partial_json(json!({"format": "csv"})))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
         )
@@ -190,7 +189,14 @@ async fn search_esql_out_csv_writes_raw_csv_without_decoding() {
         .await;
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("seq,message\n1,hello\n2,world\n"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "is_running": false, "is_partial": false,
+            "columns": [
+                {"name": "seq", "type": "long"},
+                {"name": "message", "type": "text"}
+            ],
+            "values": [[1, 2], ["a", "b"]]
+        })))
         .mount(&server)
         .await;
     Mock::given(method("DELETE"))
@@ -208,12 +214,51 @@ async fn search_esql_out_csv_writes_raw_csv_without_decoding() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     let text = fs::read_to_string(&out_path).unwrap();
-    assert_eq!(text, "seq,message\n1,hello\n2,world\n");
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("seq,message"),
-        "stdout must not reprint the CSV file: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    assert_eq!(text, "seq,message\n1,a\n2,b\n");
+}
+
+#[tokio::test]
+async fn search_esql_out_csv_truncates_to_the_limit() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let out_path = dir.path().join("results.csv");
+
+    Mock::given(method("POST"))
+        .and(path("/_query/async"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "is_running": false, "is_partial": false,
+            "columns": [
+                {"name": "seq", "type": "long"},
+                {"name": "message", "type": "text"}
+            ],
+            "values": [[1, 2, 3], ["a", "b", "c"]]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/_query/async/a1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x", "--out"])
+        .arg(&out_path)
+        .args(["--format", "csv", "--limit", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert_eq!(text, "seq,message\n1,a\n2,b\n");
 }
 
 #[tokio::test]

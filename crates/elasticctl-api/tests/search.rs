@@ -297,36 +297,6 @@ async fn run_async_sends_columnar() {
 }
 
 #[tokio::test]
-async fn run_async_csv_returns_the_raw_body() {
-    let server = MockServer::start().await;
-    let t = test_transport(&server.uri());
-    Mock::given(method("POST"))
-        .and(path("/_query/async"))
-        .and(body_partial_json(json!({"format": "csv"})))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/_query/async/a1"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("seq,message\n1,hello\n"))
-        .mount(&server)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path("/_query/async/a1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let csv = esql::run_async_csv(&t, "FROM x | LIMIT 2")
-        .await
-        .expect("csv");
-    assert_eq!(csv, "seq,message\n1,hello\n");
-}
-
-#[tokio::test]
 async fn run_async_polls_until_complete() {
     let server = MockServer::start().await;
     let t = test_transport(&server.uri());

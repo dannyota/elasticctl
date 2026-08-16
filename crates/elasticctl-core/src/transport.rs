@@ -480,42 +480,6 @@ impl Transport {
             .await
     }
 
-    /// POST JSON to Elasticsearch and return the raw body without parsing it as
-    /// JSON. The ES|QL `format: csv` response is CSV text, not a JSON object.
-    pub async fn post_absolute_es_text(&self, path: &str, body: &Value) -> Result<String> {
-        self.send_absolute_es_text(Method::POST, path, Some(body))
-            .await
-    }
-
-    /// GET Elasticsearch and return the raw body without parsing it as JSON.
-    pub async fn get_absolute_es_text(&self, path: &str) -> Result<String> {
-        self.send_absolute_es_text(Method::GET, path, None).await
-    }
-
-    async fn send_absolute_es_text(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<&Value>,
-    ) -> Result<String> {
-        let url = format!("{}{}", self.es_base, path);
-        let request_method = method.clone();
-        let response = self
-            .send_retrying(method.clone(), &url, || {
-                let mut req = self
-                    .client
-                    .request(request_method.clone(), &url)
-                    .header("Authorization", &self.auth_header);
-                if let Some(b) = body {
-                    req = req.json(b);
-                }
-                Ok(req)
-            })
-            .await?;
-
-        self.response_text(&method, &url, response).await
-    }
-
     async fn send_absolute_es(
         &self,
         method: Method,
