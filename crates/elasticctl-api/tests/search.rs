@@ -280,3 +280,15 @@ fn rewrite_from_passes_through_queries_without_a_from_clause() {
     assert_eq!(rewrite_from("SHOW INFO", "new-index"), "SHOW INFO");
     assert_eq!(rewrite_from("METRICS idx", "new-index"), "METRICS idx");
 }
+
+#[test]
+fn rewrite_from_prepends_a_pipe_for_a_command_fragment() {
+    assert_eq!(
+        rewrite_from("SORT seq ASC | LIMIT 2", "new-index"),
+        "FROM new-index | SORT seq ASC | LIMIT 2"
+    );
+    assert_eq!(
+        rewrite_from("| SORT seq ASC", "new-index"),
+        "FROM new-index | SORT seq ASC"
+    );
+}

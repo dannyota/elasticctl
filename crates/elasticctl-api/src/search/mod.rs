@@ -28,7 +28,9 @@ pub fn prepend_from(query: &str, pattern: &str) -> String {
     if has_source(query) {
         query.to_string()
     } else {
-        format!("FROM {pattern} {query}")
+        let q = query.trim_start();
+        let sep = if q.starts_with('|') { "" } else { "| " };
+        format!("FROM {pattern} {sep}{q}")
     }
 }
 
@@ -56,7 +58,7 @@ pub fn rewrite_from(query: &str, pattern: &str) -> String {
     {
         query.to_string()
     } else {
-        format!("FROM {pattern} {query}")
+        prepend_from(query, pattern)
     }
 }
 
