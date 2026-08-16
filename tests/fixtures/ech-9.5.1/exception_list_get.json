@@ -3,7 +3,6 @@
   "version": "9.5.1",
   "operation": "exception_list_get",
   "response": {
-    "id": "6990ccb1-a60a-40cf-ba57-ebb3960de5fc",
     "list_id": "elasticctl-sample-exceptions",
     "type": "detection",
     "name": "elasticctl sample exceptions",
@@ -18,9 +17,7 @@
     "version": 1,
     "_version": "REDACTED",
     "tie_breaker_id": "REDACTED",
-    "created_at": "2026-08-15T05:46:42.895Z",
     "created_by": "REDACTED",
-    "updated_at": "2026-08-15T05:46:42.895Z",
     "updated_by": "REDACTED"
   }
 }

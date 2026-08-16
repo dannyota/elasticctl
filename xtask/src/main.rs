@@ -303,6 +303,17 @@ fn strip_volatile(v: &mut Value, fields: &[&str]) {
     }
 }
 
+/// License fields minted per trial activation. A lab re-starts its trial each
+/// session, so these change on every re-record and must be dropped for
+/// byte-identical fixtures (spec §8).
+const LICENSE_VOLATILE_FIELDS: &[&str] = &[
+    "uid",
+    "issue_date",
+    "issue_date_in_millis",
+    "expiry_date",
+    "expiry_date_in_millis",
+];
+
 /// Remove the per-run PIT token wherever a search exchange stores it.
 ///
 /// The `_pit` open response carries the token as `id` and the `_search`
@@ -1380,7 +1391,8 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         t.get("/api/spaces/space").await?,
         None,
     ));
-    if let Ok(license) = t.get_absolute_es("/_license").await {
+    if let Ok(mut license) = t.get_absolute_es("/_license").await {
+        strip_volatile(&mut license, LICENSE_VOLATILE_FIELDS);
         recording.fixtures.push(response_fixture(
             "license", &flavor, &version, license, None,
         ));
@@ -2106,6 +2118,27 @@ mod tests {
                 "hits": {"hits": [{"_source": {"seq": 1}}]},
                 "nested": [{"value": 3}]
             })
+        );
+    }
+
+    #[test]
+    fn strip_volatile_drops_license_trial_fields() {
+        let mut value = json!({
+            "license": {
+                "status": "active",
+                "uid": "per-trial-uuid",
+                "type": "trial",
+                "issue_date": "2026-08-16",
+                "expiry_date_in_millis": 1,
+                "issued_to": "cluster"
+            }
+        });
+
+        strip_volatile(&mut value, LICENSE_VOLATILE_FIELDS);
+
+        assert_eq!(
+            value,
+            json!({"license": {"status": "active", "type": "trial", "issued_to": "cluster"}})
         );
     }
 

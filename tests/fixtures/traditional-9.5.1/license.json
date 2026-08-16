@@ -5,12 +5,7 @@
   "response": {
     "license": {
       "status": "active",
-      "uid": "8e5a312b-d603-4add-88c5-f5b8a28ec4e5",
       "type": "trial",
-      "issue_date": "2026-08-14T18:14:17.229Z",
-      "issue_date_in_millis": 1786731257229,
-      "expiry_date": "2026-09-13T18:14:17.229Z",
-      "expiry_date_in_millis": 1789323257229,
       "max_nodes": 1000,
       "max_resource_units": null,
       "issued_to": "docker-cluster",

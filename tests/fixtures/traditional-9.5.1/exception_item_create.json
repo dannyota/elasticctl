@@ -3,7 +3,6 @@
   "version": "9.5.1",
   "operation": "exception_item_create",
   "response": {
-    "id": "ec599df7-7bd7-4131-ab69-bc66fd64f061",
     "item_id": "elasticctl-sample-exception-item",
     "list_id": "elasticctl-sample-exceptions",
     "type": "simple",
@@ -26,9 +25,7 @@
     "comments": [],
     "_version": "REDACTED",
     "tie_breaker_id": "REDACTED",
-    "created_at": "2026-08-15T05:28:03.190Z",
     "created_by": "REDACTED",
-    "updated_at": "2026-08-15T05:28:03.190Z",
     "updated_by": "REDACTED"
   }
 }

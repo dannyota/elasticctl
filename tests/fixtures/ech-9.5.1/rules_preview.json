@@ -3,13 +3,11 @@
   "version": "9.5.1",
   "operation": "rules_preview",
   "response": {
-    "previewId": "c1b32d24-09e2-48e0-934d-fa3906ba3aaa",
     "logs": [
       {
         "errors": [],
         "warnings": [],
-        "startedAt": "2026-08-12T18:00:00.000Z",
-        "duration": 74
+        "startedAt": "2026-08-12T18:00:00.000Z"
       }
     ],
     "isAborted": false
