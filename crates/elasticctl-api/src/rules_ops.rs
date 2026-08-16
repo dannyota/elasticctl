@@ -281,7 +281,7 @@ pub async fn export_rules(
             )
         } else {
             // Export reads from the stack, so every selector names a server rule.
-            selection::resolve(t, selectors, tag, &[], "export").await?
+            selection::resolve(t, selectors, tag, None, &[], "export").await?
         };
 
     let mut bundle = rules::export(t, selection.as_deref()).await?;

@@ -117,8 +117,20 @@ fn local_match(local: &[Rule], selector: &str) -> Option<Result<String>> {
     }
 }
 
-/// Resolve selectors and an optional tag to `rule_id` values. Returns `None`
-/// when neither is given and the caller should act on every rule.
+/// Whether `rule` matches a `--search` text: a case-insensitive name substring
+/// or an exact tag.
+///
+/// The server-side KQL (`alert.attributes.name: "*<text>*"`) matches an
+/// analyzed field case-insensitively, so the local matcher must too, or a
+/// `diff`/`push` would select a different rule set than the remote read finds.
+fn search_matches(rule: &Rule, text: &str) -> bool {
+    let needle = text.to_lowercase();
+    rule.name().to_lowercase().contains(needle.as_str()) || rule.tags().contains(&text)
+}
+
+/// Resolve selectors, an optional tag, and an optional search to `rule_id`
+/// values. Returns `None` when none is given and the caller should act on every
+/// rule.
 ///
 /// Check `local` before the stack. Pass an empty slice for `rules export` and
 /// `state pull`. Pass disk rules for local commands so scoped `push` can select
@@ -130,10 +142,11 @@ pub async fn resolve(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     local: &[Rule],
     noun: &str,
 ) -> Result<Option<Vec<String>>> {
-    if selectors.is_empty() && tag.is_none() {
+    if selectors.is_empty() && tag.is_none() && search.is_none() {
         return Ok(None);
     }
 
@@ -163,6 +176,26 @@ pub async fn resolve(
         }
     }
 
+    // `--search` mirrors `--tag`: match locally, then on the stack, and union
+    // the results. The local matcher reuses the same predicate as the remote
+    // KQL so both sides narrow to the same rule set.
+    let mut search_matched = false;
+    if let Some(text) = search {
+        for rule in local.iter().filter(|r| search_matches(r, text)) {
+            search_matched = true;
+            ids.push(rule.rule_id()?.to_string());
+        }
+
+        let filter = RuleFilter {
+            search: Some(text.to_string()),
+            ..Default::default()
+        };
+        for rule in rules::find_all(t, &filter).await? {
+            search_matched = true;
+            ids.push(rule.rule_id()?.to_string());
+        }
+    }
+
     ids.sort();
     ids.dedup();
 
@@ -174,6 +207,16 @@ pub async fn resolve(
         return Err(Error::new(
             ErrorKind::NotFound,
             format!("No rules matched tag '{t}'; nothing to {noun}"),
+        ));
+    }
+
+    // Same for `--search`: a mistyped text must not silently shrink the result.
+    if let Some(s) = search
+        && !search_matched
+    {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No rules matched search '{s}'; nothing to {noun}"),
         ));
     }
 
@@ -282,6 +325,30 @@ mod tests {
     fn an_unmatched_selector_falls_through_to_the_stack() {
         let local = vec![rule("a", "Alpha")];
         assert!(local_match(&local, "Ghost").is_none());
+    }
+
+    /// The server matches the analyzed `name` field case-insensitively, so the
+    /// local `--search` matcher must too, or `diff`/`push` would narrow the
+    /// local side differently from the remote read (spec 4.7).
+    #[test]
+    fn search_matches_a_different_case_name_substring() {
+        let r = rule("a", "Suspicious Process");
+        assert!(search_matches(&r, "process"));
+        assert!(search_matches(&r, "PROCESS"));
+        assert!(search_matches(&r, "suspicious"));
+        assert!(!search_matches(&r, "unrelated"));
+    }
+
+    #[test]
+    fn search_matches_an_exact_tag_but_not_a_tag_substring() {
+        let r = Rule::from_value(json!({
+            "rule_id": "a",
+            "name": "Alpha",
+            "tags": ["prod"]
+        }))
+        .unwrap();
+        assert!(search_matches(&r, "prod"));
+        assert!(!search_matches(&r, "pro"), "tags are exact, not substring");
     }
 
     #[test]

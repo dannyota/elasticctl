@@ -185,11 +185,12 @@ async fn scope_of(
     t: &Transport,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: RuleSource,
     local: &[Rule],
     noun: &str,
 ) -> Result<Scope> {
-    let rule_ids = selection::resolve(t, selectors, tag, local, noun).await?;
+    let rule_ids = selection::resolve(t, selectors, tag, search, local, noun).await?;
     Ok(Scope {
         rule_ids,
         source,

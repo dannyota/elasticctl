@@ -23,11 +23,12 @@ pub async fn pull(
     format: FileFormat,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::pull(t, dir, format, selectors, tag, source).await?)
+    to_value(&state::pull(t, dir, format, selectors, tag, search, source).await?)
 }
 
 pub async fn diff(
@@ -35,11 +36,12 @@ pub async fn diff(
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    to_value(&state::diff(t, dir, selectors, tag, source).await?)
+    to_value(&state::diff(t, dir, selectors, tag, search, source).await?)
 }
 
 pub async fn push(
@@ -48,6 +50,7 @@ pub async fn push(
     report_path: Option<&Path>,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: RuleSource,
 ) -> Result<Value> {
     ctx.require_credential()?;
@@ -57,7 +60,7 @@ pub async fn push(
         host: ctx.resolved.profile.host(),
         space: ctx.resolved.profile.space.clone(),
     };
-    let plan = state::plan_push(t, dir, selectors, tag, source, &identity).await?;
+    let plan = state::plan_push(t, dir, selectors, tag, search, source, &identity).await?;
 
     // A report destination is local mutation preflight. Validate, recover, and
     // stage the dry-run report before the guard so a bad path can never turn a

@@ -201,6 +201,43 @@ async fn the_push_banner_names_the_selection() {
     );
 }
 
+/// `--search` is a narrowing dimension like `--tag`: a search-scoped push must
+/// name its selection in the guard banner rather than look like a full run.
+#[tokio::test]
+async fn the_push_banner_names_the_search_selection() {
+    let server = server_with(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    write_local(&state, "a", 21);
+    write_local(&state, "b", 73);
+
+    let out = run(&[
+        "state".as_ref(),
+        "push".as_ref(),
+        "--config".as_ref(),
+        cfg.as_os_str(),
+        "--dir".as_ref(),
+        state.as_os_str(),
+        "--search".as_ref(),
+        "Rule a".as_ref(),
+    ]);
+
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("selection: 1 of 2 local rules"),
+        "the banner must say the run was scoped by search: {text}"
+    );
+    assert!(
+        text.contains("[DRY RUN]"),
+        "a search-scoped push is still a dry run by default: {text}"
+    );
+}
+
 /// An unscoped run must keep the 0.1.1 output shape, including its fields.
 #[tokio::test]
 async fn an_unscoped_run_reports_no_selection_fields() {

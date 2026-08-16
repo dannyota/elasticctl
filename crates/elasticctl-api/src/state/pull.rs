@@ -21,6 +21,7 @@ pub async fn pull(
     format: Format,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: RuleSource,
 ) -> Result<PullReport> {
     // The sibling lock is acquired before recovery and held through the
@@ -31,7 +32,7 @@ pub async fn pull(
 
     // Pull reads from the stack, so selectors name stack rules. The directory
     // may not exist yet.
-    let scope = super::scope_of(t, selectors, tag, source, &[], "pull").await?;
+    let scope = super::scope_of(t, selectors, tag, search, source, &[], "pull").await?;
     let mut remote = scope.remote(t).await?;
     // An empty unselected custom/prebuilt pull is valid only when both source
     // totals still account for the whole corpus. `customized` overlaps

@@ -82,6 +82,7 @@ async fn plan_push_sends_no_write_request() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -102,6 +103,49 @@ async fn plan_push_sends_no_write_request() {
     assert_eq!(plan.report.space, "default");
 }
 
+/// `--search` resolves to a `rule_ids` scope, so the scoped remote read is a
+/// ruleId-filtered `_find` (`find_by_rule_ids`), not a corpus read (spec 5.3).
+#[tokio::test]
+async fn a_search_scoped_diff_reads_via_find_by_rule_ids() {
+    let stack = MockStack::with_rules(vec![json!({
+        "rule_id": "hit",
+        "name": "Suspicious Process",
+        "type": "query",
+    })])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_local_rule(
+        dir.path(),
+        "hit",
+        "{\"rule_id\":\"hit\",\"name\":\"Suspicious Process\",\"type\":\"query\"}\n",
+    );
+
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        Some("process"),
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.selected, Some(1));
+    assert_eq!(report.local, 1, "the local side is narrowed too");
+
+    let scoped_read = stack.requests().await.into_iter().any(|r| {
+        r.path.ends_with("/_find")
+            && r.query
+                .get("filter")
+                .is_some_and(|f| f.as_str() == "alert.attributes.params.ruleId: \"hit\"")
+    });
+    assert!(
+        scoped_read,
+        "a search-scoped read must use find_by_rule_ids, not a corpus read"
+    );
+}
+
 /// An Added change applies as one create request.
 #[tokio::test]
 async fn apply_push_issues_a_create_for_an_added_rule() {
@@ -117,6 +161,7 @@ async fn apply_push_issues_a_create_for_an_added_rule() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -157,6 +202,7 @@ async fn apply_push_issues_an_update_for_a_modified_rule() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -190,6 +236,7 @@ async fn apply_push_issues_no_request_for_a_remote_only_rule() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -222,6 +269,7 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -328,6 +376,7 @@ async fn pull_writes_the_referenced_lists_and_no_others() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -355,6 +404,7 @@ async fn requested_pull_path_is_preserved() {
         &requested,
         Format::Yaml,
         &[],
+        None,
         None,
         RuleSource::Custom,
     )
@@ -393,6 +443,7 @@ async fn a_scoped_pull_preserves_every_unplanned_mirror_path() {
         Format::Ndjson,
         &selectors,
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -427,6 +478,7 @@ async fn a_rule_default_list_is_inlined_in_its_rule_file() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -450,6 +502,7 @@ async fn pull_inlines_a_rule_default_lists_items() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -472,6 +525,7 @@ async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
         dir.path(),
         Format::Yaml,
         &[],
+        None,
         None,
         RuleSource::Custom,
     )
@@ -498,6 +552,7 @@ async fn push_creates_the_list_before_the_rule_that_points_at_it() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -530,6 +585,7 @@ async fn push_creates_the_items_before_the_rule() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -594,6 +650,7 @@ async fn push_injects_the_target_stacks_list_id() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -633,6 +690,7 @@ async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -656,6 +714,7 @@ async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -704,6 +763,7 @@ async fn the_push_preview_names_the_exception_counts() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -731,6 +791,7 @@ async fn push_never_deletes_a_container_absent_locally() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -752,9 +813,16 @@ async fn diff_reports_an_added_exception_list() {
     let stack = mock_empty_stack().await;
     let dir = mirror_with_rule_and_new_list();
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert!(!report.clean);
     assert_eq!(report.exceptions.local, 1);
@@ -778,9 +846,16 @@ async fn diff_reports_a_modified_exception_list() {
     local["description"] = json!("local description");
     std::fs::write(&path, format!("{local}\n")).unwrap();
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert!(!report.clean);
     assert_eq!(
@@ -812,9 +887,16 @@ async fn diff_reports_a_remote_only_exception_list_without_planning_a_delete() {
     )
     .unwrap();
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     assert!(!report.clean);
     assert_eq!(
         report.exceptions.changes,
@@ -828,6 +910,7 @@ async fn diff_reports_a_remote_only_exception_list_without_planning_a_delete() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -850,13 +933,21 @@ async fn pull_then_diff_in_yaml_is_clean() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
     .unwrap();
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     assert!(
         d.clean,
         "a fresh YAML pull must diff clean: {:?}",
@@ -878,13 +969,21 @@ async fn pull_then_diff_is_clean_with_a_rule_default_list() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
     .unwrap();
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     assert!(
         d.clean,
         "a rule_default list must round-trip clean: {:?}",
@@ -906,6 +1005,7 @@ async fn push_creates_a_rule_default_list_on_a_fresh_stack() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1025,6 +1125,7 @@ async fn a_symlinked_rule_file_blocks_push_before_any_write() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1161,6 +1262,7 @@ async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1185,6 +1287,7 @@ async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1216,6 +1319,7 @@ async fn malformed_value_list_index_response_fails_planning() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1237,6 +1341,7 @@ async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1321,6 +1426,7 @@ async fn scoped_push_checks_each_reachable_value_list_once() {
         dir.path(),
         &["r1".into()],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1337,9 +1443,16 @@ async fn diff_reports_an_added_exception_item() {
     let stack = mock_stack_with_list_and_items("l", &[]).await;
     let dir = mirror_with_list_items("l", &["new"]);
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert!(!report.clean);
     assert_eq!(
@@ -1371,9 +1484,16 @@ async fn diff_reports_a_modified_exception_item() {
     local["items"][0]["entries"] = entries.clone();
     std::fs::write(&path, format!("{local}\n")).unwrap();
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert!(!report.clean);
     assert_eq!(
@@ -1400,9 +1520,16 @@ async fn diff_reports_a_removed_exception_item() {
     let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
     let dir = mirror_with_list_items("l", &["keep"]);
 
-    let report = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let report = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert!(!report.clean);
     assert_eq!(
@@ -1422,6 +1549,7 @@ async fn diff_reports_a_removed_exception_item() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1446,6 +1574,7 @@ async fn an_item_absent_locally_is_deleted() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1498,6 +1627,7 @@ async fn malformed_top_level_exception_item_cannot_plan_remote_deletion() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1541,6 +1671,7 @@ async fn push_refuses_a_non_array_items_field_before_any_item_delete() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1579,6 +1710,7 @@ async fn push_refuses_a_multi_record_exception_file_before_any_item_delete() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1600,6 +1732,7 @@ async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1635,6 +1768,7 @@ async fn planning_an_item_deletion_deletes_nothing() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1652,9 +1786,16 @@ async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
         mock_stack_with_dangling_pointer("r", "shared", "00000000-0000-0000-0000-000000000000")
             .await;
     let dir = mirror_with_rule_referencing("shared");
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(d.exceptions.dangling.len(), 1);
     assert_eq!(d.exceptions.dangling[0].rule_id, "r");
@@ -1666,9 +1807,16 @@ async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
 async fn a_pointer_matching_the_live_container_is_not_reported() {
     let stack = mock_stack_with_matching_pointer("r", "shared").await;
     let dir = mirror_with_rule_referencing("shared");
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
     assert!(d.exceptions.dangling.is_empty());
     assert!(d.clean);
 }
@@ -1686,6 +1834,7 @@ async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1716,6 +1865,7 @@ async fn an_item_added_to_an_existing_container_is_created() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -1789,6 +1939,7 @@ async fn a_modified_item_is_updated() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1841,6 +1992,7 @@ async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -1889,6 +2041,7 @@ async fn a_rule_with_two_wrong_pointers_is_repaired_once() {
         dir.path(),
         &[],
         None,
+        None,
         RuleSource::Custom,
         &identity(),
     )
@@ -1926,9 +2079,16 @@ async fn diff_reports_a_pointer_whose_container_is_missing() {
          {\"list_id\":\"ghost\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
     );
 
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(d.exceptions.dangling.len(), 1);
     assert_eq!(d.exceptions.dangling[0].list_id, "ghost");
@@ -1966,6 +2126,7 @@ async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
         stack.transport(),
         dir.path(),
         &[],
+        None,
         None,
         RuleSource::Custom,
         &identity(),
@@ -2032,6 +2193,7 @@ async fn a_custom_pull_returns_only_authored_rules_while_the_default_filter_retu
         Format::Yaml,
         &[],
         None,
+        None,
         RuleSource::Custom,
     )
     .await
@@ -2052,9 +2214,16 @@ async fn a_custom_pull_returns_only_authored_rules_while_the_default_filter_retu
 async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
     let stack = mock_mixed_corpus(0, 1).await;
     let dir = mirror_holding_a_prebuilt_rule();
-    let d = state::diff(stack.transport(), dir.path(), &[], None, RuleSource::Custom)
-        .await
-        .unwrap();
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(d.out_of_scope, 1);
     assert!(
@@ -2075,6 +2244,7 @@ async fn a_prebuilt_only_stack_has_a_valid_empty_custom_scope() {
         dir.path(),
         Format::Yaml,
         &[],
+        None,
         None,
         RuleSource::Custom,
     )
@@ -2119,6 +2289,7 @@ async fn malformed_source_partition_returns_a_typed_error_instead_of_an_empty_pu
         dir.path(),
         Format::Yaml,
         &[],
+        None,
         None,
         RuleSource::Custom,
     )

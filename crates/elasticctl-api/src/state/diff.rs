@@ -63,6 +63,7 @@ pub async fn diff(
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: crate::rules::RuleSource,
 ) -> Result<DiffReport> {
     let Mirror {
@@ -70,7 +71,7 @@ pub async fn diff(
         lists,
         items,
     } = super::mirror::read_mirror(dir)?;
-    let scope = super::scope_of(t, selectors, tag, source, &local_all, "compare").await?;
+    let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "compare").await?;
     // A selector narrows both sides; with none, the `--source` scope decides.
     // A local file outside that scope is reported as `out_of_scope`, never as a
     // pending create (spec 5.5, the 0.1 upgrade guard).

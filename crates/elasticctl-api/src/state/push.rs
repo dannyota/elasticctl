@@ -50,6 +50,7 @@ pub async fn plan_push(
     dir: &Path,
     selectors: &[String],
     tag: Option<&str>,
+    search: Option<&str>,
     source: crate::rules::RuleSource,
     identity: &StackIdentity,
 ) -> Result<PushPlan> {
@@ -60,7 +61,7 @@ pub async fn plan_push(
     } = super::mirror::read_mirror(dir)?;
     // Resolve locally first because disk-only rules have no remote ID and may
     // be created by a scoped push.
-    let scope = super::scope_of(t, selectors, tag, source, &local_all, "apply").await?;
+    let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "apply").await?;
     // A local file outside the `--source` scope is never a pending create
     // (spec 5.5). Selectors narrow both sides and leave the count at zero.
     let (local, out_of_scope) = if scope.is_scoped() {

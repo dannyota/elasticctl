@@ -243,6 +243,7 @@ async fn main() {
                 format_file,
                 selectors,
                 tag,
+                search,
                 source,
             } => match parse_file_format(format_file) {
                 Ok(format) => match Context::build(&args.global) {
@@ -253,6 +254,7 @@ async fn main() {
                             format,
                             selectors,
                             tag.as_deref(),
+                            search.as_deref(),
                             source_to_api(*source),
                         )
                         .await
@@ -265,11 +267,19 @@ async fn main() {
                 dir,
                 selectors,
                 tag,
+                search,
                 source,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
-                    cmd::state::diff(&ctx, dir, selectors, tag.as_deref(), source_to_api(*source))
-                        .await
+                    cmd::state::diff(
+                        &ctx,
+                        dir,
+                        selectors,
+                        tag.as_deref(),
+                        search.as_deref(),
+                        source_to_api(*source),
+                    )
+                    .await
                 }
                 Err(e) => Err(e),
             },
@@ -278,6 +288,7 @@ async fn main() {
                 report,
                 selectors,
                 tag,
+                search,
                 source,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
@@ -287,6 +298,7 @@ async fn main() {
                         report.as_deref(),
                         selectors,
                         tag.as_deref(),
+                        search.as_deref(),
                         source_to_api(*source),
                     )
                     .await

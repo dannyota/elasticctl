@@ -303,10 +303,10 @@ pub enum ExceptionsAction {
 
 #[derive(Debug, Subcommand)]
 pub enum StateAction {
-    /// Write live rules to a directory. Without selectors or --tag, pulls the
-    /// active --source scope.
+    /// Write live rules to a directory. Without selectors, --tag, or --search,
+    /// pulls the active --source scope.
     Pull {
-        /// Rule ids or names to pull. Omit with no --tag to use --source.
+        /// Rule ids or names to pull. Omit with no --tag/--search to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
@@ -315,28 +315,34 @@ pub enum StateAction {
         /// Pull every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Source scope used when selectors and --tag are absent
+        /// Pull every rule whose name contains this text or carries it as a tag
+        #[arg(long)]
+        search: Option<String>,
+        /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
     /// Show field-level drift between the directory and the stack. Without
-    /// selectors or --tag, compares the active --source scope.
+    /// selectors, --tag, or --search, compares the active --source scope.
     Diff {
-        /// Rule ids or names to compare. Omit with no --tag to use --source.
+        /// Rule ids or names to compare. Omit with no --tag/--search to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
         /// Compare every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Source scope used when selectors and --tag are absent
+        /// Compare every rule whose name contains this text or carries it as a tag
+        #[arg(long)]
+        search: Option<String>,
+        /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
-    /// Apply the directory's rules to the stack. Without selectors or --tag,
-    /// applies the active --source scope.
+    /// Apply the directory's rules to the stack. Without selectors, --tag, or
+    /// --search, applies the active --source scope.
     Push {
-        /// Rule ids or names to apply. Omit with no --tag to use --source.
+        /// Rule ids or names to apply. Omit with no --tag/--search to use --source.
         selectors: Vec<String>,
         #[arg(long)]
         dir: std::path::PathBuf,
@@ -346,7 +352,10 @@ pub enum StateAction {
         /// Apply every rule carrying this tag, in addition to any selectors
         #[arg(long)]
         tag: Option<String>,
-        /// Source scope used when selectors and --tag are absent
+        /// Apply every rule whose name contains this text or carries it as a tag
+        #[arg(long)]
+        search: Option<String>,
+        /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]
         source: SourceArg,
     },
