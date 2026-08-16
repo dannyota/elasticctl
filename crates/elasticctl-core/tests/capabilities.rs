@@ -103,6 +103,44 @@ fn a_query_string_scheme_does_not_defeat_hostname_detection() {
 }
 
 #[test]
+fn a_doubled_scheme_yields_the_real_host() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    // A doubled scheme anchors on the second `://`, so the host is the
+    // authority after it, not the word `https`.
+    let caps = Capabilities::classify(
+        &status,
+        false,
+        "https://https://abc.kb.us-east-1.aws.found.io",
+    );
+
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[test]
+fn a_query_without_a_path_yields_the_host() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    // A query directly after the authority has no path to split on, so the
+    // host must end at the `?`.
+    let caps = Capabilities::classify(&status, false, "https://abc.kb.us-east-1.aws.found.io?x=1");
+
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[test]
+fn a_fragment_without_a_path_yields_the_host() {
+    let status = json!({
+        "version": {"number": "9.5.1", "build_flavor": "traditional"}
+    });
+    let caps = Capabilities::classify(&status, false, "https://abc.kb.us-east-1.aws.found.io#frag");
+
+    assert_eq!(caps.flavor, Flavor::ElasticCloudHosted);
+}
+
+#[test]
 fn normalized_lookalike_domain_is_not_hosted() {
     let status = json!({
         "version": {"number": "9.5.1", "build_flavor": "traditional"}
@@ -319,6 +357,15 @@ fn verified_features_ignore_a_v_prefix_and_a_prerelease_suffix() {
         };
         caps.require_feature(Feature::ExceptionLists).unwrap();
     }
+}
+
+#[test]
+fn verified_features_ignore_a_build_suffix() {
+    let caps = Capabilities {
+        flavor: Flavor::SelfManaged,
+        version: "9.5.1+build".into(),
+    };
+    caps.require_feature(Feature::ExceptionLists).unwrap();
 }
 
 #[test]

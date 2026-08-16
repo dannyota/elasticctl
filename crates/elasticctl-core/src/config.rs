@@ -112,12 +112,14 @@ impl Profile {
 
 /// Return the byte index just past the scheme's `://`.
 ///
+/// Shared with flavor detection's `host_of`.
+///
 /// The scheme is normally the first `://`. A doubled scheme
 /// (`https://https://host`) puts a second `://` inside the authority, so the
 /// first `/` after the first `://` is itself part of that `://`; anchor on that
 /// second `://` then so the authority after it parses correctly. A `://` in the
 /// path, query, or fragment never becomes the anchor.
-fn scheme_anchor(url: &str) -> Option<usize> {
+pub(crate) fn scheme_anchor(url: &str) -> Option<usize> {
     let first = url.find("://")?;
     let after = &url[first + 3..];
     let Some(delim) = after.find(['/', '?', '#']) else {

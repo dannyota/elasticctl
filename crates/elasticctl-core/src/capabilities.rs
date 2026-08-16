@@ -27,14 +27,17 @@ const CLOUD_EDGE_HEADER: &str = "x-found-handling-cluster";
 /// Matching the full URL would treat a suffix in its path or query as a
 /// deployment signal.
 fn host_of(url: &str) -> &str {
-    // The scheme is the first `://`; a later `://` in the path or query is not
-    // the scheme and must not be mistaken for it.
-    let after_scheme = match url.find("://") {
-        Some(i) => &url[i + 3..],
+    // `config::scheme_anchor` handles a doubled scheme and a `://` in the path,
+    // query, or fragment; a URL with no `://` passes through unchanged.
+    let after_scheme = match crate::config::scheme_anchor(url) {
+        Some(pos) => &url[pos..],
         None => url,
     };
-    let host = after_scheme.split('/').next().unwrap_or("");
-    host.split(':').next().unwrap_or(host)
+    // The first `/`, `?`, `#`, or `:` ends the authority. `:` drops a port.
+    after_scheme
+        .split(['/', '?', '#', ':'])
+        .next()
+        .unwrap_or("")
 }
 
 /// Whether `host` equals `suffix` or is its subdomain.
