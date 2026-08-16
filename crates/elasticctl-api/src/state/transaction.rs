@@ -185,6 +185,16 @@ fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> 
     } else {
         current_dir.join(requested)
     };
+
+    // Reject a filesystem root — `/`, a drive root, or a UNC share root — by
+    // shape before any filesystem access. `parent()` is None exactly for these
+    // roots and Some for aliases like `./` and `foo/..`, while `try_exists` and
+    // `canonicalize` on a non-existent UNC share resolve over the network and
+    // are nondeterministic (os error 64).
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| filesystem_root_error(requested))?;
+
     let exists = absolute
         .try_exists()
         .map_err(|error| filesystem_error("checking mirror path", &absolute, error))?;
@@ -198,9 +208,6 @@ fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> 
     }
     let name = absolute
         .file_name()
-        .ok_or_else(|| filesystem_root_error(requested))?;
-    let parent = absolute
-        .parent()
         .ok_or_else(|| filesystem_root_error(requested))?;
     let resolved_parent = fs::canonicalize(parent)
         .map_err(|error| filesystem_error("resolving mirror parent", parent, error))?;
