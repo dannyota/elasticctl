@@ -34,7 +34,7 @@ fn checked_env(name: &str) -> Result<Option<String>> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub kibana_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,6 +61,21 @@ fn default_verify() -> bool {
 }
 fn default_timeout() -> u64 {
     30
+}
+
+impl std::fmt::Debug for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Profile")
+            .field("kibana_url", &strip_userinfo(&self.kibana_url))
+            .field("es_url", &self.es_url.as_deref().map(strip_userinfo))
+            .field("api_key", &self.api_key.as_ref().map(|_| REDACTED))
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| REDACTED))
+            .field("space", &self.space)
+            .field("verify", &self.verify)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl Profile {
@@ -703,6 +718,35 @@ mod tests {
     }
 
     #[test]
+    fn debug_never_prints_a_secret_or_userinfo() {
+        let profile = with_urls(
+            "https://user:pass@kb.example.com",
+            Some("https://user:pass@es.example.com"),
+        )
+        .profiles["default"]
+            .clone();
+        let out = format!("{profile:?}");
+        assert!(!out.contains("essu_SECRET"), "api key leaked: {out}");
+        // `user:pass` and `pass@` name the userinfo; the field name `password`
+        // itself legitimately contains `pass`, so a bare `pass` would false-fail.
+        assert!(!out.contains("user:pass"), "userinfo leaked: {out}");
+        assert!(!out.contains("pass@"), "userinfo leaked: {out}");
+        assert!(out.contains("kb.example.com"), "host missing: {out}");
+        assert!(out.contains("es.example.com"), "host missing: {out}");
+    }
+
+    #[test]
+    fn debug_marks_the_api_key_present_but_redacted() {
+        let profile = with_urls("https://kb.example.com", None).profiles["default"].clone();
+        let out = format!("{profile:?}");
+        assert!(
+            out.contains("Some(\"***\")"),
+            "api key must show present-but-redacted: {out}"
+        );
+        assert!(!out.contains("essu_SECRET"), "api key leaked: {out}");
+    }
+
+    #[test]
     fn banner_names_profile_host_and_space() {
         let r = sample()
             .resolve(Some("prod"), &Overrides::default())
@@ -1039,6 +1083,24 @@ mod tests {
                 .clone();
         p.strip_userinfo();
         assert_eq!(p.kibana_url, "https://host:/path?next=https://idp");
+    }
+
+    #[test]
+    fn percent_encoded_userinfo_scrubs_to_the_host() {
+        // The raw `@` is the delimiter; `%40` (a percent-encoded `@`) is not
+        // userinfo and must not be mistaken for one.
+        assert_eq!(
+            strip_userinfo("https://user%40x:pass@kb.example.com"),
+            "https://kb.example.com"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_path_and_query_without_userinfo_are_left_byte_identical() {
+        // `%2F` and `%3F` are percent-encoded `/` and `?`, not delimiters, so a
+        // URL with no userinfo must be returned exactly as written.
+        let url = "https://kb.example.com/%2Fpath?next=%3F";
+        assert_eq!(strip_userinfo(url), url);
     }
 
     // `try_from_env_with_flags` and `try_from_env` read the process
