@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-08-16
+
+### Added
+
+- `search esql` and `search dsl` run ES|QL and Query DSL against Elasticsearch
+  data and render or export the results. `--index` and `--data-view` select the
+  target, `--limit` caps rows (default 100 for a peek), and `--out` writes
+  NDJSON — DSL streams pages through a point-in-time, ES|QL through the async
+  API.
+- The Elasticsearch error envelope (`{"error": {"reason": ...}, "status": ...}`)
+  is now classified alongside the Kibana and Cloud edge shapes.
+
 ## 0.2.5 — 2026-08-15
 
 ### Fixed
