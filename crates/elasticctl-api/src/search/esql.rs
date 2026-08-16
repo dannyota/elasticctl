@@ -109,6 +109,16 @@ pub fn decode_columnar(value: &Value) -> Result<EsqlResponse> {
         .get("values")
         .and_then(Value::as_array)
         .ok_or_else(|| Error::new(ErrorKind::Http, "decoding esql response field `values`"))?;
+    // A zero-row columnar result is `values: []`, not one empty array per
+    // column (measured against Serverless 9.6.0). Treat it as an empty result
+    // rather than a column-count mismatch.
+    if cols.is_empty() {
+        return Ok(EsqlResponse {
+            columns,
+            values: Vec::new(),
+            is_partial: is_partial(obj),
+        });
+    }
     if cols.len() != columns.len() {
         return Err(Error::new(
             ErrorKind::Http,
@@ -181,9 +191,21 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
         return decode_columnar(&start);
     }
 
-    // Poll at most 30 times; an async query that never finishes is a timeout,
-    // not an infinite loop. Clean up on the way out either way.
-    for _ in 0..30 {
+    // Poll once a second for up to five minutes: a bulk export may legitimately
+    // run that long, but a query that never finishes must still fail closed.
+    poll_until_complete(t, &id, 300, Duration::from_secs(1)).await
+}
+
+/// Poll `GET /_query/async/{id}` until it reports completion, cleaning up on
+/// every exit path. `max_polls * interval` bounds the wait; `run_async` passes
+/// a bulk-export-sized budget, while tests pass a tiny one.
+pub async fn poll_until_complete(
+    t: &Transport,
+    id: &str,
+    max_polls: usize,
+    interval: Duration,
+) -> Result<EsqlResponse> {
+    for _ in 0..max_polls {
         let resp = match t.get_absolute_es(&format!("/_query/async/{id}")).await {
             Ok(resp) => resp,
             Err(err) => {
@@ -195,11 +217,11 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
             let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
             return decode_columnar(&resp);
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(interval).await;
     }
     let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
     Err(Error::new(
         ErrorKind::Timeout,
-        format!("async query {id} still running after 30 polls"),
+        format!("async query {id} still running after {max_polls} polls"),
     ))
 }

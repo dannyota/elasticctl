@@ -66,14 +66,17 @@ fn dsl_row(hit: &dsl::DslHit, with_meta: bool) -> Value {
     Value::Object(row)
 }
 
-/// True when `query` already carries a standalone ES|QL `LIMIT` command, so a
-/// peek does not append a second one. The match is case-insensitive and requires
-/// the token to be bounded by non-word characters, so a longer identifier such
-/// as `myLIMIT` or `LIMIT_10` does not match.
+/// True when `query` already carries a top-level ES|QL `LIMIT` command, so a
+/// peek does not append a second one. `LIMIT` starts a pipeline stage (at the
+/// query start or after `|`); a field, function, or literal named `limit` in a
+/// clause does not count.
 fn has_limit(query: &str) -> bool {
-    query
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .any(|token| token.eq_ignore_ascii_case("limit"))
+    query.split('|').any(|stage| {
+        stage
+            .split_whitespace()
+            .next()
+            .is_some_and(|t| t.eq_ignore_ascii_case("limit"))
+    })
 }
 
 pub async fn esql(
@@ -95,13 +98,13 @@ pub async fn esql(
     let resp = if ctx.global.out.is_some() {
         esql::run_async(t, &resolved).await?
     } else {
-        // A peek appends a server-side LIMIT so a large result is never
-        // downloaded and discarded. The client-side truncation below remains a
-        // safety net.
+        // A peek appends a server-side LIMIT one past the cap so a large result
+        // is never downloaded and discarded, while the extra row lets the
+        // client-side truncation below detect and report truncation.
         let peek_query = if has_limit(&resolved) {
             resolved
         } else {
-            format!("{resolved} | LIMIT {cap}")
+            format!("{resolved} | LIMIT {}", cap.saturating_add(1))
         };
         esql::run_sync(t, &peek_query).await?
     };
@@ -177,9 +180,19 @@ pub async fn dsl(
 
 #[cfg(test)]
 mod tests {
-    use super::esql_rows;
+    use super::{esql_rows, has_limit};
     use elasticctl_api::search::esql::{EsqlColumn, EsqlResponse};
     use serde_json::json;
+
+    #[test]
+    fn has_limit_only_matches_a_top_level_limit_command() {
+        assert!(has_limit("FROM x | LIMIT 2"));
+        assert!(has_limit("FROM x | limit 2"));
+        assert!(!has_limit("FROM x"));
+        assert!(!has_limit("FROM x | WHERE limit > 5"));
+        assert!(!has_limit("FROM x | EVAL limit = 1"));
+        assert!(!has_limit("FROM x | WHERE message == \"limit\""));
+    }
 
     #[test]
     fn disambiguates_suffix_collisions_with_literal_names() {

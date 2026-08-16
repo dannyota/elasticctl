@@ -5,6 +5,16 @@ use elasticctl_core::{Error, ErrorKind};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+/// Reject an empty or whitespace-only `--search`, which would otherwise widen a
+/// scoped operation to every rule instead of narrowing it (spec 4.7).
+fn non_empty(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        Err("value must not be empty".into())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Format {
     #[default]
@@ -169,7 +179,7 @@ pub enum RulesAction {
         #[arg(long)]
         filter: Option<String>,
         /// Friendly name-substring + tag search, mutually exclusive with --filter
-        #[arg(long, conflicts_with = "filter")]
+        #[arg(long, conflicts_with = "filter", value_parser = non_empty)]
         search: Option<String>,
         /// Which rules to list: custom, customized, prebuilt, or all
         #[arg(long, value_enum, default_value = "all")]
@@ -254,7 +264,7 @@ pub enum ExceptionsAction {
         #[arg(long, value_parser = ["single", "agnostic"])]
         namespace: Option<String>,
         /// Friendly name-substring search
-        #[arg(long)]
+        #[arg(long, value_parser = non_empty)]
         search: Option<String>,
     },
     /// Show one container and its items
@@ -316,7 +326,7 @@ pub enum StateAction {
         #[arg(long)]
         tag: Option<String>,
         /// Pull every rule whose name contains this text or carries it as a tag
-        #[arg(long)]
+        #[arg(long, value_parser = non_empty)]
         search: Option<String>,
         /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]
@@ -333,7 +343,7 @@ pub enum StateAction {
         #[arg(long)]
         tag: Option<String>,
         /// Compare every rule whose name contains this text or carries it as a tag
-        #[arg(long)]
+        #[arg(long, value_parser = non_empty)]
         search: Option<String>,
         /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]
@@ -353,7 +363,7 @@ pub enum StateAction {
         #[arg(long)]
         tag: Option<String>,
         /// Apply every rule whose name contains this text or carries it as a tag
-        #[arg(long)]
+        #[arg(long, value_parser = non_empty)]
         search: Option<String>,
         /// Source scope used when selectors, --tag, and --search are absent
         #[arg(long, value_enum, default_value = "custom")]

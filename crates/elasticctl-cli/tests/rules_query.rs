@@ -110,6 +110,22 @@ async fn rules_list_forwards_search_as_a_parenthesized_filter() {
 }
 
 #[test]
+fn rules_list_rejects_an_empty_search() {
+    let dir = tempfile::tempdir().unwrap();
+    // A missing config proves clap rejects the empty value before config loading.
+    let config = dir.path().join("absent.toml");
+    let out = bin()
+        .args(["rules", "list", "--search", "", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2), "clap exits 2 on a usage error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--search"), "{stderr}");
+}
+
+#[test]
 fn rules_list_rejects_search_and_filter_together() {
     let dir = tempfile::tempdir().unwrap();
     // A missing config proves clap rejects the conflict before config loading.

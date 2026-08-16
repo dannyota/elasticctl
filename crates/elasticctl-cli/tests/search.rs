@@ -62,7 +62,7 @@ async fn search_esql_peek_appends_server_limit() {
     let cfg = write_config(dir.path(), &server.uri());
     Mock::given(method("POST"))
         .and(path("/_query"))
-        .and(body_partial_json(json!({"query": "FROM x | LIMIT 100"})))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 101"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "columns": [{"name": "seq", "type": "long"}],
             "values": [[1]],
@@ -86,7 +86,7 @@ async fn search_esql_peek_appends_server_limit_from_flag() {
     let cfg = write_config(dir.path(), &server.uri());
     Mock::given(method("POST"))
         .and(path("/_query"))
-        .and(body_partial_json(json!({"query": "FROM x | LIMIT 7"})))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 8"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "columns": [{"name": "seq", "type": "long"}],
             "values": [[1]],
@@ -101,6 +101,33 @@ async fn search_esql_peek_appends_server_limit_from_flag() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
+}
+
+#[tokio::test]
+async fn search_esql_peek_reports_the_client_side_cap() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let values: Vec<Vec<serde_json::Value>> = (1..=101).map(|n| vec![json!(n)]).collect();
+    Mock::given(method("POST"))
+        .and(path("/_query"))
+        .and(body_partial_json(json!({"query": "FROM x | LIMIT 101"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "columns": [{"name": "seq", "type": "long"}],
+            "values": values,
+            "is_partial": false
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["search", "esql", "FROM x"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("capped at 100 rows"), "{stderr}");
 }
 
 #[tokio::test]

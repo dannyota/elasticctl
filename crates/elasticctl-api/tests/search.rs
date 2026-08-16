@@ -60,6 +60,21 @@ fn decodes_a_columnar_esql_response_into_row_objects() {
 }
 
 #[test]
+fn decodes_an_empty_columnar_response_as_zero_rows() {
+    let body = json!({
+        "is_partial": false,
+        "columns": [
+            {"name": "seq", "type": "long"},
+            {"name": "message", "type": "text"}
+        ],
+        "values": []
+    });
+    let decoded = esql::decode_columnar(&body).expect("decode empty columnar");
+    assert_eq!(decoded.columns.len(), 2);
+    assert!(decoded.values.is_empty());
+}
+
+#[test]
 fn rejects_a_response_without_columns() {
     let body = json!({"values": [[1]]});
     let err = esql::decode(&body).expect_err("must fail");
@@ -454,17 +469,10 @@ async fn run_async_deletes_on_a_poll_error() {
 }
 
 #[tokio::test]
-async fn run_async_times_out_after_30_polls() {
+async fn poll_until_complete_times_out_after_its_budget() {
     let server = MockServer::start().await;
     let t = test_transport(&server.uri());
-    Mock::given(method("POST"))
-        .and(path("/_query/async"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "a1", "is_running": true})),
-        )
-        .mount(&server)
-        .await;
-    // Every poll reports still-running, so the runner exhausts its 30-poll cap.
+    // Every poll reports still-running, so the runner exhausts its poll budget.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
         .respond_with(
@@ -473,7 +481,7 @@ async fn run_async_times_out_after_30_polls() {
         .mount(&server)
         .await;
 
-    let err = esql::run_async(&t, "FROM x | LIMIT 2")
+    let err = esql::poll_until_complete(&t, "a1", 3, std::time::Duration::from_millis(1))
         .await
         .expect_err("must time out");
     assert_eq!(err.kind, elasticctl_core::ErrorKind::Timeout);

@@ -150,6 +150,18 @@ pub async fn resolve(
         return Ok(None);
     }
 
+    // An empty or whitespace-only search matches every rule, both locally
+    // (`contains("")`) and remotely (`name: "**"`). Refuse it rather than
+    // silently widening a scoped operation to the whole corpus.
+    if let Some(text) = search
+        && text.trim().is_empty()
+    {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "the --search text must not be empty or whitespace-only",
+        ));
+    }
+
     let mut ids: Vec<String> = Vec::new();
     for s in selectors {
         match local_match(local, s) {
