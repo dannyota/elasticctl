@@ -410,12 +410,24 @@ the tool whose preview is client-computed, and the banner names both counts.
 ### 4.7 Object search
 
 `rules list` gains `--search`, a friendly query over the public `_find` filter
-fields — name substring plus tags, and `description` and `query` if that filter
-reaches them (verify before build). It is sugar over the same filter as
+fields. Measured 2026-08-16, that filter reaches `name`, `tags`, `type`,
+`enabled`, `ruleId`, `severity`, and the source fields, but **not** `description`
+or `query`: either returns 400 (`This key 'alert.attributes.description' … does
+NOT exist in alert saved object index patterns`). `--search <text>` therefore
+narrows to name substring plus tags:
+
+```
+(alert.attributes.name: *<text>* OR alert.attributes.tags: "<text>")
+```
+
+The parenthesized clause is ANDed with the structured filters, so `--search`
+never widens a scoped `_find` past its other clauses. Name is substring-matched
+by wildcard; tags are exact, as in `--tag`. It is sugar over the same filter as
 `--filter` (raw KQL, unchanged); the two are mutually exclusive. `exceptions
-list` gains name-substring search through the same flag. `--search` widens list
-discovery only. Selector resolution stays exact (§4.1), and `state` gains the
-flag through §5.3. The internal `_search` route is not used (§5.2).
+list` gains name-substring search through the same flag, over
+`exception-list.attributes.name` (or its `-agnostic` counterpart). `--search`
+widens list discovery only. Selector resolution stays exact (§4.1), and `state`
+gains the flag through §5.3. The internal `_search` route is not used (§5.2).
 
 ## 5. State engine
 
@@ -1009,6 +1021,7 @@ baseline: 2,066 prebuilt rules, no sample rules, no exception lists.
 | Exception import | `POST /api/exception_lists/_import?overwrite=true` accepts an export file **including its trailer** and returns `{errors, success, success_count, success_exception_lists, success_count_exception_lists, success_exception_list_items, success_count_exception_list_items}` |
 | **Exception export needs `id`** | `POST /api/exception_lists/_export` **requires the `id` query parameter**. `list_id` and `namespace_type` alone are a 400: `id: Invalid input: expected string, received undefined` |
 | List find is filterable server-side | `GET /api/exception_lists/_find` accepts a KQL `filter` over the namespace's saved-object type: `exception-list.attributes.<field>` for `single` and `exception-list-agnostic.attributes.<field>` for `agnostic`. Measured against three sample lists: `type: detection` returned 2 of 3, `tags: alpha` returned 2 of 3, and a quoted `list_id` returned 1 |
+| List `name` is keyword, not analyzed | `exception-list.attributes.name: "Probe"` (quoted token) returned 0 against a list named `elasticctl-sample Probe Exception List`, while `*Probe*` returned it (measured 2026-08-16). Name substring therefore needs the wildcard form, unlike the rules vertical's analyzed `name` |
 | An empty filter is a 400 | Passing `filter=` with an empty value fails with `KQLSyntaxError: Expected "(", NOT, field name, value, whitespace but ")" found`. The parameter must be **omitted** when there is nothing to filter on, never sent empty |
 | Multi-list export concatenates | Exporting two lists and joining the bodies gives six lines — list, item, trailer, list, item, trailer — with a trailer **per list**, interior to the file. `_import?overwrite=true` accepts it: `success_count: 4`, both containers and both items restored |
 | `rule_default` lists are ordinary on the wire | `POST /api/exception_lists` with `"type": "rule_default"` creates one like any other container, and a rule references it through the same `exceptions_list` entry with `"type": "rule_default"`. Nothing about the route or the reference is special |
