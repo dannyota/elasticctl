@@ -45,6 +45,27 @@ fn truncate(rows: &mut Value, limit: Option<usize>) {
     }
 }
 
+/// The rendered DSL row is the hit's `_source`. `--with-meta` merges the
+/// surfaced metadata (`_id`, `_index`, `_score`) into the object; a field the
+/// server left absent or null is omitted rather than nulled. `sort` is never
+/// rendered, with or without `--with-meta`.
+fn dsl_row(hit: &dsl::DslHit, with_meta: bool) -> Value {
+    if !with_meta {
+        return hit.source.clone();
+    }
+    let mut row = hit.source.as_object().cloned().unwrap_or_default();
+    if let Some(id) = &hit.id {
+        row.insert("_id".into(), Value::String(id.clone()));
+    }
+    if let Some(index) = &hit.index {
+        row.insert("_index".into(), Value::String(index.clone()));
+    }
+    if let Some(score) = hit.score {
+        row.insert("_score".into(), Value::from(score));
+    }
+    Value::Object(row)
+}
+
 /// True when `query` already carries a standalone ES|QL `LIMIT` command, so a
 /// peek does not append a second one. The match is case-insensitive and requires
 /// the token to be bounded by non-word characters, so a longer identifier such
@@ -104,6 +125,7 @@ pub async fn dsl(
     data_view: Option<&str>,
     index: Option<&str>,
     limit: Option<usize>,
+    with_meta: bool,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
@@ -132,10 +154,17 @@ pub async fn dsl(
             .cloned()
             .unwrap_or_else(|| json!({"match_all": {}}));
         let hits = dsl::run_stream(t, &resolved_index, &query, &sort, limit).await?;
-        Ok(Value::Array(hits.into_iter().map(|h| h.source).collect()))
+        Ok(Value::Array(
+            hits.into_iter().map(|h| dsl_row(&h, with_meta)).collect(),
+        ))
     } else {
         let page = dsl::run_sync(t, &resolved_index, &body).await?;
-        let mut rows = Value::Array(page.hits.into_iter().map(|h| h.source).collect());
+        let mut rows = Value::Array(
+            page.hits
+                .into_iter()
+                .map(|h| dsl_row(&h, with_meta))
+                .collect(),
+        );
         // A peek defaults to 100 rows and reports the client-side cap.
         let cap = limit.unwrap_or(100);
         if rows.as_array().is_some_and(|items| items.len() > cap) {

@@ -296,6 +296,84 @@ async fn search_dsl_renders_sources_as_a_table() {
 }
 
 #[tokio::test]
+async fn search_dsl_with_meta_renders_hit_metadata() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/idx/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_index": "idx", "_id": "a", "_score": 1.5, "_source": {"seq": 1}},
+                {"_index": "idx", "_id": "b", "_score": 2.5, "_source": {"seq": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args([
+            "search",
+            "dsl",
+            "{\"query\": {\"match_all\": {}}}",
+            "--index",
+            "idx",
+            "--with-meta",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        value,
+        json!([
+            {"seq": 1, "_id": "a", "_index": "idx", "_score": 1.5},
+            {"seq": 2, "_id": "b", "_index": "idx", "_score": 2.5}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn search_dsl_without_meta_renders_sources_only() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/idx/_search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_index": "idx", "_id": "a", "_score": 1.5, "_source": {"seq": 1}},
+                {"_index": "idx", "_id": "b", "_score": 2.5, "_source": {"seq": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args([
+            "search",
+            "dsl",
+            "{\"query\": {\"match_all\": {}}}",
+            "--index",
+            "idx",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value, json!([{"seq": 1}, {"seq": 2}]));
+    assert!(!stdout.contains("_id"), "{stdout}");
+    assert!(!stdout.contains("_index"), "{stdout}");
+    assert!(!stdout.contains("_score"), "{stdout}");
+}
+
+#[tokio::test]
 async fn search_dsl_out_writes_jsonl_by_default() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();

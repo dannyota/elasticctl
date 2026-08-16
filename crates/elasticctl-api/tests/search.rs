@@ -104,6 +104,40 @@ fn decodes_a_search_hit_page() {
     assert_eq!(page.hits[0].sort, Some(vec![json!(1), json!(0)]));
 }
 
+#[test]
+fn decode_keeps_hit_metadata() {
+    let body = json!({
+        "hits": {
+            "total": {"value": 1, "relation": "eq"},
+            "hits": [
+                {"_index": "idx", "_id": "a", "_score": 1.5, "_source": {"seq": 1}}
+            ]
+        }
+    });
+    let page = dsl::decode(&body).expect("decode");
+    let hit = &page.hits[0];
+    assert_eq!(hit.id.as_deref(), Some("a"));
+    assert_eq!(hit.index.as_deref(), Some("idx"));
+    assert_eq!(hit.score, Some(1.5));
+}
+
+#[test]
+fn decode_treats_missing_or_null_metadata_as_none() {
+    let body = json!({
+        "hits": {
+            "total": {"value": 1, "relation": "eq"},
+            "hits": [
+                {"_id": null, "_index": "idx", "_score": null, "_source": {"seq": 1}}
+            ]
+        }
+    });
+    let page = dsl::decode(&body).expect("decode");
+    let hit = &page.hits[0];
+    assert_eq!(hit.id, None);
+    assert_eq!(hit.index.as_deref(), Some("idx"));
+    assert_eq!(hit.score, None);
+}
+
 #[tokio::test]
 async fn run_stream_pages_with_search_after() {
     let server = MockServer::start().await;

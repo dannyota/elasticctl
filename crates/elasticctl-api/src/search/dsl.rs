@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 pub struct DslHit {
     pub source: Value,
     pub sort: Option<Vec<Value>>,
+    pub id: Option<String>,
+    pub index: Option<String>,
+    pub score: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +34,9 @@ pub fn decode(value: &Value) -> Result<DslPage> {
             Ok(DslHit {
                 source: h.get("_source").cloned().unwrap_or(Value::Null),
                 sort: h.get("sort").and_then(Value::as_array).cloned(),
+                id: h.get("_id").and_then(Value::as_str).map(str::to_owned),
+                index: h.get("_index").and_then(Value::as_str).map(str::to_owned),
+                score: h.get("_score").and_then(Value::as_f64),
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -308,10 +308,18 @@ async fn main() {
                 data_view,
                 index,
                 limit,
+                with_meta,
             } => match Context::build(&args.global) {
                 Ok(ctx) => {
-                    cmd::search::dsl(&ctx, body, data_view.as_deref(), index.as_deref(), *limit)
-                        .await
+                    cmd::search::dsl(
+                        &ctx,
+                        body,
+                        data_view.as_deref(),
+                        index.as_deref(),
+                        *limit,
+                        *with_meta,
+                    )
+                    .await
                 }
                 Err(e) => Err(e),
             },

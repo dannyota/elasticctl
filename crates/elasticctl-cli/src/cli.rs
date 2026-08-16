@@ -375,6 +375,9 @@ pub enum SearchAction {
         /// Cap the number of result rows
         #[arg(long)]
         limit: Option<usize>,
+        /// Add `_id`, `_index`, and `_score` to each rendered row
+        #[arg(long)]
+        with_meta: bool,
     },
 }
 
