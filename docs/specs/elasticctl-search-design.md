@@ -157,6 +157,8 @@ that strips `execution_summary` from rule exports:
   `is_running`.
 - **DSL** — `took`, `_shards`, `_score`, `sort` (contains the per-run
   `_shard_doc`), and any `pit_id` (opaque per run).
+- **Status** — the `metrics` object (a runtime snapshot: load, memory, uptime,
+  cpu counters, `last_updated`).
 
 Unit tests run offline against recorded fixtures. Live tests follow the existing
 conformance discipline: every object is marker-scoped, the run ends by

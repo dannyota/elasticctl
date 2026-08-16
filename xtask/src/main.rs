@@ -1254,7 +1254,12 @@ async fn record_search(
 
 async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
     let responded = session.transport.get_with_headers("/api/status").await?;
-    let status = responded.body.clone();
+    let mut status = responded.body.clone();
+    // The `metrics` object is a runtime snapshot (load, memory, uptime, cpu,
+    // `last_updated`) that changes on every poll, so a re-record is not
+    // byte-identical. Drop it (spec §8); flavor and version come from the
+    // stable `version` object.
+    strip_volatile(&mut status, &["metrics"]);
     let version = status["version"]["number"]
         .as_str()
         .unwrap_or("unknown")

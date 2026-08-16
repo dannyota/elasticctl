@@ -107,7 +107,10 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
   rule. With zero rules it is the entire body.
 - `_bulk_action` targets rules by stable `rule_id` through
   `alert.attributes.params.ruleId: "<rule_id>"`, so no server-id lookup is needed. It also accepts
-  `?dry_run=true` for a server-computed preview.
+  `?dry_run=true` for a server-computed preview. Enable/disable/delete are idempotent — acting on a
+  rule already in the target state reports `succeeded`, and a missing rule is just absent from
+  `total` — so `skipped` stays `0` for every action elasticctl sends. The
+  `total == succeeded + failed + skipped` invariant's `skipped > 0` branch is defensive-only.
 - Rule export includes volatile `id`, `created_at`, `created_by`, `updated_at`, `updated_by`,
   `version`, `revision`, and `execution_summary`. Normalize them away on `pull` or every diff is
   false drift.

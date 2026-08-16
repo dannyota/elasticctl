@@ -138,7 +138,9 @@ Does not know about detection rules.
   strip: `https://user:pass@kb.example.com/?next=https://idp` scrubs to
   `https://kb.example.com/?next=https://idp`. A doubled scheme
   (`https://https://user:pass@kb.example.com`, a copy-paste slip) anchors on its
-  last `://` and scrubs the same way rather than leaking.
+  last `://` and scrubs the same way rather than leaking. An unencoded `/`,
+  `?`, or `#` inside userinfo is malformed (RFC 3986 requires percent-encoding)
+  and is out of contract; percent-encoded userinfo scrubs correctly.
 - **`auth`** — `ApiKey` (`Authorization: ApiKey <base64(id:key)>`) or `Basic`.
   API key is the default; basic auth exists for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
