@@ -7,7 +7,25 @@ use serde_json::Value;
 /// Match a `GET /api/data_views` body to one data view by `id` or `name`
 /// (exact), returning its `title` (the comma-separated index pattern).
 pub fn resolve_title(body: &Value, name: &str) -> Result<String> {
-    Ok(data_views_ops::resolve_from_body(body, name)?.title)
+    let views = body
+        .get("data_view")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Http,
+                "decoding data views response field `data_view`",
+            )
+        })?;
+    let view = data_views_ops::select_by_id_or_name(
+        views,
+        name,
+        |view| view.get("id").and_then(Value::as_str),
+        |view| view.get("name").and_then(Value::as_str),
+    )?;
+    view.get("title")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::new(ErrorKind::Http, "decoding data view field `title`"))
 }
 
 /// Resolve a data view over the wire.

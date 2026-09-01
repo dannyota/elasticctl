@@ -22,6 +22,35 @@ pub struct DataViewList {
     pub data_views: Vec<DataViewSummary>,
 }
 
+/// Select one entry by stable id or exact name without decoding unrelated
+/// entries. Shared by data-view operations and the legacy search resolver.
+pub(crate) fn select_by_id_or_name<'a, T>(
+    entries: &'a [T],
+    selector: &str,
+    id: impl Fn(&T) -> Option<&str>,
+    name: impl Fn(&T) -> Option<&str>,
+) -> Result<&'a T> {
+    if let Some(entry) = entries.iter().find(|entry| id(entry) == Some(selector)) {
+        return Ok(entry);
+    }
+
+    let matches: Vec<&T> = entries
+        .iter()
+        .filter(|entry| name(entry) == Some(selector))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(Error::new(
+            ErrorKind::NotFound,
+            format!("no data view with id or name '{selector}'"),
+        )),
+        [entry] => Ok(entry),
+        _ => Err(Error::new(
+            ErrorKind::Conflict,
+            format!("data view '{selector}' is ambiguous"),
+        )),
+    }
+}
+
 /// Resolve one selector from already-read data-view summaries.
 ///
 /// Stable ids win over names. Names are a convenience selector and must be
@@ -30,54 +59,13 @@ pub fn resolve_from_summaries(
     views: &[DataViewSummary],
     selector: &str,
 ) -> Result<DataViewSummary> {
-    if let Some(view) = views.iter().find(|view| view.id == selector) {
-        return Ok(view.clone());
-    }
-
-    let matches: Vec<&DataViewSummary> = views
-        .iter()
-        .filter(|view| view.name.as_deref() == Some(selector))
-        .collect();
-    match matches.as_slice() {
-        [] => Err(Error::new(
-            ErrorKind::NotFound,
-            format!("no data view with id or name '{selector}'"),
-        )),
-        [view] => Ok((*view).clone()),
-        _ => Err(Error::new(
-            ErrorKind::Conflict,
-            format!("data view '{selector}' is ambiguous"),
-        )),
-    }
-}
-
-/// Resolve a selector from a raw `GET /api/data_views` response body.
-///
-/// This lets the search vertical retain its body-based resolver while sharing
-/// the data-view selection rules.
-pub fn resolve_from_body(body: &Value, selector: &str) -> Result<DataViewSummary> {
-    let views = body
-        .get("data_view")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Http,
-                "decoding data views response field `data_view`",
-            )
-        })?;
-    let summaries = views
-        .iter()
-        .cloned()
-        .map(|view| {
-            serde_json::from_value(view).map_err(|_| {
-                Error::new(
-                    ErrorKind::Http,
-                    "decoding data views response field `data_view`",
-                )
-            })
-        })
-        .collect::<Result<Vec<DataViewSummary>>>()?;
-    resolve_from_summaries(&summaries, selector)
+    Ok(select_by_id_or_name(
+        views,
+        selector,
+        |view| Some(view.id.as_str()),
+        |view| view.name.as_deref(),
+    )?
+    .clone())
 }
 
 /// Resolve one selector over the wire with one data-view list read.
@@ -125,7 +113,7 @@ pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
 
     for key in ["id", "title"] {
         if let Some(value) = source.get(key) {
-            portable.insert(key.to_string(), value.clone());
+            portable.insert(key.to_string(), canonicalize(value));
         }
     }
     for key in [
@@ -138,20 +126,23 @@ pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
         "type",
     ] {
         if let Some(value) = source.get(key) {
-            portable.insert(key.to_string(), value.clone());
+            portable.insert(key.to_string(), canonicalize(value));
         }
     }
     for key in ["allowNoIndex", "allowHidden"] {
         portable.insert(
             key.to_string(),
-            source.get(key).cloned().unwrap_or(Value::Bool(false)),
+            source
+                .get(key)
+                .map(canonicalize)
+                .unwrap_or(Value::Bool(false)),
         );
     }
     if let Some(type_meta) = source.get("typeMeta")
         && !type_meta.is_null()
         && !matches!(type_meta, Value::Object(values) if values.is_empty())
     {
-        portable.insert("typeMeta".to_string(), type_meta.clone());
+        portable.insert("typeMeta".to_string(), canonicalize(type_meta));
     }
     if let Some(fields) = source.get("fields") {
         let fields = match fields {
@@ -164,12 +155,34 @@ pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
                     .map(|(name, field)| (name.clone(), field.clone()))
                     .collect(),
             ),
-            other => other.clone(),
+            other => canonicalize(other),
         };
-        portable.insert("fields".to_string(), fields);
+        portable.insert("fields".to_string(), canonicalize(&fields));
     }
 
-    DataViewSpec::try_from(Value::Object(portable))
+    DataViewSpec::try_from(canonicalize(&Value::Object(portable))).map_err(|error| {
+        Error::new(
+            ErrorKind::Http,
+            format!("decoding data view: {}", error.message),
+        )
+    })
+}
+
+/// Rebuild a JSON value with sorted object keys while preserving array order.
+fn canonicalize(value: &Value) -> Value {
+    match value {
+        Value::Object(values) => {
+            let mut keys: Vec<_> = values.keys().collect();
+            keys.sort_unstable();
+            Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonicalize(&values[key])))
+                    .collect(),
+            )
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonicalize).collect()),
+        _ => value.clone(),
+    }
 }
 
 /// Fully read and validate a portable data-view artifact.

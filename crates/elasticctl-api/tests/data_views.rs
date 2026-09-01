@@ -1,8 +1,8 @@
 use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::data_views::{self, DataViewSpec, DataViewUpdate};
 use elasticctl_api::data_views_ops::{self, DataViewFilter};
-use elasticctl_core::{Profile, Transport};
-use serde_json::json;
+use elasticctl_core::{ErrorKind, Profile, Transport};
+use serde_json::{Value, json};
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -218,6 +218,14 @@ fn normalization_keeps_only_scripted_fields() {
     assert!(value.get("namespaces").is_none());
 }
 
+#[test]
+fn normalization_classifies_malformed_live_data_as_http() {
+    let error = data_views_ops::normalize(&json!({"id": "dv", "title": 42}))
+        .expect_err("live response must be strict");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(error.message.starts_with("decoding data view:"));
+}
+
 #[tokio::test]
 async fn list_searches_case_insensitively_and_sorts_by_id() {
     let server = MockServer::start().await;
@@ -226,7 +234,7 @@ async fn list_searches_case_insensitively_and_sorts_by_id() {
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"data_view": [
                 {"id": "b", "name": "Unrelated", "title": "Logs-VIEW-b"},
-                {"id": "a", "name": "view alpha", "title": "logs-a-*"},
+                {"id": "a", "name": "view alpha", "title": "logs-a-*", "managed": true, "namespaces": ["default"]},
                 {"id": "c", "name": "other", "title": "logs-c-*"}
             ]})),
         )
@@ -280,6 +288,17 @@ fn validate_sorts_specs_and_reports_every_duplicate_id() {
     .expect("write duplicate artifact");
     let error = data_views_ops::validate(&duplicate_path).expect_err("duplicates must refuse");
     assert_eq!(error.message, "duplicate data view ids: a, c");
+}
+
+#[test]
+fn validate_reports_read_failures_as_local_errors() {
+    let path = tempfile::tempdir()
+        .expect("tempdir")
+        .path()
+        .join("missing.json");
+    let error = data_views_ops::validate(&path).expect_err("missing artifact");
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(error.message.starts_with("reading "));
 }
 
 fn transport(server: &MockServer) -> Transport {
@@ -658,4 +677,160 @@ async fn export_sorts_normalized_details_by_stable_id() {
         vec!["a", "b"]
     );
     assert!(specs.iter().all(|spec| spec.fields.is_empty()));
+}
+
+async fn export_one_detail(format: ContentFormat, detail: Value) -> String {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "dv", "title": "logs-*"}
+            ]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .mount(&server)
+        .await;
+    data_views_ops::export(&transport(&server), &["dv".into()], format)
+        .await
+        .expect("export")
+        .body
+}
+
+#[tokio::test]
+async fn export_canonicalizes_nested_objects_for_json_and_yaml() {
+    let first = json!({"data_view": {
+        "id": "dv", "title": "logs-*",
+        "sourceFilters": [{"z": 3, "a": {"z": 2, "a": 1}}],
+        "fieldFormats": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
+        "runtimeFieldMap": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
+        "fieldAttrs": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
+        "fields": {"legacy": {"z": 2, "scripted": true, "a": 1}},
+        "typeMeta": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}}
+    }});
+    let second = json!({"data_view": {
+        "id": "dv", "title": "logs-*",
+        "sourceFilters": [{"a": {"a": 1, "z": 2}, "z": 3}],
+        "fieldFormats": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
+        "runtimeFieldMap": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
+        "fieldAttrs": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
+        "fields": {"legacy": {"a": 1, "scripted": true, "z": 2}},
+        "typeMeta": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}}
+    }});
+
+    for format in [ContentFormat::Json, ContentFormat::Yaml] {
+        assert_eq!(
+            export_one_detail(format, first.clone()).await,
+            export_one_detail(format, second.clone()).await,
+            "{format:?} export must not depend on server member order"
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_without_selectors_reads_every_data_view() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "b", "title": "logs-b-*"}, {"id": "a", "title": "logs-a-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    for (id, title) in [("a", "logs-a-*"), ("b", "logs-b-*")] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/data_views/data_view/{id}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data_view": {
+                    "id": id, "title": title
+                }})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let exported = data_views_ops::export(&transport(&server), &[], ContentFormat::Json)
+        .await
+        .expect("all data views");
+    let specs: Vec<DataViewSpec> = serde_json::from_str(&exported.body).expect("portable JSON");
+    assert_eq!(exported.exported, 2);
+    assert_eq!(
+        specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+}
+
+#[tokio::test]
+async fn export_deduplicates_selectors_by_stable_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "dv", "name": "View", "title": "logs-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": {
+                "id": "dv", "title": "logs-*"
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let exported = data_views_ops::export(
+        &transport(&server),
+        &["dv".into(), "View".into(), "dv".into()],
+        ContentFormat::Json,
+    )
+    .await
+    .expect("deduplicated export");
+    assert_eq!(exported.exported, 1);
+}
+
+#[tokio::test]
+async fn export_rejects_malformed_or_mismatched_live_details_as_http() {
+    for detail in [
+        json!({"data_view": {"id": "dv", "title": 7}}),
+        json!({"data_view": {"id": "other", "title": "logs-*"}}),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                    {"id": "dv", "title": "logs-*"}
+                ]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/data_view/dv"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+            .mount(&server)
+            .await;
+
+        let error =
+            data_views_ops::export(&transport(&server), &["dv".into()], ContentFormat::Json)
+                .await
+                .expect_err("invalid live detail");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
 }

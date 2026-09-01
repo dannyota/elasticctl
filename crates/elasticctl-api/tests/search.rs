@@ -524,6 +524,26 @@ fn data_view_not_found_message_is_stable() {
 }
 
 #[test]
+fn data_view_resolution_ignores_unrelated_malformed_rows() {
+    let body = json!({"data_view": [
+        {"id": 42, "title": 42},
+        {"id": "selected", "name": "Selected", "title": "logs-selected-*"}
+    ]});
+    assert_eq!(
+        dataview::resolve_title(&body, "Selected").expect("selected row"),
+        "logs-selected-*"
+    );
+}
+
+#[test]
+fn data_view_resolution_preserves_selected_missing_title_error() {
+    let body = json!({"data_view": [{"id": "selected", "name": "Selected"}]});
+    let error = dataview::resolve_title(&body, "Selected").expect_err("missing title");
+    assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+    assert_eq!(error.message, "decoding data view field `title`");
+}
+
+#[test]
 fn rewrite_from_replaces_a_leading_from_source() {
     assert_eq!(
         rewrite_from("FROM logs-* | LIMIT 10", "new-index"),
