@@ -129,6 +129,14 @@ elasticctl exceptions list | get | validate | export | import | delete
 elasticctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
   [--source custom|customized|prebuilt|all]
 
+elasticctl alerts list [--status open|acknowledged|closed] [--severity S] [--rule R]
+                       [--tag T] [--assignee USER] [--since DUR|ISO] [--search TEXT]
+elasticctl alerts get <alert_id>
+elasticctl alerts ack|open|close (<alert_id>... | --query <dsl|@file>) --yes
+elasticctl alerts close <alert_id>... --reason false_positive --yes
+elasticctl alerts tag <alert_id>... --add triaged --remove noise --yes
+elasticctl alerts assign <alert_id>... --add USER --yes
+
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands
 ```

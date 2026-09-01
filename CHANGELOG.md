@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — Unreleased
+
+### Added
+
+- `alerts list`, `alerts get`, `alerts ack`, `alerts open`, `alerts close`,
+  `alerts tag`, and `alerts assign` triage detection alerts by id or by query
+  DSL. Every mutation previews on stderr and applies only with `--yes`;
+  `close` also accepts `--reason` and `--conflicts abort|proceed` for
+  query-scoped transitions.
+
 ## 0.3.2 — 2026-09-01
 
 ### Fixed

@@ -138,6 +138,11 @@ mod tests {
             "exceptions import",
             "state push",
             "config init",
+            "alerts ack",
+            "alerts open",
+            "alerts close",
+            "alerts tag",
+            "alerts assign",
         ];
         expected.sort();
 

@@ -14,6 +14,7 @@ use cli::{
     RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
+use elasticctl_api::alerts::AlertStatus;
 use elasticctl_api::exceptions::ListFilter;
 use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_core::{Config, Error, ErrorKind};
@@ -371,6 +372,69 @@ async fn main() {
             },
             AlertsAction::Get { alert_id } => match Context::build(&args.global) {
                 Ok(ctx) => cmd::alerts::get(&ctx, alert_id).await,
+                Err(e) => Err(e),
+            },
+            AlertsAction::Ack { alert_ids, query } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::alerts::transition(
+                        &ctx,
+                        alert_ids,
+                        query.as_deref(),
+                        AlertStatus::Acknowledged,
+                        None,
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            AlertsAction::Open { alert_ids, query } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::alerts::transition(
+                        &ctx,
+                        alert_ids,
+                        query.as_deref(),
+                        AlertStatus::Open,
+                        None,
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            AlertsAction::Close {
+                alert_ids,
+                query,
+                reason,
+                conflicts,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::alerts::transition(
+                        &ctx,
+                        alert_ids,
+                        query.as_deref(),
+                        AlertStatus::Closed,
+                        reason.as_deref(),
+                        conflicts.as_deref(),
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            AlertsAction::Tag {
+                alert_ids,
+                add,
+                remove,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::alerts::tag(&ctx, alert_ids, add, remove).await,
+                Err(e) => Err(e),
+            },
+            AlertsAction::Assign {
+                alert_ids,
+                add,
+                remove,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::alerts::assign(&ctx, alert_ids, add, remove).await,
                 Err(e) => Err(e),
             },
         },
