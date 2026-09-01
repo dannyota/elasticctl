@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.4.1 — Unreleased
+## 0.4.1 — 2026-09-01
+
+The 0.4.0 alerts vertical below was developed back-to-back with this release
+and ships with it; v0.4.1 is the first tag carrying both.
 
 ### Added
 
@@ -15,7 +18,7 @@
   same entrypoint, so the command surface is identical; help text and shell
   completions follow whichever name invoked the process.
 
-## 0.4.0 — Unreleased
+## 0.4.0 — 2026-09-01 (released as part of v0.4.1)
 
 ### Added
 
