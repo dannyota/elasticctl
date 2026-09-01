@@ -443,6 +443,18 @@ fn edit_report(outcome: SignalsOutcome) -> EditReport {
     }
 }
 
+/// Refuse an empty target list before any resolution or request. The CLI's
+/// `required = true` covers the `alerts tag`/`assign` invocations, but
+/// `plan_tags` and `plan_assign` are public, so an `-api` consumer (the
+/// planned MCP server) calling them with `&[]` must not be able to reach a
+/// `{"ids": []}` POST that reports `applied: true, total: 0`.
+fn require_targets(ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        return Err(Error::new(ErrorKind::Error, "pass at least one alert id"));
+    }
+    Ok(())
+}
+
 fn require_edit(add: &[String], remove: &[String]) -> Result<()> {
     if add.is_empty() && remove.is_empty() {
         return Err(Error::new(ErrorKind::Error, "pass --add and/or --remove"));
@@ -487,6 +499,7 @@ pub async fn plan_tags(
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<TagsPlan> {
+    require_targets(ids)?;
     require_edit(&add, &remove)?;
     require_disjoint(&add, &remove, "tags")?;
     let resolved = resolve_ids(t, ids).await?;
@@ -526,6 +539,7 @@ pub async fn plan_assign(
     add_users: &[String],
     remove_users: &[String],
 ) -> Result<AssignPlan> {
+    require_targets(ids)?;
     require_edit(add_users, remove_users)?;
     let mut add = Vec::with_capacity(add_users.len());
     let mut remove = Vec::with_capacity(remove_users.len());

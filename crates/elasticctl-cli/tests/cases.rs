@@ -47,6 +47,10 @@ fn cases_list_help_does_not_claim_a_universal_default_limit() {
         !text.contains("default 100"),
         "the --out path is uncapped, not defaulted to 100: {text}"
     );
+    assert!(
+        text.contains("--out is uncapped"),
+        "the help says so positively, not just by omission: {text}"
+    );
 }
 
 #[tokio::test]

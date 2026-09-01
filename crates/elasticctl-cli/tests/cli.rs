@@ -110,19 +110,18 @@ async fn a_guarded_verb_with_no_objects_is_refused_by_clap_before_any_request() 
     let cfg = write_config(dir.path(), &server.uri());
 
     for args in [
-        ["alerts", "ack", "", ""].as_slice(),
-        ["alerts", "open", "", ""].as_slice(),
-        ["alerts", "close", "", ""].as_slice(),
+        ["alerts", "ack"].as_slice(),
+        ["alerts", "open"].as_slice(),
+        ["alerts", "close"].as_slice(),
         ["alerts", "tag", "--add", "triaged"].as_slice(),
         ["alerts", "assign", "--add", "uid:u_1"].as_slice(),
-        ["cases", "close", "", ""].as_slice(),
-        ["cases", "open", "", ""].as_slice(),
-        ["cases", "delete", "", ""].as_slice(),
+        ["cases", "close"].as_slice(),
+        ["cases", "open"].as_slice(),
+        ["cases", "delete"].as_slice(),
     ] {
-        let args: Vec<&str> = args.iter().filter(|a| !a.is_empty()).copied().collect();
         let out = bin()
             .args(["--config", cfg.to_str().unwrap()])
-            .args(&args)
+            .args(args)
             .output()
             .unwrap();
         assert_eq!(

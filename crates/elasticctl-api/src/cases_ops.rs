@@ -501,7 +501,10 @@ pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditRe
         applied: true,
         total,
         updated: attached,
-        failed: total.saturating_sub(attached),
+        // `abs_diff`, not `saturating_sub`: a surplus (more alerts attached
+        // than the plan resolved) is a mismatch too, and `total - attached`
+        // would saturate that at 0 and read it as zero failures.
+        failed: total.abs_diff(attached),
         failures,
     })
 }

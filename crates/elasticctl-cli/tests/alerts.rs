@@ -437,6 +437,10 @@ fn alerts_list_help_does_not_claim_a_universal_default_limit() {
         !text.contains("default 100"),
         "the --out path is uncapped, not defaulted to 100: {text}"
     );
+    assert!(
+        text.contains("--out is uncapped"),
+        "the help says so positively, not just by omission: {text}"
+    );
 }
 
 /// `alerts list --out` must match `search dsl --out`: JSONL by default, and

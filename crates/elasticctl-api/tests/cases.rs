@@ -624,6 +624,12 @@ async fn apply_attach_reports_a_partial_failure_instead_of_discarding_it() {
         report.failed, 1,
         "the second group's failure must be visible"
     );
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(
+        report.failures[0].contains("Beta"),
+        "the failure entry names the rule group that failed: {:?}",
+        report.failures
+    );
 }
 
 #[tokio::test]

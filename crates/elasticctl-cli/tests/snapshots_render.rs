@@ -227,10 +227,13 @@ async fn alerts_list_table_and_json_render_uneven_keys_differently() {
 
 /// Two cases with an unequal optional-field set (one carries `severity` and
 /// a comment count, the other neither) over `cases list --format table`.
-/// Unlike alerts, `case_row` fixes its key order by explicit `insert` calls
-/// rather than deriving columns from the first row, so this pins the
-/// contrast: an absent optional field renders as a blank cell in its own
-/// column, it does not shift or drop other columns.
+/// `case_row` inserts its optional fields conditionally and `render::columns`
+/// derives the column set from the first row alone, so the columns here are
+/// exactly the first case's keys: `severity`/`comments`/`created_at` appear
+/// because case 1 carries them, and `updated_at` is absent because case 1
+/// does not — a second case's extra optional would not add a column at all.
+/// The snapshot pins that current behavior; it is not immunity to a dropped
+/// column.
 #[tokio::test]
 async fn cases_list_table_renders_two_cases_with_uneven_optional_fields() {
     let server = MockServer::start().await;

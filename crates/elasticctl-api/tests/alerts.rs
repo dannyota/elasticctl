@@ -769,6 +769,33 @@ async fn apply_status_by_query_reports_conflicts_as_failures_under_abort() {
     assert_eq!(report.failed, 0, "proceed opts into best-effort");
 }
 
+/// The CLI's `required = true` is not the only door: both plans are public
+/// `-api` entry points, so an empty target list must be refused there too,
+/// before any resolution or request.
+#[tokio::test]
+async fn tag_and_assign_plans_refuse_an_empty_target_list_before_any_request() {
+    // No mocks: a request that reaches the server fails the test.
+    let t = test_transport("http://127.0.0.1:1");
+
+    let err = alerts_ops::plan_tags(&t, &[], vec!["triaged".into()], vec![])
+        .await
+        .expect_err("an empty target list must be refused");
+    assert!(
+        err.message.contains("at least one alert id"),
+        "{}",
+        err.message
+    );
+
+    let err = alerts_ops::plan_assign(&t, &[], &["uid:u_1".into()], &[])
+        .await
+        .expect_err("an empty target list must be refused");
+    assert!(
+        err.message.contains("at least one alert id"),
+        "{}",
+        err.message
+    );
+}
+
 #[tokio::test]
 async fn plan_tags_requires_an_edit_and_rejects_overlap() {
     let t = test_transport("http://127.0.0.1:1");
