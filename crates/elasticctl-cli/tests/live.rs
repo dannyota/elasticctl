@@ -154,6 +154,16 @@ fn command_is_not_found(out: &Output) -> bool {
     text.contains("not_found") || text.contains("not found")
 }
 
+/// The open, rule-scoped alert filter shared by the poll loop, the final
+/// sweep, and cleanup's close-then-verify step: every alert this marker rule
+/// produced whose workflow status is not `closed`.
+fn open_marker_rule_alerts_query(rule_id: &str) -> Value {
+    json!({"bool": {
+        "filter": [{"term": {"kibana.alert.rule.rule_id": rule_id}}],
+        "must_not": [{"term": {"kibana.alert.workflow_status": "closed"}}],
+    }})
+}
+
 /// Identities are registered before their writes. The guard runs the same CLI
 /// deletion paths after an assertion panic and retries each transient failure.
 struct LiveCleanup {
@@ -165,6 +175,12 @@ struct LiveCleanup {
     /// deliberately exposes list deletion, not an unsafe item-only delete.
     items: BTreeSet<(String, String)>,
     indices: BTreeSet<String>,
+    /// Case ids to delete. A 404 on delete is tolerated as already-clean.
+    cases: BTreeSet<String>,
+    /// `rule_id`s whose alerts must be closed by a marker-scoped query before
+    /// the rest of cleanup runs. Alerts have no delete API (triage spec
+    /// section 9), so "cleaned" means "closed", not "gone".
+    alert_rules: BTreeSet<String>,
     finished: bool,
 }
 
@@ -177,6 +193,8 @@ impl LiveCleanup {
             lists: BTreeSet::new(),
             items: BTreeSet::new(),
             indices: BTreeSet::new(),
+            cases: BTreeSet::new(),
+            alert_rules: BTreeSet::new(),
             finished: false,
         }
     }
@@ -213,8 +231,20 @@ impl LiveCleanup {
         self.indices.insert(index.into());
     }
 
+    fn case(&mut self, case_id: impl Into<String>) {
+        self.cases.insert(case_id.into());
+    }
+
+    fn alert_rule(&mut self, rule_id: impl Into<String>) {
+        self.alert_rules.insert(rule_id.into());
+    }
+
     fn tracks(&self, rule_id: &str, list_id: &str) -> bool {
         self.rules.contains(rule_id) && self.lists.contains(list_id)
+    }
+
+    fn tracks_triage(&self, case_id: &str, rule_id: &str) -> bool {
+        self.cases.contains(case_id) && self.alert_rules.contains(rule_id)
     }
 
     fn retry<F>(identity: &str, mut delete: F) -> TestResult
@@ -284,8 +314,88 @@ impl LiveCleanup {
         })
     }
 
+    /// Close every open alert a marker rule generated, then verify none
+    /// remain open. Alerts have no delete API (triage spec section 9), so a
+    /// closed alert is the cleanup end state, not an intermediate one.
+    fn close_marker_alerts(&self, rule_id: &str) -> TestResult {
+        let profile = self.profile.clone();
+        let rule_id = rule_id.to_string();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building alert-cleanup runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = Transport::new(&profile)
+                .map_err(|e| format!("building alert-cleanup transport: {}", e.message))?;
+            elasticctl_api::alerts::status_by_query(
+                &transport,
+                &json!({"term": {"kibana.alert.rule.rule_id": rule_id}}),
+                elasticctl_api::alerts::AlertStatus::Closed,
+                elasticctl_api::alerts::Conflicts::Proceed,
+                None,
+            )
+            .await
+            .map_err(|e| format!("closing marker alerts for rule {rule_id}: {}", e.message))?;
+            let remaining = elasticctl_api::alerts::search(
+                &transport,
+                &json!({
+                    "query": open_marker_rule_alerts_query(&rule_id),
+                    "size": 0,
+                    "track_total_hits": true,
+                }),
+            )
+            .await
+            .map_err(|e| format!("verifying closed alerts for rule {rule_id}: {}", e.message))?;
+            let open = remaining.total.unwrap_or(0);
+            if open == 0 {
+                Ok(())
+            } else {
+                Err(format!("{open} open alert(s) remain for rule {rule_id}"))
+            }
+        })
+    }
+
+    /// Delete a case. A 404 means it is already clean (e.g. the contract's
+    /// own `plan_delete`/`apply_delete` already removed it).
+    fn delete_case(&self, case_id: &str) -> TestResult {
+        let profile = self.profile.clone();
+        let case_id = case_id.to_string();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building case-cleanup runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = Transport::new(&profile)
+                .map_err(|e| format!("building case-cleanup transport: {}", e.message))?;
+            match elasticctl_api::cases::delete(&transport, std::slice::from_ref(&case_id)).await {
+                Ok(())
+                | Err(elasticctl_core::Error {
+                    kind: ErrorKind::NotFound,
+                    ..
+                }) => Ok(()),
+                Err(e) => Err(format!("case delete failed: {}", e.message)),
+            }
+        })
+    }
+
     fn clean(&self) -> TestResult {
         let mut failures = Vec::new();
+
+        // Alerts are closed, and cases deleted, before the rule/list/index
+        // deletions below. The alert-close retries 3x on its own, and the
+        // contract's own final sweep (triage_probe step 9) already closes
+        // this rule's alerts before cleanup ever runs; deleting the rule in
+        // the loop below stops it from generating any more.
+        for rule_id in &self.alert_rules {
+            if let Err(error) = Self::retry(&format!("alerts for rule {rule_id}"), || {
+                self.close_marker_alerts(rule_id)
+            }) {
+                failures.push(error);
+            }
+        }
+        for case_id in &self.cases {
+            if let Err(error) =
+                Self::retry(&format!("case {case_id}"), || self.delete_case(case_id))
+            {
+                failures.push(error);
+            }
+        }
 
         for rule_id in &self.rules {
             if let Err(error) =
@@ -415,6 +525,62 @@ fn marked_indices(profile: &Profile) -> TestResult<Vec<String>> {
     })
 }
 
+/// Open `elasticctl-live-*` marker alerts and `elasticctl-live-marker` cases
+/// must be zero at baseline and after cleanup. Closed marker alerts are
+/// tolerated: alerts have no delete API, so a closed residue row is inert
+/// (triage spec section 9).
+fn triage_residue_is_clean(open_marker_alerts: u64, marker_cases: u64) -> bool {
+    open_marker_alerts == 0 && marker_cases == 0
+}
+
+/// Count open alerts across every marker rule, not just one contract's rule:
+/// baseline verification must catch any live triage contract's leftovers.
+fn open_marker_alert_count(profile: &Profile) -> TestResult<u64> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building open-alert-count runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building open-alert-count transport: {}", e.message))?;
+        let page = elasticctl_api::alerts::search(
+            &transport,
+            &json!({
+                "query": {"bool": {
+                    "filter": [{"prefix": {"kibana.alert.rule.rule_id": LIVE_PREFIX}}],
+                    "must_not": [{"term": {"kibana.alert.workflow_status": "closed"}}],
+                }},
+                "size": 0,
+                "track_total_hits": true,
+            }),
+        )
+        .await
+        .map_err(|e| format!("counting open marker alerts: {}", e.message))?;
+        Ok(page.total.unwrap_or(0))
+    })
+}
+
+fn marker_case_count(profile: &Profile) -> TestResult<u64> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building marker-case-count runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building marker-case-count transport: {}", e.message))?;
+        let query = elasticctl_api::cases_ops::find_query(
+            &elasticctl_api::cases_ops::CaseFilter {
+                tag: Some(LIVE_TAG.to_string()),
+                ..Default::default()
+            },
+            1,
+            1,
+        );
+        let (_cases, total) = elasticctl_api::cases::find_page(&transport, &query)
+            .await
+            .map_err(|e| format!("counting marker cases: {}", e.message))?;
+        Ok(total)
+    })
+}
+
 fn capture_baseline(config: &Path) -> TestResult<LiveBaseline> {
     Ok(LiveBaseline {
         custom: listed_rules(config, "custom")?.len(),
@@ -452,6 +618,14 @@ fn assert_clean_baseline(
         return Err(format!(
             "marked indices remain after cleanup: {}",
             indices.join(", ")
+        ));
+    }
+    let open_marker_alerts = open_marker_alert_count(&cleanup.profile)?;
+    let marker_cases = marker_case_count(&cleanup.profile)?;
+    if !triage_residue_is_clean(open_marker_alerts, marker_cases) {
+        return Err(format!(
+            "triage residue remains after cleanup: {open_marker_alerts} open marker alert(s), \
+             {marker_cases} marker case(s) (closed marker alerts are tolerated, see triage spec section 9)"
         ));
     }
     Ok(())
@@ -726,6 +900,28 @@ fn cleanup_guard_tracks_identities_registered_before_a_mutation() {
     cleanup.list("elasticctl-live-list");
     assert!(cleanup.tracks("elasticctl-live-rule", "elasticctl-live-list"));
     cleanup.finished = true;
+}
+
+/// The triage contract registers a case and the rule whose alerts it must
+/// close, mirroring `rule()`/`list()`'s registered-before-mutation contract.
+#[test]
+fn cleanup_guard_tracks_triage_identities_registered_before_a_mutation() {
+    let mut cleanup = LiveCleanup::for_test();
+    cleanup.case("elasticctl-live-case");
+    cleanup.alert_rule("elasticctl-live-alert-rule");
+    assert!(cleanup.tracks_triage("elasticctl-live-case", "elasticctl-live-alert-rule"));
+    cleanup.finished = true;
+}
+
+/// Open marker alerts and marker cases must both be zero; a closed marker
+/// alert is not a valid input to this function at all (see comment on
+/// `triage_residue_is_clean`), so it has no row in this table.
+#[test]
+fn triage_residue_is_clean_truth_table() {
+    assert!(triage_residue_is_clean(0, 0));
+    assert!(!triage_residue_is_clean(1, 0));
+    assert!(!triage_residue_is_clean(0, 1));
+    assert!(!triage_residue_is_clean(3, 2));
 }
 
 #[test]
@@ -1442,6 +1638,415 @@ fn search_reads_marked_documents_through_esql_and_dsl() {
 
     let result = (|| -> TestResult {
         search_probe(&profile, &index)?;
+        Ok(())
+    })();
+    conclude(result, &mut cleanup, baseline);
+}
+
+/// ~5-minute alert budget, the recorder's proven cadence
+/// (`xtask/src/main.rs`'s `ALERT_POLL_ATTEMPTS`/`ALERT_POLL_INTERVAL`).
+const TRIAGE_POLL_ATTEMPTS: u32 = 30;
+const TRIAGE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Seed a marker index, enable a marker rule over it, wait for the alert it
+/// generates, then drive every shipped alerts/cases plan-apply pair over
+/// that one alert: by-id and query-scoped status transitions, tags,
+/// assignment, and a full case round trip that attaches, comments, closes,
+/// and deletes. `cleanup.rule(rule_id)`/`cleanup.alert_rule(rule_id)` and
+/// `cleanup.index(index)` are registered by the caller before this runs;
+/// `cleanup.case(id)` is registered here, immediately once the case exists.
+fn triage_probe(
+    profile: &Profile,
+    index: &str,
+    rule_id: &str,
+    cleanup: &mut LiveCleanup,
+) -> TestResult {
+    let profile = profile.clone();
+    let index = index.to_string();
+    let rule_id = rule_id.to_string();
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("building triage runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building triage transport: {}", e.message))?;
+
+        // 1. Seed three marker-scoped documents the marker rule will match.
+        for seq in 1..=3_i64 {
+            transport
+                .post_absolute_es(
+                    &format!("/{index}/_doc?refresh=wait_for"),
+                    &json!({
+                        "@timestamp": current_rfc3339(),
+                        "seq": seq,
+                        "message": format!("elasticctl live triage {seq}"),
+                        "marker": LIVE_TAG,
+                    }),
+                )
+                .await
+                .map_err(|e| format!("seeding triage document {seq}: {}", e.message))?;
+        }
+
+        // 2. Create the marker rule, enabled, over the seeded index.
+        let rule_body = json!({
+            "rule_id": rule_id,
+            "name": rule_id,
+            "description": "Created by elasticctl's live conformance suite. Safe to delete.",
+            "type": "query",
+            "language": "kuery",
+            "query": format!("marker: \"{LIVE_TAG}\""),
+            "index": [index],
+            "severity": "low",
+            "risk_score": 21,
+            "enabled": true,
+            "from": "now-10m",
+            "interval": "1m",
+            "tags": [LIVE_TAG],
+        });
+        let rule = elasticctl_api::model::Rule::from_value(rule_body)
+            .map_err(|e| format!("building triage marker rule: {}", e.message))?;
+        elasticctl_api::rules::create(&transport, &rule)
+            .await
+            .map_err(|e| format!("creating triage marker rule: {}", e.message))?;
+
+        // 3. Poll for the alert the marker rule generates.
+        let mut alert_id: Option<String> = None;
+        for attempt in 0..TRIAGE_POLL_ATTEMPTS {
+            let page = elasticctl_api::alerts::search(
+                &transport,
+                &json!({
+                    "query": open_marker_rule_alerts_query(&rule_id),
+                    "sort": elasticctl_api::alerts_ops::default_sort(),
+                    "size": 10,
+                    "track_total_hits": true,
+                    "_source": elasticctl_api::alerts_ops::RESOLVE_SOURCE_FIELDS,
+                }),
+            )
+            .await
+            .map_err(|e| format!("polling for triage alert: {}", e.message))?;
+            if let Some(hit) = page.hits.first() {
+                alert_id = Some(hit.id.clone());
+                break;
+            }
+            if attempt + 1 < TRIAGE_POLL_ATTEMPTS {
+                tokio::time::sleep(TRIAGE_POLL_INTERVAL).await;
+            }
+        }
+        let alert_id = alert_id.ok_or_else(|| {
+            format!(
+                "no alert appeared for rule {rule_id} after {TRIAGE_POLL_ATTEMPTS} attempts \
+                 ({TRIAGE_POLL_ATTEMPTS} x {TRIAGE_POLL_INTERVAL:?})"
+            )
+        })?;
+
+        // 4. By-id transitions: open -> acknowledged -> closed.
+        let plan = elasticctl_api::alerts_ops::plan_status_by_ids(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            elasticctl_api::alerts::AlertStatus::Acknowledged,
+            None,
+        )
+        .await
+        .map_err(|e| format!("planning acknowledge by id: {}", e.message))?;
+        let report = elasticctl_api::alerts_ops::apply_status_by_ids(&transport, &plan)
+            .await
+            .map_err(|e| format!("acknowledging alert by id: {}", e.message))?;
+        if report.updated != 1 || report.failed != 0 {
+            return Err(format!(
+                "acknowledge by id must update exactly 1 alert with no failures: {report:?}"
+            ));
+        }
+
+        let plan = elasticctl_api::alerts_ops::plan_status_by_ids(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            elasticctl_api::alerts::AlertStatus::Closed,
+            None,
+        )
+        .await
+        .map_err(|e| format!("planning close by id: {}", e.message))?;
+        let report = elasticctl_api::alerts_ops::apply_status_by_ids(&transport, &plan)
+            .await
+            .map_err(|e| format!("closing alert by id: {}", e.message))?;
+        if report.updated != 1 || report.failed != 0 {
+            return Err(format!(
+                "close by id must update exactly 1 alert with no failures: {report:?}"
+            ));
+        }
+
+        // 5. Query-scoped transitions: re-open, then close again.
+        let query = json!({"term": {"kibana.alert.rule.rule_id": rule_id}});
+        let plan = elasticctl_api::alerts_ops::plan_status_by_query(
+            &transport,
+            query.clone(),
+            elasticctl_api::alerts::AlertStatus::Open,
+            elasticctl_api::alerts::Conflicts::Abort,
+            None,
+        )
+        .await
+        .map_err(|e| format!("planning open by query: {}", e.message))?;
+        if plan.matched < 1 {
+            return Err(format!(
+                "query-scoped plan must match at least 1 alert: {plan:?}"
+            ));
+        }
+        if plan.preview_details.is_empty() {
+            return Err("query-scoped plan preview must not be empty".to_string());
+        }
+        if plan.preview_details.last().map(String::as_str)
+            != Some("The set is resolved again at apply time; this count is advisory.")
+        {
+            return Err(format!(
+                "query-scoped plan preview must end with the advisory line: {:?}",
+                plan.preview_details
+            ));
+        }
+        let report = elasticctl_api::alerts_ops::apply_status_by_query(&transport, &plan)
+            .await
+            .map_err(|e| format!("opening alert by query: {}", e.message))?;
+        if report.failed != 0 {
+            return Err(format!("open by query must have no failures: {report:?}"));
+        }
+
+        let plan = elasticctl_api::alerts_ops::plan_status_by_query(
+            &transport,
+            query.clone(),
+            elasticctl_api::alerts::AlertStatus::Closed,
+            elasticctl_api::alerts::Conflicts::Abort,
+            None,
+        )
+        .await
+        .map_err(|e| format!("planning close by query: {}", e.message))?;
+        let report = elasticctl_api::alerts_ops::apply_status_by_query(&transport, &plan)
+            .await
+            .map_err(|e| format!("closing alert by query: {}", e.message))?;
+        if report.failed != 0 {
+            return Err(format!("close by query must have no failures: {report:?}"));
+        }
+
+        // 6. Tag and untag.
+        let plan = elasticctl_api::alerts_ops::plan_tags(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            vec!["elasticctl-live-triage-check".to_string()],
+            vec![],
+        )
+        .await
+        .map_err(|e| format!("planning tag add: {}", e.message))?;
+        let report = elasticctl_api::alerts_ops::apply_tags(&transport, &plan)
+            .await
+            .map_err(|e| format!("adding tag: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!("tag add must update exactly 1 alert: {report:?}"));
+        }
+
+        let plan = elasticctl_api::alerts_ops::plan_tags(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            vec![],
+            vec!["elasticctl-live-triage-check".to_string()],
+        )
+        .await
+        .map_err(|e| format!("planning tag remove: {}", e.message))?;
+        let report = elasticctl_api::alerts_ops::apply_tags(&transport, &plan)
+            .await
+            .map_err(|e| format!("removing tag: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!(
+                "tag remove must update exactly 1 alert: {report:?}"
+            ));
+        }
+
+        // 7. Resolve an activated profile and assign/unassign it. This also
+        // exercises the per-flavor profile-suggest route switch.
+        let flavor = transport
+            .capabilities()
+            .await
+            .map_err(|e| format!("probing capabilities: {}", e.message))?
+            .flavor;
+        let profiles = elasticctl_api::profiles::suggest(&transport, flavor, "")
+            .await
+            .map_err(|e| format!("suggesting profiles: {}", e.message))?;
+        let assignee_uid = profiles.first().map(|p| p.uid.clone()).ok_or_else(|| {
+            "no activated user profile is available for assignment; every conformance leg \
+             boots with at least one activated profile"
+                .to_string()
+        })?;
+
+        let report = elasticctl_api::alerts::set_assignees(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            std::slice::from_ref(&assignee_uid),
+            &[],
+        )
+        .await
+        .map_err(|e| format!("assigning alert: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!("assign must update exactly 1 alert: {report:?}"));
+        }
+
+        let report = elasticctl_api::alerts::set_assignees(
+            &transport,
+            std::slice::from_ref(&alert_id),
+            &[],
+            std::slice::from_ref(&assignee_uid),
+        )
+        .await
+        .map_err(|e| format!("unassigning alert: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!("unassign must update exactly 1 alert: {report:?}"));
+        }
+
+        // 8. Case round trip: create, attach, comment, close, delete.
+        let plan = elasticctl_api::cases_ops::plan_create(
+            &transport,
+            &unique_name("case"),
+            None,
+            vec![LIVE_TAG.to_string()],
+            None,
+            &[],
+        )
+        .await
+        .map_err(|e| format!("planning case create: {}", e.message))?;
+        let created = elasticctl_api::cases_ops::apply_create(&transport, &plan)
+            .await
+            .map_err(|e| format!("creating case: {}", e.message))?;
+        let case_id = created["id"]
+            .as_str()
+            .ok_or_else(|| format!("case create response has no id: {created}"))?
+            .to_string();
+        cleanup.case(case_id.clone());
+
+        let plan = elasticctl_api::cases_ops::plan_attach(
+            &transport,
+            &case_id,
+            std::slice::from_ref(&alert_id),
+        )
+        .await
+        .map_err(|e| format!("planning case attach: {}", e.message))?;
+        let report = elasticctl_api::cases_ops::apply_attach(&transport, &plan)
+            .await
+            .map_err(|e| format!("attaching alert to case: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!(
+                "case attach must update exactly 1 alert: {report:?}"
+            ));
+        }
+
+        let plan = elasticctl_api::cases_ops::plan_comment(
+            &transport,
+            &case_id,
+            "elasticctl live conformance check",
+        )
+        .await
+        .map_err(|e| format!("planning case comment: {}", e.message))?;
+        elasticctl_api::cases_ops::apply_comment(&transport, &plan)
+            .await
+            .map_err(|e| format!("commenting on case: {}", e.message))?;
+
+        let plan = elasticctl_api::cases_ops::plan_status(
+            &transport,
+            std::slice::from_ref(&case_id),
+            elasticctl_api::cases::CaseStatus::Closed,
+        )
+        .await
+        .map_err(|e| format!("planning case close: {}", e.message))?;
+        let report = elasticctl_api::cases_ops::apply_status(&transport, &plan)
+            .await
+            .map_err(|e| format!("closing case: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!("case close must update exactly 1 case: {report:?}"));
+        }
+
+        let plan =
+            elasticctl_api::cases_ops::plan_delete(&transport, std::slice::from_ref(&case_id))
+                .await
+                .map_err(|e| format!("planning case delete: {}", e.message))?;
+        let report = elasticctl_api::cases_ops::apply_delete(&transport, &plan)
+            .await
+            .map_err(|e| format!("deleting case: {}", e.message))?;
+        if report.updated != 1 {
+            return Err(format!(
+                "case delete must update exactly 1 case: {report:?}"
+            ));
+        }
+        match elasticctl_api::cases::get(&transport, &case_id).await {
+            Err(elasticctl_core::Error {
+                kind: ErrorKind::NotFound,
+                ..
+            }) => {}
+            Ok(case) => {
+                return Err(format!(
+                    "deleted case {case_id} is still retrievable: {case:?}"
+                ));
+            }
+            Err(e) => return Err(format!("verifying case delete: {}", e.message)),
+        }
+
+        // 9. Final sweep: close every straggler alert this rule produced and
+        // confirm none stay open. Cleanup's rule deletion disables the rule,
+        // so one in-flight execution may still land an alert after step 5's
+        // close; this absorbs that race.
+        elasticctl_api::alerts::status_by_query(
+            &transport,
+            &json!({"term": {"kibana.alert.rule.rule_id": rule_id}}),
+            elasticctl_api::alerts::AlertStatus::Closed,
+            elasticctl_api::alerts::Conflicts::Proceed,
+            None,
+        )
+        .await
+        .map_err(|e| format!("final sweep closing alerts: {}", e.message))?;
+
+        let mut open_remaining = u64::MAX;
+        for attempt in 0..5 {
+            let page = elasticctl_api::alerts::search(
+                &transport,
+                &json!({
+                    "query": open_marker_rule_alerts_query(&rule_id),
+                    "size": 0,
+                    "track_total_hits": true,
+                }),
+            )
+            .await
+            .map_err(|e| format!("final sweep verifying closed alerts: {}", e.message))?;
+            open_remaining = page.total.unwrap_or(0);
+            if open_remaining == 0 {
+                break;
+            }
+            if attempt + 1 < 5 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+        if open_remaining != 0 {
+            return Err(format!(
+                "{open_remaining} open alert(s) remain for rule {rule_id} after the final sweep"
+            ));
+        }
+
+        Ok(())
+    })
+}
+
+#[test]
+#[ignore = "requires a live stack"]
+fn triage_transitions_alerts_and_cases_and_leaves_only_closed_residue() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serial = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config).unwrap();
+    let index = unique_name("triage-index");
+    let rule_id = unique_name("triage-rule");
+    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
+    // Registered before triage_probe can create either object.
+    cleanup.index(index.clone());
+    cleanup.rule(rule_id.clone());
+    cleanup.alert_rule(rule_id.clone());
+
+    let result = (|| -> TestResult {
+        triage_probe(&profile, &index, &rule_id, &mut cleanup)?;
         Ok(())
     })();
     conclude(result, &mut cleanup, baseline);
