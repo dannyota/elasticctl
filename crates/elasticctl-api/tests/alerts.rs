@@ -455,3 +455,211 @@ async fn get_one_returns_not_found_for_a_missing_id() {
     assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
     assert!(err.message.contains("missing"), "{}", err.message);
 }
+
+fn resolution_page() -> serde_json::Value {
+    json!({"hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+        {"_id": "a1", "_source": {
+            "kibana.alert.rule.name": "Suspicious PowerShell",
+            "kibana.alert.workflow_status": "open"}},
+        {"_id": "a2", "_source": {
+            "kibana.alert.rule.name": "Rare DNS Tunnel",
+            "kibana.alert.workflow_status": "closed"}}
+    ]}})
+}
+
+#[tokio::test]
+async fn plan_status_by_ids_previews_transitions_and_noops() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(resolution_page()))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan =
+        alerts_ops::plan_status_by_ids(&t, &["a1".into(), "a2".into()], AlertStatus::Closed, None)
+            .await
+            .expect("plan");
+    assert_eq!(plan.preview_action, "Close 2 alerts");
+    assert_eq!(plan.targets, vec!["a1".to_string(), "a2".to_string()]);
+    assert!(
+        plan.preview_details[0].contains("open -> closed"),
+        "{:?}",
+        plan.preview_details
+    );
+    assert!(
+        plan.preview_details[1].contains("already closed"),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
+#[tokio::test]
+async fn a_partially_resolving_id_list_is_refused() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(resolution_page()))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = alerts_ops::plan_status_by_ids(
+        &t,
+        &["a1".into(), "a2".into(), "ghost".into()],
+        AlertStatus::Closed,
+        None,
+    )
+    .await
+    .expect_err("must refuse the partial set");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    assert!(err.message.contains("ghost"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn plan_status_by_query_counts_and_samples() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 1214, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {
+                    "kibana.alert.rule.name": "Suspicious PowerShell",
+                    "kibana.alert.severity": "high",
+                    "@timestamp": "2026-08-30T21:14:02Z"}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = alerts_ops::plan_status_by_query(
+        &t,
+        json!({"term": {"kibana.alert.rule.rule_id": "r-1"}}),
+        AlertStatus::Closed,
+        Conflicts::Abort,
+        Some("false_positive".into()),
+    )
+    .await
+    .expect("plan");
+    assert_eq!(plan.matched, 1214);
+    assert_eq!(plan.preview_action, "Close alerts matching query");
+    assert!(
+        plan.preview_details[0].contains("matched now: 1,214"),
+        "{:?}",
+        plan.preview_details
+    );
+    assert!(
+        plan.preview_details[0].contains("showing 1 of 1,214"),
+        "{:?}",
+        plan.preview_details
+    );
+    assert!(
+        plan.preview_details.last().unwrap().contains("advisory"),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
+#[tokio::test]
+async fn an_empty_query_object_is_rejected() {
+    let t = test_transport("http://127.0.0.1:1");
+    let err = alerts_ops::plan_status_by_query(
+        &t,
+        json!({}),
+        AlertStatus::Closed,
+        Conflicts::Abort,
+        None,
+    )
+    .await
+    .expect_err("empty query");
+    assert!(
+        err.message.contains("match_all"),
+        "the remedy names the explicit form: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn apply_status_by_query_reports_conflicts_as_failures_under_abort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total": 3, "updated": 2, "version_conflicts": 1, "noops": 0, "failures": []
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = alerts_ops::QueryStatusPlan {
+        status: AlertStatus::Closed,
+        reason: None,
+        conflicts: Conflicts::Abort,
+        query: json!({"term": {"x": 1}}),
+        matched: 3,
+        preview_action: "Close alerts matching query".into(),
+        preview_details: vec![],
+    };
+    let report = alerts_ops::apply_status_by_query(&t, &plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.failed, 1, "an aborted conflict is a failure");
+    assert_eq!(
+        report.version_conflicts, 1,
+        "the verbatim count still renders"
+    );
+
+    let plan = alerts_ops::QueryStatusPlan {
+        conflicts: Conflicts::Proceed,
+        ..plan
+    };
+    let report = alerts_ops::apply_status_by_query(&t, &plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.failed, 0, "proceed opts into best-effort");
+}
+
+#[tokio::test]
+async fn plan_tags_requires_an_edit_and_rejects_overlap() {
+    let t = test_transport("http://127.0.0.1:1");
+    let err = alerts_ops::plan_tags(&t, &["a1".into()], vec![], vec![])
+        .await
+        .expect_err("no edit");
+    assert!(
+        err.message.contains("--add") && err.message.contains("--remove"),
+        "{}",
+        err.message
+    );
+
+    let err = alerts_ops::plan_tags(&t, &["a1".into()], vec!["t".into()], vec!["t".into()])
+        .await
+        .expect_err("overlap");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Conflict);
+}
+
+#[tokio::test]
+async fn plan_assign_resolves_users_and_shows_the_mapping() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {
+                    "kibana.alert.rule.name": "Alpha",
+                    "kibana.alert.workflow_status": "open"}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = alerts_ops::plan_assign(&t, &["a1".into()], &["uid:u_1".into()], &[])
+        .await
+        .expect("plan");
+    assert_eq!(plan.add, vec!["u_1".to_string()]);
+    assert_eq!(plan.preview_action, "Assign 1 alert");
+    assert!(
+        plan.preview_details
+            .iter()
+            .any(|d| d.contains("uid:u_1") && d.contains("u_1")),
+        "the mapping is visible: {:?}",
+        plan.preview_details
+    );
+}
