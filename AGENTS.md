@@ -132,6 +132,7 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
 cargo test                                    # unit + fixture, offline, no stack needed
 ELASTICCTL_LIVE=1 cargo test -- --ignored     # live suite against a real stack
 cargo xtask record                            # re-record fixtures from a live stack
+cargo xtask conformance-matrix --report-dir <path>  # all three live conformance legs, concurrently
 cargo fmt --all --check                       # the CI gate, alongside:
 cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check advisories bans licenses sources

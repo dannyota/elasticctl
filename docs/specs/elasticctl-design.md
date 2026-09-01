@@ -1221,6 +1221,25 @@ disposable self-managed 9.5.1 lab. The Cloud targets come from ignored local
 configuration. The lab installs its complete prebuilt pack before baseline
 capture and is destroyed with its volumes after the run.
 
+`cargo xtask conformance-matrix --report-dir <path> [--flavors
+serverless,ech,traditional]` runs this release matrix as three concurrent
+child processes of the same `xtask` binary instead of three sequential
+invocations. The three flavors are independent targets: proving serverless
+correctness never depends on the state of Elastic Cloud Hosted or the local
+lab, so nothing forces them to run in turn. The self-managed leg starts
+`lab/up.sh` alongside the other two legs, since its boot dominates the
+combined wall clock; once it succeeds, the leg mints its own Elasticsearch API
+key against the lab's bootstrap user rather than parsing `up.sh` output, runs
+the conformance child, and always runs `lab/down.sh` afterward, whether the
+boot, the key mint, or the leg itself failed. The Hosted leg maps
+`ELASTICCTL_ECH_*` onto the generic `ELASTICCTL_*` names the child expects and
+fails before spawning anything if a piece is missing. `--flavors` accepts a
+comma-separated subset of the three names; an unknown or repeated name is
+rejected. Recording (`cargo xtask record`), unlike conformance, must never run
+concurrently: one recording session owns the marker objects on one live
+stack, and a second session recording that stack at the same time would race
+that ownership.
+
 The 0.2.3 measured matrix is:
 
 | Flavor | Version | Contracts | Cleanup | Report |

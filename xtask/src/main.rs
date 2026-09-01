@@ -4,6 +4,7 @@
 //! which is where API bugs hide.
 
 mod conformance;
+mod conformance_matrix;
 
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
@@ -384,8 +385,14 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some("conformance-matrix") => {
+            if let Err(error) = conformance_matrix::run(&args[1..]).await {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask [record|seed|conformance]");
+            eprintln!("usage: cargo xtask [record|seed|conformance|conformance-matrix]");
             std::process::exit(2);
         }
     }
