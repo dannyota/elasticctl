@@ -512,7 +512,15 @@ fn rejects_an_ambiguous_data_view_name() {
             {"id": "b", "name": "Dup", "title": "y"}
         ]
     });
-    assert!(dataview::resolve_title(&body, "Dup").is_err());
+    let error = dataview::resolve_title(&body, "Dup").expect_err("ambiguous name must refuse");
+    assert_eq!(error.message, "data view 'Dup' is ambiguous");
+}
+
+#[test]
+fn data_view_not_found_message_is_stable() {
+    let body = json!({"data_view": []});
+    let error = dataview::resolve_title(&body, "x").expect_err("missing view must refuse");
+    assert_eq!(error.message, "no data view with id or name 'x'");
 }
 
 #[test]

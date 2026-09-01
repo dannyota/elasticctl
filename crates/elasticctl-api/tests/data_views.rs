@@ -1,5 +1,6 @@
 use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::data_views::{self, DataViewSpec, DataViewUpdate};
+use elasticctl_api::data_views_ops::{self, DataViewFilter};
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path};
@@ -143,6 +144,142 @@ fn format_uses_yaml_extensions_and_json_otherwise() {
         ContentFormat::from_path(std::path::Path::new("views.json")),
         ContentFormat::Json
     );
+}
+
+#[test]
+fn resolution_prefers_an_exact_id_over_duplicate_names() {
+    let views = vec![
+        data_views::DataViewSummary {
+            id: "x".into(),
+            title: "id-title".into(),
+            name: Some("other".into()),
+            time_field_name: None,
+        },
+        data_views::DataViewSummary {
+            id: "a".into(),
+            title: "first-name-match".into(),
+            name: Some("x".into()),
+            time_field_name: None,
+        },
+        data_views::DataViewSummary {
+            id: "b".into(),
+            title: "second-name-match".into(),
+            name: Some("x".into()),
+            time_field_name: None,
+        },
+    ];
+
+    assert_eq!(
+        data_views_ops::resolve_from_summaries(&views, "x")
+            .expect("id must win")
+            .title,
+        "id-title"
+    );
+}
+
+#[test]
+fn resolution_reports_exact_name_ambiguity() {
+    let views = vec![
+        data_views::DataViewSummary {
+            id: "a".into(),
+            title: "logs-a-*".into(),
+            name: Some("duplicate".into()),
+            time_field_name: None,
+        },
+        data_views::DataViewSummary {
+            id: "b".into(),
+            title: "logs-b-*".into(),
+            name: Some("duplicate".into()),
+            time_field_name: None,
+        },
+    ];
+    let error = data_views_ops::resolve_from_summaries(&views, "duplicate")
+        .expect_err("duplicate name must refuse");
+    assert_eq!(error.message, "data view 'duplicate' is ambiguous");
+}
+
+#[test]
+fn normalization_keeps_only_scripted_fields() {
+    let body = json!({"data_view": {
+        "id": "dv", "title": "logs-*", "version": "opaque", "namespaces": ["default"],
+        "fields": {
+            "host.name": {"name": "host.name", "scripted": false},
+            "legacy": {"name": "legacy", "scripted": true, "script": "return 1"}
+        }
+    }});
+    let spec = data_views_ops::normalize(&body["data_view"]).expect("normalize");
+    assert_eq!(spec.id, "dv");
+    assert!(!spec.allow_no_index);
+    assert!(!spec.allow_hidden);
+    assert_eq!(spec.type_meta, None);
+    assert_eq!(spec.fields.keys().collect::<Vec<_>>(), vec!["legacy"]);
+    let value = serde_json::to_value(spec).expect("value");
+    assert!(value.get("version").is_none());
+    assert!(value.get("namespaces").is_none());
+}
+
+#[tokio::test]
+async fn list_searches_case_insensitively_and_sorts_by_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "b", "name": "Unrelated", "title": "Logs-VIEW-b"},
+                {"id": "a", "name": "view alpha", "title": "logs-a-*"},
+                {"id": "c", "name": "other", "title": "logs-c-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let listed = data_views_ops::list_op(
+        &transport(&server),
+        &DataViewFilter {
+            search: Some("vIeW".into()),
+        },
+    )
+    .await
+    .expect("list");
+
+    assert_eq!(listed.total, 2);
+    assert_eq!(
+        listed
+            .data_views
+            .iter()
+            .map(|view| view.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+}
+
+#[test]
+fn validate_sorts_specs_and_reports_every_duplicate_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let valid_path = dir.path().join("views.json");
+    std::fs::write(
+        &valid_path,
+        r#"[{"id":"b","title":"logs-b-*"},{"id":"a","title":"logs-a-*"}]"#,
+    )
+    .expect("write valid artifact");
+    let specs = data_views_ops::validate(&valid_path).expect("valid artifact");
+    assert_eq!(
+        specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+
+    let duplicate_path = dir.path().join("duplicates.yaml");
+    std::fs::write(
+        &duplicate_path,
+        "- id: c\n  title: logs-c-*\n- id: a\n  title: logs-a-*\n- id: c\n  title: logs-c-2-*\n- id: a\n  title: logs-a-2-*\n",
+    )
+    .expect("write duplicate artifact");
+    let error = data_views_ops::validate(&duplicate_path).expect_err("duplicates must refuse");
+    assert_eq!(error.message, "duplicate data view ids: a, c");
 }
 
 fn transport(server: &MockServer) -> Transport {
@@ -441,4 +578,84 @@ fn update_serializes_only_the_documented_partial_fields() {
             "{forbidden} must not reach the update route"
         );
     }
+}
+
+#[tokio::test]
+async fn export_resolves_every_selector_before_fetching_details() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "present", "title": "logs-present-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = data_views_ops::export(
+        &transport(&server),
+        &["present".into(), "missing".into()],
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("missing selector must refuse");
+    assert_eq!(error.message, "no data view with id or name 'missing'");
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(
+        requests.len(),
+        1,
+        "no detail request may precede resolution"
+    );
+    assert_eq!(requests[0].url.path(), "/api/data_views");
+}
+
+#[tokio::test]
+async fn export_sorts_normalized_details_by_stable_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "b", "title": "logs-b-*"},
+                {"id": "a", "title": "logs-a-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    for (id, title) in [("a", "logs-a-*"), ("b", "logs-b-*")] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/data_views/data_view/{id}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data_view": {
+                    "id": id,
+                    "title": title,
+                    "version": "opaque",
+                    "fields": {"host.name": {"scripted": false}}
+                }})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let exported = data_views_ops::export(
+        &transport(&server),
+        &["b".into(), "a".into()],
+        ContentFormat::Json,
+    )
+    .await
+    .expect("export");
+    let specs: Vec<DataViewSpec> = serde_json::from_str(&exported.body).expect("portable JSON");
+    assert_eq!(exported.exported, 2);
+    assert_eq!(
+        specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    assert!(specs.iter().all(|spec| spec.fields.is_empty()));
 }

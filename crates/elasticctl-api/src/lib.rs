@@ -7,6 +7,7 @@ pub mod cases_ops;
 pub mod codec;
 pub mod content_codec;
 pub mod data_views;
+pub mod data_views_ops;
 pub mod diff;
 pub mod exceptions;
 pub mod health;
