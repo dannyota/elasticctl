@@ -1311,6 +1311,15 @@ target:
 | Elastic Cloud Hosted | 9.5.1 | 7 pass | Verified | [report](../conformance/v0.3.1/ech-9.5.1.json) |
 | Self-managed | 9.5.1 | 7 pass | Verified | [report](../conformance/v0.3.1/traditional-9.5.1.json) |
 
+The 0.4.2 measured matrix adds the `triage` contract; all eight pass on every
+target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 8 pass | Verified | [report](../conformance/v0.4.2/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.2 | 8 pass | Verified | [report](../conformance/v0.4.2/ech-9.5.2.json) |
+| Self-managed | 9.5.1 | 8 pass | Verified | [report](../conformance/v0.4.2/traditional-9.5.1.json) |
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day
