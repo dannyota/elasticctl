@@ -1,8 +1,10 @@
 use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::data_views::{self, DataViewSpec, DataViewUpdate};
 use elasticctl_api::data_views_ops::{self, DataViewFilter};
+use elasticctl_api::{DataViewImportPlan, DataViewPatch, MutationPlan};
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -317,6 +319,619 @@ fn transport(server: &MockServer) -> Transport {
 
 fn response(spec: DataViewSpec) -> serde_json::Value {
     json!({"data_view": spec})
+}
+
+fn artifact(specs: &[DataViewSpec]) -> tempfile::TempPath {
+    let file = tempfile::NamedTempFile::new().expect("artifact");
+    serde_json::to_writer(&file, specs).expect("write artifact");
+    file.into_temp_path()
+}
+
+fn import_plan(
+    specs: Vec<DataViewSpec>,
+    before: BTreeMap<String, Option<DataViewSpec>>,
+    patches: BTreeMap<String, DataViewPatch>,
+) -> DataViewImportPlan {
+    DataViewImportPlan {
+        preview: MutationPlan {
+            preview_action: "Import data views".into(),
+            preview_details: Vec::new(),
+            targets: specs.iter().map(|spec| spec.id.clone()).collect(),
+        },
+        total: specs.len(),
+        specs,
+        before,
+        patches,
+        skipped: Vec::new(),
+        overwrite: true,
+    }
+}
+
+#[tokio::test]
+async fn plan_import_is_local_without_conflict_flags() {
+    let path = artifact(&[spec("dv-new")]);
+
+    let plan = data_views_ops::plan_import(None, &path, false, false)
+        .await
+        .expect("local plan");
+
+    assert_eq!(plan.total, 1);
+    assert_eq!(plan.specs, vec![spec("dv-new")]);
+    assert_eq!(
+        plan.preview.preview_details,
+        vec!["dv-new  create  logs-security-*"]
+    );
+    assert_eq!(plan.before.get("dv-new"), Some(&None));
+    assert!(plan.patches.is_empty());
+}
+
+#[tokio::test]
+async fn plan_import_refuses_every_default_conflict() {
+    let server = MockServer::start().await;
+    for id in ["dv-a", "dv-b"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/data_views/data_view/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response(spec(id))))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let path = artifact(&[spec("dv-b"), spec("dv-a")]);
+
+    let error = data_views_ops::plan_import(Some(&transport(&server)), &path, false, false)
+        .await
+        .expect_err("existing views must conflict");
+
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(error.message, "data views already exist: dv-a, dv-b");
+}
+
+#[tokio::test]
+async fn plan_import_skips_existing_views() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-old"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(spec("dv-old"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-new"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let path = artifact(&[spec("dv-old"), spec("dv-new")]);
+
+    let plan = data_views_ops::plan_import(Some(&transport(&server)), &path, false, true)
+        .await
+        .expect("skip plan");
+
+    assert_eq!(plan.specs, vec![spec("dv-new")]);
+    assert_eq!(
+        plan.skipped,
+        vec![json!({"id": "dv-old", "reason": "exists"})]
+    );
+    assert_eq!(
+        plan.preview.preview_details,
+        vec!["dv-new  create  logs-security-*"]
+    );
+}
+
+#[tokio::test]
+async fn plan_import_overwrite_classifies_create_replace_and_no_op() {
+    let server = MockServer::start().await;
+    let same = DataViewSpec {
+        title: "logs-same-*".into(),
+        ..spec("dv-same")
+    };
+    let old = DataViewSpec {
+        title: "logs-old-*".into(),
+        ..spec("dv-old")
+    };
+    for (id, detail) in [
+        ("dv-same", Some(same)),
+        ("dv-old", Some(old)),
+        ("dv-new", None),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/data_views/data_view/{id}")))
+            .respond_with(match detail {
+                Some(spec) => ResponseTemplate::new(200).set_body_json(response(spec)),
+                None => ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})),
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let desired_same = DataViewSpec {
+        title: "logs-same-*".into(),
+        ..spec("dv-same")
+    };
+    let desired_old = DataViewSpec {
+        title: "logs-new-*".into(),
+        ..spec("dv-old")
+    };
+    let desired_new = DataViewSpec {
+        title: "logs-new-*".into(),
+        ..spec("dv-new")
+    };
+    let path = artifact(&[
+        desired_old.clone(),
+        desired_new.clone(),
+        desired_same.clone(),
+    ]);
+
+    let plan = data_views_ops::plan_import(Some(&transport(&server)), &path, true, false)
+        .await
+        .expect("overwrite plan");
+
+    assert_eq!(plan.specs, vec![desired_new, desired_old, desired_same]);
+    assert_eq!(
+        plan.preview.preview_details,
+        vec![
+            "dv-new  create  logs-new-*",
+            "dv-old  replace  logs-old-* -> logs-new-*",
+            "dv-same  no-op  logs-same-*",
+        ]
+    );
+}
+
+#[test]
+fn build_patch_rejects_unsupported_data_view_deltas() {
+    let current = spec("dv");
+    let same_hidden = DataViewSpec {
+        allow_hidden: false,
+        ..current.clone()
+    };
+    assert!(data_views_ops::build_patch(&current, &same_hidden).is_ok());
+
+    let typed = DataViewSpec {
+        view_type: Some("rollup".into()),
+        ..current.clone()
+    };
+    let type_meta = DataViewSpec {
+        type_meta: Some(json!({"x": 1}).as_object().expect("object").clone()),
+        ..current.clone()
+    };
+    for (before, desired) in [
+        (
+            current.clone(),
+            DataViewSpec {
+                allow_hidden: true,
+                ..current.clone()
+            },
+        ),
+        (
+            current.clone(),
+            DataViewSpec {
+                name: None,
+                ..current.clone()
+            },
+        ),
+        (
+            current.clone(),
+            DataViewSpec {
+                time_field_name: None,
+                ..current.clone()
+            },
+        ),
+        (
+            typed.clone(),
+            DataViewSpec {
+                view_type: None,
+                ..typed
+            },
+        ),
+        (
+            type_meta.clone(),
+            DataViewSpec {
+                type_meta: None,
+                ..type_meta
+            },
+        ),
+    ] {
+        let error = data_views_ops::build_patch(&before, &desired).expect_err("unsupported delta");
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+}
+
+#[tokio::test]
+async fn apply_import_refuses_a_create_that_appeared_after_planning() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(spec("dv"))))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![spec("dv")],
+        BTreeMap::from([("dv".into(), None)]),
+        BTreeMap::new(),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("partial report");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "dv", "applied": false, "error": "data view appeared since preview"})]
+    );
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 1, "a raced create must not post");
+}
+
+#[tokio::test]
+async fn apply_import_refuses_a_replacement_that_changed_after_planning() {
+    let server = MockServer::start().await;
+    let old = DataViewSpec {
+        title: "logs-old-*".into(),
+        ..spec("dv")
+    };
+    let changed = DataViewSpec {
+        title: "logs-raced-*".into(),
+        ..spec("dv")
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(changed)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let desired = DataViewSpec {
+        title: "logs-new-*".into(),
+        ..spec("dv")
+    };
+    let patch = data_views_ops::build_patch(&old, &desired).expect("patch");
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("dv".into(), Some(old))]),
+        BTreeMap::from([("dv".into(), patch)]),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("partial report");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "dv", "applied": false, "error": "data view changed since preview"})]
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+}
+
+#[tokio::test]
+async fn apply_import_creates_then_reads_and_checks_the_stored_spec() {
+    let server = MockServer::start().await;
+    let desired = DataViewSpec {
+        title: "logs-new-*".into(),
+        ..spec("dv")
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view"))
+        .and(body_json(json!({"data_view": desired, "override": false})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("dv".into(), None)]),
+        BTreeMap::new(),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "dv", "action": "created"})]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_updates_base_then_metadata_then_reads() {
+    let server = MockServer::start().await;
+    let before = DataViewSpec {
+        title: "logs-old-*".into(),
+        ..spec("dv")
+    };
+    let desired = DataViewSpec {
+        title: "logs-new-*".into(),
+        field_attrs: json!({"host.name": {"customLabel": "Host"}})
+            .as_object()
+            .expect("object")
+            .clone(),
+        ..spec("dv")
+    };
+    let patch = data_views_ops::build_patch(&before, &desired).expect("patch");
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(before.clone())))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view/dv"))
+        .and(body_json(
+            json!({"data_view": {"title": "logs-new-*"}, "refresh_fields": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view/dv/fields"))
+        .and(body_json(
+            json!({"fields": {"host.name": {"customLabel": "Host"}}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("dv".into(), Some(before))]),
+        BTreeMap::from([("dv".into(), patch)]),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "dv", "action": "replaced"})]
+    );
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>(),
+        vec![
+            "/api/data_views/data_view/dv",
+            "/api/data_views/data_view/dv",
+            "/api/data_views/data_view/dv/fields",
+            "/api/data_views/data_view/dv",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_deletes_field_metadata_with_null() {
+    let server = MockServer::start().await;
+    let before = DataViewSpec {
+        field_attrs: json!({"host.name": {"customLabel": "Host"}})
+            .as_object()
+            .expect("object")
+            .clone(),
+        ..spec("dv")
+    };
+    let desired = spec("dv");
+    let patch = data_views_ops::build_patch(&before, &desired).expect("patch");
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(before.clone())))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view/dv/fields"))
+        .and(body_json(
+            json!({"fields":{"host.name":{"customLabel":null}}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("dv".into(), Some(before))]),
+        BTreeMap::from([("dv".into(), patch)]),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "dv", "action": "replaced"})]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_leaves_a_no_op_unchanged() {
+    let server = MockServer::start().await;
+    let desired = spec("dv");
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired.clone()],
+        BTreeMap::from([("dv".into(), Some(desired))]),
+        BTreeMap::from([("dv".into(), DataViewPatch::default())]),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "dv", "action": "unchanged"})]
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+}
+
+#[tokio::test]
+async fn apply_import_reports_a_metadata_failure_after_a_base_write() {
+    let server = MockServer::start().await;
+    let before = DataViewSpec {
+        title: "logs-old-*".into(),
+        ..spec("dv")
+    };
+    let desired = DataViewSpec {
+        title: "logs-new-*".into(),
+        field_attrs: json!({"host.name": {"customLabel": "Host"}})
+            .as_object()
+            .expect("object")
+            .clone(),
+        ..spec("dv")
+    };
+    let patch = data_views_ops::build_patch(&before, &desired).expect("patch");
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(before.clone())))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired.clone())))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view/dv/fields"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"message": "request timed out"})),
+        )
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("dv".into(), Some(before))]),
+        BTreeMap::from([("dv".into(), patch)]),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.failed,
+        vec![
+            json!({"id":"dv","applied":true,"error":"base updated; field metadata failed: request timed out"})
+        ]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_reports_a_lossy_create_and_continues() {
+    let server = MockServer::start().await;
+    let desired_a = DataViewSpec {
+        title: "logs-a-*".into(),
+        ..spec("dv-a")
+    };
+    let desired_b = DataViewSpec {
+        title: "logs-b-*".into(),
+        ..spec("dv-b")
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-a"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message":"missing"})))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view"))
+        .and(body_json(
+            json!({"data_view": desired_a, "override": false}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired_a.clone())))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(spec("dv-a"))))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-b"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message":"missing"})))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view"))
+        .and(body_json(
+            json!({"data_view": desired_b, "override": false}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired_b.clone())))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response(desired_b.clone())))
+        .mount(&server)
+        .await;
+    let plan = import_plan(
+        vec![desired_a, desired_b],
+        BTreeMap::from([("dv-a".into(), None), ("dv-b".into(), None)]),
+        BTreeMap::new(),
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("report");
+
+    assert_eq!(
+        report.failed,
+        vec![
+            json!({"id":"dv-a","applied":true,"error":"server stored a different data-view spec"})
+        ]
+    );
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id":"dv-b","action":"created"})]
+    );
+}
+
+#[test]
+fn apply_import_report_preserves_serialized_field_order() {
+    let report = elasticctl_api::DataViewImportReport {
+        applied: true,
+        succeeded: Vec::new(),
+        skipped: Vec::new(),
+        failed: Vec::new(),
+        total: 0,
+    };
+    assert_eq!(
+        serde_json::to_string(&report).expect("serialize"),
+        "{\"applied\":true,\"succeeded\":[],\"skipped\":[],\"failed\":[],\"total\":0}"
+    );
 }
 
 #[tokio::test]

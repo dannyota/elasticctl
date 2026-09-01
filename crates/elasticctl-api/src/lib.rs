@@ -34,6 +34,7 @@ pub use cases_ops::{
     DeletePlan, StatusPlan as CaseStatusPlan,
 };
 pub use codec::Format;
+pub use data_views_ops::{DataViewImportPlan, DataViewImportReport, DataViewPatch};
 pub use diff::{Change, Drift, FieldChange};
 pub use exceptions::{ListDetail, ListFilter, ListReport};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
