@@ -73,9 +73,12 @@ const TRIAGE_ENVELOPE_VOLATILE_FIELDS: &[&str] = &["took", "timed_out", "_shards
 
 /// Additional volatile fields on the `signals_search` response beyond the
 /// envelope fields above: relevance scores (meaningless on a `term` query and
-/// non-deterministic across runs) and the per-execution rule-run uuid
-/// (already the treatment `PREVIEW_VOLATILE_FIELDS` gives the same field on
-/// the preview-hits probe).
+/// non-deterministic across runs), the per-execution rule-run uuid (already
+/// the treatment `PREVIEW_VOLATILE_FIELDS` gives the same field on the
+/// preview-hits probe), and each hit's `sort` array, which embeds a raw
+/// epoch-millis recording time the string-only timestamp scrub cannot reach
+/// (numeric, not a string) — the DSL search fixtures already strip `sort` via
+/// `DSL_VOLATILE_FIELDS` for the same reason; this mirrors that.
 const ALERT_SEARCH_VOLATILE_FIELDS: &[&str] = &[
     "took",
     "timed_out",
@@ -83,6 +86,7 @@ const ALERT_SEARCH_VOLATILE_FIELDS: &[&str] = &[
     "_score",
     "max_score",
     "kibana.alert.rule.execution.uuid",
+    "sort",
 ];
 
 const SCRUB_FIELDS: &[&str] = &[
@@ -91,6 +95,16 @@ const SCRUB_FIELDS: &[&str] = &[
     "email",
     "created_by",
     "updated_by",
+    // `closed_by` and `pushed_by` are the same shape as `created_by`/
+    // `updated_by` (a whole identity object, including a `profile_uid` leaf
+    // not itself in this list), surfaced by the 0.4.1 cases probe
+    // (`case_update_status`, and comment pushes to an external service).
+    // Without them here, `profile_uid` under these keys would only be
+    // scrubbed if it happened to collide with a value already in the
+    // per-profile placeholder map (see `scrub_placeholder_values`) — a real
+    // uid could otherwise reach a committed fixture.
+    "closed_by",
+    "pushed_by",
     "tie_breaker_id",
     "_version",
     // User-profile identity surfaced by the 0.4 alerts probe

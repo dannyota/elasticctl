@@ -415,14 +415,28 @@ fn lists_index_records_either_the_valid_result_or_classified_404() {
 fn is_identity_key(key: &str) -> bool {
     matches!(
         key.rsplit('.').next().unwrap_or(key),
-        "created_by" | "updated_by" | "tie_breaker_id" | "_version"
+        "created_by" | "updated_by" | "closed_by" | "pushed_by" | "tie_breaker_id" | "_version"
     )
+}
+
+/// A string leaf under an identity key must be a redaction placeholder, not
+/// real identity: either the blanket `"REDACTED"` `scrub` writes when the
+/// key itself is sensitive, or a per-profile `u_REDACTED_<n>` uid placeholder
+/// `scrub_placeholder_values` writes in its place (uid is deliberately never
+/// blanket-redacted — see `SCRUB_FIELDS`'s comment in `xtask/src/main.rs`).
+/// Substring match, not exact equality, so both shapes pass: a real,
+/// unredacted value never contains the literal word "REDACTED".
+fn is_redacted_placeholder(value: &str) -> bool {
+    value.contains("REDACTED")
 }
 
 fn assert_identity_value_redacted(value: &Value, context: &str) {
     match value {
         Value::Null => {}
-        Value::String(value) => assert_eq!(value, "REDACTED", "{context}"),
+        Value::String(value) => assert!(
+            is_redacted_placeholder(value),
+            "{context}: expected a redacted placeholder, found {value:?}"
+        ),
         Value::Array(values) => {
             for value in values {
                 assert_identity_value_redacted(value, context);
