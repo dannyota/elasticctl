@@ -28,6 +28,7 @@ lab/.env
 .mcp.json
 .playwright-profile/
 .playwright-mcp/
+.worktrees/
 
 # Local working notes
 PLAN.md

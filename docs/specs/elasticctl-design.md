@@ -1421,7 +1421,9 @@ Planned shape. 0.2 is fixed; the order after it is not:
 The 0.3 search capability area is specified in
 [`elasticctl-search-design.md`](elasticctl-search-design.md). The 0.4 alert
 triage and cases capability area is specified in
-[`elasticctl-triage-design.md`](elasticctl-triage-design.md).
+[`elasticctl-triage-design.md`](elasticctl-triage-design.md). The 0.5 dashboard
+and data-view capability area is specified in
+[`elasticctl-content-design.md`](elasticctl-content-design.md).
 
 The temporary trial-deployment window changes execution order, not capability
 boundaries. The near-term evidence ladder is:
@@ -1436,8 +1438,15 @@ boundaries. The near-term evidence ladder is:
 5. 0.3.1 publishes the search conformance matrix and completes the deferred
    search items: ES|QL export payload, DSL hit metadata, and object search
    (`--search` and substring name matching) over rules, exceptions, and state.
-   Later minor capability areas begin only after 0.3 is complete and
-   trial time remains.
+6. 0.4.0 and 0.4.1 deliver alert triage and cases; 0.4.2 publishes their
+   cross-flavor proof and bounded review patch.
+7. 0.5.0 delivers complete data-view administration and transfer; 0.5.1 adds
+   typed dashboard administration plus opaque dependency bundles; 0.5.2
+   publishes the content matrix and bounded review patch.
+
+Later minor capability areas begin only after the current area is complete.
+The trial window still prioritizes live 0.5 measurements before 2026-09-08
+08:56 UTC; it does not weaken a release gate.
 
 The privacy, cleanup, evidence, and release gates for this sequence are defined
 in §8.3, §11.2, and §12.
