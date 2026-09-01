@@ -5,10 +5,12 @@ cd "$(dirname "$0")/.."
 
 CONTRACTS_V2='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip"]'
 CONTRACTS_V3='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search"]'
+CONTRACTS_V4='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search","triage"]'
 FLAVORS=(serverless ech traditional)
 declare -A CONTRACT_LISTS=(
   ["v0.2"]="$CONTRACTS_V2"
   ["v0.3"]="$CONTRACTS_V3"
+  ["v0.4"]="$CONTRACTS_V4"
 )
 
 shopt -s nullglob

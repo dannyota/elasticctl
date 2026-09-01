@@ -1197,9 +1197,10 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same seven contracts serially against each target: diagnostics,
+It runs the same eight contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
-repair, source scoping, rule export/import round-trip, and search. Before the
+repair, source scoping, rule export/import round-trip, search, and triage
+(`elasticctl-triage-design.md` section 9). Before the
 first mutation, it captures custom, prebuilt, and customized rule counts and
 refuses a target with existing live-marker objects. It checks marker cleanup after
 every contract and compares the final rule partitions with that baseline.
@@ -1243,8 +1244,14 @@ run for having nothing to partition). The install is verified, not assumed:
 `PUT .../prepackaged` answers `200` with an all-zero
 `{"rules_installed":0,...}` body when the underlying Fleet package fetch
 fails, so the leg follows it with the prepackaged status check and fails
-unless that reports the pack current. Only then does it run the conformance
-child, with `ELASTICCTL_SPACE=default`. This whole boot-through-conformance
+unless that reports the pack current. It then activates a Kibana user
+profile by logging in as the lab's bootstrap user
+(`POST /internal/security/login`, `elasticctl-triage-design.md` section 9),
+since the lab boots headless with no browser session ever logging in and the
+`triage` contract's assign/unassign step needs one activated profile to
+resolve; Serverless and Hosted already carry one from the operator's own SSO
+login. Only then does it run the conformance child, with
+`ELASTICCTL_SPACE=default`. This whole boot-through-conformance
 sequence races against Ctrl-C, and either outcome — completion or
 interruption — is followed by `lab/down.sh`, which also covers a plain panic
 anywhere in the sequence. Because `lab/down.sh` runs `compose down -v`,

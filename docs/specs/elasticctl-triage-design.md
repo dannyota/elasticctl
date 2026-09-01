@@ -270,11 +270,31 @@ the case workflow-duration numerics `duration`, `time_to_acknowledge`,
 `time_to_investigate`, `time_to_resolve` — elapsed real time between the
 recorder's own steps, so a re-record's values never match the prior ones.
 
-The conformance contract (eighth in the matrix) would: seed marker events,
-enable the marker rule, wait for an alert, transition it
-open → acknowledged → closed by id, re-open and close it by marker-scoped
-query, tag and untag it, resolve the operator's own username, create a case,
-attach the alert, close and delete the case, then verify baseline.
+The conformance contract (eighth in the matrix,
+`triage_transitions_alerts_and_cases_and_leaves_only_closed_residue` in
+`crates/elasticctl-cli/tests/live.rs`) does: seed three marker documents,
+create and enable the marker rule over them, poll for the alert it
+generates, transition it open → acknowledged → closed by id, re-open and
+close it again by marker-scoped query, tag then untag it, resolve an
+assignee, create a case, attach the alert to it, comment on it, close and
+delete the case (verifying it is gone), then run a final closing sweep over
+every alert the marker rule produced and confirm none stay open before
+`conclude`'s baseline check runs.
+
+**Assignment refinement.** The contract does not resolve the operator's own
+username — it takes the *first activated profile* from
+`profiles::suggest(&transport, flavor, "")` and assigns/unassigns that uid,
+failing the contract if the list is empty. This also exercises the
+per-flavor profile-suggest route switch (section 7). Serverless and Hosted
+already carry one activated profile from the operator's own SSO login before
+the matrix ever runs; the self-managed lab boots headless with no browser
+session ever logging in, so the traditional matrix leg activates one itself
+at boot, immediately after installing the prebuilt rule pack and before
+spawning the conformance child (`xtask/src/activation.rs`, called from
+`conformance_matrix.rs::run_traditional_boot_and_leg`). Activation logs in as
+the lab's bootstrap `elastic` user via `POST /internal/security/login` with
+`x-elastic-internal-origin: Kibana` — the only call that activates a
+profile, per the measured fact in section 10.
 
 **Accepted deviation — alert residue (decided).** Generated alerts live in
 the shared `.alerts-security.alerts-default` index, the public API has no

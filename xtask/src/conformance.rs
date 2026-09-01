@@ -106,7 +106,7 @@ const PREBUILT_RULES: RequiredFeature = RequiredFeature {
     label: "prebuilt-rules",
 };
 
-const CONTRACTS: [Contract; 7] = [
+const CONTRACTS: [Contract; 8] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -140,6 +140,11 @@ const CONTRACTS: [Contract; 7] = [
     Contract {
         name: "search",
         test: "search_reads_marked_documents_through_esql_and_dsl",
+        features: &[],
+    },
+    Contract {
+        name: "triage",
+        test: "triage_transitions_alerts_and_cases_and_leaves_only_closed_residue",
         features: &[],
     },
 ];
@@ -236,6 +241,16 @@ struct TargetState {
     marked_rules: u64,
     marked_lists: usize,
     marked_indices: usize,
+    /// Open (non-`closed`) `elasticctl-live-*` marker alerts. Closed marker
+    /// alerts are never counted here at all — the capture query below
+    /// excludes them, which *is* the triage contract's accepted alert-residue
+    /// tolerance (design spec `elasticctl-triage-design.md` section 9): a
+    /// closed marker alert is inert and stays out of every baseline count.
+    open_marked_alerts: u64,
+    /// `elasticctl-live-marker`-tagged cases. Unlike alerts, cases delete
+    /// cleanly through a public API, so this carries no such tolerance and
+    /// must be zero like every other partition (same spec section).
+    marked_cases: u64,
 }
 
 /// Whether a feature is available on the measured target.
@@ -326,6 +341,49 @@ impl TargetState {
             }) => 0,
             Err(error) => return Err(error),
         };
+
+        // Same prefix + must_not-closed body live.rs's own baseline counter
+        // sends (crates/elasticctl-cli/tests/live.rs::open_marker_alert_count):
+        // every `elasticctl-live-`-prefixed marker rule's alerts, excluding
+        // `workflow_status: closed`. Un-gated by `Feature`: every supported
+        // stack serves `signals/search`.
+        let open_marked_alerts = {
+            let body = serde_json::json!({
+                "query": {"bool": {
+                    "filter": [{"prefix": {"kibana.alert.rule.rule_id": "elasticctl-live-"}}],
+                    "must_not": [{"term": {"kibana.alert.workflow_status": "closed"}}],
+                }},
+                "size": 0,
+                "track_total_hits": true,
+            });
+            transport
+                .post(elasticctl_api::alerts::SEARCH_PATH, Some(&body))
+                .await?
+                .pointer("/hits/total/value")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Http,
+                        "invalid alert-count response: hits.total.value must be a number",
+                    )
+                })?
+        };
+
+        // Same tag-filtered find query live.rs's own baseline counter sends
+        // (crates/elasticctl-cli/tests/live.rs::marker_case_count).
+        let marked_cases = {
+            let query = elasticctl_api::cases_ops::find_query(
+                &elasticctl_api::cases_ops::CaseFilter {
+                    tag: Some("elasticctl-live-marker".to_string()),
+                    ..Default::default()
+                },
+                1,
+                1,
+            );
+            let (_cases, total) = elasticctl_api::cases::find_page(transport, &query).await?;
+            total
+        };
+
         Ok(Self {
             custom,
             prebuilt,
@@ -333,11 +391,23 @@ impl TargetState {
             marked_rules,
             marked_lists,
             marked_indices,
+            open_marked_alerts,
+            marked_cases,
         })
     }
 
+    /// `open_marked_alerts` is already the *open* count only — `capture`'s
+    /// query excludes `workflow_status: closed`, so a closed marker alert
+    /// never reaches this field at all. Requiring it to be zero here still
+    /// tolerates closed residue without a separate branch: the exclusion at
+    /// capture time *is* the tolerance (triage spec section 9). `marked_cases`
+    /// carries no such deviation and is held to zero unconditionally.
     fn markers_are_clean(&self) -> bool {
-        self.marked_rules == 0 && self.marked_lists == 0 && self.marked_indices == 0
+        self.marked_rules == 0
+            && self.marked_lists == 0
+            && self.marked_indices == 0
+            && self.open_marked_alerts == 0
+            && self.marked_cases == 0
     }
 
     fn assert_clean_start(&self) -> Result<(), String> {
@@ -715,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_seven_in_order() {
+    fn contract_table_is_the_approved_eight_in_order() {
         assert_eq!(
             CONTRACTS.map(|contract| contract.name),
             [
@@ -726,6 +796,7 @@ mod tests {
                 "source_scoping",
                 "rule_round_trip",
                 "search",
+                "triage",
             ]
         );
     }
@@ -848,6 +919,8 @@ mod tests {
             marked_rules: 0,
             marked_lists: 0,
             marked_indices: 0,
+            open_marked_alerts: 0,
+            marked_cases: 0,
         }
     }
 
@@ -898,6 +971,12 @@ mod tests {
         variants.push(state);
         let mut state = baseline.clone();
         state.marked_indices = 1;
+        variants.push(state);
+        let mut state = baseline.clone();
+        state.open_marked_alerts = 1;
+        variants.push(state);
+        let mut state = baseline.clone();
+        state.marked_cases = 1;
         variants.push(state);
 
         for state in variants {

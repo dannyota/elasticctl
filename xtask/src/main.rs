@@ -3,6 +3,7 @@
 //! Fixtures capture what Elastic sent. Hand-written mocks capture assumptions,
 //! which is where API bugs hide.
 
+mod activation;
 mod conformance;
 mod conformance_matrix;
 

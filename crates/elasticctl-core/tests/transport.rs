@@ -196,6 +196,30 @@ async fn get_internal_sends_the_internal_origin_header_and_no_api_version() {
 }
 
 #[tokio::test]
+async fn post_internal_sends_the_internal_origin_and_xsrf_headers_and_no_api_version() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/internal/security/login"))
+        .and(header("x-elastic-internal-origin", "Kibana"))
+        .and(header("kbn-xsrf", "true"))
+        .and(WithoutHeader("elastic-api-version"))
+        .and(body_partial_json(json!({"providerType": "basic"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    let body = t
+        .post_internal(
+            "/internal/security/login",
+            &json!({"providerType": "basic"}),
+        )
+        .await
+        .expect("internal POST");
+    assert_eq!(body["ok"], true);
+}
+
+#[tokio::test]
 async fn out_of_range_json_integer_is_a_transport_http_parse_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

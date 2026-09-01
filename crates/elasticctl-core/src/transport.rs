@@ -438,6 +438,37 @@ impl Transport {
         parse_response_json(&text)
     }
 
+    /// POST a Kibana *internal* route with a JSON body. Mirrors
+    /// `get_internal`'s reasoning (same `x-elastic-internal-origin`
+    /// requirement, `elastic-api-version` still omitted), plus `kbn-xsrf`:
+    /// Kibana rejects any state-changing request without it, same as every
+    /// other non-GET call `send` makes.
+    ///
+    /// Its only caller today is xtask's profile-activation login
+    /// (`POST /internal/security/login`) — not reachable from
+    /// `elasticctl-api` or `elasticctl-cli`.
+    pub async fn post_internal(&self, path: &str, body: &Value) -> Result<Value> {
+        let method = Method::POST;
+        let url = self.url(path);
+        let response = self
+            .send_retrying(method.clone(), &url, || {
+                Ok(self
+                    .client
+                    .request(Method::POST, &url)
+                    .header("Authorization", &self.auth_header)
+                    .header("kbn-xsrf", "true")
+                    .header("x-elastic-internal-origin", "Kibana")
+                    .json(body))
+            })
+            .await?;
+
+        let text = self.response_text(&method, &url, response).await?;
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        parse_response_json(&text)
+    }
+
     /// GET a body with its captured headers.
     ///
     /// This is separate from `get` because only the capability probe needs

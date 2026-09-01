@@ -446,7 +446,9 @@ async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(
 
 /// Run the self-managed leg's boot-through-conformance sequence: `lab/up.sh`,
 /// minting a lab API key, installing the prebuilt rule pack so
-/// `source_scoping` has rules to partition, then the conformance child.
+/// `source_scoping` has rules to partition, activating a user profile so the
+/// `triage` contract's assign/unassign step has one to resolve, then the
+/// conformance child.
 ///
 /// This runs as its own spawned task (see `run_traditional_leg`) so a panic
 /// anywhere in it surfaces there as a `JoinError` instead of unwinding past
@@ -460,6 +462,14 @@ async fn run_traditional_boot_and_leg(
     run_lab_script(&up_script, &workspace, "lab-up").await?;
     let api_key = mint_traditional_api_key(&workspace).await?;
     install_prebuilt_rules(&workspace, &api_key).await?;
+    // Serverless and Hosted already carry an activated profile from the
+    // operator's own SSO login; the lab boots headless, with no browser
+    // session ever logging in, so without this the triage contract's
+    // assign/unassign step finds no profile to resolve on this leg alone
+    // (design spec `elasticctl-triage-design.md` section 10).
+    crate::activation::activate_profile("http://localhost:5601", "elastic", "elasticctl-lab")
+        .await
+        .map_err(|error| private_failure(&workspace, "lab-activate", error.message.as_bytes()))?;
 
     let mut command = spawn_conformance_child(&exe, "traditional", &report_dir);
     command
