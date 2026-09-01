@@ -1,0 +1,34 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "signals_tags",
+  "request": {
+    "ids": [
+      "elasticctl-fixture-alert-1"
+    ],
+    "tags": {
+      "tags_to_add": [
+        "triage-check"
+      ],
+      "tags_to_remove": []
+    }
+  },
+  "response": {
+    "took": 320,
+    "timed_out": false,
+    "total": 1,
+    "updated": 1,
+    "deleted": 0,
+    "batches": 1,
+    "version_conflicts": 0,
+    "noops": 0,
+    "retries": {
+      "bulk": 0,
+      "search": 0
+    },
+    "throttled_millis": 0,
+    "requests_per_second": -1,
+    "throttled_until_millis": 0,
+    "failures": []
+  }
+}

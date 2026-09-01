@@ -1,9 +1,0 @@
-{
-  "flavor": "ech",
-  "version": "9.5.1",
-  "operation": "search_pit_close",
-  "response": {
-    "succeeded": true,
-    "num_freed": 1
-  }
-}

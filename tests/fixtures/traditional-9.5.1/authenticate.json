@@ -8,7 +8,7 @@
     "full_name": null,
     "email": null,
     "metadata": {
-      "_reserved": true
+      "_reserved": "REDACTED"
     },
     "enabled": true,
     "authentication_realm": {

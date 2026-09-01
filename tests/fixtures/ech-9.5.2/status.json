@@ -1,17 +1,17 @@
 {
-  "flavor": "traditional",
-  "version": "9.5.1",
+  "flavor": "ech",
+  "version": "9.5.2",
   "operation": "status",
   "response": {
-    "name": "1c0ea3b2a3be",
-    "uuid": "2877be6a-89bd-49f9-b208-6bf1ae0006e4",
+    "name": "instance-0000000001",
+    "uuid": "32e1d76b-316c-4558-a917-37e84fcb7c58",
     "version": {
-      "number": "9.5.1",
-      "build_hash": "c9539950cdb7c83db5f1a7d4eda28880aded9a95",
-      "build_number": 106993,
+      "number": "9.5.2",
+      "build_hash": "37dc1e9d6dbf80bb1cf22da5ed258d3f642d2f9c",
+      "build_number": 107242,
       "build_snapshot": false,
       "build_flavor": "traditional",
-      "build_date": "2026-08-06T08:28:54.786Z"
+      "build_date": "2026-08-18T11:06:45.983Z"
     },
     "status": {
       "overall": {
@@ -166,6 +166,10 @@
           "summary": "All services and plugins are available"
         },
         "reporting": {
+          "level": "available",
+          "summary": "All services and plugins are available"
+        },
+        "profilingDataAccess": {
           "level": "available",
           "summary": "All services and plugins are available"
         },
@@ -337,6 +341,10 @@
           "level": "available",
           "summary": "All services and plugins are available"
         },
+        "profiling": {
+          "level": "available",
+          "summary": "All services and plugins are available"
+        },
         "observabilityOnboarding": {
           "level": "available",
           "summary": "All services and plugins are available"
@@ -353,6 +361,10 @@
           "level": "available",
           "summary": "Fleet is available",
           "reported": true
+        },
+        "usageApi": {
+          "level": "available",
+          "summary": "All services are available"
         },
         "urlForwarding": {
           "level": "available",
@@ -615,6 +627,10 @@
           "summary": "All services and plugins are available"
         },
         "cloudLinks": {
+          "level": "available",
+          "summary": "All services and plugins are available"
+        },
+        "cloudFullStory": {
           "level": "available",
           "summary": "All services and plugins are available"
         },
@@ -942,6 +958,10 @@
           "level": "available",
           "summary": "All services and plugins are available"
         },
+        "cloudExperiments": {
+          "level": "available",
+          "summary": "All services and plugins are available"
+        },
         "licensing": {
           "level": "available",
           "summary": "License fetched",
@@ -955,5 +975,8 @@
       }
     }
   },
-  "headers": {}
+  "headers": {
+    "x-found-handling-cluster": "REDACTED",
+    "x-found-handling-instance": "REDACTED"
+  }
 }

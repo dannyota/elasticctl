@@ -1,0 +1,15 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "users_find",
+  "response": [
+    {
+      "uid": "u_REDACTED_1",
+      "enabled": true,
+      "data": {},
+      "user": {
+        "username": "REDACTED"
+      }
+    }
+  ]
+}

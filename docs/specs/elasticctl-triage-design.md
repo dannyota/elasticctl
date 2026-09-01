@@ -270,39 +270,49 @@ uniformly grant and on behavior Elastic does not contract.
 
 Read probes 2026-09-01 against the trial Serverless project (9.6.0) and the
 Hosted deployment (9.5.1), with the stacks' project/deployment API keys. The
-two status-route mutations sent were query-scoped to the `elasticctl-sample`
-marker and verified to match zero alerts immediately before sending; nothing
-was mutated. Rows marked *unverified* are documented shapes not yet exercised.
+two status-route mutations sent at that time were query-scoped to the
+`elasticctl-sample` marker and verified to match zero alerts immediately
+before sending; nothing was mutated then.
+
+Task 8 (2026-09-01) exercised every triage mutation route for real: a marker
+rule over a marker index generated genuine alerts on Serverless (9.6.0), the
+Hosted deployment (9.5.2 — moved from 9.5.1 mid-task), and the traditional
+lab (9.5.1). Each was transitioned by id, tagged, assigned, then closed by
+query; every flavor verified baseline before and after (no leftover marker
+rule or index, no non-closed marker alert — closed residue is the accepted
+deviation, section 9). Rows marked *unverified* are documented shapes not yet
+exercised.
 
 | Fact | Detail |
 |---|---|
-| Alert search route | `POST /api/detection_engine/signals/search` returns the raw ES envelope `{took, timed_out, _shards, hits}` — 200 with and without `elastic-api-version`, and 200 even without `kbn-xsrf` on Serverless (the transport still always sends it) |
+| Alert search route | `POST /api/detection_engine/signals/search` returns the raw ES envelope `{took, timed_out, _shards, hits}` — 200 with and without `elastic-api-version`, and 200 even without `kbn-xsrf` on Serverless (the transport still always sends it). Measured 2026-09-01 with populated hits from a live marker rule on all three flavors: `hits.hits[]._source` carries 50+ `kibana.alert.*` field groups plus the original event fields, and `_id`/`kibana.alert.uuid` uniquely identify each alert instance |
 | Search body acceptance | `sort`, `search_after`, `_source`, `track_total_hits`, `size`, `aggs`, and `runtime_mappings` all accepted (200) |
 | Triage fields | The alerts index mapping carries `kibana.alert.workflow_status`, `workflow_tags`, `workflow_assignee_ids`, `workflow_status_updated_at`, `workflow_user`, `workflow_reason`, and `kibana.alert.case_ids`; 50 `kibana.alert.*` field groups total |
 | Query-scoped status | `POST /api/detection_engine/signals/status` with `{status, query, conflicts}` → 200 with a raw update-by-query envelope: `{took, timed_out, total, updated, deleted, batches, version_conflicts, noops, retries, throttled_millis, requests_per_second, throttled_until_millis, failures}`. Zero-match returns all-zero counts. Identical shape on Serverless 9.6.0 and Hosted 9.5.1 |
 | Status body (docs) | `signal_ids` and `query` are one-of; `conflicts` is `abort` (default) or `proceed`; `status` allows `open`, `acknowledged`, `in-progress`, `closed`; `reason` is a documented enum (`false_positive`, `duplicate`, `true_positive`, `benign_positive`, `automated_closure`, `other`) plus free text 1–1024 chars |
-| Profile suggest, public | `POST /_security/profile/_suggest` on Hosted 9.5.1 → 200 `{total, took, profiles: [{uid, user: {username, realm_name, roles, …}, data, labels, enabled}]}`. On Serverless → **410** `api_not_available_exception` "not available when running in serverless mode" |
-| Profile suggest, internal | `GET /internal/detection_engine/users/_find?searchTerm=` → 200 `[{data, enabled, uid, user}]` on both flavors; **without** `x-elastic-internal-origin` the internal route family answers 400 "exists but is not available". `POST /internal/cases/_suggest_user_profiles` (with `{name, size, owners}`) behaves the same |
-| Profile activation | Each stack shows exactly one activated profile (the SSO login); the API-key identities used by elasticctl have none. Empty `searchTerm` returns all activated profiles |
+| Status body, `signal_ids` form (measured) | `reason` is accepted alongside `signal_ids`, not just `query` — measured 2026-09-01 on Serverless 9.6.0, Hosted 9.5.2, and the traditional lab 9.5.1: `POST signals/status` with `{signal_ids, status, reason}` returns 200, never a 400. `alerts::status_by_ids` already sends `reason` unconditionally; no code change needed |
+| Profile suggest, public | `POST /_security/profile/_suggest` → 200 `{total, took, profiles: [{uid, user: {username, realm_name, roles, …}, data, labels, enabled}]}` on Hosted (9.5.1, then 9.5.2) and the traditional lab (9.5.1, measured 2026-09-01). On Serverless → **410** `api_not_available_exception` "not available when running in serverless mode" |
+| Profile suggest, internal | `GET /internal/detection_engine/users/_find?searchTerm=` → 200 `[{data, enabled, uid, user}]` on all three flavors; **without** `x-elastic-internal-origin` the internal route family answers 400 "exists but is not available". `POST /internal/cases/_suggest_user_profiles` (with `{name, size, owners}`) behaves the same |
+| Profile activation | Each cloud stack shows exactly one activated profile (the SSO login); the API-key identities used by elasticctl have none. Empty `searchTerm` returns all activated profiles. Measured 2026-09-01 on the traditional lab: a fresh stack activates none — a raw Elasticsearch API key or an HTTP Basic call to a Kibana route does **not** trigger activation; only `POST /internal/security/login` (with `x-elastic-internal-origin: Kibana`, since it is itself a restricted internal route) does |
 | Profile by uid | `GET /_security/profile/<uid>` on Hosted → 200 `{profiles: [...]}` |
 | Cases find | `GET /api/cases/_find` → `{cases, page, per_page, total, count_open_cases, count_in_progress_cases, count_closed_cases}`; accepts `perPage`, `page`, `sortField`, `sortOrder`, `status` |
 | Cases reads | `GET /api/cases/tags` and `/api/cases/reporters` → arrays; `GET /api/cases/configure` → array; `GET /api/cases/alerts/<absent id>` → 200 `[]`, not 404 |
 | Alerts index | `GET /api/detection_engine/index` → `{name: ".alerts-security.alerts-default", index_mapping_outdated: false}` |
-| Tags mutation (unverified) | `POST /api/detection_engine/signals/tags` with `{ids, tags: {tags_to_add, tags_to_remove}}` |
-| Assignee mutation (unverified) | `POST /api/detection_engine/signals/assignees` with `{assignees: {add, remove}, ids}` — uids only; response documented as an update-by-query envelope; add and remove of the same uid in one request is rejected |
+| Tags mutation | `POST /api/detection_engine/signals/tags` with `{ids, tags: {tags_to_add, tags_to_remove}}` → 200 with the same raw update-by-query envelope as `signals/status`. Measured 2026-09-01: added `triage-check` to a real marker alert by `_id` on Serverless 9.6.0, Hosted 9.5.2, and the traditional lab 9.5.1 |
+| Assignee mutation | `POST /api/detection_engine/signals/assignees` with `{assignees: {add, remove}, ids}` — uids only, same envelope shape. Measured 2026-09-01: assigned then unassigned a real activated profile uid (from `users/_find`) to a marker alert by `_id` on all three flavors. Add and remove of the same uid in one request was not exercised live; still documented as rejected per the API reference (section 13) |
 | Case mutations (unverified) | `POST /api/cases` (create), `PATCH /api/cases` (bulk update, `version` required), `DELETE /api/cases?ids=...`, `POST /api/cases/<id>/comments` with `{type: "alert", alertId, index, rule, owner}` |
 
-Remaining live verification, split by the version that needs it. Measured
-facts outlive the trial, so **both groups land before 2026-09-08 08:56 UTC**
-(after that, only a lab session remains and Serverless evidence is lost):
+Remaining live verification: 0.4.0's own routes (`signals/search`, the
+`signals/status` id and query forms, `signals/tags`, `signals/assignees`, and
+both profile-resolution routes) are now fully measured across all three
+flavors (Task 8). What is left is out of scope for this release but should
+still land **before 2026-09-08 08:56 UTC** (after that, only a lab session
+remains and Serverless evidence is lost), since measured facts outlive the
+trial:
 
-- **Needed by 0.4.0** — populated alert rows through `signals/search`
-  (rendering against real documents), and the tags and assignees mutation
-  shapes (marker-scoped).
 - **Ships in 0.4.1 but measured now** — the case mutation family: create,
   attach, comment, status change, delete, and the version/409 conflict
-  behavior. The profile-resolution routes are verified on both flavors
-  already.
+  behavior.
 
 ## 11. Version placement
 

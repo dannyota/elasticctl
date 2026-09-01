@@ -1,0 +1,29 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "profile_suggest",
+  "response": {
+    "took": 1,
+    "total": {
+      "value": 1,
+      "relation": "eq"
+    },
+    "profiles": [
+      {
+        "uid": "u_REDACTED_1",
+        "user": {
+          "username": "REDACTED",
+          "roles": [
+            "superuser"
+          ],
+          "realm_name": "REDACTED",
+          "realm_domain": "cloud-default",
+          "email": "REDACTED",
+          "full_name": "REDACTED"
+        },
+        "labels": {},
+        "data": {}
+      }
+    ]
+  }
+}

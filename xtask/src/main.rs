@@ -19,6 +19,27 @@ const MARKER_TAGS: [&str; 2] = ["elasticctl", "fixture"];
 const SCRATCH_DOC_ID: &str = "elasticctl-sample-fixture";
 const SCRATCH_MARKER: &str = "elasticctl_fixture_marker";
 
+/// The alerts probe (triage spec section 9): a marker rule over a marker
+/// index, generating alerts the recorder transitions, tags, and assigns
+/// through every triage route before closing them out. Alert documents live
+/// in the shared `.alerts-security.alerts-*` index and have no public delete
+/// API, so residual *closed* marker alerts are the accepted deviation (spec
+/// section 9); the marker rule and index are still deleted by `cleanup`.
+const ALERT_RULE_ID: &str = "elasticctl-sample-alert-probe";
+const ALERT_RULE_NAME: &str = "elasticctl sample alert probe";
+const ALERT_PROBE_INDEX: &str = "elasticctl-sample-alert-events";
+const ALERT_MARKER_TAG: &str = "elasticctl-sample";
+
+/// Fixed replacement for every alert timestamp value the recorder scrubs.
+/// Kept present, not stripped: the alert decoders require every declared
+/// field (spec section 9).
+const ALERT_FIXTURE_TIMESTAMP: &str = "2026-01-01T00:00:00.000Z";
+
+/// How long to poll `signals/search` for the marker rule's first alert
+/// before giving up. The rule scheduler can lag by more than one interval.
+const ALERT_POLL_ATTEMPTS: u32 = 30;
+const ALERT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 const SCRUB_FIELDS: &[&str] = &[
     "username",
     "full_name",
@@ -27,6 +48,11 @@ const SCRUB_FIELDS: &[&str] = &[
     "updated_by",
     "tie_breaker_id",
     "_version",
+    // User-profile identity surfaced by the 0.4 alerts probe
+    // (`profile_suggest`, `users_find`). `uid` is deliberately absent here:
+    // it is rewritten to a per-profile placeholder, not blanket-redacted
+    // (see `scrub_placeholder_values`).
+    "realm_name",
 ];
 
 /// Replace credentials and operator identity before writing a fixture. Recorded
@@ -337,6 +363,23 @@ fn strip_pit_token(v: &mut Value) {
 /// shape so the fixture still proves the endpoint's structure.
 const DATA_VIEW_IDENTITY_FIELDS: &[&str] = &["id", "title", "name", "namespaces"];
 
+/// Redact the `_authenticate` response's `metadata` object wholesale.
+///
+/// For an API-key-authenticated request this is normally `{}`, but
+/// Elasticsearch surfaces the underlying user's *cached* metadata regardless
+/// of the current auth method. For an identity that has ever signed in via
+/// SAML/OIDC, that has been observed to include the literal SSO access and
+/// refresh tokens and the user's email, under provider-specific claim-URI
+/// keys such as `saml(http://saml.elastic-cloud.com/attributes/email)` —
+/// shapes `scrub`'s key-name allowlist cannot anticipate. No known key set
+/// makes this field safe to allowlist, so every leaf is redacted regardless
+/// of key name; nothing in elasticctl decodes `metadata`.
+fn redact_authenticate_metadata(v: &mut Value) {
+    if let Some(metadata) = v.get_mut("metadata") {
+        redact(metadata);
+    }
+}
+
 fn redact_data_views(v: &mut Value) {
     let Some(views) = v.get_mut("data_view").and_then(Value::as_array_mut) else {
         return;
@@ -351,6 +394,88 @@ fn redact_data_views(v: &mut Value) {
             }
         }
     }
+}
+
+/// Rewrite every occurrence of a mapped alert id or profile uid to its fixed
+/// placeholder wherever it appears as a whole string value. Alert ids and
+/// uids are rewritten, never stripped: the alert and profile decoders
+/// require the field present, only its value is sensitive (spec section 9).
+fn scrub_placeholder_values(v: &mut Value, map: &BTreeMap<String, String>) {
+    match v {
+        Value::String(s) => {
+            if let Some(replacement) = map.get(s.as_str()) {
+                *s = replacement.clone();
+            }
+        }
+        Value::Object(m) => m
+            .values_mut()
+            .for_each(|x| scrub_placeholder_values(x, map)),
+        Value::Array(a) => a.iter_mut().for_each(|x| scrub_placeholder_values(x, map)),
+        _ => {}
+    }
+}
+
+/// True for the alert timestamp key shapes the recorder normalizes:
+/// `@timestamp` and any key ending `_at`, `.start`, or `.end`. Alert
+/// documents flatten `kibana.alert.*` fields into dotted keys directly on
+/// `_source`, not nested objects, so a suffix match on the key is enough.
+fn is_alert_timestamp_key(key: &str) -> bool {
+    key == "@timestamp" || key.ends_with("_at") || key.ends_with(".start") || key.ends_with(".end")
+}
+
+/// Rewrite alert timestamp values to a fixed placeholder in place, keeping
+/// the field present for the decoders (spec section 9).
+fn scrub_alert_timestamps(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for (key, value) in m.iter_mut() {
+                if value.is_string() && is_alert_timestamp_key(key) {
+                    *value = json!(ALERT_FIXTURE_TIMESTAMP);
+                } else {
+                    scrub_alert_timestamps(value);
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(scrub_alert_timestamps),
+        _ => {}
+    }
+}
+
+/// Format the current time as RFC3339 UTC with millisecond precision, e.g.
+/// `2026-09-01T12:34:56.789Z`. The workspace has no date-formatting
+/// dependency, so this hand-rolls it from `SystemTime` using Howard
+/// Hinnant's civil-from-days algorithm
+/// (<https://howardhinnant.github.io/date_algorithms.html>).
+fn now_rfc3339() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let millis = now.as_millis() as i64;
+    let secs = millis.div_euclid(1000);
+    let ms = millis.rem_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+    let second = secs_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z")
+}
+
+/// Convert a day count since the Unix epoch (1970-01-01) to a proleptic
+/// Gregorian (year, month, day).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if month <= 2 { y + 1 } else { y };
+    (year, month, day)
 }
 
 /// Scrub a raw NDJSON export body line by line. The export fixture stores the
@@ -675,6 +800,8 @@ struct CleanupOwnership {
     list: bool,
     scratch_index: bool,
     search_index: bool,
+    alert_rule: bool,
+    alert_index: bool,
 }
 
 #[derive(Default)]
@@ -729,6 +856,56 @@ fn owns_scratch_index(value: &Value) -> bool {
 
 fn owns_search_index(value: &Value) -> bool {
     value["_source"]["marker"].as_str() == Some(SEARCH_MARKER)
+}
+
+fn owns_alert_rule(value: &Value) -> bool {
+    value.get("rule_id").and_then(Value::as_str) == Some(ALERT_RULE_ID)
+        && value
+            .get("tags")
+            .and_then(Value::as_array)
+            .is_some_and(|tags| {
+                tags.iter()
+                    .any(|tag| tag.as_str() == Some(ALERT_MARKER_TAG))
+            })
+}
+
+fn owns_alert_index(value: &Value) -> bool {
+    value["_source"]["marker"].as_str() == Some(ALERT_MARKER_TAG)
+}
+
+/// The query filter that names every alert the probe rule produced.
+fn alert_probe_filter() -> Value {
+    json!({"term": {"kibana.alert.rule.rule_id": ALERT_RULE_ID}})
+}
+
+/// Every alert the probe rule produced that has not been closed. Closed
+/// residue from an earlier run is the accepted deviation (spec section 9).
+fn alert_probe_open_filter() -> Value {
+    json!({
+        "bool": {
+            "filter": [alert_probe_filter()],
+            "must_not": [{"term": {"kibana.alert.workflow_status": "closed"}}]
+        }
+    })
+}
+
+async fn require_no_open_marker_alerts(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    let body = json!({"query": alert_probe_open_filter(), "size": 0, "track_total_hits": true});
+    let response = t
+        .post(elasticctl_api::alerts::SEARCH_PATH, Some(&body))
+        .await?;
+    let total = response
+        .pointer("/hits/total/value")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if total > 0 {
+        return Err(recording_error(format!(
+            "refusing to record: {total} non-closed alert(s) already carry rule_id {ALERT_RULE_ID}"
+        )));
+    }
+    Ok(())
 }
 
 async fn require_absent_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
@@ -794,6 +971,31 @@ async fn require_absent_search_index(
     match t.get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}")).await {
         Ok(_) => Err(recording_error(format!(
             "refusing to record: scratch index {SEARCH_PROBE_INDEX} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_alert_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    match t
+        .get(&format!(
+            "/api/detection_engine/rules?rule_id={ALERT_RULE_ID}"
+        ))
+        .await
+    {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: rule {ALERT_RULE_ID} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_alert_index(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    match t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}")).await {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: scratch index {ALERT_PROBE_INDEX} already exists and is not cleanup-owned"
         ))),
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -1058,6 +1260,85 @@ impl RecordingSession<'_> {
                     error.message
                 )),
             }
+        }
+
+        if self.ownership.alert_rule {
+            match self
+                .transport
+                .get(&format!(
+                    "/api/detection_engine/rules?rule_id={ALERT_RULE_ID}"
+                ))
+                .await
+            {
+                Ok(rule) if owns_alert_rule(&rule) => {
+                    match self
+                        .transport
+                        .delete(&format!(
+                            "/api/detection_engine/rules?rule_id={ALERT_RULE_ID}"
+                        ))
+                        .await
+                    {
+                        Ok(_) => self.ownership.alert_rule = false,
+                        Err(error) => {
+                            errors.push(format!("deleting rule {ALERT_RULE_ID}: {}", error.message))
+                        }
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete rule {ALERT_RULE_ID}: its marker fields no longer match"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.alert_rule = false;
+                }
+                Err(error) => {
+                    errors.push(format!("checking rule {ALERT_RULE_ID}: {}", error.message))
+                }
+            }
+        }
+
+        if self.ownership.alert_index {
+            match self
+                .transport
+                .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
+                .await
+            {
+                Ok(document) if owns_alert_index(&document) => {
+                    match self
+                        .transport
+                        .delete_absolute_es(&format!("/{ALERT_PROBE_INDEX}"))
+                        .await
+                    {
+                        Ok(_) => self.ownership.alert_index = false,
+                        Err(error) => errors.push(format!(
+                            "deleting alert index {ALERT_PROBE_INDEX}: {}",
+                            error.message
+                        )),
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete alert index {ALERT_PROBE_INDEX}: its marker field no longer matches"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                    self.ownership.alert_index = false;
+                }
+                Err(error) => errors.push(format!(
+                    "checking alert index {ALERT_PROBE_INDEX}: {}",
+                    error.message
+                )),
+            }
+        }
+
+        // A raw total-rule-count comparison would be unsound here: this same
+        // pass also deletes the unrelated fixture-probe rule (`self.ownership.rule`,
+        // above), so "before" and "after" would straddle a second, independent
+        // deletion and always disagree by one. `require_absent_alert_rule` and
+        // `require_absent_alert_index`, both already run at the top of
+        // `record_alerts`, are what prove the alert probe itself adds and
+        // removes exactly one rule and one index; this final check covers the
+        // one thing those existence probes cannot: no *open* marker alert
+        // residue (closed residue is the accepted deviation, spec section 9).
+        if let Err(error) = require_no_open_marker_alerts(self.transport).await {
+            errors.push(format!("verifying alert probe baseline: {}", error.message));
         }
 
         if errors.is_empty() {
@@ -1350,6 +1631,407 @@ async fn record_search(
     Ok(())
 }
 
+/// Record the alerts probe: a marker rule over a marker index, generating an
+/// alert the recorder transitions, tags, and assigns through every triage
+/// route, then closes. Runs after `record_search` (triage spec section 9).
+async fn record_alerts(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+) -> elasticctl_core::Result<()> {
+    require_absent_alert_rule(session.transport).await?;
+    require_absent_alert_index(session.transport).await?;
+    require_no_open_marker_alerts(session.transport).await?;
+
+    let t = session.transport;
+
+    for (id, seq) in [("1", 1_i64), ("2", 2), ("3", 3)] {
+        let doc = json!({
+            "@timestamp": now_rfc3339(),
+            "marker": ALERT_MARKER_TAG,
+            "message": format!("elasticctl sample alert event {seq}"),
+        });
+        t.post_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/{id}"), &doc)
+            .await?;
+    }
+    let proof = t
+        .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
+        .await?;
+    if !owns_alert_index(&proof) {
+        return Err(recording_error(
+            "alert index write did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.alert_index = true;
+    // `_refresh` rejects a body, so use the GET form, which sends none.
+    t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
+        .await?;
+
+    let rule_body = json!({
+        "rule_id": ALERT_RULE_ID,
+        "name": ALERT_RULE_NAME,
+        "description": "Recorded by cargo xtask record. Safe to delete.",
+        "type": "query",
+        "language": "kuery",
+        "query": "marker: elasticctl-sample",
+        "index": [ALERT_PROBE_INDEX],
+        "severity": "low",
+        "risk_score": 21,
+        "enabled": true,
+        "from": "now-10m",
+        "interval": "1m",
+        "tags": [ALERT_MARKER_TAG],
+    });
+    let created_rule = t
+        .post("/api/detection_engine/rules", Some(&rule_body))
+        .await?;
+    if !owns_alert_rule(&created_rule) {
+        return Err(recording_error(
+            "alert rule create response did not prove the fixed marker identity",
+        ));
+    }
+    session.ownership.alert_rule = true;
+
+    let search_request = json!({
+        "query": alert_probe_filter(),
+        "size": 10,
+        "track_total_hits": true,
+    });
+    let mut search_response = Value::Null;
+    let mut found = false;
+    for attempt in 0..ALERT_POLL_ATTEMPTS {
+        search_response = t
+            .post(elasticctl_api::alerts::SEARCH_PATH, Some(&search_request))
+            .await?;
+        let total = search_response
+            .pointer("/hits/total/value")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if total > 0 {
+            found = true;
+            break;
+        }
+        if attempt + 1 < ALERT_POLL_ATTEMPTS {
+            tokio::time::sleep(ALERT_POLL_INTERVAL).await;
+        }
+    }
+    if !found {
+        let minutes = ALERT_POLL_ATTEMPTS * ALERT_POLL_INTERVAL.as_secs() as u32 / 60;
+        return Err(recording_error(format!(
+            "no alerts appeared for rule_id {ALERT_RULE_ID} after {ALERT_POLL_ATTEMPTS} \
+             attempts over ~{minutes} minutes; the rule scheduler may be lagging — rerun this \
+             flavor"
+        )));
+    }
+
+    let page = elasticctl_api::alerts::decode_page(&search_response).map_err(|error| {
+        recording_error(format!(
+            "decoding signals_search response: {}",
+            error.message
+        ))
+    })?;
+    if page.hits.is_empty() {
+        return Err(recording_error(
+            "signals_search reported a positive total but decoded zero hits",
+        ));
+    }
+    let mut id_map: BTreeMap<String, String> = BTreeMap::new();
+    for (i, hit) in page.hits.iter().enumerate() {
+        let placeholder = format!("elasticctl-fixture-alert-{}", i + 1);
+        id_map.insert(hit.id.clone(), placeholder.clone());
+        if let Some(uuid) = hit.source.get("kibana.alert.uuid").and_then(Value::as_str) {
+            id_map.insert(uuid.to_string(), placeholder);
+        }
+    }
+    let first_id = page.hits[0].id.clone();
+
+    {
+        let mut request = search_request.clone();
+        let mut response = search_response.clone();
+        strip_volatile(&mut response, &["took", "timed_out", "_shards"]);
+        scrub_placeholder_values(&mut request, &id_map);
+        scrub_placeholder_values(&mut response, &id_map);
+        scrub_alert_timestamps(&mut response);
+        recording.fixtures.push(exchange_fixture(
+            "signals_search",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // Acknowledge the first alert by id. The live response settles whether
+    // the `signal_ids` form accepts `reason` (triage spec section 10).
+    let with_reason = json!({
+        "signal_ids": [first_id.clone()],
+        "status": "acknowledged",
+        "reason": "false_positive",
+    });
+    let (ids_status_request, ids_status_response, ids_reason_accepted) = match t
+        .post(elasticctl_api::alerts::STATUS_PATH, Some(&with_reason))
+        .await
+    {
+        Ok(response) => (with_reason, response, true),
+        Err(error) => {
+            println!(
+                "signals/status signal_ids+reason failed ({}); retrying without reason",
+                error.message
+            );
+            let without_reason = json!({
+                "signal_ids": [first_id.clone()],
+                "status": "acknowledged",
+            });
+            let response = t
+                .post(elasticctl_api::alerts::STATUS_PATH, Some(&without_reason))
+                .await?;
+            (without_reason, response, false)
+        }
+    };
+    println!("signals/status signal_ids-form reason accepted: {ids_reason_accepted}");
+    elasticctl_api::alerts::decode_outcome(&ids_status_response).map_err(|error| {
+        recording_error(format!(
+            "decoding signals_status_ids response: {}",
+            error.message
+        ))
+    })?;
+    {
+        let mut request = ids_status_request;
+        let mut response = ids_status_response;
+        scrub_placeholder_values(&mut request, &id_map);
+        scrub_placeholder_values(&mut response, &id_map);
+        recording.fixtures.push(exchange_fixture(
+            "signals_status_ids",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // Add then remove a tag on the same alert; record the add.
+    let add_tags_request = json!({
+        "ids": [first_id.clone()],
+        "tags": {"tags_to_add": ["triage-check"], "tags_to_remove": []},
+    });
+    let add_tags_response = t
+        .post(elasticctl_api::alerts::TAGS_PATH, Some(&add_tags_request))
+        .await?;
+    elasticctl_api::alerts::decode_outcome(&add_tags_response).map_err(|error| {
+        recording_error(format!("decoding signals_tags response: {}", error.message))
+    })?;
+    let remove_tags_request = json!({
+        "ids": [first_id.clone()],
+        "tags": {"tags_to_add": [], "tags_to_remove": ["triage-check"]},
+    });
+    t.post(
+        elasticctl_api::alerts::TAGS_PATH,
+        Some(&remove_tags_request),
+    )
+    .await?;
+    {
+        let mut request = add_tags_request;
+        let mut response = add_tags_response;
+        scrub_placeholder_values(&mut request, &id_map);
+        scrub_placeholder_values(&mut response, &id_map);
+        recording.fixtures.push(exchange_fixture(
+            "signals_tags",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // Activated user profiles. `uid` is rewritten to a per-profile
+    // placeholder, never blanket-redacted: the assignees exchange below
+    // needs it to stay a decodable, distinguishable value.
+    let users_body = t
+        .get_internal(&elasticctl_api::profiles::internal_find_path(""))
+        .await?;
+    let profiles_list =
+        elasticctl_api::profiles::decode_internal(&users_body).map_err(|error| {
+            recording_error(format!("decoding users_find response: {}", error.message))
+        })?;
+    let assignee_uid = profiles_list
+        .first()
+        .ok_or_else(|| {
+            recording_error(
+                "users_find returned no activated profiles; the assignees probe needs at least one",
+            )
+        })?
+        .uid
+        .clone();
+    let mut uid_map: BTreeMap<String, String> = BTreeMap::new();
+    for (i, profile) in profiles_list.iter().enumerate() {
+        uid_map.insert(profile.uid.clone(), format!("u_REDACTED_{}", i + 1));
+    }
+    {
+        let mut response = users_body;
+        scrub_placeholder_values(&mut response, &uid_map);
+        recording.fixtures.push(response_fixture(
+            "users_find",
+            flavor,
+            version,
+            response,
+            None,
+        ));
+    }
+
+    // Assign then unassign the first activated uid; record the add.
+    let add_assignees_request = json!({
+        "ids": [first_id.clone()],
+        "assignees": {"add": [assignee_uid.clone()], "remove": []},
+    });
+    let add_assignees_response = t
+        .post(
+            elasticctl_api::alerts::ASSIGNEES_PATH,
+            Some(&add_assignees_request),
+        )
+        .await?;
+    elasticctl_api::alerts::decode_outcome(&add_assignees_response).map_err(|error| {
+        recording_error(format!(
+            "decoding signals_assignees response: {}",
+            error.message
+        ))
+    })?;
+    let remove_assignees_request = json!({
+        "ids": [first_id.clone()],
+        "assignees": {"add": [], "remove": [assignee_uid.clone()]},
+    });
+    t.post(
+        elasticctl_api::alerts::ASSIGNEES_PATH,
+        Some(&remove_assignees_request),
+    )
+    .await?;
+    {
+        let mut request = add_assignees_request;
+        let mut response = add_assignees_response;
+        scrub_placeholder_values(&mut request, &id_map);
+        scrub_placeholder_values(&mut response, &id_map);
+        scrub_placeholder_values(&mut request, &uid_map);
+        scrub_placeholder_values(&mut response, &uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "signals_assignees",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // Profile suggest, public route. Serverless answers 410; record
+    // whichever shape the live route actually returns.
+    match t
+        .post_absolute_es(
+            elasticctl_api::profiles::PUBLIC_SUGGEST_PATH,
+            &json!({"name": "", "size": 10}),
+        )
+        .await
+    {
+        Ok(mut response) => {
+            let suggested =
+                elasticctl_api::profiles::decode_public(&response).map_err(|error| {
+                    recording_error(format!(
+                        "decoding profile_suggest response: {}",
+                        error.message
+                    ))
+                })?;
+            let mut next_index = uid_map.len();
+            for profile in &suggested {
+                if !uid_map.contains_key(&profile.uid) {
+                    next_index += 1;
+                    uid_map.insert(profile.uid.clone(), format!("u_REDACTED_{next_index}"));
+                }
+            }
+            scrub_placeholder_values(&mut response, &uid_map);
+            recording.fixtures.push(response_fixture(
+                "profile_suggest",
+                flavor,
+                version,
+                response,
+                None,
+            ));
+        }
+        Err(error) => {
+            recording
+                .fixtures
+                .push(error_fixture("profile_suggest", flavor, version, error))
+        }
+    }
+
+    // Disable the rule before closing: the rule keeps executing on its 1m
+    // interval right up until `cleanup` deletes it, and an execution
+    // in-flight around the close-by-query call can land fresh, unclosed
+    // alerts moments after this "close everything" snapshot. Disabling first
+    // stops any further execution from starting, so the close below is the
+    // last word bar an execution already in progress (handled by the
+    // verify-and-retry loop after it).
+    t.patch(
+        "/api/detection_engine/rules",
+        &json!({"rule_id": ALERT_RULE_ID, "enabled": false}),
+    )
+    .await?;
+
+    // Close every marker alert by query. This is also the residue step: the
+    // session's alerts end closed (triage spec section 9).
+    let close_query_request = json!({
+        "query": alert_probe_filter(),
+        "status": "closed",
+        "conflicts": "abort",
+        "reason": "automated_closure",
+    });
+    let close_query_response = t
+        .post(
+            elasticctl_api::alerts::STATUS_PATH,
+            Some(&close_query_request),
+        )
+        .await?;
+    elasticctl_api::alerts::decode_outcome(&close_query_response).map_err(|error| {
+        recording_error(format!(
+            "decoding signals_status_query response: {}",
+            error.message
+        ))
+    })?;
+    {
+        let mut request = close_query_request.clone();
+        let mut response = close_query_response;
+        scrub_placeholder_values(&mut request, &id_map);
+        scrub_placeholder_values(&mut response, &id_map);
+        recording.fixtures.push(exchange_fixture(
+            "signals_status_query",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // Verify and retry: an execution that was already in progress when the
+    // rule was disabled can still land alerts after the close above. Sweep a
+    // few more times before giving up, rather than leaving open residue.
+    for _ in 0..5 {
+        if require_no_open_marker_alerts(t).await.is_ok() {
+            return Ok(());
+        }
+        t.post(
+            elasticctl_api::alerts::STATUS_PATH,
+            Some(&close_query_request),
+        )
+        .await?;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    require_no_open_marker_alerts(t).await.map_err(|error| {
+        recording_error(format!(
+            "alert probe left open residue after retrying the close-by-query sweep: {}",
+            error.message
+        ))
+    })?;
+
+    Ok(())
+}
+
 async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
     let responded = session.transport.get_with_headers("/api/status").await?;
     let mut status = responded.body.clone();
@@ -1384,11 +2066,13 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
     };
     let t = session.transport;
 
+    let mut authenticate = t.get_absolute_es("/_security/_authenticate").await?;
+    redact_authenticate_metadata(&mut authenticate);
     recording.fixtures.push(response_fixture(
         "authenticate",
         &flavor,
         &version,
-        t.get_absolute_es("/_security/_authenticate").await?,
+        authenticate,
         None,
     ));
     recording.fixtures.push(response_fixture(
@@ -1707,6 +2391,7 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
     ));
 
     record_search(session, &mut recording, &flavor, &version).await?;
+    record_alerts(session, &mut recording, &flavor, &version).await?;
 
     Ok(recording)
 }
@@ -2174,6 +2859,39 @@ mod tests {
     }
 
     #[test]
+    fn redact_authenticate_metadata_redacts_every_leaf_regardless_of_key_shape() {
+        let mut value = json!({
+            "username": "REDACTED",
+            "metadata": {
+                "saml(http://saml.elastic-cloud.com/attributes/email)": ["real@example.com"],
+                "saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/access_token)": ["essu_realtoken"],
+                "nested": {"still": "sensitive"}
+            }
+        });
+
+        redact_authenticate_metadata(&mut value);
+
+        assert_eq!(
+            value["metadata"]["saml(http://saml.elastic-cloud.com/attributes/email)"][0],
+            "REDACTED"
+        );
+        assert_eq!(
+            value["metadata"]["saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/access_token)"]
+                [0],
+            "REDACTED"
+        );
+        assert_eq!(value["metadata"]["nested"]["still"], "REDACTED");
+        assert_eq!(value["username"], "REDACTED");
+    }
+
+    #[test]
+    fn redact_authenticate_metadata_leaves_an_empty_object_untouched() {
+        let mut value = json!({"metadata": {}});
+        redact_authenticate_metadata(&mut value);
+        assert_eq!(value, json!({"metadata": {}}));
+    }
+
+    #[test]
     fn redact_data_views_redacts_identity_but_keeps_configuration() {
         let mut value = json!({
             "data_view": [
@@ -2205,5 +2923,94 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_epoch_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(1), (1970, 1, 2));
+        assert_eq!(civil_from_days(1_700_000_000 / 86_400), (2023, 11, 14));
+        assert_eq!(civil_from_days(1_893_456_000 / 86_400), (2030, 1, 1));
+    }
+
+    #[test]
+    fn now_rfc3339_is_well_formed_and_close_to_the_wall_clock() {
+        let formatted = now_rfc3339();
+        assert_eq!(formatted.len(), "2026-09-01T12:34:56.789Z".len());
+        assert!(formatted.starts_with("20"), "{formatted}");
+        assert!(formatted.ends_with('Z'), "{formatted}");
+        let parsed: Value = json!(formatted);
+        assert!(parsed.is_string());
+    }
+
+    #[test]
+    fn scrub_placeholder_values_rewrites_whole_string_matches_only() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "real-id".to_string(),
+            "elasticctl-fixture-alert-1".to_string(),
+        );
+        let mut value = json!({
+            "_id": "real-id",
+            "signal_ids": ["real-id"],
+            "note": "not-real-id-substring",
+            "kibana.alert.uuid": "real-id"
+        });
+
+        scrub_placeholder_values(&mut value, &map);
+
+        assert_eq!(value["_id"], "elasticctl-fixture-alert-1");
+        assert_eq!(value["signal_ids"][0], "elasticctl-fixture-alert-1");
+        assert_eq!(value["kibana.alert.uuid"], "elasticctl-fixture-alert-1");
+        assert_eq!(value["note"], "not-real-id-substring");
+    }
+
+    #[test]
+    fn scrub_alert_timestamps_rewrites_matching_keys_only() {
+        let mut value = json!({
+            "@timestamp": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.workflow_status_updated_at": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.start": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.end": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.original_time": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.workflow_status": "open"
+        });
+
+        scrub_alert_timestamps(&mut value);
+
+        assert_eq!(value["@timestamp"], ALERT_FIXTURE_TIMESTAMP);
+        assert_eq!(
+            value["kibana.alert.workflow_status_updated_at"],
+            ALERT_FIXTURE_TIMESTAMP
+        );
+        assert_eq!(value["kibana.alert.start"], ALERT_FIXTURE_TIMESTAMP);
+        assert_eq!(value["kibana.alert.end"], ALERT_FIXTURE_TIMESTAMP);
+        assert_eq!(
+            value["kibana.alert.original_time"], "2026-08-30T21:14:02.000Z",
+            "only the named key shapes are rewritten"
+        );
+        assert_eq!(value["kibana.alert.workflow_status"], "open");
+    }
+
+    #[test]
+    fn owns_alert_rule_checks_id_and_marker_tag() {
+        assert!(owns_alert_rule(&json!({
+            "rule_id": ALERT_RULE_ID,
+            "tags": [ALERT_MARKER_TAG]
+        })));
+        assert!(!owns_alert_rule(
+            &json!({"rule_id": ALERT_RULE_ID, "tags": []})
+        ));
+        assert!(!owns_alert_rule(
+            &json!({"rule_id": "other", "tags": [ALERT_MARKER_TAG]})
+        ));
+    }
+
+    #[test]
+    fn owns_alert_index_checks_the_marker_field() {
+        assert!(owns_alert_index(
+            &json!({"_source": {"marker": ALERT_MARKER_TAG}})
+        ));
+        assert!(!owns_alert_index(&json!({"_source": {"marker": "other"}})));
     }
 }

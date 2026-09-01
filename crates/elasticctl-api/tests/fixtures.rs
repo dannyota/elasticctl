@@ -39,6 +39,17 @@ const V0_3_SEARCH_FIXTURES: [&str; 6] = [
     "detection_engine_index.json",
 ];
 
+/// Triage fixtures added in 0.4, recorded by the alerts probe.
+const V0_4_ALERT_FIXTURES: [&str; 7] = [
+    "signals_search.json",
+    "signals_status_ids.json",
+    "signals_status_query.json",
+    "signals_tags.json",
+    "signals_assignees.json",
+    "users_find.json",
+    "profile_suggest.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -102,6 +113,20 @@ fn every_fixture_parses_and_carries_its_metadata() {
         assert!(
             missing.is_empty(),
             "{} lacks search fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
+
+        // The alert fixtures are recorded as a set; a set missing any of them
+        // predates the alerts probe.
+        let missing: Vec<&str> = V0_4_ALERT_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks alert fixture(s): {}",
             set.display(),
             missing.join(", ")
         );
@@ -599,5 +624,46 @@ fn search_fixtures_decode_through_the_production_paths() {
             "{}: hits must carry their seq source",
             set.display()
         );
+    }
+}
+
+#[test]
+fn alert_fixtures_decode_through_the_typed_decoders() {
+    use elasticctl_api::{alerts, profiles};
+    for set in fixture_sets() {
+        let read = |name: &str| -> Value {
+            serde_json::from_str(&fs::read_to_string(set.join(name)).expect(name)).expect(name)
+        };
+
+        let search = read("signals_search.json");
+        let page = alerts::decode_page(&search["response"]).expect("signals_search decodes");
+        assert!(
+            !page.hits.is_empty(),
+            "{}: the recorded search must carry alert rows",
+            set.display()
+        );
+
+        for name in [
+            "signals_status_ids.json",
+            "signals_status_query.json",
+            "signals_tags.json",
+            "signals_assignees.json",
+        ] {
+            let doc = read(name);
+            alerts::decode_outcome(&doc["response"])
+                .unwrap_or_else(|e| panic!("{}/{name}: {e}", set.display()));
+        }
+
+        let users = read("users_find.json");
+        profiles::decode_internal(&users["response"]).expect("users_find decodes");
+
+        let suggest = read("profile_suggest.json");
+        if let Some(response) = suggest.get("response") {
+            profiles::decode_public(response).expect("profile_suggest decodes");
+        } else {
+            // Serverless: the public route answers 410; the fixture records
+            // the error envelope instead of a response.
+            assert_eq!(suggest["error"]["http_status"], serde_json::json!(410));
+        }
     }
 }

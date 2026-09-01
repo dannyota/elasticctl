@@ -1,0 +1,17 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "users_find",
+  "response": [
+    {
+      "uid": "u_REDACTED_1",
+      "enabled": true,
+      "data": {},
+      "user": {
+        "username": "REDACTED",
+        "email": "REDACTED",
+        "full_name": "REDACTED"
+      }
+    }
+  ]
+}

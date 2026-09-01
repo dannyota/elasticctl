@@ -1,0 +1,32 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "spaces",
+  "response": [
+    {
+      "id": "default",
+      "name": "Default",
+      "description": "This is your default space!",
+      "color": "#00bfb3",
+      "disabledFeatures": [
+        "observabilityAIAssistant",
+        "searchSynonyms",
+        "searchQueryRules",
+        "searchPlayground",
+        "enterpriseSearch",
+        "enterpriseSearchApplications",
+        "enterpriseSearchAnalytics",
+        "observabilityCasesV3",
+        "logs",
+        "observabilityAlerts",
+        "slo",
+        "uptime",
+        "apm",
+        "profiling",
+        "infrastructure"
+      ],
+      "_reserved": true,
+      "solution": "security"
+    }
+  ]
+}

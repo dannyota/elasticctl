@@ -1,0 +1,66 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "authenticate",
+  "response": {
+    "username": "REDACTED",
+    "roles": [],
+    "full_name": "REDACTED",
+    "email": "REDACTED",
+    "metadata": {
+      "saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/access_token)": [
+        "REDACTED"
+      ],
+      "saml_email": [
+        "REDACTED"
+      ],
+      "saml(http://saml.elastic-cloud.com/attributes/principal)": [
+        "REDACTED"
+      ],
+      "saml_roles": [
+        "REDACTED"
+      ],
+      "saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/refresh_token_expires_at)": [
+        "REDACTED"
+      ],
+      "saml(http://saml.elastic-cloud.com/attributes/roles)": [
+        "REDACTED"
+      ],
+      "saml_name": [
+        "REDACTED"
+      ],
+      "saml_nameid_format": "REDACTED",
+      "saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/access_token_expires_at)": [
+        "REDACTED"
+      ],
+      "saml_principal": [
+        "REDACTED"
+      ],
+      "saml_nameid": "REDACTED",
+      "saml(http://saml.elastic-cloud.com/attributes/uiam/authentication/refresh_token)": [
+        "REDACTED"
+      ],
+      "saml(http://saml.elastic-cloud.com/attributes/name)": [
+        "REDACTED"
+      ],
+      "saml(http://saml.elastic-cloud.com/attributes/email)": [
+        "REDACTED"
+      ]
+    },
+    "enabled": true,
+    "authentication_realm": {
+      "name": "_es_api_key",
+      "type": "_es_api_key"
+    },
+    "lookup_realm": {
+      "name": "_es_api_key",
+      "type": "_es_api_key"
+    },
+    "authentication_type": "api_key",
+    "api_key": {
+      "managed_by": "REDACTED",
+      "name": "REDACTED",
+      "id": "REDACTED"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "flavor": "serverless",
-  "version": "9.6.0",
+  "flavor": "ech",
+  "version": "9.5.2",
   "operation": "license",
   "response": {
     "license": {
@@ -8,9 +8,9 @@
       "type": "enterprise",
       "max_nodes": null,
       "max_resource_units": 100000,
-      "issued_to": "Elastic Serverless",
-      "issuer": "Elastic",
-      "start_date_in_millis": 0
+      "issued_to": "Elastic Cloud",
+      "issuer": "API",
+      "start_date_in_millis": 1677628800000
     }
   }
 }

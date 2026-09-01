@@ -1,0 +1,33 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "signals_status_query",
+  "request": {
+    "query": {
+      "term": {
+        "kibana.alert.rule.rule_id": "elasticctl-sample-alert-probe"
+      }
+    },
+    "status": "closed",
+    "conflicts": "abort",
+    "reason": "automated_closure"
+  },
+  "response": {
+    "took": 46,
+    "timed_out": false,
+    "total": 6,
+    "updated": 6,
+    "deleted": 0,
+    "batches": 1,
+    "version_conflicts": 0,
+    "noops": 0,
+    "retries": {
+      "bulk": 0,
+      "search": 0
+    },
+    "throttled_millis": 0,
+    "requests_per_second": -1,
+    "throttled_until_millis": 0,
+    "failures": []
+  }
+}

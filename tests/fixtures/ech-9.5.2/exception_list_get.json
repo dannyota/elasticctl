@@ -1,0 +1,23 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "exception_list_get",
+  "response": {
+    "list_id": "elasticctl-sample-exceptions",
+    "type": "detection",
+    "name": "elasticctl sample exceptions",
+    "description": "Recorded by cargo xtask record. Safe to delete.",
+    "immutable": false,
+    "namespace_type": "single",
+    "os_types": [],
+    "tags": [
+      "elasticctl",
+      "fixture"
+    ],
+    "version": 1,
+    "_version": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_by": "REDACTED",
+    "updated_by": "REDACTED"
+  }
+}

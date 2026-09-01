@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "profile_suggest",
+  "error": {
+    "kind": "http",
+    "message": "Request for uri [/_security/profile/_suggest] with method [POST] exists but is not available when running in serverless mode",
+    "http_status": 410
+  }
+}

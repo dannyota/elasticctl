@@ -1,6 +1,6 @@
 {
-  "flavor": "traditional",
-  "version": "9.5.1",
+  "flavor": "ech",
+  "version": "9.5.2",
   "operation": "rules_preview_hits",
   "request": {
     "index": ".preview.alerts-security.alerts-default",
@@ -24,7 +24,7 @@
     "attempts_until_hits": 1
   },
   "response": {
-    "took": 0,
+    "took": 2,
     "timed_out": false,
     "_shards": {
       "total": 1,
@@ -43,7 +43,7 @@
           "_index": ".internal.preview.alerts-security.alerts-default-000001",
           "_score": null,
           "_source": {
-            "kibana.version": "9.5.1",
+            "kibana.version": "9.5.2",
             "kibana.alert.rule.parameters": {
               "description": "Recorded by cargo xtask record. Safe to delete.",
               "risk_score": 21,

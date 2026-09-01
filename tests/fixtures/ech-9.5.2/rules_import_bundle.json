@@ -1,0 +1,42 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "rules_import_bundle",
+  "request": {
+    "overwrite": true,
+    "objects": [
+      {
+        "rule_id": "elasticctl-fixture-probe"
+      }
+    ]
+  },
+  "response": {
+    "exceptions_success": false,
+    "exceptions_success_count": 0,
+    "exceptions_errors": [
+      {
+        "list_id": "elasticctl-sample-exceptions",
+        "error": {
+          "status_code": 409,
+          "message": "Found that list_id: \"elasticctl-sample-exceptions\" already exists. Import of list_id: \"elasticctl-sample-exceptions\" skipped."
+        }
+      },
+      {
+        "list_id": "elasticctl-sample-exceptions",
+        "item_id": "elasticctl-sample-exception-item",
+        "error": {
+          "status_code": 409,
+          "message": "Found that item_id: \"elasticctl-sample-exception-item\" already exists. Import of item_id: \"elasticctl-sample-exception-item\" skipped."
+        }
+      }
+    ],
+    "rules_count": 1,
+    "success": true,
+    "success_count": 1,
+    "errors": [],
+    "action_connectors_errors": [],
+    "action_connectors_warnings": [],
+    "action_connectors_success": true,
+    "action_connectors_success_count": 0
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "flavor": "traditional",
-  "version": "9.5.1",
+  "flavor": "ech",
+  "version": "9.5.2",
   "operation": "prebuilt_status",
   "response": {
     "rules_custom_installed": 0,

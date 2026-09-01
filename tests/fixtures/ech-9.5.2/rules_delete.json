@@ -1,0 +1,53 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "rules_delete",
+  "response": {
+    "rule_id": "elasticctl-fixture-probe",
+    "name": "elasticctl fixture probe",
+    "immutable": false,
+    "rule_source": {
+      "type": "internal"
+    },
+    "version": 1,
+    "revision": 0,
+    "updated_by": "REDACTED",
+    "created_by": "REDACTED",
+    "enabled": false,
+    "interval": "5m",
+    "from": "now-6m",
+    "to": "now",
+    "description": "Recorded by cargo xtask record. Safe to delete.",
+    "tags": [
+      "elasticctl",
+      "fixture"
+    ],
+    "author": [],
+    "threat": [],
+    "related_integrations": [],
+    "required_fields": [],
+    "setup": "",
+    "false_positives": [],
+    "references": [],
+    "risk_score": 21,
+    "risk_score_mapping": [],
+    "severity": "low",
+    "severity_mapping": [],
+    "output_index": "",
+    "max_signals": 100,
+    "exceptions_list": [
+      {
+        "list_id": "elasticctl-sample-exceptions",
+        "type": "detection",
+        "namespace_type": "single"
+      }
+    ],
+    "actions": [],
+    "type": "query",
+    "language": "kuery",
+    "index": [
+      "logs-*"
+    ],
+    "query": "*:*"
+  }
+}
