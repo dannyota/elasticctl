@@ -380,17 +380,20 @@ async fn build_query_composes_filters_and_resolves_the_rule() {
         severity: Some("high".into()),
         rule: Some("r-1".into()),
         tag: Some("triaged".into()),
+        // `uid:` bypasses resolution, so this needs no extra mock or flavor
+        // probe.
+        assignee: Some("uid:u_1".into()),
         since: Some("7d".into()),
         search: Some("powershell".into()),
-        ..Default::default()
     };
     let q = alerts_ops::build_query(&t, &f).await.expect("query");
     let filters = q["bool"]["filter"].as_array().expect("filter array");
-    assert_eq!(filters.len(), 6);
+    assert_eq!(filters.len(), 7);
     assert!(filters.contains(&json!({"term": {"kibana.alert.workflow_status": "open"}})));
     assert!(filters.contains(&json!({"term": {"kibana.alert.severity": "high"}})));
     assert!(filters.contains(&json!({"term": {"kibana.alert.rule.rule_id": "r-1"}})));
     assert!(filters.contains(&json!({"term": {"kibana.alert.workflow_tags": "triaged"}})));
+    assert!(filters.contains(&json!({"term": {"kibana.alert.workflow_assignee_ids": "u_1"}})));
     assert!(filters.contains(&json!({"range": {"@timestamp": {"gte": "now-7d"}}})));
     let search_clause = filters
         .iter()
