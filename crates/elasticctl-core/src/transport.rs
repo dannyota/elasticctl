@@ -409,6 +409,35 @@ impl Transport {
         self.send_json(Method::GET, path, None).await
     }
 
+    /// GET a Kibana *internal* route. Internal routes sit outside the public
+    /// API's versioning contract: Kibana requires `x-elastic-internal-origin`
+    /// on them (without it the route family answers 400 "exists but is not
+    /// available"), and `elastic-api-version: 2023-10-31` names a public-API
+    /// version internal routes do not serve, so it is omitted.
+    pub async fn get_internal(&self, path: &str) -> Result<Value> {
+        let method = Method::GET;
+        let url = self.url(path);
+        let response = self
+            .send_retrying(method.clone(), &url, || {
+                Ok(self
+                    .client
+                    .request(Method::GET, &url)
+                    .header("Authorization", &self.auth_header)
+                    .header("x-elastic-internal-origin", "Kibana"))
+            })
+            .await?;
+
+        // Convert the response exactly as `get` does: the same
+        // response_text/parse_response_json path `send_json` uses after its
+        // send, with the same `Error::from_response_body` classification
+        // already applied inside `send_retrying`.
+        let text = self.response_text(&method, &url, response).await?;
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        parse_response_json(&text)
+    }
+
     /// GET a body with its captured headers.
     ///
     /// This is separate from `get` because only the capability probe needs

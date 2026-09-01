@@ -12,6 +12,14 @@ use std::time::Duration;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+struct WithoutHeader(&'static str);
+
+impl wiremock::Match for WithoutHeader {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        !request.headers.contains_key(self.0)
+    }
+}
+
 #[cfg(unix)]
 const STDERR_FILENO: i32 = 2;
 #[cfg(unix)]
@@ -166,6 +174,25 @@ async fn get_sends_the_authorization_and_version_headers() {
 
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert_eq!(t.get("/api/thing").await.unwrap()["ok"], true);
+}
+
+#[tokio::test]
+async fn get_internal_sends_the_internal_origin_header_and_no_api_version() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/internal/detection_engine/users/_find"))
+        .and(header("x-elastic-internal-origin", "Kibana"))
+        .and(WithoutHeader("elastic-api-version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"uid": "u_1"}])))
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    let body = t
+        .get_internal("/internal/detection_engine/users/_find?searchTerm=")
+        .await
+        .expect("internal GET");
+    assert_eq!(body[0]["uid"], json!("u_1"));
 }
 
 #[tokio::test]
