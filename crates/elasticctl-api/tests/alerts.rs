@@ -1,5 +1,6 @@
 use elasticctl_api::alerts::{self, AlertStatus, Conflicts};
-use elasticctl_core::{Profile, Transport};
+use elasticctl_api::profiles::{self, UserProfile};
+use elasticctl_core::{Flavor, Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -213,5 +214,135 @@ async fn set_tags_and_assignees_post_their_bodies() {
             .unwrap()
             .updated,
         1
+    );
+}
+
+fn profile(uid: &str, username: &str, realm: Option<&str>) -> UserProfile {
+    UserProfile {
+        uid: uid.into(),
+        username: username.into(),
+        realm: realm.map(str::to_owned),
+    }
+}
+
+#[test]
+fn decodes_the_public_suggest_shape() {
+    let body = json!({
+        "total": 1, "took": 3,
+        "profiles": [
+            {"uid": "u_abc_0", "enabled": true,
+             "user": {"username": "danny", "realm_name": "cloud-saml", "roles": ["superuser"]},
+             "data": {}, "labels": {}}
+        ]
+    });
+    let profiles = profiles::decode_public(&body).expect("decode");
+    assert_eq!(
+        profiles,
+        vec![profile("u_abc_0", "danny", Some("cloud-saml"))]
+    );
+}
+
+#[test]
+fn decodes_the_internal_find_shape() {
+    let body = json!([
+        {"uid": "u_abc_0", "enabled": true, "data": {},
+         "user": {"username": "danny", "full_name": "REDACTED"}}
+    ]);
+    let profiles = profiles::decode_internal(&body).expect("decode");
+    assert_eq!(profiles, vec![profile("u_abc_0", "danny", None)]);
+}
+
+#[test]
+fn pick_exact_matches_usernames_exactly() {
+    let list = [profile("u_1", "danny", Some("native"))];
+    assert_eq!(profiles::pick_exact(&list, "danny").unwrap(), "u_1");
+
+    let err = profiles::pick_exact(&list, "dan").expect_err("no prefix matching");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    assert!(
+        err.message.contains("logged into Kibana"),
+        "{}",
+        err.message
+    );
+
+    let dup = [
+        profile("u_1", "danny", Some("native")),
+        profile("u_2", "danny", Some("saml")),
+    ];
+    let err = profiles::pick_exact(&dup, "danny").expect_err("ambiguous");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Conflict);
+    assert!(
+        err.message.contains("native") && err.message.contains("saml"),
+        "{}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn suggest_routes_by_flavor() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/_security/profile/_suggest"))
+        .and(body_json(json!({"name": "danny", "size": 10})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total": 1, "took": 1,
+            "profiles": [{"uid": "u_pub", "user": {"username": "danny", "realm_name": "native"}}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/internal/detection_engine/users/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"uid": "u_int", "user": {"username": "danny"}}
+        ])))
+        .mount(&server)
+        .await;
+
+    let t = test_transport(&server.uri());
+    let public = profiles::suggest(&t, Flavor::ElasticCloudHosted, "danny")
+        .await
+        .unwrap();
+    assert_eq!(public[0].uid, "u_pub");
+    let internal = profiles::suggest(&t, Flavor::Serverless, "danny")
+        .await
+        .unwrap();
+    assert_eq!(internal[0].uid, "u_int");
+}
+
+#[tokio::test]
+async fn an_unavailable_suggest_route_downgrades_to_unsupported() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/_security/profile/_suggest"))
+        .respond_with(ResponseTemplate::new(410).set_body_json(json!({
+            "error": {"type": "api_not_available_exception",
+                      "reason": "Request for uri [...] is not available when running in serverless mode"},
+            "status": 410
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = profiles::suggest(&t, Flavor::SelfManaged, "danny")
+        .await
+        .expect_err("410");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Unsupported);
+    assert!(
+        err.message.contains("uid:"),
+        "the remedy names the bypass: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn resolve_assignee_bypasses_with_a_uid_prefix() {
+    // No mocks: the uid: path must not touch the network or the flavor probe.
+    let t = test_transport("http://127.0.0.1:1");
+    assert_eq!(
+        profiles::resolve_assignee(&t, "uid:u_raw").await.unwrap(),
+        "u_raw"
+    );
+    assert!(
+        profiles::resolve_assignee(&t, "uid:").await.is_err(),
+        "an empty uid is refused"
     );
 }
