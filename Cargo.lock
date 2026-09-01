@@ -2296,6 +2296,7 @@ dependencies = [
  "elasticctl-core",
  "serde_json",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

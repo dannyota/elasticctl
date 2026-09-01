@@ -467,6 +467,7 @@ async fn run_traditional_boot_and_leg(
     // session ever logging in, so without this the triage contract's
     // assign/unassign step finds no profile to resolve on this leg alone
     // (design spec `elasticctl-triage-design.md` section 10).
+    // lab/compose.yaml sets ELASTIC_PASSWORD to this value.
     crate::activation::activate_profile("http://localhost:5601", "elastic", "elasticctl-lab")
         .await
         .map_err(|error| private_failure(&workspace, "lab-activate", error.message.as_bytes()))?;

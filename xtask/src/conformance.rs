@@ -260,6 +260,15 @@ struct TargetState {
 /// feature as unavailable, so `TargetState::capture` defaults the gated
 /// partitions to 0 instead of failing the baseline before the skip
 /// classification can run.
+///
+/// Exception: `open_marked_alerts` and `marked_cases` are *not* gated by this
+/// function at all — no `Feature::Alerts`/`Feature::Cases` variant exists,
+/// because every supported stack (9.5.1+) serves `signals/search` and
+/// `cases/_find` unconditionally. A target that cannot answer those routes
+/// cannot be audited for triage residue either, so `capture` fails the whole
+/// baseline for it instead of defaulting the two triage partitions to 0 —
+/// silently reporting "clean" when the harness could not actually check
+/// would be the dishonest outcome, not the fail.
 fn feature_available(capabilities: &Capabilities, feature: Feature) -> bool {
     capabilities.require_feature(feature).is_ok()
 }
