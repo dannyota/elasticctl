@@ -1,4 +1,5 @@
 use elasticctl_api::cases::{self, CaseStatus, NewCase};
+use elasticctl_api::cases_ops::{self, CaseFilter};
 use elasticctl_core::{Profile, Transport};
 use serde_json::json;
 use wiremock::matchers::{body_json, method, path, query_param};
@@ -170,4 +171,72 @@ async fn comments_and_alert_attachments_post_their_shapes() {
     )
     .await
     .expect("attach");
+}
+
+#[test]
+fn find_query_composes_all_filters_deterministically() {
+    let f = CaseFilter {
+        status: Some(CaseStatus::InProgress),
+        severity: Some("high".into()),
+        tag: Some("triage".into()),
+        search: Some("power shell".into()),
+    };
+    assert_eq!(
+        cases_ops::find_query(&f, 2, 100),
+        "page=2&perPage=100&sortField=createdAt&sortOrder=desc\
+         &status=in-progress&severity=high&tags=triage\
+         &search=power%20shell&searchFields=title&searchFields=description"
+    );
+    assert_eq!(
+        cases_ops::find_query(&CaseFilter::default(), 1, 100),
+        "page=1&perPage=100&sortField=createdAt&sortOrder=desc"
+    );
+}
+
+#[tokio::test]
+async fn list_pages_until_the_limit_and_reports_truncation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [case_body("c1", "open"), case_body("c2", "open")],
+            "page": 1, "per_page": 100, "total": 5
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let out = cases_ops::list(&t, &CaseFilter::default(), 1)
+        .await
+        .expect("list");
+    assert!(out.truncated);
+    assert_eq!(out.cases.len(), 1);
+    assert_eq!(out.total, 5);
+}
+
+#[tokio::test]
+async fn export_follows_pages_to_the_end() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [case_body("c3", "open")], "page": 2, "per_page": 100, "total": 3
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [case_body("c1", "open"), case_body("c2", "open")],
+            "page": 1, "per_page": 100, "total": 3
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let all = cases_ops::export_with_page_size(&t, &CaseFilter::default(), 2)
+        .await
+        .expect("export");
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[2].id, "c3");
 }
