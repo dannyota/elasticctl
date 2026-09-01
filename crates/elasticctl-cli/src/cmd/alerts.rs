@@ -50,7 +50,7 @@ pub async fn list(
         search: search.map(str::to_owned),
     };
     if ctx.global.out.is_some() {
-        let hits = alerts_ops::export(t, &filter).await?;
+        let hits = alerts_ops::export(t, &filter, limit).await?;
         return Ok(Value::Array(
             hits.iter().map(|h| alert_row(h, with_meta)).collect(),
         ));
@@ -106,12 +106,21 @@ pub async fn transition(
 ) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
-    let conflicts = conflicts
-        .map(Conflicts::parse)
-        .transpose()?
-        .unwrap_or_default();
     match (alert_ids.is_empty(), query) {
         (false, None) => {
+            // `--conflicts` names a version-conflict policy for the server-side
+            // update-by-query the `--query` form runs; explicit ids resolve and
+            // transition individually, so the flag has nothing to apply to.
+            // Reject rather than silently ignore it: `status_by_ids` sends no
+            // `conflicts` key (that shape is unmeasured), so silently accepting
+            // the flag would apply the opposite of `proceed` with no diagnostic.
+            if conflicts.is_some() {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    "--conflicts applies to --query transitions only; explicit alert ids \
+                     resolve and transition individually",
+                ));
+            }
             let plan =
                 alerts_ops::plan_status_by_ids(t, alert_ids, status, reason.map(str::to_owned))
                     .await?;
@@ -126,6 +135,10 @@ pub async fn transition(
             }
         }
         (true, Some(raw)) => {
+            let conflicts = conflicts
+                .map(Conflicts::parse)
+                .transpose()?
+                .unwrap_or_default();
             let query = parse_query(raw)?;
             let plan = alerts_ops::plan_status_by_query(
                 t,

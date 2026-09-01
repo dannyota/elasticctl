@@ -497,10 +497,15 @@ async fn main() {
                 if out_already_written {
                     g.out = None;
                 }
-                // `search --out` writes NDJSON (JSONL) by default; `--format`
-                // or `--json` still override it.
-                if matches!(&args.command, Command::Search { .. })
-                    && args.global.out.is_some()
+                // `search --out` and `alerts list --out` write NDJSON (JSONL)
+                // by default; `--format` or `--json` still override it.
+                if matches!(
+                    &args.command,
+                    Command::Search { .. }
+                        | Command::Alerts {
+                            action: AlertsAction::List { .. }
+                        }
+                ) && args.global.out.is_some()
                     && args.global.format.is_none()
                     && !args.global.json
                 {

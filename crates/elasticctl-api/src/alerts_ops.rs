@@ -114,10 +114,11 @@ pub async fn list(t: &Transport, f: &AlertFilter, limit: usize) -> Result<AlertL
     })
 }
 
-/// The `--out` path: page the filtered set fully.
-pub async fn export(t: &Transport, f: &AlertFilter) -> Result<Vec<AlertHit>> {
+/// The `--out` path: page the filtered set fully, or stop at `limit` rows
+/// when the caller passes one (matching `search dsl --out --limit`).
+pub async fn export(t: &Transport, f: &AlertFilter, limit: Option<usize>) -> Result<Vec<AlertHit>> {
     let query = build_query(t, f).await?;
-    alerts::search_all(t, &query, &default_sort(), None).await
+    alerts::search_all(t, &query, &default_sort(), limit).await
 }
 
 /// `alerts get`: an `_id`-filtered search returning one document.
@@ -139,6 +140,13 @@ pub struct ResolvedAlert {
     pub rule_name: String,
     pub status: String,
 }
+
+/// `_source` fields `resolve_ids` requests: only what a mutation preview
+/// renders (rule name and current workflow status), not the whole document.
+/// `pub` so the fixture recorder can send the identical production body
+/// instead of a hand-rolled approximation (triage spec section 10).
+pub const RESOLVE_SOURCE_FIELDS: &[&str] =
+    &["kibana.alert.rule.name", "kibana.alert.workflow_status"];
 
 /// Alert documents store dotted field names as flat `_source` keys; older
 /// pipelines may nest them. Read both shapes.
@@ -163,7 +171,7 @@ async fn resolve_ids(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedAlert>
     let body = json!({
         "query": {"ids": {"values": unique}},
         "size": unique.len(),
-        "_source": ["kibana.alert.rule.name", "kibana.alert.workflow_status"],
+        "_source": RESOLVE_SOURCE_FIELDS,
     });
     let page = alerts::search(t, &body).await?;
     let mut resolved = Vec::with_capacity(unique.len());

@@ -1,7 +1,7 @@
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn bin() -> Command {
@@ -276,4 +276,148 @@ async fn tag_and_assign_dry_runs_preview_edits() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("Assign 1 alert"), "{err}");
     assert!(err.contains("add uid:u_1 -> u_1"), "{err}");
+}
+
+/// `ack` and `open` share `transition`'s `guard_path`, which switches on
+/// `AlertStatus`; a copy-paste swap of the match arms would silently preview
+/// the wrong verb (or check the wrong guard entry) while still exiting 0.
+#[tokio::test]
+async fn ack_and_open_dry_runs_preview_the_correct_verb() {
+    for (subcommand, expected) in [("ack", "Acknowledge 1 alert"), ("open", "Open 1 alert")] {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = write_config(dir.path(), &server.uri());
+        Mock::given(method("POST"))
+            .and(path("/api/detection_engine/signals/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_open_alert()))
+            .mount(&server)
+            .await;
+        // No mock for signals/status: a dry run that POSTs there fails the
+        // test with a 404-driven non-zero exit.
+
+        let out = bin()
+            .args(["--config", cfg.to_str().unwrap(), "--json"])
+            .args(["alerts", subcommand, "a1"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{subcommand}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(expected), "{subcommand}: {err}");
+    }
+}
+
+/// `--conflicts` names a version-conflict policy for the server-side
+/// update-by-query the `--query` form runs; explicit ids resolve and
+/// transition individually, so passing it there must be refused, not
+/// silently ignored (it would otherwise apply the opposite of `proceed` with
+/// no diagnostic, since `status_by_ids` sends no `conflicts` key at all).
+#[tokio::test]
+async fn conflicts_is_rejected_on_ids_and_applied_on_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), "http://127.0.0.1:1");
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["alerts", "close", "a1", "--conflicts", "proceed"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "an explicit --conflicts on the ids form must be refused"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--conflicts") && err.contains("--query"),
+        "{err}"
+    );
+
+    let server = MockServer::start().await;
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 42, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {"kibana.alert.rule.name": "Alpha"}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/status"))
+        .and(body_partial_json(json!({"conflicts": "proceed"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total": 42, "updated": 42, "version_conflicts": 0, "noops": 0, "failures": []
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap(), "--json", "--yes"])
+        .args([
+            "alerts",
+            "close",
+            "--query",
+            r#"{"term":{"kibana.alert.rule.rule_id":"r-1"}}"#,
+            "--conflicts",
+            "proceed",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["applied"], json!(true));
+    assert_eq!(report["updated"], json!(42));
+}
+
+/// `alerts list --out` must match `search dsl --out`: JSONL by default, and
+/// `--limit` respected during export, not just the bounded peek.
+#[tokio::test]
+async fn alerts_list_out_writes_jsonl_by_default_and_honors_limit() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let out_path = dir.path().join("results.ndjson");
+
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {"kibana.alert.rule.name": "Alpha"}},
+                {"_id": "a2", "_source": {"kibana.alert.rule.name": "Beta"}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["alerts", "list", "--out"])
+        .arg(&out_path)
+        .args(["--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = fs::read_to_string(&out_path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    assert!(
+        lines[0].starts_with('{') && lines[0].ends_with('}'),
+        "{text}"
+    );
+    assert!(
+        lines[0].contains("\"kibana.alert.rule.name\":\"Alpha\""),
+        "{text}"
+    );
 }

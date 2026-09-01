@@ -1845,10 +1845,21 @@ async fn record_alerts(
     // otherwise satisfy the readiness check before this session's rule ever
     // fires, and the same query becomes the recorded `signals_search`
     // exchange, so it must capture only this session's own alerts.
+    //
+    // The rest of the body is the PRODUCTION body, not a hand-rolled probe
+    // shape: `alerts_ops::default_sort()` and `RESOLVE_SOURCE_FIELDS` are the
+    // exact sort and `_source` include `alerts_ops` sends on every read, so
+    // this recording proves — for the first time against a live stack —
+    // that the `kibana.alert.uuid` sort tiebreaker doesn't error and that a
+    // dotted `_source` include actually returns flat dotted keys (triage
+    // spec section 10). Composed from the `-api` crate so recorder and
+    // production cannot drift apart.
     let search_request = json!({
         "query": alert_probe_open_filter(),
+        "sort": elasticctl_api::alerts_ops::default_sort(),
         "size": 10,
         "track_total_hits": true,
+        "_source": elasticctl_api::alerts_ops::RESOLVE_SOURCE_FIELDS,
     });
     let mut search_response = Value::Null;
     let mut found = false;
@@ -1887,6 +1898,24 @@ async fn record_alerts(
         return Err(recording_error(
             "signals_search reported a positive total but decoded zero hits",
         ));
+    }
+    // Prove the dotted `_source` include actually returns the requested
+    // fields against flat dotted keys — an assumption `resolve_ids` (and so
+    // every mutation preview) rests on, never before exercised against a
+    // live stack (triage spec section 10). A hit whose restricted `_source`
+    // is missing a requested field would otherwise pass silently: `hits` is
+    // still non-empty, decode still succeeds, and the fixture would record
+    // broken behavior as if it were proven.
+    for hit in &page.hits {
+        for field in elasticctl_api::alerts_ops::RESOLVE_SOURCE_FIELDS {
+            if hit.source.get(*field).is_none() {
+                return Err(recording_error(format!(
+                    "signals_search's `_source` include did not return `{field}` on hit {}: \
+                     the dotted _source include may not work against flat dotted keys",
+                    hit.id
+                )));
+            }
+        }
     }
     let mut id_map: BTreeMap<String, String> = BTreeMap::new();
     for (i, hit) in page.hits.iter().enumerate() {

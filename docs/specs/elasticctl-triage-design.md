@@ -146,7 +146,7 @@ makes the set visible before it is mutated and honest about the race window:
      matched now: 1,214   showing 10 of 1,214
      9f2a…  Suspicious PowerShell  high    2026-08-30T21:14:02Z
      …
-   The set is resolved again at apply time; this count is advisory.
+     The set is resolved again at apply time; this count is advisory.
    Pass --yes to apply.
    ```
 
@@ -251,14 +251,18 @@ timestamp=…`), which a whole-string match misses. `kibana.alert.url` is
 additionally replaced outright with a fixed placeholder, since its
 `timestamp=` query parameter is a live value nothing decodes.
 
-Volatile fields to normalize: alert `_id`s, `@timestamp`,
+Volatile fields to normalize: alert `_id`s, `@timestamp`, any
+`kibana.alert.*` key ending `_at`, `.start`, or `.end` (the general suffix
+rule; alert documents flatten `kibana.alert.*` into dotted keys directly on
+`_source`, so a suffix match on the key catches the class without naming
+every occurrence), plus the explicit fields that don't fit that pattern —
 `kibana.alert.uuid`, `kibana.alert.url` (replaced outright, see above),
-`workflow_status_updated_at`, `kibana.alert.last_detected`,
-`kibana.alert.original_time`, `kibana.alert.intended_timestamp`,
-`kibana.alert.rule.execution.timestamp`, `kibana.alert.rule.execution.uuid`,
-`_score`, `max_score`, `took`, `timed_out`, `_shards` (present on every
-triage mutation response, not only `signals/search`), case `id`, `version`,
-`created_at`, `updated_at`, comment ids.
+`kibana.alert.last_detected`, `kibana.alert.original_time`,
+`kibana.alert.intended_timestamp`, `kibana.alert.rule.execution.timestamp`,
+`kibana.alert.rule.execution.uuid`, `_score`, `max_score` — and `took`,
+`timed_out`, `_shards` (present on every triage mutation response, not only
+`signals/search`), case `id`, `version`, `created_at`, `updated_at`, comment
+ids.
 
 The conformance contract (eighth in the matrix) would: seed marker events,
 enable the marker rule, wait for an alert, transition it
@@ -293,7 +297,7 @@ alert — closed residue is the accepted deviation, section 9). Rows marked
 
 | Fact | Detail |
 |---|---|
-| Alert search route | `POST /api/detection_engine/signals/search` returns the raw ES envelope `{took, timed_out, _shards, hits}` — 200 with and without `elastic-api-version`, and 200 even without `kbn-xsrf` on Serverless (the transport still always sends it). Measured 2026-09-01 with populated hits from a live marker rule on all three flavors: `hits.hits[]._source` carries 50+ `kibana.alert.*` field groups plus the original event fields, and `_id`/`kibana.alert.uuid` uniquely identify each alert instance |
+| Alert search route | `POST /api/detection_engine/signals/search` returns the raw ES envelope `{took, timed_out, _shards, hits}` — 200 with and without `elastic-api-version`, and 200 even without `kbn-xsrf` on Serverless (the transport still always sends it). Measured 2026-09-01 with populated hits from a live marker rule on all three flavors, sending the actual `alerts_ops` production body (`default_sort()` plus `resolve_ids`'s `_source` include, not a hand-rolled shape): the `kibana.alert.uuid` sort tiebreaker does not error, and the dotted `_source` include (`kibana.alert.rule.name`, `kibana.alert.workflow_status`) returns exactly those two flat dotted keys per hit, proving the include works against flat keys rather than being interpreted as a nested path. `_id` uniquely identifies each alert instance |
 | Search body acceptance | `sort`, `search_after`, `_source`, `track_total_hits`, `size`, `aggs`, and `runtime_mappings` all accepted (200) |
 | Triage fields | The alerts index mapping carries `kibana.alert.workflow_status`, `workflow_tags`, `workflow_assignee_ids`, `workflow_status_updated_at`, `workflow_user`, `workflow_reason`, and `kibana.alert.case_ids`; 50 `kibana.alert.*` field groups total |
 | Query-scoped status | `POST /api/detection_engine/signals/status` with `{status, query, conflicts}` → 200 with a raw update-by-query envelope: `{took, timed_out, total, updated, deleted, batches, version_conflicts, noops, retries, throttled_millis, requests_per_second, throttled_until_millis, failures}`. Zero-match returns all-zero counts. Identical shape on Serverless 9.6.0 and Hosted 9.5.2 |
@@ -312,11 +316,16 @@ alert — closed residue is the accepted deviation, section 9). Rows marked
 
 Remaining live verification: 0.4.0's own routes (`signals/search`, the
 `signals/status` id and query forms, `signals/tags`, `signals/assignees`, and
-both profile-resolution routes) are now fully measured across all three
-flavors (Task 8). What is left is out of scope for this release but should
-still land **before 2026-09-08 08:56 UTC** (after that, only a lab session
-remains and Serverless evidence is lost), since measured facts outlive the
-trial:
+both profile-resolution routes) are measured across all three flavors
+(Task 8), and so is the actual `alerts_ops` read body sent on `signals/search`
+— `default_sort()`'s `kibana.alert.uuid` sort tiebreaker and the dotted
+`_source` include `resolve_ids` sends both round-tripped against a live stack,
+not a hand-rolled probe shape. Still unmeasured against a live stack: `list`/
+`export`'s `size: limit + 1` sizing, and the `ids` query form `resolve_ids`/
+`get_one` send (`{"query": {"ids": {"values": [...]}}}`). What is left is out
+of scope for this release but should still land **before 2026-09-08 08:56
+UTC** (after that, only a lab session remains and Serverless evidence is
+lost), since measured facts outlive the trial:
 
 - **Ships in 0.4.1 but measured now** — the case mutation family: create,
   attach, comment, status change, delete, and the version/409 conflict
