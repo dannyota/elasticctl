@@ -1244,7 +1244,13 @@ run for having nothing to partition). The install is verified, not assumed:
 `PUT .../prepackaged` answers `200` with an all-zero
 `{"rules_installed":0,...}` body when the underlying Fleet package fetch
 fails, so the leg follows it with the prepackaged status check and fails
-unless that reports the pack current. It then activates a Kibana user
+unless that reports the pack current. One call is also not enough on a fresh
+lab: measured 2026-09-01 on 9.5.1, the first `PUT` installed 1,963 of the
+pack's 2,069 rules and left `rules_not_installed: 106`, and a second call
+installed exactly those 106 in six seconds and reported the pack current.
+The leg therefore repeats install-then-status up to five times and fails at
+this step, with the last status in the private log, only if it never
+converges. It then activates a Kibana user
 profile by logging in as the lab's bootstrap user
 (`POST /internal/security/login`, `elasticctl-triage-design.md` section 9),
 since the lab boots headless with no browser session ever logging in and the
@@ -1272,7 +1278,12 @@ short public status line per script.
 The Hosted leg maps `ELASTICCTL_ECH_*` onto the generic `ELASTICCTL_*` names
 the child expects, including `ELASTICCTL_ECH_SPACE` (defaulting to
 `"default"`), and fails before spawning anything if a required piece is
-missing. `--flavors` accepts a comma-separated subset of the three names,
+missing. When `ELASTICCTL_ECH_USERNAME` and `ELASTICCTL_ECH_PASSWORD` are
+both set and non-empty, it also activates that user's profile first, the
+same step and code path the self-managed leg runs at boot; without the pair
+it relies on whatever profile the deployment already carries from an
+operator's own SSO login, and the `triage` contract's own empty-profile
+check stays the backstop. `--flavors` accepts a comma-separated subset of the three names,
 trimmed and de-duplicated; an unknown or repeated name is rejected. Recording
 (`cargo xtask record`), unlike conformance, must never run concurrently: one
 recording session owns the marker objects on one live stack, and a second

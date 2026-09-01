@@ -303,10 +303,25 @@ the matrix ever runs; the self-managed lab boots headless with no browser
 session ever logging in, so the traditional matrix leg activates one itself
 at boot, immediately after installing the prebuilt rule pack and before
 spawning the conformance child (`xtask/src/activation.rs`, called from
-`conformance_matrix.rs::run_traditional_boot_and_leg`). Activation logs in as
-the lab's bootstrap `elastic` user via `POST /internal/security/login` with
-`x-elastic-internal-origin: Kibana` — the only call that activates a
-profile, per the measured fact in section 10.
+`conformance_matrix.rs::run_traditional_boot_and_leg`). The Hosted leg calls
+the same function before spawning its child whenever
+`ELASTICCTL_ECH_USERNAME` and `ELASTICCTL_ECH_PASSWORD` are both set, so a
+Hosted deployment that has lost its SSO-activated profile is repaired rather
+than failing the contract. Activation logs in as that user via
+`POST /internal/security/login` with `x-elastic-internal-origin: Kibana` —
+the only call that activates a profile, per the measured fact in section 10.
+
+The login provider's *name* is discovered, not assumed. The route takes a
+configured provider name rather than a type, and answers `401 Unauthorized`
+for a name the deployment does not configure — indistinguishable from a
+wrong password. A self-managed stack names its basic provider `basic`; a
+Hosted deployment names it `cloud-basic` (measured 2026-09-01: identical
+credentials, `basic` → 401, `cloud-basic` → 200). Activation therefore reads
+`GET /internal/security/login_state` first and takes the name of the first
+provider of type `basic` with `usesLoginForm: true`, ignoring
+`selector.enabled` (the lab reports it `false` while still listing the
+provider). A deployment advertising no such provider fails at this step with
+a named error instead of a misleading 401.
 
 **Accepted deviation — alert residue (decided).** Generated alerts live in
 the shared `.alerts-security.alerts-default` index, the public API has no
@@ -365,6 +380,7 @@ closed or otherwise.
 | Profile suggest, public | `POST /_security/profile/_suggest` → 200 `{total, took, profiles: [{uid, user: {username, realm_name, roles, …}, data, labels, enabled}]}` on Hosted (9.5.1, then 9.5.2) and the traditional lab (9.5.1, measured 2026-09-01). On Serverless → **410** `api_not_available_exception` "not available when running in serverless mode" |
 | Profile suggest, internal | `GET /internal/detection_engine/users/_find?searchTerm=` → 200 `[{data, enabled, uid, user}]` on all three flavors; **without** `x-elastic-internal-origin` the internal route family answers 400 "exists but is not available". `POST /internal/cases/_suggest_user_profiles` (with `{name, size, owners}`) behaves the same |
 | Profile activation | Each cloud stack shows exactly one activated profile (the SSO login); the API-key identities used by elasticctl have none. Empty `searchTerm` returns all activated profiles. Measured 2026-09-01 on the traditional lab: a fresh stack activates none — a raw Elasticsearch API key or an HTTP Basic call to a Kibana route does **not** trigger activation; only `POST /internal/security/login` (with `x-elastic-internal-origin: Kibana`, since it is itself a restricted internal route) does |
+| Login provider name | `POST /internal/security/login` takes the provider's configured *name*, not its type, and answers `401 Unauthorized` for a name the deployment does not configure. Measured 2026-09-01 with identical credentials: the self-managed lab names it `basic`; Hosted names it `cloud-basic` and rejects `basic` with 401. `GET /internal/security/login_state` reports the configured providers on both, listing the basic provider even when `selector.enabled` is `false` |
 | Profile by uid | `GET /_security/profile/<uid>` on Hosted → 200 `{profiles: [...]}` |
 | Cases find | `GET /api/cases/_find` → `{cases, page, per_page, total, count_open_cases, count_in_progress_cases, count_closed_cases}`; accepts `perPage`, `page`, `sortField`, `sortOrder`, `status` |
 | Cases find, scoped (measured) | The exact params `cases_ops::find_query` sends — `search=<title>&searchFields=title&searchFields=description&tags=<tag>` plus `page`/`perPage`/`sortField`/`sortOrder` — correctly scope the find to the marker case alone on all three flavors. Measured 2026-09-01 (Task 6) |
