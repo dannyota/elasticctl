@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.2 — 2026-09-01
+
+### Added
+
+- An eighth live conformance contract covers alert transitions, tags,
+  assignment, and the full case lifecycle. The same contract now passes on
+  Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and self-managed 9.5.1.
+
+### Fixed
+
+- Alert and case mutations now reject empty or inconsistent public plans
+  before a request. Case status changes also require an exact one-to-one
+  response for every requested id and target status.
+- Alert list search escapes wildcard syntax, profile lookup recognizes the
+  internal route's unavailable response, and `alerts get` and `cases get` no
+  longer derive their exit status from fields inside the returned document.
+- Case attachment preserves earlier group outcomes after a later failure.
+  Live cleanup refuses dirty triage targets and can delete a created case by
+  its exact title and marker tag when its response has no usable id.
+
+### Verified
+
+- All 24 rows in the three-flavor 0.4.2 matrix passed. The scrubbed
+  [findings](docs/conformance/v0.4.2/findings.md) record the targets and
+  cleanup result.
+
 ## 0.4.1 — 2026-09-01
 
 The 0.4.0 alerts vertical below was developed back-to-back with this release
