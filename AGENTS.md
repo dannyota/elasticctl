@@ -85,6 +85,8 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
 - Never commit it, copy its contents into tracked files, or echo a key into output or commits.
 - Live systems are trial-only Serverless and Hosted test deployments. Never expose their URLs, IDs, credentials, or
   identifying data. The trial was extended; it ends 2026-09-08 at 08:56 UTC.
+- The Hosted deployment stays running for the whole trial. Do not stop, suspend, or tear it
+  down; a stopped deployment changes its endpoints on restart and invalidates `.env`.
 - `.env.example` is the committed template and must contain placeholders only.
 - An **organization-level** Cloud API key is not enough. Every key type carries the `essu_`
   prefix, so it does not indicate scope. Only `GET /_security/_authenticate` reports the realm.
