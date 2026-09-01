@@ -1103,6 +1103,15 @@ Same project, same date.
 | Customization is filterable | `params.ruleSource.isCustomized` splits 0 / 2,066. A prebuilt rule carries `rule_source: {type, is_customized, customized_fields, has_base_version}` |
 | `immutable` agrees with `ruleSource.type` | 2,066 / 0 under either field |
 
+### 7.9 ES|QL async query, measured
+
+Same project, 2026-08-16.
+
+| Fact | Detail |
+|---|---|
+| `format` is rejected | `POST /_query/async` returns 400 `unknown field [format]` for a `format: csv` body |
+| `columnar` is accepted | `columnar: true` works on the async route, so CSV export is a client-side transpose of the columnar response, not a raw server CSV |
+
 ## 8. Testing
 
 | Tier | Runs | Covers |
