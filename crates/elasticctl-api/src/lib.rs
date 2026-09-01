@@ -5,6 +5,8 @@ pub mod alerts_ops;
 pub mod cases;
 pub mod cases_ops;
 pub mod codec;
+pub mod content_codec;
+pub mod data_views;
 pub mod diff;
 pub mod exceptions;
 pub mod health;
