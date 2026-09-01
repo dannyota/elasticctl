@@ -13,6 +13,10 @@ description = "Operate Elastic Security as code with a safety-first CLI for secu
 name = "elasticctl"
 path = "src/main.rs"
 
+[[bin]]
+name = "elkctl"
+path = "src/main.rs"
+
 [dependencies]
 elasticctl-core.workspace = true
 elasticctl-api.workspace = true

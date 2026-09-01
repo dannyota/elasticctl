@@ -11,6 +11,9 @@
   each case title. Case identity is the case id plus a version fetched just
   before the mutation, so a change since the preview is reported as a
   conflict rather than silently overwritten.
+- `elkctl`, a shorter alias binary for `elasticctl`. Both compile from the
+  same entrypoint, so the command surface is identical; help text and shell
+  completions follow whichever name invoked the process.
 
 ## 0.4.0 — Unreleased
 

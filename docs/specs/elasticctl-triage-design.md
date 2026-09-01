@@ -348,7 +348,7 @@ evidence is lost), since measured facts outlive the trial.
 | Version | Content |
 |---|---|
 | 0.4.0 | The complete alerts vertical: `alerts list|get|ack|open|close|tag|assign` including `--query` transitions and username resolution; capability floors; fixtures for all of it |
-| 0.4.1 | The complete cases surface: `cases list|get|create|close|open|delete|attach|comment`, case assignees |
+| 0.4.1 | The complete cases surface: `cases list|get|create|close|open|delete|attach|comment`, case assignees; the `elkctl` alias binary |
 | 0.4.2 | Triage conformance contract, cross-flavor matrix run, bounded review patch |
 
 Each version is one meaningful story — alerts, then cases, then proven.

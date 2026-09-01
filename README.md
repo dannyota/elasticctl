@@ -22,7 +22,9 @@ An MCP server is planned once the CLI surface is stable.
 
 ## Install
 
-Install from crates.io or download a prebuilt binary.
+Install from crates.io or download a prebuilt binary. Every install method
+also installs `elkctl`, a shorter alias for the same binary; `elasticctl`
+stays the canonical name in documentation and error text.
 
 ### From crates.io
 

@@ -7,9 +7,19 @@ use clap_complete::Shell;
 use elasticctl_core::Result;
 use serde_json::{Value, json};
 
+/// The name this process was invoked under; completions and usage follow it
+/// so `elkctl completion zsh` completes `elkctl`. `file_stem` drops `.exe`.
+fn invoked_name() -> String {
+    std::env::args_os()
+        .next()
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "elasticctl".to_string())
+}
+
 pub fn completion(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
-    clap_complete::generate(shell, &mut cmd, "elasticctl", &mut std::io::stdout());
+    clap_complete::generate(shell, &mut cmd, invoked_name(), &mut std::io::stdout());
     Ok(())
 }
 
