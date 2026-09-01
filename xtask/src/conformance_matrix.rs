@@ -211,6 +211,16 @@ async fn run_serverless_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), Str
 /// `ELASTICCTL_SPACE` is set explicitly rather than left to inherit the
 /// parent's value, since a space configured for another purpose could
 /// silently scope this run to the wrong place.
+///
+/// When `ELASTICCTL_ECH_USERNAME` and `ELASTICCTL_ECH_PASSWORD` are both set,
+/// activate that user's profile first, the same step the traditional leg
+/// runs at boot: a Hosted deployment reached only through an API key has no
+/// activated profile for the `triage` contract's assign/unassign step to
+/// resolve. Without the pair, this falls back to whatever profile the
+/// deployment already carries from an operator's own SSO login, and the
+/// contract's own empty-profile check stays the backstop. An empty value
+/// counts as absent, so a placeholder in the environment does not fail the
+/// leg on a login that could never succeed.
 async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let kibana_url = std::env::var("ELASTICCTL_ECH_KIBANA_URL")
         .map_err(|_| "missing ELASTICCTL_ECH_KIBANA_URL".to_string())?;
@@ -219,6 +229,21 @@ async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let api_key = std::env::var("ELASTICCTL_ECH_API_KEY")
         .map_err(|_| "missing ELASTICCTL_ECH_API_KEY".to_string())?;
     let space = std::env::var("ELASTICCTL_ECH_SPACE").unwrap_or_else(|_| "default".to_string());
+
+    let username = std::env::var("ELASTICCTL_ECH_USERNAME")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let password = std::env::var("ELASTICCTL_ECH_PASSWORD")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if let (Some(username), Some(password)) = (username, password) {
+        let workspace = workspace_root();
+        crate::activation::activate_profile(&kibana_url, &username, &password)
+            .await
+            .map_err(|error| {
+                private_failure(&workspace, "ech", "activate", error.message.as_bytes())
+            })?;
+    }
 
     let mut command = spawn_conformance_child(&exe, "ech", &report_dir);
     command
@@ -238,18 +263,19 @@ async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
 }
 
 /// Write a failure's real detail to a private, owner-only log and return a
-/// public message that names only its workspace-relative path, mirroring
-/// `conformance::private_failure`. The detail can carry an authentication
-/// error naming the lab's own request, so it must never be returned as the
-/// failure message itself.
-fn private_failure(workspace: &Path, name: &str, detail: impl AsRef<[u8]>) -> String {
-    let path = lab_log_path(workspace, name);
+/// public message that names only the failing leg, its step, and the log's
+/// workspace-relative path, mirroring `conformance::private_failure`. The
+/// detail can carry an authentication error naming the request that failed —
+/// including a Hosted login — so it must never be returned as the failure
+/// message itself.
+fn private_failure(workspace: &Path, flavor: &str, name: &str, detail: impl AsRef<[u8]>) -> String {
+    let path = private_log_path(workspace, flavor, name);
     if write_private_log(&path, detail.as_ref()).is_err() {
         return "conformance-matrix failed and its private log could not be written".to_string();
     }
     let relative = path.strip_prefix(workspace).unwrap_or(&path);
     format!(
-        "traditional {name} failed; private detail is in {}",
+        "{flavor} {name} failed; private detail is in {}",
         relative.display()
     )
 }
@@ -273,21 +299,35 @@ async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
         timeout_secs: 30,
     };
     profile.strip_userinfo();
-    let transport = elasticctl_core::Transport::new(&profile)
-        .map_err(|error| private_failure(workspace, "lab-mint", error.message.as_bytes()))?;
+    let transport = elasticctl_core::Transport::new(&profile).map_err(|error| {
+        private_failure(
+            workspace,
+            "traditional",
+            "lab-mint",
+            error.message.as_bytes(),
+        )
+    })?;
     let response = transport
         .post_absolute_es(
             "/_security/api_key",
             &serde_json::json!({"name": "elasticctl-matrix"}),
         )
         .await
-        .map_err(|error| private_failure(workspace, "lab-mint", error.message.as_bytes()))?;
+        .map_err(|error| {
+            private_failure(
+                workspace,
+                "traditional",
+                "lab-mint",
+                error.message.as_bytes(),
+            )
+        })?;
     response["encoded"]
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| {
             private_failure(
                 workspace,
+                "traditional",
                 "lab-mint",
                 "lab API key response is missing encoded",
             )
@@ -321,39 +361,65 @@ async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), S
         timeout_secs: 600,
     };
     profile.strip_userinfo();
-    let transport = elasticctl_core::Transport::new(&profile)
-        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+    let transport = elasticctl_core::Transport::new(&profile).map_err(|error| {
+        private_failure(
+            workspace,
+            "traditional",
+            "lab-seed",
+            error.message.as_bytes(),
+        )
+    })?;
     transport
         .put(
             "/api/detection_engine/rules/prepackaged",
             &serde_json::json!({}),
         )
         .await
-        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+        .map_err(|error| {
+            private_failure(
+                workspace,
+                "traditional",
+                "lab-seed",
+                error.message.as_bytes(),
+            )
+        })?;
 
     let status = transport
         .get("/api/detection_engine/rules/prepackaged/_status")
         .await
-        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+        .map_err(|error| {
+            private_failure(
+                workspace,
+                "traditional",
+                "lab-seed",
+                error.message.as_bytes(),
+            )
+        })?;
     match crate::prebuilt_is_current(&status) {
         Ok(true) => Ok(()),
         Ok(false) => {
             let detail = format!("prebuilt install did not report current: {status}");
-            Err(private_failure(workspace, "lab-seed", detail.as_bytes()))
+            Err(private_failure(
+                workspace,
+                "traditional",
+                "lab-seed",
+                detail.as_bytes(),
+            ))
         }
         Err(error) => Err(private_failure(
             workspace,
+            "traditional",
             "lab-seed",
             error.message.as_bytes(),
         )),
     }
 }
 
-fn lab_log_path(workspace: &Path, name: &str) -> PathBuf {
+fn private_log_path(workspace: &Path, flavor: &str, name: &str) -> PathBuf {
     workspace
         .join("target")
         .join("conformance-private")
-        .join("traditional")
+        .join(flavor)
         .join(format!("{name}.log"))
 }
 
@@ -428,7 +494,7 @@ async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(
     log.extend_from_slice(&redact_lab_output(&output.stdout));
     log.extend_from_slice(b"\nstderr:\n");
     log.extend_from_slice(&redact_lab_output(&output.stderr));
-    let log_path = lab_log_path(workspace, name);
+    let log_path = private_log_path(workspace, "traditional", name);
     write_private_log(&log_path, &log)?;
 
     if output.status.success() {
@@ -470,7 +536,14 @@ async fn run_traditional_boot_and_leg(
     // lab/compose.yaml sets ELASTIC_PASSWORD to this value.
     crate::activation::activate_profile("http://localhost:5601", "elastic", "elasticctl-lab")
         .await
-        .map_err(|error| private_failure(&workspace, "lab-activate", error.message.as_bytes()))?;
+        .map_err(|error| {
+            private_failure(
+                &workspace,
+                "traditional",
+                "lab-activate",
+                error.message.as_bytes(),
+            )
+        })?;
 
     let mut command = spawn_conformance_child(&exe, "traditional", &report_dir);
     command
