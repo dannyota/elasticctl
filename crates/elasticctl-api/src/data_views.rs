@@ -1,13 +1,13 @@
 //! Typed data-view models and public Kibana route wrappers.
 
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
 const BASE: &str = "/api/data_views";
 
 /// The portable, author-controlled data-view representation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataViewSpec {
     pub id: String,
@@ -34,6 +34,38 @@ pub struct DataViewSpec {
     pub view_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_meta: Option<Map<String, Value>>,
+}
+
+/// The deserialization form is deliberately separate from `DataViewSpec` so
+/// every construction path passes through the same validation and
+/// canonicalization boundary without recursive deserialization.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDataViewSpec {
+    id: String,
+    title: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    time_field_name: Option<String>,
+    #[serde(default)]
+    allow_no_index: bool,
+    #[serde(default)]
+    allow_hidden: bool,
+    #[serde(default)]
+    source_filters: Vec<Value>,
+    #[serde(default)]
+    field_formats: Map<String, Value>,
+    #[serde(default)]
+    runtime_field_map: Map<String, Value>,
+    #[serde(default)]
+    field_attrs: Map<String, Value>,
+    #[serde(default)]
+    fields: Map<String, Value>,
+    #[serde(rename = "type", default)]
+    view_type: Option<String>,
+    #[serde(default)]
+    type_meta: Option<Value>,
 }
 
 impl DataViewSpec {
@@ -68,6 +100,34 @@ impl DataViewSpec {
     }
 }
 
+impl DataViewSpec {
+    fn from_raw(raw: RawDataViewSpec) -> Result<Self> {
+        let type_meta = match raw.type_meta {
+            Some(Value::Object(map)) if map.is_empty() => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(Error::new(ErrorKind::Error, "typeMeta must be an object")),
+            None => None,
+        };
+        let spec = Self {
+            id: raw.id,
+            title: raw.title,
+            name: raw.name,
+            time_field_name: raw.time_field_name,
+            allow_no_index: raw.allow_no_index,
+            allow_hidden: raw.allow_hidden,
+            source_filters: raw.source_filters,
+            field_formats: raw.field_formats,
+            runtime_field_map: raw.runtime_field_map,
+            field_attrs: raw.field_attrs,
+            fields: raw.fields,
+            view_type: raw.view_type,
+            type_meta,
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
 fn validate_object_values(values: &Map<String, Value>, path: &str) -> Result<()> {
     for (name, value) in values {
         if !value.is_object() {
@@ -84,37 +144,19 @@ impl TryFrom<Value> for DataViewSpec {
     type Error = Error;
 
     fn try_from(value: Value) -> Result<Self> {
-        validate_input_objects(&value)?;
-        let spec: Self = serde_json::from_value(value).map_err(|error| {
-            Error::new(ErrorKind::Error, format!("decoding data view: {error}"))
-        })?;
-        spec.validate()?;
-        Ok(spec)
+        serde_json::from_value(value)
+            .map_err(|error| Error::new(ErrorKind::Error, format!("decoding data view: {error}")))
     }
 }
 
-fn validate_input_objects(value: &Value) -> Result<()> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| Error::new(ErrorKind::Error, "data view must be a JSON object"))?;
-    if let Some(type_meta) = object.get("typeMeta")
-        && !type_meta.is_object()
+impl<'de> Deserialize<'de> for DataViewSpec {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
     {
-        return Err(Error::new(ErrorKind::Error, "typeMeta must be an object"));
+        let raw = RawDataViewSpec::deserialize(deserializer)?;
+        Self::from_raw(raw).map_err(serde::de::Error::custom)
     }
-    for field in ["fieldAttrs", "fields"] {
-        if let Some(entries) = object.get(field).and_then(Value::as_object) {
-            for (name, entry) in entries {
-                if !entry.is_object() {
-                    return Err(Error::new(
-                        ErrorKind::Error,
-                        format!("{field}.{name} must be an object"),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The documented partial-update fields. `None` omits a field from the body.
@@ -158,7 +200,10 @@ pub struct DataViewSummary {
 /// A data view returned from its detail, create, or update route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataView {
-    pub spec: DataViewSpec,
+    /// The complete object returned by Kibana. It includes server-owned
+    /// fields and generated mapped-field cache entries, which Task 2 removes
+    /// only when building a portable `DataViewSpec`.
+    pub data_view: Map<String, Value>,
 }
 
 /// A saved object that refers to a data view.
@@ -188,19 +233,7 @@ pub struct ReferenceSwap {
 /// List all data views in the active space.
 pub async fn list(transport: &Transport) -> Result<Vec<DataViewSummary>> {
     let body = transport.get(BASE).await?;
-    let views = required_array(&body, "data_view", "data views list")?;
-    views
-        .iter()
-        .cloned()
-        .map(|view| {
-            serde_json::from_value(view).map_err(|error| {
-                Error::new(
-                    ErrorKind::Http,
-                    format!("decoding data views list entry: {error}"),
-                )
-            })
-        })
-        .collect()
+    decode_envelope::<ListEnvelope>(&body, "data views list").map(|envelope| envelope.data_view)
 }
 
 /// Get one data view by its stable id.
@@ -255,9 +288,9 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
 /// Get the active space's default data-view id, if one is set.
 pub async fn get_default(transport: &Transport) -> Result<Option<String>> {
     let body = transport.get(&format!("{BASE}/default")).await?;
-    match required_object(&body, "data view default")?.get("data_view_id") {
-        Some(Value::String(id)) => Ok(Some(id.clone())),
-        Some(Value::Null) => Ok(None),
+    match decode_envelope::<DefaultEnvelope>(&body, "data view default")?.data_view_id {
+        Value::String(id) => Ok(Some(id)),
+        Value::Null => Ok(None),
         _ => Err(Error::new(
             ErrorKind::Http,
             "decoding data view default field `data_view_id`: expected string or null",
@@ -303,23 +336,10 @@ pub async fn swap(transport: &Transport, from_id: &str, to_id: &str) -> Result<R
     let response = transport
         .post(&format!("{BASE}/swap_references"), Some(&body))
         .await?;
-    let result = decode_references(&response, "data view reference swap")?;
-    let map = required_object(&response, "data view reference swap")?;
-    let delete_status = map.get("deleteStatus").ok_or_else(|| {
-        Error::new(
-            ErrorKind::Http,
-            "decoding data view reference swap field `deleteStatus`",
-        )
-    })?;
-    let delete_status = serde_json::from_value(delete_status.clone()).map_err(|error| {
-        Error::new(
-            ErrorKind::Http,
-            format!("decoding data view reference swap field `deleteStatus`: {error}"),
-        )
-    })?;
+    let envelope = decode_envelope::<SwapEnvelope>(&response, "data view reference swap")?;
     Ok(ReferenceSwap {
-        result,
-        delete_status,
+        result: envelope.result,
+        delete_status: envelope.delete_status,
     })
 }
 
@@ -328,25 +348,14 @@ fn data_view_path(id: &str) -> String {
 }
 
 fn decode_data_view(body: &Value, context: &str) -> Result<DataView> {
-    let value = required_object(body, context)?
-        .get("data_view")
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Http,
-                format!("decoding {context} field `data_view`"),
-            )
-        })?;
-    let spec = DataViewSpec::try_from(value.clone()).map_err(|error| {
-        Error::new(
-            ErrorKind::Http,
-            format!("decoding {context} field `data_view`: {}", error.message),
-        )
-    })?;
-    Ok(DataView { spec })
+    let envelope = decode_envelope::<DataViewEnvelope>(body, context)?;
+    Ok(DataView {
+        data_view: envelope.data_view,
+    })
 }
 
 fn decode_acknowledged(body: &Value, context: &str) -> Result<()> {
-    if required_object(body, context)?.get("acknowledged") == Some(&Value::Bool(true)) {
+    if decode_envelope::<AcknowledgedEnvelope>(body, context)?.acknowledged {
         Ok(())
     } else {
         Err(Error::new(
@@ -357,38 +366,47 @@ fn decode_acknowledged(body: &Value, context: &str) -> Result<()> {
 }
 
 fn decode_references(body: &Value, context: &str) -> Result<Vec<DataViewReference>> {
-    let values = required_array(body, "result", context)?;
-    values
-        .iter()
-        .cloned()
-        .map(|value| {
-            serde_json::from_value(value).map_err(|error| {
-                Error::new(
-                    ErrorKind::Http,
-                    format!("decoding {context} result entry: {error}"),
-                )
-            })
-        })
-        .collect()
+    decode_envelope::<ReferencePreviewEnvelope>(body, context).map(|envelope| envelope.result)
 }
 
-fn required_object<'a>(body: &'a Value, context: &str) -> Result<&'a Map<String, Value>> {
-    body.as_object().ok_or_else(|| {
-        Error::new(
-            ErrorKind::Http,
-            format!("decoding {context}: expected a JSON object"),
-        )
-    })
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListEnvelope {
+    data_view: Vec<DataViewSummary>,
 }
 
-fn required_array<'a>(body: &'a Value, field: &str, context: &str) -> Result<&'a Vec<Value>> {
-    required_object(body, context)?
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::Http,
-                format!("decoding {context} field `{field}`: expected an array"),
-            )
-        })
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataViewEnvelope {
+    data_view: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcknowledgedEnvelope {
+    acknowledged: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DefaultEnvelope {
+    data_view_id: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferencePreviewEnvelope {
+    result: Vec<DataViewReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SwapEnvelope {
+    result: Vec<DataViewReference>,
+    delete_status: DeleteStatus,
+}
+
+fn decode_envelope<T: DeserializeOwned>(body: &Value, context: &str) -> Result<T> {
+    serde_json::from_value(body.clone())
+        .map_err(|error| Error::new(ErrorKind::Http, format!("decoding {context}: {error}")))
 }
