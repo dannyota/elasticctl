@@ -240,3 +240,164 @@ async fn export_follows_pages_to_the_end() {
     assert_eq!(all.len(), 3);
     assert_eq!(all[2].id, "c3");
 }
+
+#[tokio::test]
+async fn plan_status_fetches_versions_and_marks_noops() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c2", "closed")))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = cases_ops::plan_status(&t, &["c1".into(), "c2".into()], CaseStatus::Closed)
+        .await
+        .expect("plan");
+    assert_eq!(plan.preview_action, "Close 2 cases");
+    assert!(
+        plan.preview_details[0].contains("open -> closed"),
+        "{:?}",
+        plan.preview_details
+    );
+    assert!(
+        plan.preview_details[1].contains("already closed"),
+        "{:?}",
+        plan.preview_details
+    );
+    // Only the case actually transitioning is PATCHed.
+    assert_eq!(plan.updates.len(), 1);
+    assert_eq!(plan.updates[0].0, "c1");
+}
+
+#[tokio::test]
+async fn a_missing_case_id_refuses_the_whole_set() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/ghost"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404, "error": "Not Found", "message": "case not found"
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = cases_ops::plan_status(&t, &["c1".into(), "ghost".into()], CaseStatus::Closed)
+        .await
+        .expect_err("partial resolution must refuse");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    assert!(err.message.contains("ghost"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn a_stale_version_conflict_names_the_remedy() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/cases"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "statusCode": 409, "error": "Conflict", "message": "version mismatch"
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = cases_ops::StatusPlan {
+        target: CaseStatus::Closed,
+        updates: vec![("c1".into(), "stale".into(), CaseStatus::Closed)],
+        preview_action: "Close 1 case".into(),
+        preview_details: vec![],
+    };
+    let err = cases_ops::apply_status(&t, &plan).await.expect_err("409");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Conflict);
+    assert!(
+        err.message.contains("re-run"),
+        "the remediation names the fix: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_delete_names_every_title() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = cases_ops::plan_delete(&t, &["c1".into()])
+        .await
+        .expect("plan");
+    assert_eq!(plan.preview_action, "Delete 1 case permanently");
+    assert!(
+        plan.preview_details[0].contains("Suspicious activity"),
+        "{:?}",
+        plan.preview_details
+    );
+}
+
+#[tokio::test]
+async fn plan_attach_groups_alerts_by_rule() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_index": "idx-a",
+                 "_source": {"kibana.alert.rule.name": "Alpha", "kibana.alert.rule.uuid": "ru-1",
+                             "kibana.alert.workflow_status": "open"}},
+                {"_id": "a2", "_index": "idx-a",
+                 "_source": {"kibana.alert.rule.name": "Beta", "kibana.alert.rule.uuid": "ru-2",
+                             "kibana.alert.workflow_status": "open"}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = cases_ops::plan_attach(&t, "c1", &["a1".into(), "a2".into()])
+        .await
+        .expect("plan");
+    assert_eq!(
+        plan.preview_action,
+        "Attach 2 alerts to case 'Suspicious activity'"
+    );
+    assert_eq!(plan.groups.len(), 2, "two rules, two comment groups");
+    assert_eq!(plan.groups[0].rule_name, "Alpha");
+    assert_eq!(plan.groups[0].indices, vec!["idx-a".to_string()]);
+}
+
+#[tokio::test]
+async fn plan_create_resolves_assignees_and_previews_them() {
+    let t = test_transport("http://127.0.0.1:1");
+    let plan = cases_ops::plan_create(
+        &t,
+        "Incident 7",
+        None,
+        vec!["triage".into()],
+        Some("high".into()),
+        &["uid:u_9".into()],
+    )
+    .await
+    .expect("plan");
+    assert_eq!(plan.preview_action, "Create case 'Incident 7'");
+    assert!(
+        plan.preview_details
+            .iter()
+            .any(|d| d.contains("assign uid:u_9 -> u_9")),
+        "{:?}",
+        plan.preview_details
+    );
+    assert_eq!(plan.new.assignee_uids, vec!["u_9".to_string()]);
+}

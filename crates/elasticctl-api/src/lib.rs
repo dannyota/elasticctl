@@ -26,7 +26,10 @@ pub use alerts_ops::{
     TagsPlan,
 };
 pub use cases::{Case, CaseStatus, NewCase};
-pub use cases_ops::{CaseFilter, CaseList};
+pub use cases_ops::{
+    AttachGroup, AttachPlan, CaseEditReport, CaseFilter, CaseList, CommentPlan, CreatePlan,
+    DeletePlan, StatusPlan as CaseStatusPlan,
+};
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use exceptions::{ListDetail, ListFilter, ListReport};

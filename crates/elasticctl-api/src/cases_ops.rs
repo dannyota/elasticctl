@@ -1,7 +1,10 @@
 //! Case orchestration: filters, list/get, and the guarded mutation plans.
 
-use crate::cases::{self, Case, CaseStatus};
-use elasticctl_core::{Result, Transport, urlencode};
+use crate::alerts;
+use crate::cases::{self, Case, CaseStatus, NewCase};
+use crate::profiles;
+use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
+use serde_json::Value;
 
 /// The `_find` route's per-page cap.
 pub const PAGE_SIZE: u32 = 100;
@@ -95,4 +98,398 @@ pub async fn export_with_page_size(
 
 pub async fn get_one(t: &Transport, id: &str) -> Result<Case> {
     cases::get(t, id).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCase {
+    pub id: String,
+    pub version: String,
+    pub title: String,
+    pub status: String,
+}
+
+fn case_noun(n: usize) -> &'static str {
+    if n == 1 { "case" } else { "cases" }
+}
+
+/// Resolve explicit case ids. Fail-closed: every id must resolve or nothing
+/// proceeds; duplicates collapse preserving first-seen order.
+async fn resolve_cases(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedCase>> {
+    let mut unique: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !unique.contains(id) {
+            unique.push(id.clone());
+        }
+    }
+    let mut resolved = Vec::with_capacity(unique.len());
+    let mut missing = Vec::new();
+    for id in &unique {
+        match cases::get(t, id).await {
+            Ok(case) => resolved.push(ResolvedCase {
+                id: case.id,
+                version: case.version,
+                title: case.title,
+                status: case.status,
+            }),
+            Err(e) if e.kind == ErrorKind::NotFound => missing.push(id.clone()),
+            Err(e) => return Err(e),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No case with id: {}", missing.join(", ")),
+        ));
+    }
+    Ok(resolved)
+}
+
+/// The compact case row for list output and mutation reports: stable columns
+/// in a fixed order (`preserve_order` makes this the render contract).
+pub fn case_row(case: &Case) -> Value {
+    let mut row = serde_json::Map::new();
+    row.insert("id".into(), Value::String(case.id.clone()));
+    row.insert("title".into(), Value::String(case.title.clone()));
+    row.insert("status".into(), Value::String(case.status.clone()));
+    if let Some(severity) = &case.severity {
+        row.insert("severity".into(), Value::String(severity.clone()));
+    }
+    row.insert("tags".into(), serde_json::json!(case.tags));
+    if let Some(n) = case.total_comment {
+        row.insert("comments".into(), serde_json::json!(n));
+    }
+    if let Some(at) = &case.created_at {
+        row.insert("created_at".into(), Value::String(at.clone()));
+    }
+    if let Some(at) = &case.updated_at {
+        row.insert("updated_at".into(), Value::String(at.clone()));
+    }
+    Value::Object(row)
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CaseEditReport {
+    pub applied: bool,
+    pub total: u64,
+    pub updated: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatePlan {
+    pub new: NewCase,
+    pub preview_action: String,
+    pub preview_details: Vec<String>,
+}
+
+pub async fn plan_create(
+    t: &Transport,
+    title: &str,
+    description: Option<String>,
+    tags: Vec<String>,
+    severity: Option<String>,
+    assignees: &[String],
+) -> Result<CreatePlan> {
+    if title.trim().is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "a case needs a non-empty --title",
+        ));
+    }
+    let mut details = Vec::new();
+    if let Some(severity) = &severity {
+        details.push(format!("severity: {severity}"));
+    }
+    if !tags.is_empty() {
+        details.push(format!("tags: {}", tags.join(", ")));
+    }
+    let mut assignee_uids = Vec::with_capacity(assignees.len());
+    for user in assignees {
+        let uid = profiles::resolve_assignee(t, user).await?;
+        details.push(format!("assign {user} -> {uid}"));
+        assignee_uids.push(uid);
+    }
+    Ok(CreatePlan {
+        preview_action: format!("Create case '{title}'"),
+        new: NewCase {
+            title: title.to_string(),
+            description,
+            tags,
+            severity,
+            assignee_uids,
+        },
+        preview_details: details,
+    })
+}
+
+pub async fn apply_create(t: &Transport, plan: &CreatePlan) -> Result<Value> {
+    let case = cases::create(t, &plan.new).await?;
+    let mut row = case_row(&case);
+    if let Some(obj) = row.as_object_mut() {
+        obj.insert("applied".into(), Value::Bool(true));
+    }
+    Ok(row)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusPlan {
+    pub target: CaseStatus,
+    /// Only the cases actually transitioning: (id, version, target).
+    pub updates: Vec<(String, String, CaseStatus)>,
+    pub preview_action: String,
+    pub preview_details: Vec<String>,
+}
+
+/// Fetch each case for its version, mark already-in-state rows, and PATCH
+/// only the rest. A no-op set still previews and reports zero updates.
+pub async fn plan_status(t: &Transport, ids: &[String], target: CaseStatus) -> Result<StatusPlan> {
+    let resolved = resolve_cases(t, ids).await?;
+    let mut updates = Vec::new();
+    let mut details = Vec::new();
+    for case in &resolved {
+        if case.status == target.as_str() {
+            details.push(format!(
+                "{}  {}  already {}",
+                case.id, case.title, case.status
+            ));
+        } else {
+            details.push(format!(
+                "{}  {}  {} -> {}",
+                case.id,
+                case.title,
+                case.status,
+                target.as_str()
+            ));
+            updates.push((case.id.clone(), case.version.clone(), target));
+        }
+    }
+    Ok(StatusPlan {
+        preview_action: format!(
+            "{} {} {}",
+            target.verb(),
+            resolved.len(),
+            case_noun(resolved.len())
+        ),
+        target,
+        updates,
+        preview_details: details,
+    })
+}
+
+pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditReport> {
+    if plan.updates.is_empty() {
+        return Ok(CaseEditReport {
+            applied: true,
+            total: 0,
+            updated: 0,
+        });
+    }
+    let updated = cases::patch_status(t, &plan.updates).await.map_err(|e| {
+        if e.kind == ErrorKind::Conflict {
+            Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "a case changed since the preview ({}); re-run the command",
+                    e.message
+                ),
+            )
+        } else {
+            e
+        }
+    })?;
+    Ok(CaseEditReport {
+        applied: true,
+        total: plan.updates.len() as u64,
+        updated: updated.len() as u64,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletePlan {
+    pub targets: Vec<String>,
+    pub preview_action: String,
+    pub preview_details: Vec<String>,
+}
+
+/// The 0.4 area's only destructive verb: the preview names each title.
+pub async fn plan_delete(t: &Transport, ids: &[String]) -> Result<DeletePlan> {
+    let resolved = resolve_cases(t, ids).await?;
+    Ok(DeletePlan {
+        preview_action: format!(
+            "Delete {} {} permanently",
+            resolved.len(),
+            case_noun(resolved.len())
+        ),
+        preview_details: resolved
+            .iter()
+            .map(|c| format!("{}  {}  ({})", c.id, c.title, c.status))
+            .collect(),
+        targets: resolved.into_iter().map(|c| c.id).collect(),
+    })
+}
+
+pub async fn apply_delete(t: &Transport, plan: &DeletePlan) -> Result<CaseEditReport> {
+    cases::delete(t, &plan.targets).await?;
+    Ok(CaseEditReport {
+        applied: true,
+        total: plan.targets.len() as u64,
+        updated: plan.targets.len() as u64,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachGroup {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub alert_ids: Vec<String>,
+    pub indices: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttachPlan {
+    pub case_id: String,
+    pub groups: Vec<AttachGroup>,
+    pub preview_action: String,
+    pub preview_details: Vec<String>,
+}
+
+fn attach_source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
+    if let Some(v) = source.get(key).and_then(Value::as_str) {
+        return Some(v);
+    }
+    let pointer = format!("/{}", key.replace('.', "/"));
+    source.pointer(&pointer).and_then(Value::as_str)
+}
+
+/// Resolve the case (for its title) and every alert (id, index, rule),
+/// fail-closed on any missing alert, then group by rule — the comments route
+/// takes one `rule` object per comment.
+pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> Result<AttachPlan> {
+    if alert_ids.is_empty() {
+        return Err(Error::new(ErrorKind::Error, "pass at least one --alert id"));
+    }
+    let case = cases::get(t, case_id).await?;
+    let mut unique: Vec<String> = Vec::with_capacity(alert_ids.len());
+    for id in alert_ids {
+        if !unique.contains(id) {
+            unique.push(id.clone());
+        }
+    }
+    let body = serde_json::json!({
+        "query": {"ids": {"values": unique}},
+        "size": unique.len(),
+        "_source": ["kibana.alert.rule.name", "kibana.alert.rule.uuid", "kibana.alert.workflow_status"],
+    });
+    let page = alerts::search(t, &body).await?;
+    let missing: Vec<&str> = unique
+        .iter()
+        .filter(|id| !page.hits.iter().any(|h| &h.id == *id))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No alert with id: {}", missing.join(", ")),
+        ));
+    }
+    let mut groups: Vec<AttachGroup> = Vec::new();
+    let mut details = Vec::new();
+    for id in &unique {
+        let hit = page
+            .hits
+            .iter()
+            .find(|h| &h.id == id)
+            .expect("checked above");
+        let rule_id = attach_source_str(&hit.source, "kibana.alert.rule.uuid")
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Http,
+                    "decoding alert field `kibana.alert.rule.uuid`",
+                )
+            })?
+            .to_string();
+        let rule_name = attach_source_str(&hit.source, "kibana.alert.rule.name")
+            .unwrap_or("(unnamed rule)")
+            .to_string();
+        let index = hit.index.clone().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Http,
+                "decoding alert field `_index` (needed to attach)",
+            )
+        })?;
+        details.push(format!("{}  {}", id, rule_name));
+        match groups.iter_mut().find(|g| g.rule_id == rule_id) {
+            Some(group) => {
+                group.alert_ids.push(id.clone());
+                group.indices.push(index);
+            }
+            None => groups.push(AttachGroup {
+                rule_id,
+                rule_name,
+                alert_ids: vec![id.clone()],
+                indices: vec![index],
+            }),
+        }
+    }
+    Ok(AttachPlan {
+        preview_action: format!(
+            "Attach {} {} to case '{}'",
+            unique.len(),
+            if unique.len() == 1 { "alert" } else { "alerts" },
+            case.title
+        ),
+        case_id: case.id,
+        groups,
+        preview_details: details,
+    })
+}
+
+pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditReport> {
+    let mut attached = 0u64;
+    for group in &plan.groups {
+        cases::attach_alerts(
+            t,
+            &plan.case_id,
+            &group.alert_ids,
+            &group.indices,
+            &group.rule_id,
+            &group.rule_name,
+        )
+        .await?;
+        attached += group.alert_ids.len() as u64;
+    }
+    Ok(CaseEditReport {
+        applied: true,
+        total: attached,
+        updated: attached,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentPlan {
+    pub case_id: String,
+    pub message: String,
+    pub preview_action: String,
+    pub preview_details: Vec<String>,
+}
+
+pub async fn plan_comment(t: &Transport, case_id: &str, message: &str) -> Result<CommentPlan> {
+    if message.trim().is_empty() {
+        return Err(Error::new(ErrorKind::Error, "pass a non-empty --message"));
+    }
+    let case = cases::get(t, case_id).await?;
+    Ok(CommentPlan {
+        preview_action: format!("Comment on case '{}'", case.title),
+        preview_details: vec![message.to_string()],
+        case_id: case.id,
+        message: message.to_string(),
+    })
+}
+
+pub async fn apply_comment(t: &Transport, plan: &CommentPlan) -> Result<CaseEditReport> {
+    cases::add_comment(t, &plan.case_id, &plan.message).await?;
+    Ok(CaseEditReport {
+        applied: true,
+        total: 1,
+        updated: 1,
+    })
 }
