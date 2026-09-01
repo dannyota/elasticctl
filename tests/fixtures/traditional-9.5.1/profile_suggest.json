@@ -3,7 +3,6 @@
   "version": "9.5.1",
   "operation": "profile_suggest",
   "response": {
-    "took": 0,
     "total": {
       "value": 1,
       "relation": "eq"

@@ -10,8 +10,6 @@
     "reason": "false_positive"
   },
   "response": {
-    "took": 262,
-    "timed_out": false,
     "total": 1,
     "updated": 1,
     "deleted": 0,

@@ -243,10 +243,22 @@ generate alerts, records the triage exchanges, then closes and cleans up.
 
 Scrubbing gains a new class: profile and cases payloads embed user identity
 (`username`, `full_name`, `email`, profile `uid`s, realm names, `created_by`,
-`updated_by`). All are scrubbed like the existing identity fields. Volatile
-fields to normalize: alert `_id`s, `@timestamp`, `kibana.alert.uuid`,
-`workflow_status_updated_at`, case `id`, `version`, `created_at`,
-`updated_at`, comment ids, `took`.
+`updated_by`). All are scrubbed like the existing identity fields. Alert ids
+and profile uids are rewritten wherever they appear **inside** a string
+value, not only where the whole value equals one: Kibana embeds the real
+alert uuid inside `kibana.alert.url` (`.../redirect/<uuid>?index=…&
+timestamp=…`), which a whole-string match misses. `kibana.alert.url` is
+additionally replaced outright with a fixed placeholder, since its
+`timestamp=` query parameter is a live value nothing decodes.
+
+Volatile fields to normalize: alert `_id`s, `@timestamp`,
+`kibana.alert.uuid`, `kibana.alert.url` (replaced outright, see above),
+`workflow_status_updated_at`, `kibana.alert.last_detected`,
+`kibana.alert.original_time`, `kibana.alert.intended_timestamp`,
+`kibana.alert.rule.execution.timestamp`, `kibana.alert.rule.execution.uuid`,
+`_score`, `max_score`, `took`, `timed_out`, `_shards` (present on every
+triage mutation response, not only `signals/search`), case `id`, `version`,
+`created_at`, `updated_at`, comment ids.
 
 The conformance contract (eighth in the matrix) would: seed marker events,
 enable the marker rule, wait for an alert, transition it
@@ -268,27 +280,23 @@ uniformly grant and on behavior Elastic does not contract.
 
 ## 10. Measured behavior
 
-Read probes 2026-09-01 against the trial Serverless project (9.6.0) and the
-Hosted deployment (9.5.1), with the stacks' project/deployment API keys. The
-two status-route mutations sent at that time were query-scoped to the
-`elasticctl-sample` marker and verified to match zero alerts immediately
-before sending; nothing was mutated then.
-
-Task 8 (2026-09-01) exercised every triage mutation route for real: a marker
-rule over a marker index generated genuine alerts on Serverless (9.6.0), the
-Hosted deployment (9.5.2 — moved from 9.5.1 mid-task), and the traditional
-lab (9.5.1). Each was transitioned by id, tagged, assigned, then closed by
-query; every flavor verified baseline before and after (no leftover marker
-rule or index, no non-closed marker alert — closed residue is the accepted
-deviation, section 9). Rows marked *unverified* are documented shapes not yet
-exercised.
+Read probes and live triage mutations, most recently 2026-09-01 (Task 8),
+against the trial Serverless project (9.6.0), the Hosted deployment (9.5.2 —
+9.5.1 when first read-probed, before the deployment moved mid-project), and
+the traditional lab (9.5.1), with the stacks' project/deployment API keys.
+Task 8 exercised every triage mutation route for real: a marker rule over a
+marker index generated genuine alerts on all three flavors, each transitioned
+by id, tagged, assigned, then closed by query; every flavor verified baseline
+before and after (no leftover marker rule or index, no non-closed marker
+alert — closed residue is the accepted deviation, section 9). Rows marked
+*unverified* are documented shapes not yet exercised.
 
 | Fact | Detail |
 |---|---|
 | Alert search route | `POST /api/detection_engine/signals/search` returns the raw ES envelope `{took, timed_out, _shards, hits}` — 200 with and without `elastic-api-version`, and 200 even without `kbn-xsrf` on Serverless (the transport still always sends it). Measured 2026-09-01 with populated hits from a live marker rule on all three flavors: `hits.hits[]._source` carries 50+ `kibana.alert.*` field groups plus the original event fields, and `_id`/`kibana.alert.uuid` uniquely identify each alert instance |
 | Search body acceptance | `sort`, `search_after`, `_source`, `track_total_hits`, `size`, `aggs`, and `runtime_mappings` all accepted (200) |
 | Triage fields | The alerts index mapping carries `kibana.alert.workflow_status`, `workflow_tags`, `workflow_assignee_ids`, `workflow_status_updated_at`, `workflow_user`, `workflow_reason`, and `kibana.alert.case_ids`; 50 `kibana.alert.*` field groups total |
-| Query-scoped status | `POST /api/detection_engine/signals/status` with `{status, query, conflicts}` → 200 with a raw update-by-query envelope: `{took, timed_out, total, updated, deleted, batches, version_conflicts, noops, retries, throttled_millis, requests_per_second, throttled_until_millis, failures}`. Zero-match returns all-zero counts. Identical shape on Serverless 9.6.0 and Hosted 9.5.1 |
+| Query-scoped status | `POST /api/detection_engine/signals/status` with `{status, query, conflicts}` → 200 with a raw update-by-query envelope: `{took, timed_out, total, updated, deleted, batches, version_conflicts, noops, retries, throttled_millis, requests_per_second, throttled_until_millis, failures}`. Zero-match returns all-zero counts. Identical shape on Serverless 9.6.0 and Hosted 9.5.2 |
 | Status body (docs) | `signal_ids` and `query` are one-of; `conflicts` is `abort` (default) or `proceed`; `status` allows `open`, `acknowledged`, `in-progress`, `closed`; `reason` is a documented enum (`false_positive`, `duplicate`, `true_positive`, `benign_positive`, `automated_closure`, `other`) plus free text 1–1024 chars |
 | Status body, `signal_ids` form (measured) | `reason` is accepted alongside `signal_ids`, not just `query` — measured 2026-09-01 on Serverless 9.6.0, Hosted 9.5.2, and the traditional lab 9.5.1: `POST signals/status` with `{signal_ids, status, reason}` returns 200, never a 400. `alerts::status_by_ids` already sends `reason` unconditionally; no code change needed |
 | Profile suggest, public | `POST /_security/profile/_suggest` → 200 `{total, took, profiles: [{uid, user: {username, realm_name, roles, …}, data, labels, enabled}]}` on Hosted (9.5.1, then 9.5.2) and the traditional lab (9.5.1, measured 2026-09-01). On Serverless → **410** `api_not_available_exception` "not available when running in serverless mode" |

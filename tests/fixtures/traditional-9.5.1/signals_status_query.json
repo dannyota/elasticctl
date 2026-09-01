@@ -13,10 +13,8 @@
     "reason": "automated_closure"
   },
   "response": {
-    "took": 15,
-    "timed_out": false,
-    "total": 6,
-    "updated": 6,
+    "total": 3,
+    "updated": 3,
     "deleted": 0,
     "batches": 1,
     "version_conflicts": 0,

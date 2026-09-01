@@ -40,6 +40,27 @@ const ALERT_FIXTURE_TIMESTAMP: &str = "2026-01-01T00:00:00.000Z";
 const ALERT_POLL_ATTEMPTS: u32 = 30;
 const ALERT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Volatile fields on every recorded triage mutation response: the raw
+/// update-by-query envelope (`signals_status_ids`/`signals_tags`/
+/// `signals_assignees`/`signals_status_query`) and `profile_suggest` all
+/// carry `took`/`timed_out` (spec section 9); none of the mutation envelopes
+/// carry `_shards`, but stripping it if present is harmless.
+const TRIAGE_ENVELOPE_VOLATILE_FIELDS: &[&str] = &["took", "timed_out", "_shards"];
+
+/// Additional volatile fields on the `signals_search` response beyond the
+/// envelope fields above: relevance scores (meaningless on a `term` query and
+/// non-deterministic across runs) and the per-execution rule-run uuid
+/// (already the treatment `PREVIEW_VOLATILE_FIELDS` gives the same field on
+/// the preview-hits probe).
+const ALERT_SEARCH_VOLATILE_FIELDS: &[&str] = &[
+    "took",
+    "timed_out",
+    "_shards",
+    "_score",
+    "max_score",
+    "kibana.alert.rule.execution.uuid",
+];
+
 const SCRUB_FIELDS: &[&str] = &[
     "username",
     "full_name",
@@ -397,14 +418,21 @@ fn redact_data_views(v: &mut Value) {
 }
 
 /// Rewrite every occurrence of a mapped alert id or profile uid to its fixed
-/// placeholder wherever it appears as a whole string value. Alert ids and
-/// uids are rewritten, never stripped: the alert and profile decoders
-/// require the field present, only its value is sensitive (spec section 9).
+/// placeholder, wherever it appears **inside** a string value — not only
+/// where the whole value equals it. Kibana embeds the real alert uuid inside
+/// a longer string in `kibana.alert.url` (`.../redirect/<uuid>?...`), which a
+/// whole-string match would miss entirely. Alert ids and uids are rewritten,
+/// never stripped: the alert and profile decoders require the field present,
+/// only its value is sensitive (spec section 9). The mapped keys are
+/// server-generated random ids/uuids, so an accidental substring collision
+/// with unrelated content is not a realistic risk.
 fn scrub_placeholder_values(v: &mut Value, map: &BTreeMap<String, String>) {
     match v {
         Value::String(s) => {
-            if let Some(replacement) = map.get(s.as_str()) {
-                *s = replacement.clone();
+            for (real, placeholder) in map {
+                if !real.is_empty() && s.contains(real.as_str()) {
+                    *s = s.replace(real.as_str(), placeholder.as_str());
+                }
             }
         }
         Value::Object(m) => m
@@ -415,12 +443,27 @@ fn scrub_placeholder_values(v: &mut Value, map: &BTreeMap<String, String>) {
     }
 }
 
+/// `kibana.alert.*` fields that don't fit the `_at`/`.start`/`.end` suffix
+/// pattern but are still live timestamps on every recorded alert: the
+/// detection time, the rule-execution time, and the intended run time.
+const ALERT_TIMESTAMP_KEYS: &[&str] = &[
+    "kibana.alert.last_detected",
+    "kibana.alert.original_time",
+    "kibana.alert.intended_timestamp",
+    "kibana.alert.rule.execution.timestamp",
+];
+
 /// True for the alert timestamp key shapes the recorder normalizes:
-/// `@timestamp` and any key ending `_at`, `.start`, or `.end`. Alert
-/// documents flatten `kibana.alert.*` fields into dotted keys directly on
-/// `_source`, not nested objects, so a suffix match on the key is enough.
+/// `@timestamp`, any key ending `_at`, `.start`, or `.end`, and the explicit
+/// names in `ALERT_TIMESTAMP_KEYS`. Alert documents flatten `kibana.alert.*`
+/// fields into dotted keys directly on `_source`, not nested objects, so a
+/// suffix match on the key is enough for the fields that follow the pattern.
 fn is_alert_timestamp_key(key: &str) -> bool {
-    key == "@timestamp" || key.ends_with("_at") || key.ends_with(".start") || key.ends_with(".end")
+    key == "@timestamp"
+        || key.ends_with("_at")
+        || key.ends_with(".start")
+        || key.ends_with(".end")
+        || ALERT_TIMESTAMP_KEYS.contains(&key)
 }
 
 /// Rewrite alert timestamp values to a fixed placeholder in place, keeping
@@ -437,6 +480,32 @@ fn scrub_alert_timestamps(v: &mut Value) {
             }
         }
         Value::Array(a) => a.iter_mut().for_each(scrub_alert_timestamps),
+        _ => {}
+    }
+}
+
+/// Fixed replacement for `kibana.alert.url`. Kibana builds this value as
+/// `/app/security/alerts/redirect/<alertUuid>?index=…&timestamp=<@timestamp>`
+/// — both the alert uuid (the real, unscrubbed `_id`) and a live wall-clock
+/// timestamp are embedded inside a single string value. The substring id
+/// rewrite in `scrub_placeholder_values` fixes the first; this fixes the
+/// second by replacing the whole value outright, since nothing in elasticctl
+/// decodes `kibana.alert.url`.
+const ALERT_FIXTURE_URL: &str =
+    "https://REDACTED.example.invalid/app/security/alerts/redirect/elasticctl-fixture-redacted";
+
+fn scrub_alert_urls(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for (key, value) in m.iter_mut() {
+                if key == "kibana.alert.url" && value.is_string() {
+                    *value = json!(ALERT_FIXTURE_URL);
+                } else {
+                    scrub_alert_urls(value);
+                }
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(scrub_alert_urls),
         _ => {}
     }
 }
@@ -802,6 +871,15 @@ struct CleanupOwnership {
     search_index: bool,
     alert_rule: bool,
     alert_index: bool,
+    /// Set once, when `record_alerts` is about to create the marker rule or
+    /// index, and never cleared back to `false` even after a successful
+    /// delete (unlike `alert_rule`/`alert_index` above, which toggle off
+    /// once deleted and gate whether `cleanup` attempts one). Gates
+    /// `cleanup`'s final re-verification that the object is actually gone —
+    /// the only in-session proof of that for a lab session that gets torn
+    /// down right after.
+    alert_rule_claimed: bool,
+    alert_index_claimed: bool,
 }
 
 #[derive(Default)]
@@ -906,6 +984,39 @@ async fn require_no_open_marker_alerts(
         )));
     }
     Ok(())
+}
+
+/// Best-effort disable of the marker rule (idempotent: a rule that is
+/// already gone or already disabled is not an error, so its result is
+/// ignored), then close every marker alert by query, checking after each
+/// attempt. Retries up to 5 times, 3 seconds apart, to absorb a rule
+/// execution that was already in flight when disabled. Shared by
+/// `record_alerts`'s own residue step and `cleanup`'s last-resort sweep.
+async fn sweep_close_marker_alerts(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    let _ = t
+        .patch(
+            "/api/detection_engine/rules",
+            &json!({"rule_id": ALERT_RULE_ID, "enabled": false}),
+        )
+        .await;
+    let close_query_request = json!({
+        "query": alert_probe_filter(),
+        "status": "closed",
+        "conflicts": "abort",
+        "reason": "automated_closure",
+    });
+    for _ in 0..5 {
+        if require_no_open_marker_alerts(t).await.is_ok() {
+            return Ok(());
+        }
+        t.post(
+            elasticctl_api::alerts::STATUS_PATH,
+            Some(&close_query_request),
+        )
+        .await?;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    require_no_open_marker_alerts(t).await
 }
 
 async fn require_absent_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
@@ -1332,13 +1443,41 @@ impl RecordingSession<'_> {
         // pass also deletes the unrelated fixture-probe rule (`self.ownership.rule`,
         // above), so "before" and "after" would straddle a second, independent
         // deletion and always disagree by one. `require_absent_alert_rule` and
-        // `require_absent_alert_index`, both already run at the top of
-        // `record_alerts`, are what prove the alert probe itself adds and
-        // removes exactly one rule and one index; this final check covers the
-        // one thing those existence probes cannot: no *open* marker alert
-        // residue (closed residue is the accepted deviation, spec section 9).
-        if let Err(error) = require_no_open_marker_alerts(self.transport).await {
-            errors.push(format!("verifying alert probe baseline: {}", error.message));
+        // `require_absent_alert_index` below are what prove the alert probe
+        // itself adds and removes exactly one rule and one index — the only
+        // in-session proof of that, since a lab session is torn down right
+        // after and can't rely on "the next run's baseline check will catch
+        // it".
+        if self.ownership.alert_rule_claimed
+            && let Err(error) = require_absent_alert_rule(self.transport).await
+        {
+            errors.push(format!(
+                "verifying the alert probe rule is gone: {}",
+                error.message
+            ));
+        }
+        if self.ownership.alert_index_claimed
+            && let Err(error) = require_absent_alert_index(self.transport).await
+        {
+            errors.push(format!(
+                "verifying the alert probe index is gone: {}",
+                error.message
+            ));
+        }
+
+        // Last resort: a query-scoped close, retried, before failing on open
+        // residue. This covers the one thing the existence checks above
+        // cannot: no *open* marker alert (closed residue is the accepted
+        // deviation, spec section 9). `sweep_close_marker_alerts` is the same
+        // helper `record_alerts` uses for its own residue step.
+        if let Err(error) = sweep_close_marker_alerts(self.transport).await {
+            errors.push(format!(
+                "verifying alert probe baseline: {}. Manual remediation: POST {} with \
+                 body {{\"query\":{{\"term\":{{\"kibana.alert.rule.rule_id\":\"{ALERT_RULE_ID}\"}}}},\
+                 \"status\":\"closed\",\"conflicts\":\"abort\"}}",
+                error.message,
+                elasticctl_api::alerts::STATUS_PATH,
+            ));
         }
 
         if errors.is_empty() {
@@ -1646,6 +1785,14 @@ async fn record_alerts(
 
     let t = session.transport;
 
+    // Claim ownership before issuing the write, not after a successful
+    // response: a transport failure on a create the server actually applied
+    // (e.g. the response is lost but the write landed) must not orphan an
+    // enabled, 1-minute-interval rule or a scratch index. `cleanup` already
+    // re-verifies the marker fields before deleting anything, so claiming
+    // early cannot cause it to delete a foreign object.
+    session.ownership.alert_index = true;
+    session.ownership.alert_index_claimed = true;
     for (id, seq) in [("1", 1_i64), ("2", 2), ("3", 3)] {
         let doc = json!({
             "@timestamp": now_rfc3339(),
@@ -1663,7 +1810,6 @@ async fn record_alerts(
             "alert index write did not prove the fixed marker identity",
         ));
     }
-    session.ownership.alert_index = true;
     // `_refresh` rejects a body, so use the GET form, which sends none.
     t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
         .await?;
@@ -1683,6 +1829,8 @@ async fn record_alerts(
         "interval": "1m",
         "tags": [ALERT_MARKER_TAG],
     });
+    session.ownership.alert_rule = true;
+    session.ownership.alert_rule_claimed = true;
     let created_rule = t
         .post("/api/detection_engine/rules", Some(&rule_body))
         .await?;
@@ -1691,10 +1839,14 @@ async fn record_alerts(
             "alert rule create response did not prove the fixed marker identity",
         ));
     }
-    session.ownership.alert_rule = true;
 
+    // Poll on the *open* filter, not the bare rule-id filter: closed residue
+    // from an earlier run (the accepted deviation, spec section 9) would
+    // otherwise satisfy the readiness check before this session's rule ever
+    // fires, and the same query becomes the recorded `signals_search`
+    // exchange, so it must capture only this session's own alerts.
     let search_request = json!({
-        "query": alert_probe_filter(),
+        "query": alert_probe_open_filter(),
         "size": 10,
         "track_total_hits": true,
     });
@@ -1749,10 +1901,11 @@ async fn record_alerts(
     {
         let mut request = search_request.clone();
         let mut response = search_response.clone();
-        strip_volatile(&mut response, &["took", "timed_out", "_shards"]);
+        strip_volatile(&mut response, ALERT_SEARCH_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &id_map);
         scrub_placeholder_values(&mut response, &id_map);
         scrub_alert_timestamps(&mut response);
+        scrub_alert_urls(&mut response);
         recording.fixtures.push(exchange_fixture(
             "signals_search",
             flavor,
@@ -1799,6 +1952,7 @@ async fn record_alerts(
     {
         let mut request = ids_status_request;
         let mut response = ids_status_response;
+        strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &id_map);
         scrub_placeholder_values(&mut response, &id_map);
         recording.fixtures.push(exchange_fixture(
@@ -1833,6 +1987,7 @@ async fn record_alerts(
     {
         let mut request = add_tags_request;
         let mut response = add_tags_response;
+        strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &id_map);
         scrub_placeholder_values(&mut response, &id_map);
         recording.fixtures.push(exchange_fixture(
@@ -1908,6 +2063,7 @@ async fn record_alerts(
     {
         let mut request = add_assignees_request;
         let mut response = add_assignees_response;
+        strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &id_map);
         scrub_placeholder_values(&mut response, &id_map);
         scrub_placeholder_values(&mut request, &uid_map);
@@ -1945,6 +2101,7 @@ async fn record_alerts(
                     uid_map.insert(profile.uid.clone(), format!("u_REDACTED_{next_index}"));
                 }
             }
+            strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
             scrub_placeholder_values(&mut response, &uid_map);
             recording.fixtures.push(response_fixture(
                 "profile_suggest",
@@ -1995,8 +2152,9 @@ async fn record_alerts(
         ))
     })?;
     {
-        let mut request = close_query_request.clone();
+        let mut request = close_query_request;
         let mut response = close_query_response;
+        strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &id_map);
         scrub_placeholder_values(&mut response, &id_map);
         recording.fixtures.push(exchange_fixture(
@@ -2009,20 +2167,10 @@ async fn record_alerts(
     }
 
     // Verify and retry: an execution that was already in progress when the
-    // rule was disabled can still land alerts after the close above. Sweep a
-    // few more times before giving up, rather than leaving open residue.
-    for _ in 0..5 {
-        if require_no_open_marker_alerts(t).await.is_ok() {
-            return Ok(());
-        }
-        t.post(
-            elasticctl_api::alerts::STATUS_PATH,
-            Some(&close_query_request),
-        )
-        .await?;
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    }
-    require_no_open_marker_alerts(t).await.map_err(|error| {
+    // rule was disabled can still land alerts after the close above.
+    // `sweep_close_marker_alerts` is the same helper `cleanup`'s last-resort
+    // sweep uses.
+    sweep_close_marker_alerts(t).await.map_err(|error| {
         recording_error(format!(
             "alert probe left open residue after retrying the close-by-query sweep: {}",
             error.message
@@ -2944,25 +3092,45 @@ mod tests {
     }
 
     #[test]
-    fn scrub_placeholder_values_rewrites_whole_string_matches_only() {
+    fn scrub_placeholder_values_rewrites_substring_matches_too() {
+        // The regression this guards: Kibana embeds the real alert uuid
+        // inside a longer string (`kibana.alert.url`'s
+        // `.../redirect/<uuid>?...`); a whole-string-only match misses it
+        // entirely.
         let mut map = BTreeMap::new();
         map.insert(
-            "real-id".to_string(),
+            "abc123realid".to_string(),
             "elasticctl-fixture-alert-1".to_string(),
         );
         let mut value = json!({
-            "_id": "real-id",
-            "signal_ids": ["real-id"],
-            "note": "not-real-id-substring",
-            "kibana.alert.uuid": "real-id"
+            "_id": "abc123realid",
+            "signal_ids": ["abc123realid"],
+            "kibana.alert.url": "https://host/app/security/alerts/redirect/abc123realid?index=x",
+            "unrelated": "nothing to see here"
         });
 
         scrub_placeholder_values(&mut value, &map);
 
         assert_eq!(value["_id"], "elasticctl-fixture-alert-1");
         assert_eq!(value["signal_ids"][0], "elasticctl-fixture-alert-1");
-        assert_eq!(value["kibana.alert.uuid"], "elasticctl-fixture-alert-1");
-        assert_eq!(value["note"], "not-real-id-substring");
+        assert_eq!(
+            value["kibana.alert.url"],
+            "https://host/app/security/alerts/redirect/elasticctl-fixture-alert-1?index=x"
+        );
+        assert_eq!(value["unrelated"], "nothing to see here");
+    }
+
+    #[test]
+    fn scrub_alert_urls_replaces_the_whole_value() {
+        let mut value = json!({
+            "kibana.alert.url": "https://REDACTED.example.invalid/app/security/alerts/redirect/deadbeef?index=x&timestamp=2026-09-01T05:48:22.428Z",
+            "kibana.alert.rule.name": "keep me"
+        });
+
+        scrub_alert_urls(&mut value);
+
+        assert_eq!(value["kibana.alert.url"], ALERT_FIXTURE_URL);
+        assert_eq!(value["kibana.alert.rule.name"], "keep me");
     }
 
     #[test]
@@ -2973,6 +3141,9 @@ mod tests {
             "kibana.alert.start": "2026-08-30T21:14:02.000Z",
             "kibana.alert.end": "2026-08-30T21:14:02.000Z",
             "kibana.alert.original_time": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.last_detected": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.intended_timestamp": "2026-08-30T21:14:02.000Z",
+            "kibana.alert.rule.execution.timestamp": "2026-08-30T21:14:02.000Z",
             "kibana.alert.workflow_status": "open"
         });
 
@@ -2986,8 +3157,17 @@ mod tests {
         assert_eq!(value["kibana.alert.start"], ALERT_FIXTURE_TIMESTAMP);
         assert_eq!(value["kibana.alert.end"], ALERT_FIXTURE_TIMESTAMP);
         assert_eq!(
-            value["kibana.alert.original_time"], "2026-08-30T21:14:02.000Z",
-            "only the named key shapes are rewritten"
+            value["kibana.alert.original_time"], ALERT_FIXTURE_TIMESTAMP,
+            "explicit key shapes are rewritten too, not just the _at/.start/.end suffix pattern"
+        );
+        assert_eq!(value["kibana.alert.last_detected"], ALERT_FIXTURE_TIMESTAMP);
+        assert_eq!(
+            value["kibana.alert.intended_timestamp"],
+            ALERT_FIXTURE_TIMESTAMP
+        );
+        assert_eq!(
+            value["kibana.alert.rule.execution.timestamp"],
+            ALERT_FIXTURE_TIMESTAMP
         );
         assert_eq!(value["kibana.alert.workflow_status"], "open");
     }

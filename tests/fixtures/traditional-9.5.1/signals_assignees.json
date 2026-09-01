@@ -14,8 +14,6 @@
     }
   },
   "response": {
-    "took": 15,
-    "timed_out": false,
     "total": 1,
     "updated": 1,
     "deleted": 0,
