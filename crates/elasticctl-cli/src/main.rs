@@ -269,8 +269,13 @@ async fn main() {
                 path,
                 overwrite,
                 skip_existing,
-            } => match Context::build(&args.global) {
-                Ok(ctx) => cmd::data_views::import(&ctx, path, *overwrite, *skip_existing).await,
+            } => match cmd::data_views::validate_import_artifact(path) {
+                Ok(()) => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::data_views::import(&ctx, path, *overwrite, *skip_existing).await
+                    }
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
             },
             DataViewsAction::Delete {

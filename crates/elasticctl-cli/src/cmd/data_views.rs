@@ -19,15 +19,20 @@ pub async fn list(ctx: &Context, search: Option<String>) -> Result<Value> {
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
     let report = data_views_ops::list_op(transport, &DataViewFilter { search }).await?;
-    Ok(json!({
-        "total": report.total,
-        "data_views": report.data_views.iter().map(|view| json!({
-            "id": view.id,
-            "name": view.name,
-            "title": view.title,
-            "time_field_name": view.time_field_name,
-        })).collect::<Vec<_>>(),
-    }))
+    Ok(Value::Array(
+        report
+            .data_views
+            .iter()
+            .map(|view| {
+                json!({
+                    "id": view.id,
+                    "name": view.name,
+                    "title": view.title,
+                    "time_field_name": view.time_field_name,
+                })
+            })
+            .collect(),
+    ))
 }
 
 pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
@@ -42,6 +47,19 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
 pub fn validate(path: &Path) -> Result<Value> {
     let specs = data_views_ops::validate(path)?;
     Ok(json!({"valid": true, "total": specs.len()}))
+}
+
+/// Validate the entire import artifact before configuration is consulted.
+/// `plan_import` remains the authoritative plan builder and validates again.
+pub fn validate_import_artifact(path: &Path) -> Result<()> {
+    let specs = data_views_ops::validate(path)?;
+    if specs.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "data-view import needs at least one data view",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn export(
@@ -77,11 +95,16 @@ pub async fn import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
-    // The API reads and validates the complete file while making the preflight
-    // plan. It retains the parsed specs, so apply never re-reads this path.
-    ctx.require_credential()?;
-    let transport = ctx.transport().await?;
-    let plan = data_views_ops::plan_import(Some(transport), path, overwrite, skip_existing).await?;
+    // A no-flag dry run is entirely local. Any mode that may apply or inspect
+    // conflicts uses the authenticated preflight and retains its API plan.
+    let needs_server_preflight = ctx.global.yes || overwrite || skip_existing;
+    let transport = if needs_server_preflight {
+        ctx.require_credential()?;
+        Some(ctx.transport().await?)
+    } else {
+        None
+    };
+    let plan = data_views_ops::plan_import(transport, path, overwrite, skip_existing).await?;
     let preview = Preview {
         action: plan.preview.preview_action.clone(),
         details: plan.preview.preview_details.clone(),
@@ -94,6 +117,7 @@ pub async fn import(
             "pending": plan.preview.targets.len(),
         }));
     }
+    let transport = transport.expect("--yes requires an authenticated import preflight");
     to_value(&data_views_ops::apply_import(transport, &plan).await?)
 }
 

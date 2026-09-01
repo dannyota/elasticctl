@@ -20,6 +20,18 @@ fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
     path
 }
 
+fn credential_less_config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
+    let path = dir.join("credential-less.toml");
+    fs::write(
+        &path,
+        format!(
+            "current = \"default\"\n\n[profiles.default]\nkibana_url = \"{uri}\"\nspace = \"default\"\nverify = true\ntimeout_secs = 5\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
 fn summary(id: &str, name: &str) -> Value {
     json!({"id": id, "name": name, "title": format!("logs-{id}-*"), "timeFieldName": "@timestamp"})
 }
@@ -134,6 +146,84 @@ fn validate_is_local_and_uses_json_or_yaml_extensions() {
         .success();
 }
 
+#[test]
+fn import_artifact_errors_precede_configuration_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent_config = dir.path().join("absent-config.toml");
+    let missing = dir.path().join("missing.json");
+    let malformed = dir.path().join("malformed.json");
+    let empty = dir.path().join("empty.json");
+    fs::write(&malformed, "[{\"id\":\"dv\",\"titel\":\"typo\"}]").unwrap();
+    fs::write(&empty, "[]").unwrap();
+
+    for (artifact, expected) in [
+        (missing.as_path(), "reading"),
+        (malformed.as_path(), "unknown field"),
+        (
+            empty.as_path(),
+            "data-view import needs at least one data view",
+        ),
+    ] {
+        let output = Command::cargo_bin("elasticctl")
+            .unwrap()
+            .args(["data-views", "import", "--path"])
+            .arg(artifact)
+            .args(["--json", "--config"])
+            .arg(&absent_config)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains(expected), "{message}");
+        assert!(!message.contains("config"), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn import_conflict_modes_use_authenticated_server_preflight() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(dir.path(), &server.uri());
+    let artifact = dir.path().join("views.json");
+    fs::write(&artifact, "[{\"id\":\"dv\",\"title\":\"logs-*\"}]").unwrap();
+
+    for flag in ["--overwrite", "--skip-existing"] {
+        let output = Command::cargo_bin("elasticctl")
+            .unwrap()
+            .args(["data-views", "import", "--path"])
+            .arg(&artifact)
+            .arg(flag)
+            .args(["--json", "--config"])
+            .arg(&config)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/api/data_views/data_view/dv")
+            .count(),
+        2
+    );
+}
+
 #[tokio::test]
 async fn list_get_and_export_preserve_portable_artifacts() {
     let server = server_with_view().await;
@@ -148,8 +238,25 @@ async fn list_get_and_export_preserve_portable_artifacts() {
         .unwrap();
     assert!(list.status.success());
     let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
-    assert_eq!(listed["data_views"][0]["id"], "dv");
-    assert_eq!(listed["data_views"][0]["time_field_name"], "@timestamp");
+    assert_eq!(listed[0]["id"], "dv");
+    assert_eq!(listed[0]["time_field_name"], "@timestamp");
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+
+    let table = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["data-views", "list", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(table.status.success());
+    let table = String::from_utf8_lossy(&table.stdout);
+    for column in ["id", "name", "title", "time_field_name"] {
+        assert!(table.contains(column), "{table}");
+    }
+    assert!(
+        table.contains("Security events") && table.contains("Replacement"),
+        "{table}"
+    );
 
     let get = Command::cargo_bin("elasticctl")
         .unwrap()
@@ -182,6 +289,24 @@ async fn list_get_and_export_preserve_portable_artifacts() {
     let artifact = String::from_utf8_lossy(&export.stdout);
     assert!(artifact.starts_with("- id: dv"), "{artifact}");
     assert!(!artifact.contains("exported"), "{artifact}");
+
+    let json_export = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "data-views",
+            "export",
+            "dv",
+            "--format-file",
+            "json",
+            "--format",
+            "table",
+            "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(json_export.status.success());
+    assert!(String::from_utf8_lossy(&json_export.stdout).starts_with("[\n"));
 
     let out_path = dir.path().join("views.json");
     let confirmation = Command::cargo_bin("elasticctl")
@@ -271,20 +396,12 @@ async fn guarded_default_set_dry_runs_then_posts_the_checked_snapshot() {
 async fn import_and_default_unset_dry_runs_never_write() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/data_views/data_view/dv"))
-        .respond_with(
-            ResponseTemplate::new(404)
-                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
         .and(path("/api/data_views/default"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "dv"})))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let config = config_for(dir.path(), &server.uri());
+    let config = credential_less_config_for(dir.path(), &server.uri());
     let artifact = dir.path().join("views.json");
     fs::write(&artifact, "[{\"id\":\"dv\",\"title\":\"logs-*\"}]").unwrap();
 
@@ -303,10 +420,14 @@ async fn import_and_default_unset_dry_runs_never_write() {
     );
     assert!(String::from_utf8_lossy(&import.stderr).contains("[DRY RUN]"));
 
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    let privileged_config = config_for(dir.path(), &server.uri());
+
     let unset = Command::cargo_bin("elasticctl")
         .unwrap()
         .args(["data-views", "default", "unset", "--json", "--config"])
-        .arg(&config)
+        .arg(&privileged_config)
         .output()
         .unwrap();
     assert!(
@@ -322,6 +443,95 @@ async fn import_and_default_unset_dry_runs_never_write() {
             .unwrap()
             .iter()
             .any(|request| request.method == "POST")
+    );
+}
+
+#[tokio::test]
+async fn default_unset_applies_the_explicit_null_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "dv"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/default"))
+        .and(body_partial_json(
+            json!({"data_view_id": null, "force": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(dir.path(), &server.uri());
+    let output = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "data-views",
+            "default",
+            "unset",
+            "--yes",
+            "--json",
+            "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["data_view_id"],
+        Value::Null
+    );
+}
+
+#[tokio::test]
+async fn direct_delete_dry_run_names_the_target_and_sends_no_delete() {
+    let server = server_with_view().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(dir.path(), &server.uri());
+    let output = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["data-views", "delete", "dv", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[DRY RUN]")
+            && stderr.contains("profile: default")
+            && stderr.contains("space: default"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(server.uri().trim_start_matches("http://")),
+        "{stderr}"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "DELETE")
     );
 }
 
@@ -377,6 +587,43 @@ async fn import_apply_uses_the_planned_create_and_never_rereads_the_artifact() {
 }
 
 #[tokio::test]
+async fn import_partial_failure_renders_typed_failed_rows_and_exits_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/data_view"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_json(json!({"statusCode": 500, "message": "create failed"})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(dir.path(), &server.uri());
+    let artifact = dir.path().join("views.json");
+    fs::write(&artifact, "[{\"id\":\"dv\",\"title\":\"logs-*\"}]").unwrap();
+    let output = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["data-views", "import", "--path"])
+        .arg(&artifact)
+        .args(["--yes", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["failed"][0]["id"], "dv");
+    assert_eq!(report["failed"][0]["applied"], false);
+}
+
+#[tokio::test]
 async fn delete_apply_rechecks_then_uses_the_direct_delete_route() {
     let server = server_with_view().await;
     Mock::given(method("GET"))
@@ -411,6 +658,61 @@ async fn delete_apply_rechecks_then_uses_the_direct_delete_route() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["deleted"][0]["id"],
         "dv"
     );
+}
+
+#[tokio::test]
+async fn delete_partial_failure_renders_typed_failed_rows_and_exits_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data_view": [summary("a", "Alpha"), summary("b", "Beta")]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/b"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_json(json!({"statusCode": 500, "message": "delete failed"})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_for(dir.path(), &server.uri());
+    let output = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args([
+            "data-views",
+            "delete",
+            "a",
+            "b",
+            "--yes",
+            "--json",
+            "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["deleted"][0]["id"], "a");
+    assert_eq!(report["failed"][0]["id"], "b");
 }
 
 #[tokio::test]
