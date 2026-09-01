@@ -325,6 +325,20 @@ impl LiveCleanup {
         runtime.block_on(async move {
             let transport = Transport::new(&profile)
                 .map_err(|e| format!("building alert-cleanup transport: {}", e.message))?;
+            // Best-effort: the rule is still enabled at this point (its own
+            // `rules delete` runs later in `clean()`), so without disabling
+            // it here first, a 1-minute-interval execution can land a fresh
+            // open alert between this close-by-query and the verify below.
+            // Mirrors the recorder's `sweep_close_marker_alerts`
+            // (xtask/src/main.rs). Errors are ignored: the rule may already
+            // be deleted or never created, and the close-and-verify plus the
+            // baseline backstop are the real guarantees, not this PATCH.
+            let _ = transport
+                .patch(
+                    "/api/detection_engine/rules",
+                    &json!({"rule_id": rule_id, "enabled": false}),
+                )
+                .await;
             elasticctl_api::alerts::status_by_query(
                 &transport,
                 &json!({"term": {"kibana.alert.rule.rule_id": rule_id}}),
