@@ -929,6 +929,102 @@ async fn apply_import_accepts_an_all_skipped_plan_without_http() {
 }
 
 #[tokio::test]
+async fn apply_import_rejects_noncanonical_or_overwrite_skipped_rows_before_http() {
+    let server = MockServer::start().await;
+    let valid = || DataViewImportPlan {
+        preview: MutationPlan {
+            preview_action: "Import 0 data view(s) from test".into(),
+            preview_details: Vec::new(),
+            targets: Vec::new(),
+        },
+        specs: Vec::new(),
+        before: BTreeMap::new(),
+        patches: BTreeMap::new(),
+        skipped: vec![
+            json!({"id": "a", "reason": "exists"}),
+            json!({"id": "z", "reason": "exists"}),
+        ],
+        total: 2,
+        overwrite: false,
+    };
+    let mut reversed_rows = valid();
+    reversed_rows.skipped.reverse();
+    let mut reversed_keys = valid();
+    reversed_keys.skipped = vec![json!({"reason": "exists", "id": "a"})];
+    reversed_keys.total = 1;
+    let mut overwrite = valid();
+    overwrite.overwrite = true;
+
+    for plan in [reversed_rows, reversed_keys, overwrite] {
+        assert!(
+            data_views_ops::apply_import(&transport(&server), &plan)
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn plan_skip_existing_all_then_apply_retains_canonical_zero_target_plan() {
+    let server = MockServer::start().await;
+    for id in ["a", "b"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/data_views/data_view/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response(spec(id))))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let path = artifact(&[spec("b"), spec("a")]);
+
+    let plan = data_views_ops::plan_import(Some(&transport(&server)), &path, false, true)
+        .await
+        .expect("all skipped plan");
+
+    assert_eq!(plan.total, 2);
+    assert!(plan.specs.is_empty());
+    assert_eq!(plan.preview.targets, Vec::<String>::new());
+    assert!(plan.preview.preview_details.is_empty());
+    assert_eq!(
+        plan.skipped,
+        vec![
+            json!({"id": "a", "reason": "exists"}),
+            json!({"id": "b", "reason": "exists"}),
+        ]
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("plan requests")
+            .len(),
+        2
+    );
+
+    let report = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect("all skipped apply");
+
+    assert_eq!(report.total, 2);
+    assert_eq!(report.skipped, plan.skipped);
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("all requests")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn plan_import_is_local_without_conflict_flags() {
     let path = artifact(&[spec("dv-new")]);
 

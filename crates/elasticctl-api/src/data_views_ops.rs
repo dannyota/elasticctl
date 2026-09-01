@@ -632,23 +632,32 @@ fn validate_import_plan(plan: &DataViewImportPlan) -> Result<()> {
         pending_ids.push(spec.id.clone());
     }
     let pending: BTreeSet<_> = pending_ids.iter().cloned().collect();
+    if !plan.skipped.is_empty() && plan.overwrite {
+        return invalid_plan("skipped data views require skip-existing mode");
+    }
     let mut skipped_ids = BTreeSet::new();
+    let mut previous_skipped = None;
     for row in &plan.skipped {
         let object = row
             .as_object()
             .filter(|object| object.len() == 2)
             .ok_or_else(|| Error::new(ErrorKind::Error, "invalid data-view import skipped row"))?;
+        if !object.keys().map(String::as_str).eq(["id", "reason"]) {
+            return invalid_plan("invalid data-view import skipped row order");
+        }
         let id = object
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| !id.trim().is_empty())
             .ok_or_else(|| Error::new(ErrorKind::Error, "invalid data-view import skipped row"))?;
         if object.get("reason").and_then(Value::as_str) != Some("exists")
+            || previous_skipped.is_some_and(|previous: &str| previous >= id)
             || !skipped_ids.insert(id.to_owned())
             || pending.contains(id)
         {
             return invalid_plan("invalid data-view import skipped rows");
         }
+        previous_skipped = Some(id);
     }
     if plan.preview.targets != pending_ids {
         return invalid_plan("preview targets do not match pending data views");
