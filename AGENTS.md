@@ -84,7 +84,7 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
 
 - Never commit it, copy its contents into tracked files, or echo a key into output or commits.
 - Live systems are trial-only Serverless and Hosted test deployments. Never expose their URLs, IDs, credentials, or
-  identifying data. On 2026-08-15, 11 days remain; expected expiry is 2026-08-26.
+  identifying data. The trial was extended; it ends 2026-09-08 at 08:56 UTC.
 - `.env.example` is the committed template and must contain placeholders only.
 - An **organization-level** Cloud API key is not enough. Every key type carries the `essu_`
   prefix, so it does not indicate scope. Only `GET /_security/_authenticate` reports the realm.
@@ -121,6 +121,8 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
   with `preview_id`. The only in-band hit signal is the `max_signals` warning at 100+.
 - Re-importing existing rules without overwrite is a per-rule 409 storm, not a skip: N "already
   exists" errors and exit 1.
+- ES|QL `POST /_query/async` rejects `format`: a `format: csv` body is a 400 "unknown field".
+  `columnar: true` is accepted, so CSV export transposes the columnar response client-side.
 
 ## Testing
 
@@ -141,7 +143,8 @@ oversubscribe the CPU. Do not commit `RUST_TEST_THREADS` to `.cargo/config.toml`
 fewer cores than the dev machine.
 
 Fixtures are recorded from real traffic, never hand-written. They are tagged with flavor and
-stack version. Do not hand-edit a fixture to make a test pass; re-record it.
+stack version, and live in `tests/fixtures/<flavor>-<version>/`. Do not hand-edit a fixture to
+make a test pass; re-record it.
 
 The directory is named for the *deployment* flavor, not the reported flavor. Hosted and
 self-managed both report `build_flavor: "traditional"`. Recording a Hosted stack without
