@@ -10,8 +10,8 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    AlertsAction, Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction,
-    RulesAction, SearchAction, SourceArg, StateAction,
+    AlertsAction, CasesAction, Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs,
+    PrebuiltAction, RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -438,6 +438,32 @@ async fn main() {
                 Err(e) => Err(e),
             },
         },
+        Command::Cases { action } => match action {
+            CasesAction::List {
+                status,
+                severity,
+                tag,
+                search,
+                limit,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::cases::list(
+                        &ctx,
+                        status.as_deref(),
+                        severity.as_deref(),
+                        tag.as_deref(),
+                        search.as_deref(),
+                        *limit,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            CasesAction::Get { case_id } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::get(&ctx, case_id).await,
+                Err(e) => Err(e),
+            },
+        },
         // Completion streams a shell script to stdout. Its null placeholder is
         // never rendered because the result match exits first.
         Command::Completion { shell } => cmd::meta::completion(*shell).map(|_| Value::Null),
@@ -497,13 +523,17 @@ async fn main() {
                 if out_already_written {
                     g.out = None;
                 }
-                // `search --out` and `alerts list --out` write NDJSON (JSONL)
-                // by default; `--format` or `--json` still override it.
+                // `search --out`, `alerts list --out`, and `cases list --out`
+                // write NDJSON (JSONL) by default; `--format` or `--json`
+                // still override it.
                 if matches!(
                     &args.command,
                     Command::Search { .. }
                         | Command::Alerts {
                             action: AlertsAction::List { .. }
+                        }
+                        | Command::Cases {
+                            action: CasesAction::List { .. }
                         }
                 ) && args.global.out.is_some()
                     && args.global.format.is_none()

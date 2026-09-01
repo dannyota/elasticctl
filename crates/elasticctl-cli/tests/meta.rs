@@ -58,6 +58,7 @@ fn the_command_tree_lists_every_top_level_group() {
         "rules",
         "state",
         "alerts",
+        "cases",
         "completion",
         "commands",
     ] {

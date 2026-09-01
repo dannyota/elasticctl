@@ -157,6 +157,11 @@ pub enum Command {
         #[command(subcommand)]
         action: AlertsAction,
     },
+    /// Track investigations as cases
+    Cases {
+        #[command(subcommand)]
+        action: CasesAction,
+    },
     /// Generate a shell completion script
     Completion {
         #[arg(value_enum)]
@@ -502,6 +507,33 @@ pub enum AlertsAction {
         /// Username or uid:<profile_uid> to unassign (repeatable)
         #[arg(long)]
         remove: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CasesAction {
+    /// List cases
+    List {
+        /// Filter by status
+        #[arg(long, value_parser = ["open", "in-progress", "closed"])]
+        status: Option<String>,
+        /// Filter by severity
+        #[arg(long)]
+        severity: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Substring match on title and description
+        #[arg(long)]
+        search: Option<String>,
+        /// Cap the rows returned (default 100)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show one case in full
+    Get {
+        /// The case id
+        case_id: String,
     },
 }
 
