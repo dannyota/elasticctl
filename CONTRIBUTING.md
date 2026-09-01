@@ -40,6 +40,7 @@ opt-in:
 ELASTICCTL_LIVE=1 cargo test --locked --test live -- --ignored --test-threads=1
 cargo xtask conformance --flavor serverless \
   --report-dir docs/conformance/v0.2.5
+cargo xtask conformance-matrix --report-dir docs/conformance/v0.2.5
 ```
 
 A live run creates only objects marked `elasticctl-sample` and verifies the
@@ -48,7 +49,9 @@ The conformance runner reads the same generic `ELASTICCTL_*` variables as the
 fixture recorder. Map `ELASTICCTL_ECH_*` into those names for Hosted. Raw test
 output stays under the ignored `target/conformance-private/` directory; only
 the scrubbed report is tracked. Supply the disposable lab key only to the
-runner process and never persist it.
+runner process and never persist it. `conformance-matrix` runs all three
+flavors above as concurrent child processes instead of one at a time; see
+design spec 8.3.
 
 ## Fixtures are recorded, never written
 

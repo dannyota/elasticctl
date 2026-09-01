@@ -62,9 +62,9 @@ impl Args {
     }
 }
 
-/// Parse a comma-separated flavor list, rejecting an unknown name or a repeat
-/// without echoing the offending value, matching `conformance::Args::parse`'s
-/// style.
+/// Parse a comma-separated flavor list, trimming whitespace and rejecting an
+/// unknown name or a repeat without echoing the offending value, matching
+/// `conformance::Args::parse`'s style.
 fn parse_flavors(value: &str) -> Result<Vec<String>, String> {
     let mut seen = BTreeSet::new();
     let mut flavors = Vec::new();
@@ -90,10 +90,35 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Build the `live` integration test binary once before any leg starts.
+///
+/// `conformance` shells out to `cargo test --locked --test live <contract>`
+/// per contract. If all three legs hit that build for the first time at
+/// once, Cargo serializes the concurrent compiles behind its workspace build
+/// lock, and the wall-clock win this command exists for stalls into a
+/// compile queue instead (design spec 8.3).
+async fn prebuild_live_tests(workspace: &Path) -> Result<(), String> {
+    let output = Command::new("cargo")
+        .current_dir(workspace)
+        .args(["test", "--locked", "--test", "live", "--no-run"])
+        .output()
+        .await
+        .map_err(|error| format!("pre-building the live test binary: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "pre-building the live test binary exited with {}",
+            output.status
+        ))
+    }
+}
+
 /// Build the child invocation `conformance --flavor <f> --report-dir <dir>`
 /// against the current executable, so a locally built `xtask` and one
 /// installed elsewhere both dispatch to themselves rather than a `PATH`
-/// lookup.
+/// lookup. `kill_on_drop` limits how long a live-marker-owning child can
+/// outlive this runner if a leg's task is aborted or panics.
 fn spawn_conformance_child(exe: &Path, flavor: &str, report_dir: &Path) -> Command {
     let mut command = Command::new(exe);
     command
@@ -102,18 +127,27 @@ fn spawn_conformance_child(exe: &Path, flavor: &str, report_dir: &Path) -> Comma
         .arg(flavor)
         .arg("--report-dir")
         .arg(report_dir)
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
 }
 
-/// Stream a child's stdout and stderr to the parent's stdout, each line
-/// prefixed with the flavor name, then wait for it to exit.
+/// Stream a child's stdout and stderr to the parent, stdout via `println!`
+/// and stderr via `eprintln!`, each line prefixed with the flavor name, then
+/// wait for it to exit.
+///
+/// Reads raw byte segments split on `\n` and lossily converts each one,
+/// rather than using `AsyncBufReadExt::lines`, which returns an `Err` and
+/// ends the stream on the first invalid UTF-8 byte. That would leave the
+/// child's stdout pipe unread; if the child then wrote anything more, it
+/// could be killed by `SIGPIPE` mid-contract, leaving live-marker objects
+/// behind uncleaned.
 ///
 /// `conformance` writes only public one-line messages (design spec 8.3), so
-/// no further redaction happens here. This helper must never be pointed at a
-/// process that can print a credential; `lab/up.sh` and `lab/down.sh` are not
-/// run through it for exactly that reason.
+/// no redaction happens here. This helper must never be pointed at a process
+/// that can print a credential; `lab/up.sh` and `lab/down.sh` are not run
+/// through it for exactly that reason.
 async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, String> {
     let stdout = child
         .stdout
@@ -126,16 +160,16 @@ async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, Str
 
     let out_flavor = flavor.to_string();
     let stdout_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            println!("[{out_flavor}] {line}");
+        let mut chunks = BufReader::new(stdout).split(b'\n');
+        while let Ok(Some(chunk)) = chunks.next_segment().await {
+            println!("[{out_flavor}] {}", String::from_utf8_lossy(&chunk));
         }
     });
     let err_flavor = flavor.to_string();
     let stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            println!("[{err_flavor}] {line}");
+        let mut chunks = BufReader::new(stderr).split(b'\n');
+        while let Ok(Some(chunk)) = chunks.next_segment().await {
+            eprintln!("[{err_flavor}] {}", String::from_utf8_lossy(&chunk));
         }
     });
 
@@ -164,7 +198,10 @@ async fn run_serverless_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), Str
 
 /// Map the `ELASTICCTL_ECH_*` target onto the generic `ELASTICCTL_*` names the
 /// child expects, the same mapping AGENTS.md documents for the fixture
-/// recorder. Fail before spawning anything if a piece is missing.
+/// recorder. Fail before spawning anything if a required piece is missing.
+/// `ELASTICCTL_SPACE` is set explicitly rather than left to inherit the
+/// parent's value, since a space configured for another purpose could
+/// silently scope this run to the wrong place.
 async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let kibana_url = std::env::var("ELASTICCTL_ECH_KIBANA_URL")
         .map_err(|_| "missing ELASTICCTL_ECH_KIBANA_URL".to_string())?;
@@ -172,12 +209,14 @@ async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
         .map_err(|_| "missing ELASTICCTL_ECH_ES_URL".to_string())?;
     let api_key = std::env::var("ELASTICCTL_ECH_API_KEY")
         .map_err(|_| "missing ELASTICCTL_ECH_API_KEY".to_string())?;
+    let space = std::env::var("ELASTICCTL_ECH_SPACE").unwrap_or_else(|_| "default".to_string());
 
     let mut command = spawn_conformance_child(&exe, "ech", &report_dir);
     command
         .env("ELASTICCTL_KIBANA_URL", kibana_url)
         .env("ELASTICCTL_ES_URL", es_url)
-        .env("ELASTICCTL_API_KEY", api_key);
+        .env("ELASTICCTL_API_KEY", api_key)
+        .env("ELASTICCTL_SPACE", space);
     let child = command
         .spawn()
         .map_err(|error| format!("spawning ech leg: {error}"))?;
@@ -189,18 +228,36 @@ async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     }
 }
 
+/// Write a failure's real detail to a private, owner-only log and return a
+/// public message that names only its workspace-relative path, mirroring
+/// `conformance::private_failure`. The detail can carry an authentication
+/// error naming the lab's own request, so it must never be returned as the
+/// failure message itself.
+fn private_failure(workspace: &Path, name: &str, detail: impl AsRef<[u8]>) -> String {
+    let path = lab_log_path(workspace, name);
+    if write_private_log(&path, detail.as_ref()).is_err() {
+        return "conformance-matrix failed and its private log could not be written".to_string();
+    }
+    let relative = path.strip_prefix(workspace).unwrap_or(&path);
+    format!(
+        "traditional {name} failed; private detail is in {}",
+        relative.display()
+    )
+}
+
 /// Mint a fresh Elasticsearch API key against the lab's bootstrap user.
 ///
 /// `lab/up.sh` mints its own key and prints it for a human to paste into
 /// `elasticctl config init`, but reading it back here would mean parsing
 /// script stdout, which the design brief for this command forbids. Minting a
 /// second, independent key sidesteps that parse entirely.
-async fn mint_traditional_api_key() -> Result<String, String> {
+async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
     let mut profile = elasticctl_core::Profile {
-        kibana_url: "http://localhost:9200".to_string(),
+        kibana_url: "http://localhost:5601".to_string(),
         es_url: Some("http://localhost:9200".to_string()),
         api_key: None,
         username: Some("elastic".to_string()),
+        // lab/compose.yaml sets ELASTIC_PASSWORD to this value.
         password: Some("elasticctl-lab".to_string()),
         space: "default".to_string(),
         verify: true,
@@ -208,18 +265,56 @@ async fn mint_traditional_api_key() -> Result<String, String> {
     };
     profile.strip_userinfo();
     let transport = elasticctl_core::Transport::new(&profile)
-        .map_err(|_| "building lab API key transport failed".to_string())?;
+        .map_err(|error| private_failure(workspace, "lab-mint", error.message.as_bytes()))?;
     let response = transport
         .post_absolute_es(
             "/_security/api_key",
             &serde_json::json!({"name": "elasticctl-matrix"}),
         )
         .await
-        .map_err(|_| "minting lab API key failed".to_string())?;
+        .map_err(|error| private_failure(workspace, "lab-mint", error.message.as_bytes()))?;
     response["encoded"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| "lab API key response is missing encoded".to_string())
+        .ok_or_else(|| {
+            private_failure(
+                workspace,
+                "lab-mint",
+                "lab API key response is missing encoded",
+            )
+        })
+}
+
+/// Install Elastic's prebuilt rule pack against the freshly minted key, the
+/// same request `xtask seed` sends.
+///
+/// `lab/down.sh` always runs `compose down -v`, so every lab boot starts
+/// empty. Without this, `source_scoping` fails on every matrix run because it
+/// has no prebuilt rules to partition against custom ones (design spec 8.3).
+async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), String> {
+    let mut profile = elasticctl_core::Profile {
+        kibana_url: "http://localhost:5601".to_string(),
+        es_url: Some("http://localhost:9200".to_string()),
+        api_key: Some(api_key.to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        // A prepackaged install can exceed the normal 60-second timeout on a
+        // fresh stack; `xtask seed` uses the same 600-second allowance.
+        timeout_secs: 600,
+    };
+    profile.strip_userinfo();
+    let transport = elasticctl_core::Transport::new(&profile)
+        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+    transport
+        .put(
+            "/api/detection_engine/rules/prepackaged",
+            &serde_json::json!({}),
+        )
+        .await
+        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+    Ok(())
 }
 
 fn lab_log_path(workspace: &Path, name: &str) -> PathBuf {
@@ -230,9 +325,30 @@ fn lab_log_path(workspace: &Path, name: &str) -> PathBuf {
         .join(format!("{name}.log"))
 }
 
+/// Redact any line containing `ELASTICCTL_API_KEY=` from captured script
+/// output before it reaches a log file. `lab/up.sh` prints the key it mints
+/// in its final summary block; this runner mints its own key independently
+/// (see `mint_traditional_api_key`) and must not let the lab's
+/// superuser-derived key leak into a file either, even one meant to be read
+/// in the clear otherwise.
+fn redact_lab_output(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    text.lines()
+        .map(|line| {
+            if line.contains("ELASTICCTL_API_KEY=") {
+                "[redacted line containing ELASTICCTL_API_KEY]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes()
+}
+
 /// Write a private log with the same owner-only permissions `conformance`
 /// uses for its own private logs (design spec 8.3): this file can hold
-/// `lab/up.sh` output, which prints a plaintext API key.
+/// redacted `lab/up.sh` output or a raw transport error.
 fn write_private_log(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -259,23 +375,27 @@ fn write_private_log(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Run `lab/up.sh` or `lab/down.sh` to completion without ever printing its
-/// output. `up.sh` prints a plaintext API key and the target URLs in its
+/// output live. `up.sh` prints a plaintext API key and the target URLs in its
 /// final summary block, and the brief for this command forbids printing any
-/// env value, not only the key this runner mints itself. Full output goes to
-/// a private log instead, the same pattern `conformance` uses to keep
-/// contract detail out of its public one-liners.
+/// env value, not only the key this runner mints itself. Redacted output
+/// goes to a private log instead, the same pattern `conformance` uses to keep
+/// contract detail out of its public one-liners. `kill_on_drop` gives the
+/// script's immediate process a chance to die if this call is ever aborted
+/// mid-flight, though a `compose` grandchild it spawned can still be left
+/// running; `lab/down.sh` is what actually reconciles that.
 async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(), String> {
     println!("[traditional] {name} starting");
     let output = Command::new(script)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|error| format!("running {name}: {error}"))?;
 
     let mut log = Vec::new();
     log.extend_from_slice(b"stdout:\n");
-    log.extend_from_slice(&output.stdout);
+    log.extend_from_slice(&redact_lab_output(&output.stdout));
     log.extend_from_slice(b"\nstderr:\n");
-    log.extend_from_slice(&output.stderr);
+    log.extend_from_slice(&redact_lab_output(&output.stderr));
     let log_path = lab_log_path(workspace, name);
     write_private_log(&log_path, &log)?;
 
@@ -292,42 +412,89 @@ async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(
     }
 }
 
-/// Run the self-managed leg: boot the lab, mint a key, run the conformance
-/// child, then always tear the lab down.
+/// Run the self-managed leg's boot-through-conformance sequence: `lab/up.sh`,
+/// minting a lab API key, installing the prebuilt rule pack so
+/// `source_scoping` has rules to partition, then the conformance child.
 ///
-/// Booting dominates wall clock (design spec 9: roughly 20 minutes), so this
-/// whole function is one task the scheduler in `run` spawns alongside the
-/// other two flavors; nothing here blocks them.
+/// This runs as its own spawned task (see `run_traditional_leg`) so a panic
+/// anywhere in it surfaces there as a `JoinError` instead of unwinding past
+/// the teardown that must always follow.
+async fn run_traditional_boot_and_leg(
+    exe: PathBuf,
+    report_dir: PathBuf,
+    up_script: PathBuf,
+    workspace: PathBuf,
+) -> Result<(), String> {
+    run_lab_script(&up_script, &workspace, "lab-up").await?;
+    let api_key = mint_traditional_api_key(&workspace).await?;
+    install_prebuilt_rules(&workspace, &api_key).await?;
+
+    let mut command = spawn_conformance_child(&exe, "traditional", &report_dir);
+    command
+        .env("ELASTICCTL_KIBANA_URL", "http://localhost:5601")
+        .env("ELASTICCTL_ES_URL", "http://localhost:9200")
+        .env("ELASTICCTL_API_KEY", api_key)
+        .env("ELASTICCTL_SPACE", "default");
+    let child = command
+        .spawn()
+        .map_err(|error| format!("spawning traditional leg: {error}"))?;
+    let status = stream_output("traditional", child).await?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("traditional leg exited with {status}"))
+    }
+}
+
+/// Run the self-managed leg: boot the lab, mint a key, install the prebuilt
+/// rule pack, run the conformance child, then always tear the lab down.
+///
+/// The boot-through-conformance sequence races against Ctrl-C, and either
+/// outcome is followed by `lab/down.sh`; the same select's `JoinError`
+/// branch covers a plain panic in that sequence for the same reason. Booting
+/// dominates wall clock (design spec 9: roughly 20 minutes), so this whole
+/// function is one task the scheduler in `run` spawns alongside the other
+/// two flavors; nothing here blocks them.
 async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let workspace = workspace_root();
     let up_script = workspace.join("lab").join("up.sh");
     let down_script = workspace.join("lab").join("down.sh");
 
-    let result = match run_lab_script(&up_script, &workspace, "lab-up").await {
-        Ok(()) => match mint_traditional_api_key().await {
-            Ok(api_key) => {
-                let mut command = spawn_conformance_child(&exe, "traditional", &report_dir);
-                command
-                    .env("ELASTICCTL_KIBANA_URL", "http://localhost:5601")
-                    .env("ELASTICCTL_ES_URL", "http://localhost:9200")
-                    .env("ELASTICCTL_API_KEY", api_key);
-                match command.spawn() {
-                    Ok(child) => match stream_output("traditional", child).await {
-                        Ok(status) if status.success() => Ok(()),
-                        Ok(status) => Err(format!("traditional leg exited with {status}")),
-                        Err(message) => Err(message),
-                    },
-                    Err(error) => Err(format!("spawning traditional leg: {error}")),
-                }
-            }
-            Err(message) => Err(message),
+    let inner_workspace = workspace.clone();
+    let handle = tokio::spawn(run_traditional_boot_and_leg(
+        exe,
+        report_dir,
+        up_script,
+        inner_workspace,
+    ));
+    let abort_handle = handle.abort_handle();
+
+    // Racing the whole sequence against Ctrl-C, rather than only the
+    // conformance child, means an interrupt during the up-to-20-minute lab
+    // boot also reaches the teardown below instead of killing the process
+    // outright.
+    let result = tokio::select! {
+        joined = handle => match joined {
+            Ok(inner_result) => inner_result,
+            Err(join_error) => Err(format!("traditional leg task panicked: {join_error}")),
         },
-        Err(message) => Err(message),
+        ctrl_c = tokio::signal::ctrl_c() => {
+            abort_handle.abort();
+            match ctrl_c {
+                Ok(()) => Err("interrupted by ctrl-c; tearing down the lab".to_string()),
+                Err(error) => Err(format!("failed to watch for ctrl-c: {error}")),
+            }
+        }
     };
 
-    // Always tear the lab down, whether the boot, the key mint, or the leg
-    // itself failed: a partially started compose stack must not survive this
-    // command.
+    // Always tear the lab down, whether the boot, the key mint, the prebuilt
+    // install, the leg itself, or a Ctrl-C interrupt of any of those failed:
+    // a partially started compose stack must not survive this command. This
+    // covers every case up to the point the select above resolves. A Ctrl-C
+    // received after that — for example, while a sibling flavor is still
+    // running — no longer stops the process the normal way, because
+    // installing this listener replaces the OS's default interrupt
+    // disposition for the whole run.
     let teardown = run_lab_script(&down_script, &workspace, "lab-down").await;
     match (result, teardown) {
         (Ok(()), Ok(())) => Ok(()),
@@ -343,6 +510,8 @@ pub async fn run(values: &[String]) -> Result<(), String> {
     let args = Args::parse(values)?;
     let exe = std::env::current_exe()
         .map_err(|error| format!("resolving the current executable: {error}"))?;
+    let workspace = workspace_root();
+    prebuild_live_tests(&workspace).await?;
 
     let mut handles = Vec::with_capacity(args.flavors.len());
     for flavor in &args.flavors {
@@ -426,5 +595,77 @@ mod tests {
             Args::parse(&["--flavors".into(), "ech".into()]).unwrap_err(),
             "missing --report-dir"
         );
+    }
+
+    #[test]
+    fn rejects_an_unknown_option_a_duplicate_report_dir_and_a_missing_flavors_value() {
+        assert_eq!(
+            Args::parse(&["--bogus".into(), "x".into()]).unwrap_err(),
+            "unknown option"
+        );
+        assert_eq!(
+            Args::parse(&[
+                "--report-dir".into(),
+                "a".into(),
+                "--report-dir".into(),
+                "b".into(),
+            ])
+            .unwrap_err(),
+            "duplicate --report-dir"
+        );
+        assert_eq!(
+            Args::parse(&["--flavors".into()]).unwrap_err(),
+            "missing value for --flavors"
+        );
+    }
+
+    #[test]
+    fn trims_whitespace_and_rejects_an_empty_or_trailing_comma_flavor() {
+        let trimmed = Args::parse(&[
+            "--flavors".into(),
+            " serverless , ech ".into(),
+            "--report-dir".into(),
+            "reports".into(),
+        ])
+        .unwrap();
+        assert_eq!(trimmed.flavors, vec!["serverless", "ech"]);
+
+        assert_eq!(
+            Args::parse(&[
+                "--flavors".into(),
+                "".into(),
+                "--report-dir".into(),
+                "reports".into(),
+            ])
+            .unwrap_err(),
+            "invalid flavor in --flavors; expected serverless, ech, or traditional"
+        );
+        assert_eq!(
+            Args::parse(&[
+                "--flavors".into(),
+                "serverless,".into(),
+                "--report-dir".into(),
+                "reports".into(),
+            ])
+            .unwrap_err(),
+            "invalid flavor in --flavors; expected serverless, ech, or traditional"
+        );
+    }
+
+    #[test]
+    fn redacts_only_the_api_key_line_from_captured_lab_output() {
+        let captured = redact_lab_output(
+            b"compose provider: docker compose\n\
+              Lab is up.\n\
+              \n\
+              \x20 ELASTICCTL_KIBANA_URL=http://localhost:5601 \\\n\
+              \x20 ELASTICCTL_API_KEY=super-secret-value \\\n\
+              \x20 elasticctl config init --from-env --profile lab\n",
+        );
+        let text = String::from_utf8(captured).unwrap();
+        assert!(!text.contains("super-secret-value"));
+        assert!(text.contains("compose provider: docker compose"));
+        assert!(text.contains("ELASTICCTL_KIBANA_URL=http://localhost:5601"));
+        assert!(text.contains("[redacted line containing ELASTICCTL_API_KEY]"));
     }
 }

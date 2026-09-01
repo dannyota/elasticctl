@@ -1226,19 +1226,46 @@ serverless,ech,traditional]` runs this release matrix as three concurrent
 child processes of the same `xtask` binary instead of three sequential
 invocations. The three flavors are independent targets: proving serverless
 correctness never depends on the state of Elastic Cloud Hosted or the local
-lab, so nothing forces them to run in turn. The self-managed leg starts
-`lab/up.sh` alongside the other two legs, since its boot dominates the
-combined wall clock; once it succeeds, the leg mints its own Elasticsearch API
-key against the lab's bootstrap user rather than parsing `up.sh` output, runs
-the conformance child, and always runs `lab/down.sh` afterward, whether the
-boot, the key mint, or the leg itself failed. The Hosted leg maps
-`ELASTICCTL_ECH_*` onto the generic `ELASTICCTL_*` names the child expects and
-fails before spawning anything if a piece is missing. `--flavors` accepts a
-comma-separated subset of the three names; an unknown or repeated name is
-rejected. Recording (`cargo xtask record`), unlike conformance, must never run
-concurrently: one recording session owns the marker objects on one live
-stack, and a second session recording that stack at the same time would race
-that ownership.
+lab, so nothing forces them to run in turn. Before spawning any leg, the
+runner builds the `live` integration test binary once (`cargo test --locked
+--test live --no-run`) in the workspace root; without this, the three
+children's own `cargo test` invocations would race to compile that binary and
+serialize behind Cargo's workspace build lock, stalling exactly the
+concurrency this command exists to provide.
+
+The self-managed leg boots `lab/up.sh` alongside the other two legs, since its
+boot dominates the combined wall clock. Once it succeeds, the leg mints its
+own Elasticsearch API key against the lab's bootstrap user rather than
+parsing `up.sh` output, installs Elastic's prebuilt rule pack with that key
+(a fresh lab boots with no rules, and `lab/down.sh` always destroys the
+previous session's volumes, so `source_scoping` would otherwise fail on every
+run for having nothing to partition), then runs the conformance child with
+`ELASTICCTL_SPACE=default`. This whole boot-through-conformance sequence
+races against Ctrl-C, and either outcome — completion or interruption — is
+followed by `lab/down.sh`, which also covers a plain panic anywhere in the
+sequence. Because `lab/down.sh` runs `compose down -v`, starting the
+traditional leg destroys any `lab/` session already up on this machine,
+including its volumes, whether or not this run started it. A Ctrl-C received
+after that boot-through-conformance race has already resolved — for example,
+while a sibling flavor is still running — no longer stops the process the
+normal way, because installing the interrupt listener replaces the OS's
+default disposition for the whole run.
+
+`lab/up.sh` and `lab/down.sh` output is never streamed live: `up.sh` prints a
+plaintext superuser-derived API key in its final summary block. Both scripts'
+output is instead captured to a private, redacted log under
+`target/conformance-private/traditional/`, with any line naming
+`ELASTICCTL_API_KEY=` blanked before it is written; the matrix prints only a
+short public status line per script.
+
+The Hosted leg maps `ELASTICCTL_ECH_*` onto the generic `ELASTICCTL_*` names
+the child expects, including `ELASTICCTL_ECH_SPACE` (defaulting to
+`"default"`), and fails before spawning anything if a required piece is
+missing. `--flavors` accepts a comma-separated subset of the three names,
+trimmed and de-duplicated; an unknown or repeated name is rejected. Recording
+(`cargo xtask record`), unlike conformance, must never run concurrently: one
+recording session owns the marker objects on one live stack, and a second
+session recording that stack at the same time would race that ownership.
 
 The 0.2.3 measured matrix is:
 
