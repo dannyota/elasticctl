@@ -585,15 +585,16 @@ async fn main() {
                 g
             };
 
-            // `alerts get` renders the raw alert `_source` merged with `_id`,
-            // not one of elasticctl's own report shapes. A top-level `failed`
-            // key there belongs to the source event, not to the `failed`
-            // convention `exit_code_for_value` reads, so it must never derive
-            // an exit code from this payload (finding 2).
+            // `alerts get` and `cases get` render raw server documents, not
+            // elasticctl report shapes. A top-level `failed` key there belongs
+            // to the document, not to the convention `exit_code_for_value`
+            // reads, so it must never derive an exit code from these payloads.
             let payload_drives_exit_code = !matches!(
                 &args.command,
                 Command::Alerts {
                     action: AlertsAction::Get { .. }
+                } | Command::Cases {
+                    action: CasesAction::Get { .. }
                 }
             );
             match render::emit(&value, &render_global) {

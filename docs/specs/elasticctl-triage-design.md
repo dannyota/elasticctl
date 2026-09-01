@@ -284,14 +284,15 @@ recorder's own steps, so a re-record's values never match the prior ones.
 
 The conformance contract (eighth in the matrix,
 `triage_transitions_alerts_and_cases_and_leaves_only_closed_residue` in
-`crates/elasticctl-cli/tests/live.rs`) does: seed three marker documents,
-create and enable the marker rule over them, poll for the alert it
-generates, transition it open → acknowledged → closed by id, re-open and
-close it again by marker-scoped query, tag then untag it, resolve an
-assignee, create a case, attach the alert to it, comment on it, close and
-delete the case (verifying it is gone), then run a final closing sweep over
-every alert the marker rule produced and confirm none stay open before
-`conclude`'s baseline check runs.
+`crates/elasticctl-cli/tests/live.rs`) first refuses to mutate a target with
+an open `elasticctl-live-*` alert or an `elasticctl-live-marker` case. It then
+seeds three marker documents, creates and enables the marker rule over them,
+polls for the alert it generates, transitions it open → acknowledged → closed
+by id, re-opens and closes it again by marker-scoped query, tags then untags
+it, resolves an assignee, creates a case, attaches the alert to it, comments
+on it, closes and deletes the case (verifying it is gone), then runs a final
+closing sweep over every alert the marker rule produced and confirms none stay
+open before `conclude`'s baseline check runs.
 
 **Assignment refinement.** The contract does not resolve the operator's own
 username — it takes the *first activated profile* from
@@ -346,7 +347,10 @@ through a public API (`DELETE /api/cases`, section 10), so the recording
 session tolerates **no** marker-case residue, closed or otherwise: the cases
 probe deletes its marker case as its final step, and baseline verification
 proves absence the same way every other conformance contract does. The
-alert-residue deviation above does not extend to cases.
+alert-residue deviation above does not extend to cases. The live cleanup guard
+registers the case's exact unique title and marker tag before creation. If the
+POST succeeds but its response cannot supply an id, cleanup finds that exact
+scope through `_find` and deletes the returned id instead of leaving residue.
 
 ## 10. Measured behavior
 

@@ -731,6 +731,131 @@ async fn apply_status_by_query_refuses_an_unscoped_query_before_any_request() {
 }
 
 #[tokio::test]
+async fn status_plan_and_apply_refuse_empty_targets_before_any_request() {
+    // No server is listening: validation must return the named local error
+    // instead of attempting either the preview search or the mutation.
+    let t = test_transport("http://127.0.0.1:1");
+    let err = alerts_ops::plan_status_by_ids(&t, &[], AlertStatus::Closed, None)
+        .await
+        .expect_err("an empty target list must be refused while planning");
+    assert!(
+        err.message.contains("at least one alert id"),
+        "unexpected planning error: {}",
+        err.message
+    );
+
+    let plan = alerts_ops::StatusPlan {
+        status: AlertStatus::Closed,
+        reason: None,
+        targets: vec![],
+        preview_action: "Close 0 alerts".into(),
+        preview_details: vec![],
+    };
+    let err = alerts_ops::apply_status_by_ids(&t, &plan)
+        .await
+        .expect_err("a manually constructed empty plan must be refused");
+    assert!(
+        err.message.contains("at least one alert id"),
+        "unexpected apply error: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn tag_apply_revalidates_a_manually_constructed_plan_before_any_request() {
+    let t = test_transport("http://127.0.0.1:1");
+    let invalid = [
+        (
+            alerts_ops::TagsPlan {
+                targets: vec![],
+                add: vec!["triaged".into()],
+                remove: vec![],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "at least one alert id",
+        ),
+        (
+            alerts_ops::TagsPlan {
+                targets: vec!["a1".into()],
+                add: vec![],
+                remove: vec![],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "--add",
+        ),
+        (
+            alerts_ops::TagsPlan {
+                targets: vec!["a1".into()],
+                add: vec!["triaged".into()],
+                remove: vec!["triaged".into()],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "both added and removed",
+        ),
+    ];
+    for (plan, expected) in invalid {
+        let err = alerts_ops::apply_tags(&t, &plan)
+            .await
+            .expect_err("every invalid public tag plan must be refused locally");
+        assert!(
+            err.message.contains(expected),
+            "expected {expected:?}, got {}",
+            err.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn assign_apply_revalidates_a_manually_constructed_plan_before_any_request() {
+    let t = test_transport("http://127.0.0.1:1");
+    let invalid = [
+        (
+            alerts_ops::AssignPlan {
+                targets: vec![],
+                add: vec!["u_1".into()],
+                remove: vec![],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "at least one alert id",
+        ),
+        (
+            alerts_ops::AssignPlan {
+                targets: vec!["a1".into()],
+                add: vec![],
+                remove: vec![],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "--add",
+        ),
+        (
+            alerts_ops::AssignPlan {
+                targets: vec!["a1".into()],
+                add: vec!["u_1".into()],
+                remove: vec!["u_1".into()],
+                preview_action: String::new(),
+                preview_details: vec![],
+            },
+            "both added and removed",
+        ),
+    ];
+    for (plan, expected) in invalid {
+        let err = alerts_ops::apply_assign(&t, &plan)
+            .await
+            .expect_err("every invalid public assignment plan must be refused locally");
+        assert!(
+            err.message.contains(expected),
+            "expected {expected:?}, got {}",
+            err.message
+        );
+    }
+}
+
+#[tokio::test]
 async fn apply_status_by_query_reports_conflicts_as_failures_under_abort() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

@@ -413,11 +413,49 @@ async fn a_stale_version_conflict_names_the_remedy() {
     );
 }
 
-/// `CaseEditReport::failed` is the exit-code seam: `render::exit_code_for_value`
-/// keys on a positive `failed` count to exit 1, so a PATCH response short of
-/// what was sent must be visible in the report, not just in `updated`.
 #[tokio::test]
-async fn apply_status_reports_zero_failed_on_a_full_patch_and_the_shortfall_otherwise() {
+async fn apply_status_refuses_an_inconsistent_public_plan_before_any_request() {
+    let t = test_transport("http://127.0.0.1:1");
+    let invalid = [
+        (
+            cases_ops::StatusPlan {
+                target: CaseStatus::Closed,
+                updates: vec![
+                    ("c1".into(), "WzEsMV0=".into(), CaseStatus::Closed),
+                    ("c1".into(), "WzEsMl0=".into(), CaseStatus::Closed),
+                ],
+                resolved: 1,
+                preview_action: "Close 1 case".into(),
+                preview_details: vec![],
+            },
+            "duplicate case id",
+        ),
+        (
+            cases_ops::StatusPlan {
+                target: CaseStatus::Closed,
+                updates: vec![("c1".into(), "WzEsMV0=".into(), CaseStatus::Open)],
+                resolved: 1,
+                preview_action: "Close 1 case".into(),
+                preview_details: vec![],
+            },
+            "does not match plan target",
+        ),
+    ];
+    for (plan, expected) in invalid {
+        let err = cases_ops::apply_status(&t, &plan)
+            .await
+            .expect_err("an inconsistent public plan must be refused locally");
+        assert_eq!(err.kind, elasticctl_core::ErrorKind::Error);
+        assert!(
+            err.message.contains(expected),
+            "expected {expected:?}, got {}",
+            err.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn apply_status_requires_each_requested_id_at_the_target_status_exactly_once() {
     let server = MockServer::start().await;
     Mock::given(method("PATCH"))
         .and(path("/api/cases"))
@@ -449,58 +487,56 @@ async fn apply_status_reports_zero_failed_on_a_full_patch_and_the_shortfall_othe
     assert_eq!(report.updated, 2);
     assert_eq!(report.failed, 0, "a full response leaves nothing failed");
 
-    let server = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/api/cases"))
-        .and(body_json(json!({"cases": [
-            {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
-            {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
-        ]})))
-        // Server-side reality: only one of the two requested cases came
-        // back updated, with no error surfaced elsewhere in the exchange.
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([case_body("c1", "closed")])))
-        .mount(&server)
-        .await;
-    let t = test_transport(&server.uri());
-    let report = cases_ops::apply_status(&t, &full_plan)
-        .await
-        .expect("apply");
-    assert_eq!(report.total, 2);
-    assert_eq!(report.updated, 1);
-    assert_eq!(
-        report.failed, 1,
-        "a short response must surface the shortfall as failed, since \
-         render::exit_code_for_value keys on `failed` to choose the exit code"
-    );
-
-    // Finding 10: `saturating_sub` reads a surplus response (three cases
-    // returned for a two-case PATCH) as zero failures, since `total -
-    // updated` saturates at 0 when `updated > total`. The mismatch itself is
-    // the anomaly to surface, in either direction.
-    let server = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/api/cases"))
-        .and(body_json(json!({"cases": [
-            {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
-            {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
-        ]})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            case_body("c1", "closed"),
-            case_body("c2", "closed"),
-            case_body("c3", "closed"),
-        ])))
-        .mount(&server)
-        .await;
-    let t = test_transport(&server.uri());
-    let report = cases_ops::apply_status(&t, &full_plan)
-        .await
-        .expect("apply");
-    assert_eq!(report.total, 2);
-    assert_eq!(report.updated, 3);
-    assert_eq!(
-        report.failed, 1,
-        "a surplus response is a mismatch too, not zero failures"
-    );
+    let malformed = [
+        ("missing id", json!([case_body("c1", "closed")])),
+        (
+            "surplus id",
+            json!([
+                case_body("c1", "closed"),
+                case_body("c2", "closed"),
+                case_body("c3", "closed"),
+            ]),
+        ),
+        (
+            "duplicate id",
+            json!([case_body("c1", "closed"), case_body("c1", "closed")]),
+        ),
+        (
+            "unrelated id",
+            json!([case_body("c1", "closed"), case_body("c9", "closed")]),
+        ),
+        (
+            "wrong status",
+            json!([case_body("c1", "closed"), case_body("c2", "open")]),
+        ),
+    ];
+    for (label, response) in malformed {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/cases"))
+            .and(body_json(json!({"cases": [
+                {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
+                {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
+            ]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .mount(&server)
+            .await;
+        let t = test_transport(&server.uri());
+        let err = cases_ops::apply_status(&t, &full_plan)
+            .await
+            .expect_err(label);
+        assert_eq!(
+            err.kind,
+            elasticctl_core::ErrorKind::Http,
+            "{label}: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("case status response"),
+            "{label}: {}",
+            err.message
+        );
+    }
 }
 
 #[tokio::test]

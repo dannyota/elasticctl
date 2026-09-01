@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult<T = ()> = std::result::Result<T, String>;
@@ -179,6 +179,9 @@ struct LiveCleanup {
     indices: BTreeSet<String>,
     /// Case ids to delete. A 404 on delete is tolerated as already-clean.
     cases: BTreeSet<String>,
+    /// Exact title/tag pairs known before case creation. If creation succeeds
+    /// but its response cannot be decoded, this scope still discovers the id.
+    case_scopes: BTreeSet<(String, String)>,
     /// `rule_id`s whose alerts must be closed by a marker-scoped query before
     /// the rest of cleanup runs. Alerts have no delete API (triage spec
     /// section 9), so "cleaned" means "closed", not "gone".
@@ -196,6 +199,7 @@ impl LiveCleanup {
             items: BTreeSet::new(),
             indices: BTreeSet::new(),
             cases: BTreeSet::new(),
+            case_scopes: BTreeSet::new(),
             alert_rules: BTreeSet::new(),
             finished: false,
         }
@@ -235,6 +239,10 @@ impl LiveCleanup {
 
     fn case(&mut self, case_id: impl Into<String>) {
         self.cases.insert(case_id.into());
+    }
+
+    fn case_scope(&mut self, title: impl Into<String>, tag: impl Into<String>) {
+        self.case_scopes.insert((title.into(), tag.into()));
     }
 
     fn alert_rule(&mut self, rule_id: impl Into<String>) {
@@ -390,6 +398,40 @@ impl LiveCleanup {
         })
     }
 
+    /// Resolve a case through the marker identity known before its POST, then
+    /// delete only exact title/tag matches. The server-side search narrows the
+    /// set; the exact client-side check prevents a substring match from
+    /// widening cleanup.
+    fn delete_case_scope(&self, title: &str, tag: &str) -> TestResult {
+        let profile = self.profile.clone();
+        let title = title.to_string();
+        let tag = tag.to_string();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building case-scope-cleanup runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = Transport::new(&profile)
+                .map_err(|e| format!("building case-scope-cleanup transport: {}", e.message))?;
+            let filter = elasticctl_api::cases_ops::CaseFilter {
+                tag: Some(tag.clone()),
+                search: Some(title.clone()),
+                ..Default::default()
+            };
+            let ids: Vec<String> = elasticctl_api::cases_ops::export(&transport, &filter, None)
+                .await
+                .map_err(|e| format!("finding marker case for cleanup: {}", e.message))?
+                .into_iter()
+                .filter(|case| case.title == title && case.tags.iter().any(|value| value == &tag))
+                .map(|case| case.id)
+                .collect();
+            if ids.is_empty() {
+                return Ok(());
+            }
+            elasticctl_api::cases::delete(&transport, &ids)
+                .await
+                .map_err(|e| format!("case scope delete failed: {}", e.message))
+        })
+    }
+
     fn clean(&self) -> TestResult {
         let mut failures = Vec::new();
 
@@ -409,6 +451,13 @@ impl LiveCleanup {
             if let Err(error) =
                 Self::retry(&format!("case {case_id}"), || self.delete_case(case_id))
             {
+                failures.push(error);
+            }
+        }
+        for (title, tag) in &self.case_scopes {
+            if let Err(error) = Self::retry(&format!("case titled {title}"), || {
+                self.delete_case_scope(title, tag)
+            }) {
                 failures.push(error);
             }
         }
@@ -605,7 +654,21 @@ fn marker_case_count(profile: &Profile) -> TestResult<u64> {
     })
 }
 
-fn capture_baseline(config: &Path) -> TestResult<LiveBaseline> {
+fn require_clean_triage_baseline(profile: &Profile) -> TestResult {
+    let open_marker_alerts = open_marker_alert_count(profile)?;
+    let marker_cases = marker_case_count(profile)?;
+    if triage_residue_is_clean(open_marker_alerts, marker_cases) {
+        Ok(())
+    } else {
+        Err(format!(
+            "pre-test triage baseline is dirty: {open_marker_alerts} open marker alert(s), \
+             {marker_cases} marker case(s)"
+        ))
+    }
+}
+
+fn capture_baseline(config: &Path, profile: &Profile) -> TestResult<LiveBaseline> {
+    require_clean_triage_baseline(profile)?;
     Ok(LiveBaseline {
         custom: listed_rules(config, "custom")?.len(),
         prebuilt: listed_rules(config, "prebuilt")?.len(),
@@ -983,6 +1046,131 @@ async fn open_marker_alert_count_refuses_a_response_without_total() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn pre_mutation_triage_baseline_refuses_existing_open_marker_alerts() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 1, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [], "page": 1, "per_page": 1, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+
+    let result = tokio::task::spawn_blocking(move || require_clean_triage_baseline(&profile))
+        .await
+        .expect("baseline task must not panic");
+    let error = result.expect_err("a dirty target must be refused before mutation");
+    assert!(
+        error.contains("pre-test triage baseline") && error.contains("1 open marker alert"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_guard_scopes_pages_and_retries_case_discovery_without_an_id() {
+    let server = MockServer::start().await;
+    let title = "elasticctl-live-case-with-unreadable-create-response";
+    let mut first_page = vec![json!({
+        "id": "c-exact-first", "version": "WzEsMV0=", "title": title,
+        "status": "open", "tags": [LIVE_TAG]
+    })];
+    for n in 0..98 {
+        first_page.push(json!({
+            "id": format!("c-near-{n}"), "version": "WzEsMV0=",
+            "title": format!("{title}-near-{n}"), "status": "open",
+            "tags": [LIVE_TAG]
+        }));
+    }
+    first_page.push(json!({
+        "id": "c-wrong-tag", "version": "WzEsMV0=", "title": title,
+        "status": "open", "tags": ["not-the-live-marker"]
+    }));
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .and(query_param("page", "1"))
+        .and(query_param("perPage", "100"))
+        .and(query_param("tags", LIVE_TAG))
+        .and(query_param("search", title))
+        .and(query_param("searchFields", "title"))
+        .and(query_param("searchFields", "description"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": first_page, "page": 1, "per_page": 100, "total": 101
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .and(query_param("page", "2"))
+        .and(query_param("perPage", "100"))
+        .and(query_param("tags", LIVE_TAG))
+        .and(query_param("search", title))
+        .and(query_param("searchFields", "title"))
+        .and(query_param("searchFields", "description"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [{
+                "id": "c-exact-second", "version": "WzEsMV0=", "title": title,
+                "status": "open", "tags": [LIVE_TAG]
+            }],
+            "page": 2, "per_page": 100, "total": 101
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/cases"))
+        .and(query_param("ids", r#"["c-exact-first","c-exact-second"]"#))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "statusCode": 400, "error": "Bad Request", "message": "transient cleanup failure"
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/cases"))
+        .and(query_param("ids", r#"["c-exact-first","c-exact-second"]"#))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused-config.toml"), profile);
+    cleanup.case_scope(title, LIVE_TAG);
+
+    tokio::task::spawn_blocking(move || cleanup.finish())
+        .await
+        .expect("cleanup task must not panic")
+        .expect("the scoped marker case must be deleted");
+}
+
 #[test]
 #[ignore = "requires a live stack"]
 fn doctor_reports_no_failed_checks() {
@@ -993,7 +1181,7 @@ fn doctor_reports_no_failed_checks() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
 
     let result = (|| -> TestResult {
@@ -1026,7 +1214,7 @@ fn a_pull_followed_by_a_diff_is_clean() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
     let state = dir.path().join("state");
 
@@ -1064,7 +1252,7 @@ fn exception_crud_and_bundle_round_trip_preserve_a_marked_list() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let list_id = unique_name("exceptions");
     let item_id = unique_name("exception-item");
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
@@ -1199,7 +1387,7 @@ fn a_stale_exception_pointer_is_observed_repaired_and_rewritten_on_import() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let list_id = unique_name("pointer-list");
     let item_id = unique_name("pointer-item");
     let rule_id = unique_name("pointer-rule");
@@ -1403,7 +1591,7 @@ fn source_defaults_keep_custom_rules_and_allow_selected_prebuilt_rules() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let rule_id = unique_name("source-rule");
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
     cleanup.rule(rule_id.clone());
@@ -1518,7 +1706,7 @@ fn a_rule_survives_a_create_export_import_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let rule_id = unique_name("roundtrip-rule");
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
     cleanup.rule(rule_id.clone());
@@ -1690,7 +1878,7 @@ fn search_reads_marked_documents_through_esql_and_dsl() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let index = unique_name("search");
     let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
     cleanup.index(index.clone());
@@ -1712,17 +1900,20 @@ const TRIAGE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// that one alert: by-id and query-scoped status transitions, tags,
 /// assignment, and a full case round trip that attaches, comments, closes,
 /// and deletes. `cleanup.rule(rule_id)`/`cleanup.alert_rule(rule_id)` and
-/// `cleanup.index(index)` are registered by the caller before this runs;
-/// `cleanup.case(id)` is registered here, immediately once the case exists.
+/// `cleanup.index(index)` plus the case's exact title/tag cleanup scope are
+/// registered by the caller before this runs; `cleanup.case(id)` is added
+/// immediately once the create response supplies the id.
 fn triage_probe(
     profile: &Profile,
     index: &str,
     rule_id: &str,
+    case_title: &str,
     cleanup: &mut LiveCleanup,
 ) -> TestResult {
     let profile = profile.clone();
     let index = index.to_string();
     let rule_id = rule_id.to_string();
+    let case_title = case_title.to_string();
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| format!("building triage runtime: {e}"))?;
     runtime.block_on(async move {
@@ -1958,7 +2149,7 @@ fn triage_probe(
         // 8. Case round trip: create, attach, comment, close, delete.
         let plan = elasticctl_api::cases_ops::plan_create(
             &transport,
-            &unique_name("case"),
+            &case_title,
             None,
             vec![LIVE_TAG.to_string()],
             None,
@@ -2096,17 +2287,19 @@ fn triage_transitions_alerts_and_cases_and_leaves_only_closed_residue() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config).unwrap();
+    let baseline = capture_baseline(&config, &profile).unwrap();
     let index = unique_name("triage-index");
     let rule_id = unique_name("triage-rule");
+    let case_title = unique_name("case");
     let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
     // Registered before triage_probe can create either object.
     cleanup.index(index.clone());
     cleanup.rule(rule_id.clone());
     cleanup.alert_rule(rule_id.clone());
+    cleanup.case_scope(case_title.clone(), LIVE_TAG);
 
     let result = (|| -> TestResult {
-        triage_probe(&profile, &index, &rule_id, &mut cleanup)?;
+        triage_probe(&profile, &index, &rule_id, &case_title, &mut cleanup)?;
         Ok(())
     })();
     conclude(result, &mut cleanup, baseline);

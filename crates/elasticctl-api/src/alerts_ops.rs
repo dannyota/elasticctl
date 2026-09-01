@@ -246,6 +246,7 @@ pub async fn plan_status_by_ids(
     status: AlertStatus,
     reason: Option<String>,
 ) -> Result<StatusPlan> {
+    require_targets(ids)?;
     let resolved = resolve_ids(t, ids).await?;
     let preview_details = resolved
         .iter()
@@ -318,6 +319,7 @@ fn status_report(
 }
 
 pub async fn apply_status_by_ids(t: &Transport, plan: &StatusPlan) -> Result<StatusReport> {
+    require_targets(&plan.targets)?;
     let outcome =
         alerts::status_by_ids(t, &plan.targets, plan.status, plan.reason.as_deref()).await?;
     Ok(status_report(plan.status, outcome, Conflicts::Abort))
@@ -518,6 +520,9 @@ pub async fn plan_tags(
 }
 
 pub async fn apply_tags(t: &Transport, plan: &TagsPlan) -> Result<EditReport> {
+    require_targets(&plan.targets)?;
+    require_edit(&plan.add, &plan.remove)?;
+    require_disjoint(&plan.add, &plan.remove, "tags")?;
     Ok(edit_report(
         alerts::set_tags(t, &plan.targets, &plan.add, &plan.remove).await?,
     ))
@@ -573,6 +578,9 @@ pub async fn plan_assign(
 }
 
 pub async fn apply_assign(t: &Transport, plan: &AssignPlan) -> Result<EditReport> {
+    require_targets(&plan.targets)?;
+    require_edit(&plan.add, &plan.remove)?;
+    require_disjoint(&plan.add, &plan.remove, "assignees")?;
     Ok(edit_report(
         alerts::set_assignees(t, &plan.targets, &plan.add, &plan.remove).await?,
     ))

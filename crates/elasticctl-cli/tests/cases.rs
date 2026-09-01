@@ -117,6 +117,34 @@ async fn cases_get_returns_the_full_case() {
     );
 }
 
+#[tokio::test]
+async fn cases_get_does_not_derive_its_exit_code_from_the_case_document() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    let mut body = case_body("c1", "open");
+    body["failed"] = json!(2);
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap(), "--json"])
+        .args(["cases", "get", "c1"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the case payload's own `failed` field must not drive the exit code: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["failed"], json!(2));
+}
+
 /// `cases list --out` must match `alerts list --out` and `search dsl --out`:
 /// JSONL by default, and `--limit` respected during export, not just the
 /// bounded peek.

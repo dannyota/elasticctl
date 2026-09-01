@@ -6,6 +6,7 @@ use crate::cases::{self, Case, CaseStatus, NewCase};
 use crate::profiles;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The `_find` route's per-page cap.
 pub const PAGE_SIZE: u32 = 100;
@@ -307,6 +308,25 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
             failures: Vec::new(),
         });
     }
+    let mut expected = BTreeMap::new();
+    for (id, _, status) in &plan.updates {
+        if *status != plan.target {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!(
+                    "case '{id}' status '{}' does not match plan target '{}'",
+                    status.as_str(),
+                    plan.target.as_str()
+                ),
+            ));
+        }
+        if expected.insert(id.as_str(), *status).is_some() {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!("duplicate case id in status plan: '{id}'"),
+            ));
+        }
+    }
     let updated = cases::patch_status(t, &plan.updates).await.map_err(|e| {
         if e.kind == ErrorKind::Conflict {
             Error::new(
@@ -320,16 +340,54 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
             e
         }
     })?;
-    let total = plan.updates.len() as u64;
-    let updated = updated.len() as u64;
+    if updated.len() != expected.len() {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!(
+                "decoding case status response: expected {} cases, got {}",
+                expected.len(),
+                updated.len()
+            ),
+        ));
+    }
+    let mut returned_ids = BTreeSet::new();
+    for case in &updated {
+        if !returned_ids.insert(case.id.as_str()) {
+            return Err(Error::new(
+                ErrorKind::Http,
+                format!(
+                    "decoding case status response: duplicate case id '{}'",
+                    case.id
+                ),
+            ));
+        }
+        let requested_status = expected.get(case.id.as_str()).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Http,
+                format!(
+                    "decoding case status response: unexpected case id '{}'",
+                    case.id
+                ),
+            )
+        })?;
+        if case.status != requested_status.as_str() {
+            return Err(Error::new(
+                ErrorKind::Http,
+                format!(
+                    "decoding case status response: case '{}' has status '{}', expected '{}'",
+                    case.id,
+                    case.status,
+                    requested_status.as_str()
+                ),
+            ));
+        }
+    }
+    let total = expected.len() as u64;
     Ok(CaseEditReport {
         applied: true,
         total,
-        updated,
-        // `abs_diff`, not `saturating_sub`: a surplus response (more cases
-        // came back than were sent) is a mismatch too, and `total -
-        // updated` would saturate that at 0 and read it as zero failures.
-        failed: total.abs_diff(updated),
+        updated: total,
+        failed: 0,
         failures: Vec::new(),
     })
 }

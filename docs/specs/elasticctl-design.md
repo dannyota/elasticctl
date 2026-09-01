@@ -790,9 +790,12 @@ coercing a malformed value to zero, "unknown", or an empty result:
 
 - **Mutation outcomes.** `_bulk_action` requires an object summary with four
   unsigned counters whose total equals `succeeded + failed + skipped`; import
-  responses require a numeric `success_count` and an `errors` array. A
-  contradictory or missing counter is an `http` error, never "nothing
-  happened".
+  responses require a numeric `success_count` and an `errors` array. Case
+  status apply refuses a public plan with duplicate ids or an update status
+  that differs from the plan target before sending it. Its response must then
+  return each requested case id exactly once at that target status. A
+  contradictory, missing, duplicate, or unexpected result is an `http` error,
+  never "nothing happened".
 - **Read outcomes.** A recognized export trailer decodes or fails with its
   line number; a preview-hits body requires `hits.total.value` and
   `hits.hits`; an `_authenticate` body requires `username` and
