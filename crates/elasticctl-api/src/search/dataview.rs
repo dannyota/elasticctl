@@ -30,7 +30,8 @@ pub fn resolve_title(body: &Value, name: &str) -> Result<String> {
 
 /// Resolve a data view over the wire.
 pub async fn resolve(t: &Transport, name: &str) -> Result<String> {
-    Ok(data_views_ops::resolve(t, name).await?.title)
+    let body = t.get("/api/data_views").await?;
+    resolve_title(&body, name)
 }
 
 /// The space's default alerts index, from `GET /api/detection_engine/index`.

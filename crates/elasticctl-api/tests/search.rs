@@ -543,6 +543,56 @@ fn data_view_resolution_preserves_selected_missing_title_error() {
     assert_eq!(error.message, "decoding data view field `title`");
 }
 
+#[tokio::test]
+async fn wire_resolution_ignores_unrelated_malformed_data_view_rows() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": 42, "title": 42},
+                {"id": "selected", "name": "Selected", "title": "logs-selected-*"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    assert_eq!(
+        dataview::resolve(&test_transport(&server.uri()), "Selected")
+            .await
+            .expect("selected row"),
+        "logs-selected-*"
+    );
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/api/data_views");
+}
+
+#[tokio::test]
+async fn wire_resolution_preserves_selected_missing_title_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view": [
+                {"id": "selected", "name": "Selected"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dataview::resolve(&test_transport(&server.uri()), "Selected")
+        .await
+        .expect_err("missing title");
+    assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+    assert_eq!(error.message, "decoding data view field `title`");
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/api/data_views");
+}
+
 #[test]
 fn rewrite_from_replaces_a_leading_from_source() {
     assert_eq!(
