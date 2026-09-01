@@ -366,9 +366,19 @@ With `--replace-with TARGET`:
   `{fromId, toId, delete: true}`;
 - success requires `deleteStatus.deletePerformed == true` and
   `deleteStatus.remainingRefs == 0`;
-- if the source was default, apply sets the default to the target only after
-  the swap succeeds. A default-set failure is reported as partial: references
-  moved and source deleted, default not updated.
+- marker probes on 2026-09-02 found that Serverless 9.6.0 and Hosted 9.5.2
+  retain the deleted source id as the default after a successful swap/delete.
+  Both probes restored the prior default and left no marker views. This fact
+  has not been measured on self-managed.
+- if the guarded source was default, apply GETs the default again after the
+  strict swap and before any forceful default POST. A current default equal to
+  the deleted source is updated to the replacement. A current default already
+  equal to the replacement is success with no POST. A null or other default
+  produces the partial error `references moved and source deleted; default
+  changed before update` with no POST. A post-swap default GET error produces
+  `references moved and source deleted; default recheck failed: {message}`
+  with no POST. A replacement POST error remains `references moved and source
+  deleted; default update failed: {message}`.
 
 The guard retains the normalized reference list for each source and the full
 default-data-view id snapshot. Immediately before each source mutation, apply
@@ -379,8 +389,9 @@ default fails it with `default data view changed since preview`. Neither case
 may send DELETE, swap, or default POST for that source. A direct-source read,
 preview, or snapshot failure is a failed row and apply continues to independent
 sources. Replacement permits one source, so its check failure is its one failed
-row and stops. Kibana exposes no conditional mutation token, leaving the final
-check-to-write window unavoidable.
+row and stops. Kibana exposes no conditional mutation token. The final
+post-swap default GET-to-POST interval is therefore the unavoidable
+conditional-write window.
 
 `data-views default set` resolves the selector and sends its id with
 `force: true`. `default unset` sends `data_view_id: null` with `force: true`.
@@ -517,6 +528,7 @@ cleaned up its dashboard and data view; the lab was torn down with its volumes.
 | Field metadata | The `/fields` route updates count and description and removes a label sent as `null` on Serverless 9.6.0 and Hosted 9.5.2; both probes cleaned up |
 | Reference preview | Self-swap (`fromId == toId`) answers 200 and returns the marker dashboard dependent without mutation |
 | Unsafe direct delete | Direct DELETE of a referenced marker data view answers 200; the dependent dashboard remains readable and broken |
+| Swap default | Serverless 9.6.0 and Hosted 9.5.2 retain the deleted source id as the current default after successful marker swap/delete; both probes restored the prior default and left no marker views. Self-managed was not measured. |
 | Dashboard create/update | `PUT /api/dashboards/{id}` answers 201 on create and 200 on replacement; replacement is full, not patch semantics |
 | Dashboard response | Top level is `{id, data, meta}` for the measured supported dashboard |
 | Dashboard search | `GET /api/dashboards` answers the documented paginated `{data, meta}` shape |

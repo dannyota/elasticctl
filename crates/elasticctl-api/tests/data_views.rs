@@ -8,8 +8,12 @@ use elasticctl_api::{
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use wiremock::matchers::{body_json, header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 fn spec(id: &str) -> DataViewSpec {
     serde_json::from_value(json!({
@@ -437,6 +441,28 @@ fn summary(id: &str) -> data_views::DataViewSummary {
     }
 }
 
+#[derive(Clone)]
+struct SequenceResponder {
+    responses: Arc<Vec<ResponseTemplate>>,
+    next: Arc<AtomicUsize>,
+}
+
+impl SequenceResponder {
+    fn new(responses: Vec<ResponseTemplate>) -> Self {
+        Self {
+            responses: Arc::new(responses),
+            next: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Respond for SequenceResponder {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        let index = self.next.fetch_add(1, Ordering::SeqCst);
+        self.responses[index.min(self.responses.len() - 1)].clone()
+    }
+}
+
 #[tokio::test]
 async fn delete_plan_previews_each_unreferenced_non_default_source_for_direct_delete() {
     let server = MockServer::start().await;
@@ -629,6 +655,189 @@ async fn delete_apply_continues_after_independent_direct_delete_failures() {
 }
 
 #[tokio::test]
+async fn replacement_default_change_after_swap_reports_partial_without_posting() {
+    for post_swap_default in [Value::Null, json!("other")] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/swap_references/_preview"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(SequenceResponder::new(vec![
+                ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": post_swap_default})),
+            ]))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/swap_references"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": [],
+                "deleteStatus": {"deletePerformed": true, "remainingRefs": 0}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = data_views_ops::apply_delete(&transport(&server), &replacement_delete_plan())
+            .await
+            .expect("post-swap default drift is a partial row");
+
+        assert_eq!(
+            report.failed,
+            vec![json!({
+                "id": "source",
+                "error": "references moved and source deleted; default changed before update"
+            })]
+        );
+        assert_eq!(server.received_requests().await.expect("requests").len(), 4);
+    }
+}
+
+#[tokio::test]
+async fn replacement_post_swap_default_read_failure_reports_partial_without_posting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+            ResponseTemplate::new(500).set_body_json(json!({"message": "default recheck failed"})),
+        ]))
+        .expect(4)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [],
+            "deleteStatus": {"deletePerformed": true, "remainingRefs": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report = data_views_ops::apply_delete(&transport(&server), &replacement_delete_plan())
+        .await
+        .expect("post-swap read failure is a partial row");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "source",
+            "error": "references moved and source deleted; default recheck failed: default recheck failed"
+        })]
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 6);
+}
+
+#[tokio::test]
+async fn replacement_already_default_after_swap_succeeds_without_posting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "replacement"})),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [],
+            "deleteStatus": {"deletePerformed": true, "remainingRefs": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report = data_views_ops::apply_delete(&transport(&server), &replacement_delete_plan())
+        .await
+        .expect("replacement already default is success");
+
+    assert_eq!(report.deleted, vec![json!({"id": "source"})]);
+    assert!(report.failed.is_empty());
+    assert_eq!(server.received_requests().await.expect("requests").len(), 4);
+}
+
+#[tokio::test]
+async fn replacement_default_update_checks_every_mutation_in_order() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": [],
+            "deleteStatus": {"deletePerformed": true, "remainingRefs": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/default"))
+        .and(body_json(
+            json!({"data_view_id": "replacement", "force": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    data_views_ops::apply_delete(&transport(&server), &replacement_delete_plan())
+        .await
+        .expect("replacement update");
+    let routes: Vec<_> = server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            "POST /api/data_views/swap_references/_preview",
+            "GET /api/data_views/default",
+            "POST /api/data_views/swap_references",
+            "GET /api/data_views/default",
+            "POST /api/data_views/default",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn delete_apply_reports_a_default_update_failure_after_a_successful_swap() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -640,8 +849,11 @@ async fn delete_apply_reports_a_default_update_failure_after_a_successful_swap()
         .await;
     Mock::given(method("GET"))
         .and(path("/api/data_views/default"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})))
-        .expect(1)
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})),
+        ]))
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))

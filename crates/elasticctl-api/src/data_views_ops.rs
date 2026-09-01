@@ -449,15 +449,30 @@ pub async fn apply_delete(
                     }));
                 }
                 Ok(_) if target.was_default => {
-                    if let Err(error) =
-                        data_views::set_default(transport, Some(&replacement.id)).await
-                    {
-                        failed.push(json!({
+                    match data_views::get_default(transport).await {
+                        Err(error) => failed.push(json!({
                             "id": target.source.id,
-                            "error": format!("references moved and source deleted; default update failed: {}", error.message)
-                        }));
-                    } else {
-                        deleted.push(json!({"id": target.source.id}));
+                            "error": format!("references moved and source deleted; default recheck failed: {}", error.message)
+                        })),
+                        Ok(Some(current)) if current == target.source.id => {
+                            if let Err(error) =
+                                data_views::set_default(transport, Some(&replacement.id)).await
+                            {
+                                failed.push(json!({
+                                    "id": target.source.id,
+                                    "error": format!("references moved and source deleted; default update failed: {}", error.message)
+                                }));
+                            } else {
+                                deleted.push(json!({"id": target.source.id}));
+                            }
+                        }
+                        Ok(Some(current)) if current == replacement.id => {
+                            deleted.push(json!({"id": target.source.id}));
+                        }
+                        Ok(_) => failed.push(json!({
+                            "id": target.source.id,
+                            "error": "references moved and source deleted; default changed before update"
+                        })),
                     }
                 }
                 Ok(_) => deleted.push(json!({"id": target.source.id})),
