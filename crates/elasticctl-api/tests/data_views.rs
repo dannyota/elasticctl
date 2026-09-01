@@ -468,6 +468,7 @@ async fn delete_plan_previews_each_unreferenced_non_default_source_for_direct_de
 
     assert_eq!(plan.preview.targets, vec!["dv"]);
     assert_eq!(plan.preview.preview_details, vec!["dv  direct delete"]);
+    assert_eq!(plan.default_before, None);
     assert!(plan.targets[0].references.is_empty());
     assert!(!plan.targets[0].was_default);
 }
@@ -548,6 +549,7 @@ async fn delete_plan_resolves_replacement_before_preview_and_lists_every_depende
             .expect("replacement plan");
 
     assert_eq!(plan.replacement.expect("replacement").id, "replacement");
+    assert_eq!(plan.default_before, Some("source".into()));
     assert_eq!(
         plan.preview.preview_details,
         vec![
@@ -587,6 +589,18 @@ async fn delete_plan_rejects_multiple_sources_or_a_source_equal_to_replacement_b
 #[tokio::test]
 async fn delete_apply_continues_after_independent_direct_delete_failures() {
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .expect(2)
+        .mount(&server)
+        .await;
     Mock::given(method("DELETE"))
         .and(path("/api/data_views/data_view/a"))
         .respond_with(
@@ -617,6 +631,19 @@ async fn delete_apply_continues_after_independent_direct_delete_failures() {
 #[tokio::test]
 async fn delete_apply_reports_a_default_update_failure_after_a_successful_swap() {
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .and(body_json(json!({"fromId": "source", "toId": "source"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})))
+        .expect(1)
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/api/data_views/swap_references"))
         .and(body_json(
@@ -674,6 +701,248 @@ async fn delete_apply_rejects_a_forged_later_target_before_any_write() {
     assert_eq!(error.kind, ErrorKind::Error);
 }
 
+#[tokio::test]
+async fn delete_apply_refuses_reference_drift_without_direct_delete() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .and(body_json(json!({"fromId": "source", "toId": "source"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [
+            {"id": "dash-1", "type": "dashboard"}
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report =
+        data_views_ops::apply_delete(&transport(&server), &direct_delete_plan(&["source"]))
+            .await
+            .expect("drift is a failed row");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "source", "error": "references changed since preview"})]
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+}
+
+#[tokio::test]
+async fn delete_apply_refuses_default_drift_without_direct_delete() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .and(body_json(json!({"fromId": "source", "toId": "source"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "other"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report =
+        data_views_ops::apply_delete(&transport(&server), &direct_delete_plan(&["source"]))
+            .await
+            .expect("drift is a failed row");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "source", "error": "default data view changed since preview"})]
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+}
+
+#[tokio::test]
+async fn delete_apply_checks_a_coherent_forged_plan_against_live_references() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [
+            {"id": "dash-1", "type": "dashboard"}
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let plan = direct_delete_plan(&["source"]);
+
+    let report = data_views_ops::apply_delete(&transport(&server), &plan)
+        .await
+        .expect("coherent forged plan is checked against the server");
+
+    assert_eq!(report.deleted, Vec::<Value>::new());
+    assert_eq!(
+        report.failed[0]["error"],
+        "references changed since preview"
+    );
+}
+
+#[tokio::test]
+async fn replacement_apply_refuses_both_default_snapshot_changes_before_swap() {
+    for (plan, live_default) in [
+        (replacement_delete_plan(), "other"),
+        (
+            replacement_delete_plan_with_default(false, Some("other")),
+            "source",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/swap_references/_preview"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data_view_id": live_default})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = data_views_ops::apply_delete(&transport(&server), &plan)
+            .await
+            .expect("drift is a failed row");
+
+        assert_eq!(
+            report.failed,
+            vec![json!({"id": "source", "error": "default data view changed since preview"})]
+        );
+        assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn replacement_apply_refuses_reference_drift_before_swap() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [
+            {"id": "lens-1", "type": "lens"}
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "source"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report = data_views_ops::apply_delete(&transport(&server), &replacement_delete_plan())
+        .await
+        .expect("drift is a failed row");
+
+    assert_eq!(
+        report.failed[0]["error"],
+        "references changed since preview"
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 2);
+}
+
+#[tokio::test]
+async fn direct_delete_checks_preview_then_default_then_writes() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/source"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    data_views_ops::apply_delete(&transport(&server), &direct_delete_plan(&["source"]))
+        .await
+        .expect("delete");
+    let routes: Vec<_> = server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            "POST /api/data_views/swap_references/_preview",
+            "GET /api/data_views/default",
+            "DELETE /api/data_views/data_view/source",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn direct_delete_continues_after_a_snapshot_read_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .and(body_json(json!({"fromId": "a", "toId": "a"})))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_json(json!({"message": "preview a failed"})),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/swap_references/_preview"))
+        .and(body_json(json!({"fromId": "b", "toId": "b"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": null})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let report =
+        data_views_ops::apply_delete(&transport(&server), &direct_delete_plan(&["a", "b"]))
+            .await
+            .expect("partial result");
+
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "a", "error": "preview a failed"})]
+    );
+    assert_eq!(report.deleted, vec![json!({"id": "b"})]);
+}
+
 fn direct_delete_plan(ids: &[&str]) -> DataViewDeletePlan {
     let targets: Vec<_> = ids
         .iter()
@@ -694,22 +963,34 @@ fn direct_delete_plan(ids: &[&str]) -> DataViewDeletePlan {
         },
         targets,
         replacement: None,
+        default_before: None,
     }
 }
 
 fn replacement_delete_plan() -> DataViewDeletePlan {
+    replacement_delete_plan_with_default(true, Some("source"))
+}
+
+fn replacement_delete_plan_with_default(
+    was_default: bool,
+    default_before: Option<&str>,
+) -> DataViewDeletePlan {
     DataViewDeletePlan {
         preview: MutationPlan {
             preview_action: "Replace references and delete source with replacement".into(),
-            preview_details: vec!["source  default -> replacement".into()],
+            preview_details: was_default
+                .then_some("source  default -> replacement".into())
+                .into_iter()
+                .collect(),
             targets: vec!["source".into()],
         },
         targets: vec![DataViewDeleteTarget {
             source: summary("source"),
             references: Vec::new(),
-            was_default: true,
+            was_default,
         }],
         replacement: Some(summary("replacement")),
+        default_before: default_before.map(str::to_owned),
     }
 }
 

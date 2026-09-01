@@ -370,6 +370,18 @@ With `--replace-with TARGET`:
   the swap succeeds. A default-set failure is reported as partial: references
   moved and source deleted, default not updated.
 
+The guard retains the normalized reference list for each source and the full
+default-data-view id snapshot. Immediately before each source mutation, apply
+must call the self-swap preview, then GET the default, and only then DELETE or
+swap. Both reads must exactly equal the guarded snapshots. A changed reference
+list fails that source with `references changed since preview`; a changed
+default fails it with `default data view changed since preview`. Neither case
+may send DELETE, swap, or default POST for that source. A direct-source read,
+preview, or snapshot failure is a failed row and apply continues to independent
+sources. Replacement permits one source, so its check failure is its one failed
+row and stops. Kibana exposes no conditional mutation token, leaving the final
+check-to-write window unavoidable.
+
 `data-views default set` resolves the selector and sends its id with
 `force: true`. `default unset` sends `data_view_id: null` with `force: true`.
 The client validates ids because Kibana's endpoint does not.

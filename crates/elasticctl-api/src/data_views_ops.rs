@@ -75,6 +75,7 @@ pub struct DataViewDeletePlan {
     pub preview: MutationPlan,
     pub targets: Vec<DataViewDeleteTarget>,
     pub replacement: Option<DataViewSummary>,
+    pub default_before: Option<String>,
 }
 
 /// Select one entry by stable id or exact name without decoding unrelated
@@ -341,13 +342,13 @@ pub async fn plan_delete(
         ));
     }
 
-    let default = data_views::get_default(transport).await?;
+    let default_before = data_views::get_default(transport).await?;
     let mut targets = Vec::with_capacity(sources.len());
     for source in sources {
         let mut references = data_views::preview_swap(transport, &source.id, &source.id).await?;
         normalize_references(&mut references)?;
         targets.push(DataViewDeleteTarget {
-            was_default: default.as_deref() == Some(source.id.as_str()),
+            was_default: default_before.as_deref() == Some(source.id.as_str()),
             source,
             references,
         });
@@ -394,6 +395,7 @@ pub async fn plan_delete(
         preview: delete_preview(&targets, replacement.as_ref()),
         targets,
         replacement,
+        default_before,
     })
 }
 
@@ -409,6 +411,12 @@ pub async fn apply_delete(
     match (&plan.replacement, plan.targets.as_slice()) {
         (None, targets) => {
             for target in targets {
+                if let Err(error) =
+                    check_delete_snapshot(transport, target, plan.default_before.as_deref()).await
+                {
+                    failed.push(json!({"id": target.source.id, "error": error.message}));
+                    continue;
+                }
                 match data_views::delete(transport, &target.source.id).await {
                     Ok(()) => deleted.push(json!({"id": target.source.id})),
                     Err(error) => {
@@ -418,6 +426,17 @@ pub async fn apply_delete(
             }
         }
         (Some(replacement), [target]) => {
+            if let Err(error) =
+                check_delete_snapshot(transport, target, plan.default_before.as_deref()).await
+            {
+                failed.push(json!({"id": target.source.id, "error": error.message}));
+                return Ok(DeleteOutcome {
+                    applied: true,
+                    deleted,
+                    failed,
+                    total: plan.targets.len(),
+                });
+            }
             match data_views::swap(transport, &target.source.id, &replacement.id).await {
                 Err(error) => failed.push(json!({"id": target.source.id, "error": error.message})),
                 Ok(swap)
@@ -453,6 +472,32 @@ pub async fn apply_delete(
         failed,
         total: plan.targets.len(),
     })
+}
+
+/// Re-read the source's guarded safety facts in the route order that leaves
+/// the smallest documented check-to-write window.
+async fn check_delete_snapshot(
+    transport: &Transport,
+    target: &DataViewDeleteTarget,
+    default_before: Option<&str>,
+) -> Result<()> {
+    let mut references =
+        data_views::preview_swap(transport, &target.source.id, &target.source.id).await?;
+    normalize_references(&mut references)?;
+    let default = data_views::get_default(transport).await?;
+    if references != target.references {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "references changed since preview",
+        ));
+    }
+    if default.as_deref() != default_before {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "default data view changed since preview",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_references(references: &mut Vec<DataViewReference>) -> Result<()> {
@@ -523,12 +568,23 @@ fn validate_delete_plan(plan: &DataViewDeletePlan) -> Result<()> {
         return invalid_plan("data-view delete plan needs at least one target");
     }
     let mut ids = BTreeSet::new();
+    if plan
+        .default_before
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        return invalid_plan("default data-view snapshot id must not be empty");
+    }
     for target in &plan.targets {
         if target.source.id.trim().is_empty() || target.source.title.trim().is_empty() {
             return invalid_plan("data-view delete target identity must not be empty");
         }
         if !ids.insert(target.source.id.clone()) {
             return invalid_plan("data-view delete targets must be unique by id");
+        }
+        if target.was_default != (plan.default_before.as_deref() == Some(target.source.id.as_str()))
+        {
+            return invalid_plan("data-view delete default claims do not match its snapshot");
         }
         let mut canonical = target.references.clone();
         normalize_references(&mut canonical).map_err(|error| {
