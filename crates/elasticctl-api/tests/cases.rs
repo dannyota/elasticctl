@@ -234,11 +234,33 @@ async fn export_follows_pages_to_the_end() {
         .mount(&server)
         .await;
     let t = test_transport(&server.uri());
-    let all = cases_ops::export_with_page_size(&t, &CaseFilter::default(), 2)
+    let all = cases_ops::export_with_page_size(&t, &CaseFilter::default(), 2, None)
         .await
         .expect("export");
     assert_eq!(all.len(), 3);
     assert_eq!(all[2].id, "c3");
+}
+
+/// A `--limit` that is satisfied within the first page must stop paging: no
+/// page-2 mock is mounted, so a second request fails the test.
+#[tokio::test]
+async fn export_stops_paging_once_the_limit_is_in_hand() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [case_body("c1", "open"), case_body("c2", "open")],
+            "page": 1, "per_page": 100, "total": 5
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let all = cases_ops::export(&t, &CaseFilter::default(), Some(1))
+        .await
+        .expect("export");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].id, "c1");
 }
 
 #[tokio::test]

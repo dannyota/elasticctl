@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1 — Unreleased
+
+### Added
+
+- `cases list`, `cases get`, `cases create`, `cases close`, `cases open`,
+  `cases delete`, `cases attach`, and `cases comment` track investigations as
+  cases. Every mutation previews on stderr and applies only with `--yes`;
+  `cases delete` is the area's only destructive verb, and its preview names
+  each case title. Case identity is the case id plus a version fetched just
+  before the mutation, so a change since the preview is reported as a
+  conflict rather than silently overwritten.
+
 ## 0.4.0 — Unreleased
 
 ### Added

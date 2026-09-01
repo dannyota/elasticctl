@@ -15,6 +15,7 @@ use cli::{
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
+use elasticctl_api::cases::CaseStatus;
 use elasticctl_api::exceptions::ListFilter;
 use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_core::{Config, Error, ErrorKind};
@@ -461,6 +462,46 @@ async fn main() {
             },
             CasesAction::Get { case_id } => match Context::build(&args.global) {
                 Ok(ctx) => cmd::cases::get(&ctx, case_id).await,
+                Err(e) => Err(e),
+            },
+            CasesAction::Create {
+                title,
+                description,
+                tag,
+                severity,
+                assignee,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::cases::create(
+                        &ctx,
+                        title,
+                        description.as_deref(),
+                        tag,
+                        severity.as_deref(),
+                        assignee,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            CasesAction::Close { case_ids } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::status(&ctx, case_ids, CaseStatus::Closed).await,
+                Err(e) => Err(e),
+            },
+            CasesAction::Open { case_ids } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::status(&ctx, case_ids, CaseStatus::Open).await,
+                Err(e) => Err(e),
+            },
+            CasesAction::Delete { case_ids } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::delete(&ctx, case_ids).await,
+                Err(e) => Err(e),
+            },
+            CasesAction::Attach { case_id, alert } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::attach(&ctx, case_id, alert).await,
+                Err(e) => Err(e),
+            },
+            CasesAction::Comment { case_id, message } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::cases::comment(&ctx, case_id, message).await,
                 Err(e) => Err(e),
             },
         },

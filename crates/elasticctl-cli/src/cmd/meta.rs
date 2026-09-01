@@ -143,6 +143,12 @@ mod tests {
             "alerts close",
             "alerts tag",
             "alerts assign",
+            "cases create",
+            "cases close",
+            "cases open",
+            "cases delete",
+            "cases attach",
+            "cases comment",
         ];
         expected.sort();
 

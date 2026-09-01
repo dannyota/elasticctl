@@ -535,6 +535,55 @@ pub enum CasesAction {
         /// The case id
         case_id: String,
     },
+    /// Create a case
+    Create {
+        /// The case title
+        #[arg(long)]
+        title: String,
+        /// The case description (defaults to the title)
+        #[arg(long)]
+        description: Option<String>,
+        /// Tag to set (repeatable)
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Case severity
+        #[arg(long)]
+        severity: Option<String>,
+        /// Username or uid:<profile_uid> to assign (repeatable)
+        #[arg(long)]
+        assignee: Vec<String>,
+    },
+    /// Close cases
+    Close {
+        /// Case ids
+        case_ids: Vec<String>,
+    },
+    /// Reopen cases
+    Open {
+        /// Case ids
+        case_ids: Vec<String>,
+    },
+    /// Delete cases permanently
+    Delete {
+        /// Case ids
+        case_ids: Vec<String>,
+    },
+    /// Attach alerts to a case
+    Attach {
+        /// The case id
+        case_id: String,
+        /// Alert document id to attach (repeatable)
+        #[arg(long, required = true)]
+        alert: Vec<String>,
+    },
+    /// Add a comment to a case
+    Comment {
+        /// The case id
+        case_id: String,
+        /// The comment text
+        #[arg(long)]
+        message: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

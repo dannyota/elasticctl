@@ -72,16 +72,19 @@ pub async fn list(t: &Transport, f: &CaseFilter, limit: usize) -> Result<CaseLis
     })
 }
 
-/// The `--out` path: every page.
-pub async fn export(t: &Transport, f: &CaseFilter) -> Result<Vec<Case>> {
-    export_with_page_size(t, f, PAGE_SIZE).await
+/// The `--out` path: every page, unless `limit` stops it early.
+pub async fn export(t: &Transport, f: &CaseFilter, limit: Option<usize>) -> Result<Vec<Case>> {
+    export_with_page_size(t, f, PAGE_SIZE, limit).await
 }
 
-/// The paging loop with an explicit page size, exposed for tests.
+/// The paging loop with an explicit page size, exposed for tests. Stops
+/// paging as soon as `limit` rows are in hand, mirroring
+/// `alerts_ops::export`'s shape.
 pub async fn export_with_page_size(
     t: &Transport,
     f: &CaseFilter,
     per_page: u32,
+    limit: Option<usize>,
 ) -> Result<Vec<Case>> {
     let mut all = Vec::new();
     let mut page = 1;
@@ -89,6 +92,12 @@ pub async fn export_with_page_size(
         let (batch, _) = cases::find_page(t, &find_query(f, page, per_page)).await?;
         let got = batch.len();
         all.extend(batch);
+        if let Some(limit) = limit
+            && all.len() >= limit
+        {
+            all.truncate(limit);
+            return Ok(all);
+        }
         if got < per_page as usize {
             return Ok(all);
         }

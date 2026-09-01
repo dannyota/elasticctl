@@ -137,6 +137,16 @@ elasticctl alerts close <alert_id>... --reason false_positive --yes
 elasticctl alerts tag <alert_id>... --add triaged --remove noise --yes
 elasticctl alerts assign <alert_id>... --add USER --yes
 
+elasticctl cases list [--status open|in-progress|closed] [--severity S]
+                      [--tag T] [--search TEXT]
+elasticctl cases get <case_id>
+elasticctl cases create --title T [--description D] [--tag T]... [--severity S]
+                        [--assignee USER]... --yes
+elasticctl cases close|open <case_id>... --yes
+elasticctl cases delete <case_id>... --yes
+elasticctl cases attach <case_id> --alert <alert_id>... --yes
+elasticctl cases comment <case_id> --message TEXT --yes
+
 elasticctl completion bash|elvish|fish|powershell|zsh
 elasticctl commands
 ```
