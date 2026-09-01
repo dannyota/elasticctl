@@ -2,6 +2,7 @@
 
 pub mod alerts;
 pub mod alerts_ops;
+pub mod cases;
 pub mod codec;
 pub mod diff;
 pub mod exceptions;
@@ -23,6 +24,7 @@ pub use alerts_ops::{
     AlertFilter, AlertList, AssignPlan, EditReport, QueryStatusPlan, StatusPlan, StatusReport,
     TagsPlan,
 };
+pub use cases::{Case, CaseStatus, NewCase};
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use exceptions::{ListDetail, ListFilter, ListReport};

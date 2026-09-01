@@ -86,6 +86,8 @@ impl Conflicts {
 pub struct AlertHit {
     /// The document `_id` — the identity every mutation route takes.
     pub id: String,
+    /// The backing index, from `_index`. The cases attach body needs it.
+    pub index: Option<String>,
     pub source: Value,
     pub sort: Option<Vec<Value>>,
 }
@@ -116,13 +118,19 @@ pub fn decode_page(value: &Value) -> Result<AlertPage> {
             .and_then(Value::as_str)
             .ok_or_else(|| Error::new(ErrorKind::Http, "decoding alert hit field `_id`"))?
             .to_string();
+        let index = hit.get("_index").and_then(Value::as_str).map(str::to_owned);
         let source = hit
             .get("_source")
             .filter(|s| s.is_object())
             .cloned()
             .ok_or_else(|| Error::new(ErrorKind::Http, "decoding alert hit field `_source`"))?;
         let sort = hit.get("sort").and_then(Value::as_array).cloned();
-        out.push(AlertHit { id, source, sort });
+        out.push(AlertHit {
+            id,
+            index,
+            source,
+            sort,
+        });
     }
     let total = value.pointer("/hits/total/value").and_then(Value::as_u64);
     Ok(AlertPage { hits: out, total })

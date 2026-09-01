@@ -44,6 +44,11 @@ fn decodes_an_alert_page_with_ids() {
     );
     assert_eq!(page.hits[0].sort.as_ref().unwrap().len(), 2);
     assert!(page.hits[1].sort.is_none());
+    assert_eq!(
+        page.hits[0].index.as_deref(),
+        Some(".alerts-security.alerts-default")
+    );
+    assert!(page.hits[1].index.is_none());
 }
 
 #[test]
