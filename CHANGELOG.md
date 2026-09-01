@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2 — 2026-09-01
+
+### Fixed
+
+- Flavor detection mis-parsed a doubled-scheme URL as its scheme name and a
+  query-only URL as `host?query`; the host is now cut at `/`, `?`, `#`, or `:`
+  after the real scheme boundary.
+- `Profile`'s derived `Debug` printed the raw API key, password, and URL
+  userinfo. A manual implementation now marks secrets present-but-redacted and
+  strips userinfo, so `Config` and `Resolved` debug output stays safe by
+  delegation.
+
+### Security
+
+- Updated `h2` to 0.4.19 for RUSTSEC-2026-0258 (unbounded queuing of empty
+  DATA frames; low severity).
+
 ## 0.3.1 — 2026-08-16
 
 ### Added
