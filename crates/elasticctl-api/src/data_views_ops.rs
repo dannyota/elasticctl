@@ -252,6 +252,9 @@ pub fn validate(path: &Path) -> Result<Vec<DataViewSpec>> {
 
 /// Build the exact documented replacement delta between canonical data views.
 pub fn build_patch(current: &DataViewSpec, desired: &DataViewSpec) -> Result<DataViewPatch> {
+    if current.id != desired.id {
+        return unsupported("changing data view id is not supported by the data-view update API");
+    }
     if current.allow_hidden != desired.allow_hidden {
         return unsupported("changing allowHidden is not supported by the data-view update API");
     }
@@ -333,13 +336,19 @@ pub async fn plan_import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<DataViewImportPlan> {
+    let mut specs = validate(path)?;
+    if specs.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "data-view import needs at least one data view",
+        ));
+    }
     if overwrite && skip_existing {
         return Err(Error::new(
             ErrorKind::Error,
             "--overwrite and --skip-existing cannot be used together",
         ));
     }
-    let mut specs = validate(path)?;
     let total = specs.len();
     let requires_server = overwrite || skip_existing || transport.is_some();
     let transport = if requires_server { transport } else { None };
@@ -389,22 +398,16 @@ pub async fn plan_import(
     }
 
     let mut patches = BTreeMap::new();
-    let mut details = Vec::new();
     for spec in &specs {
         match before.get(&spec.id).and_then(Option::as_ref) {
-            None => details.push(format!("{}  create  {}", spec.id, spec.title)),
             Some(current) if current == spec => {
-                details.push(format!("{}  no-op  {}", spec.id, spec.title));
                 patches.insert(spec.id.clone(), DataViewPatch::default());
             }
             Some(current) => {
                 let patch = build_patch(current, spec)?;
-                details.push(format!(
-                    "{}  replace  {} -> {}",
-                    spec.id, current.title, spec.title
-                ));
                 patches.insert(spec.id.clone(), patch);
             }
+            None => {}
         }
     }
     let preview = MutationPlan {
@@ -413,7 +416,7 @@ pub async fn plan_import(
             specs.len(),
             path.display()
         ),
-        preview_details: details,
+        preview_details: preview_details(&specs, &before),
         targets: specs.iter().map(|spec| spec.id.clone()).collect(),
     };
     Ok(DataViewImportPlan {
@@ -436,6 +439,7 @@ pub async fn apply_import(
     transport: &Transport,
     plan: &DataViewImportPlan,
 ) -> Result<DataViewImportReport> {
+    validate_import_plan(plan)?;
     let mut succeeded = Vec::new();
     let mut failed = Vec::new();
 
@@ -596,9 +600,145 @@ fn failed_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
 }
 
 async fn read_spec(transport: &Transport, id: &str) -> Result<DataViewSpec> {
-    normalize(&Value::Object(
+    let spec = normalize(&Value::Object(
         data_views::get(transport, id).await?.data_view,
-    ))
+    ))?;
+    if spec.id != id {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!("decoding data view: expected id '{id}', got '{}'", spec.id),
+        ));
+    }
+    Ok(spec)
+}
+
+fn validate_import_plan(plan: &DataViewImportPlan) -> Result<()> {
+    if plan.total == 0 {
+        return invalid_plan("total must be greater than zero");
+    }
+    if plan.total != plan.specs.len() + plan.skipped.len() {
+        return invalid_plan("total does not equal pending and skipped data views");
+    }
+
+    let mut pending_ids = Vec::with_capacity(plan.specs.len());
+    for spec in &plan.specs {
+        validate_canonical_spec(spec)?;
+        if pending_ids
+            .last()
+            .is_some_and(|previous| previous >= &spec.id)
+        {
+            return invalid_plan("pending data views must be unique and sorted by id");
+        }
+        pending_ids.push(spec.id.clone());
+    }
+    let pending: BTreeSet<_> = pending_ids.iter().cloned().collect();
+    let mut skipped_ids = BTreeSet::new();
+    for row in &plan.skipped {
+        let object = row
+            .as_object()
+            .filter(|object| object.len() == 2)
+            .ok_or_else(|| Error::new(ErrorKind::Error, "invalid data-view import skipped row"))?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| Error::new(ErrorKind::Error, "invalid data-view import skipped row"))?;
+        if object.get("reason").and_then(Value::as_str) != Some("exists")
+            || !skipped_ids.insert(id.to_owned())
+            || pending.contains(id)
+        {
+            return invalid_plan("invalid data-view import skipped rows");
+        }
+    }
+    if plan.preview.targets != pending_ids {
+        return invalid_plan("preview targets do not match pending data views");
+    }
+    let prefix = format!("Import {} data view(s) from ", plan.specs.len());
+    if !plan.preview.preview_action.starts_with(&prefix)
+        || plan.preview.preview_action[prefix.len()..].is_empty()
+    {
+        return invalid_plan("preview action does not match pending data views");
+    }
+    if plan.preview.preview_details != preview_details(&plan.specs, &plan.before) {
+        return invalid_plan("preview details do not match pending data views");
+    }
+
+    let before_ids: BTreeSet<_> = plan.before.keys().cloned().collect();
+    if before_ids != pending {
+        return invalid_plan("preflight snapshots do not match pending data views");
+    }
+    let mut patch_ids = BTreeSet::new();
+    for spec in &plan.specs {
+        let before = plan.before.get(&spec.id).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Error,
+                "preflight snapshots do not match pending data views",
+            )
+        })?;
+        match before {
+            None => {
+                if plan.patches.contains_key(&spec.id) {
+                    return invalid_plan("planned creates must not carry a replacement patch");
+                }
+            }
+            Some(snapshot) => {
+                validate_canonical_spec(snapshot)?;
+                if snapshot.id != spec.id {
+                    return invalid_plan("preflight snapshot id does not match its target");
+                }
+                if !plan.overwrite {
+                    return invalid_plan("replacement plan requires overwrite");
+                }
+                let expected = build_patch(snapshot, spec)?;
+                let patch = plan.patches.get(&spec.id).ok_or_else(|| {
+                    Error::new(ErrorKind::Error, "planned replacement is missing its patch")
+                })?;
+                if patch != &expected {
+                    return invalid_plan("planned replacement patch does not match its snapshots");
+                }
+                patch_ids.insert(spec.id.clone());
+            }
+        }
+    }
+    if plan.patches.keys().cloned().collect::<BTreeSet<_>>() != patch_ids {
+        return invalid_plan("replacement patches do not match preflight snapshots");
+    }
+    Ok(())
+}
+
+fn validate_canonical_spec(spec: &DataViewSpec) -> Result<()> {
+    spec.validate()?;
+    if matches!(spec.type_meta.as_ref(), Some(values) if values.is_empty()) {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "data view typeMeta must not be empty",
+        ));
+    }
+    Ok(())
+}
+
+fn preview_details(
+    specs: &[DataViewSpec],
+    before: &BTreeMap<String, Option<DataViewSpec>>,
+) -> Vec<String> {
+    specs
+        .iter()
+        .filter_map(|spec| match before.get(&spec.id) {
+            Some(None) => Some(format!("{}  create  {}", spec.id, spec.title)),
+            Some(Some(current)) if current == spec => {
+                Some(format!("{}  no-op  {}", spec.id, spec.title))
+            }
+            Some(Some(current)) => Some(format!(
+                "{}  replace  {} -> {}",
+                spec.id, current.title, spec.title
+            )),
+            None => None,
+        })
+        .collect()
+}
+
+fn invalid_plan(message: impl Into<String>) -> Result<()> {
+    Err(Error::new(ErrorKind::Error, message))
 }
 
 /// Export selected data views as a portable JSON or YAML artifact.
