@@ -25,11 +25,11 @@ these runs had the container images already pulled.
 The `triage` contract's accepted deviation is closed alert residue: the
 public API has no alert delete, so the contract closes every alert its marker
 rule produced and baseline verification counts only *open* marker alerts.
-After the matrix, Serverless held 9 closed marker alerts and Hosted held 3,
-with zero open on either and zero marker rules, marker indices, or marker
-cases anywhere. Both cloud targets' prebuilt packs were unchanged at 2,069
-rules. The self-managed lab is destroyed with its volumes, so it retains
-nothing.
+After the final matrix, Serverless held 12 closed marker alerts and Hosted
+held 6, with zero open on either and zero marker rules, marker indices, or
+marker cases anywhere. Both cloud targets' prebuilt packs were unchanged at
+2,069 rules. The self-managed lab is destroyed with its volumes, so it
+retains nothing.
 
 ## Two boot-step defects, both fixed before the passing run
 
@@ -57,5 +57,15 @@ now repeats install-then-status until the status is current, bounded at five
 attempts. The earlier symptom would have been a `source_scoping` failure
 against an incomplete partition.
 
-Both fixes are pure setup-path changes. No contract, baseline rule,
-classifier, or cleanup behavior was touched to make this matrix pass.
+Both fixes are pure setup-path changes. Neither weakened a contract, baseline
+rule, classifier, or cleanup check.
+
+## Final release review and rerun
+
+The release review also hardened the public alert and case mutation plans,
+made case status response checks exact, required a clean triage target before
+the first write, and added an exact title-and-tag cleanup fallback for a case
+whose create response cannot be decoded. The complete matrix was rerun from
+the resulting `1906c814c87acc83ad72b4ae14925d0df8df4cd4` candidate. All 24
+contract rows passed again, and the self-managed lab removed its containers
+and volumes.
