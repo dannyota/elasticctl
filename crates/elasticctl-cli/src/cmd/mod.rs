@@ -1,5 +1,6 @@
 //! Command implementations organized by subcommand family.
 
+pub mod alerts;
 pub mod config_cmd;
 pub mod doctor;
 pub mod exceptions;

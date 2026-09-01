@@ -10,8 +10,8 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction, RulesAction,
-    SearchAction, SourceArg, StateAction,
+    AlertsAction, Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction,
+    RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::exceptions::ListFilter;
@@ -337,6 +337,40 @@ async fn main() {
                     )
                     .await
                 }
+                Err(e) => Err(e),
+            },
+        },
+        Command::Alerts { action } => match action {
+            AlertsAction::List {
+                status,
+                severity,
+                rule,
+                tag,
+                assignee,
+                since,
+                search,
+                limit,
+                with_meta,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    cmd::alerts::list(
+                        &ctx,
+                        status.as_deref(),
+                        severity.as_deref(),
+                        rule.as_deref(),
+                        tag.as_deref(),
+                        assignee.as_deref(),
+                        since.as_deref(),
+                        search.as_deref(),
+                        *limit,
+                        *with_meta,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
+            AlertsAction::Get { alert_id } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::alerts::get(&ctx, alert_id).await,
                 Err(e) => Err(e),
             },
         },

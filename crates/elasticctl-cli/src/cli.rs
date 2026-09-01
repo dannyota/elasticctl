@@ -152,6 +152,11 @@ pub enum Command {
         #[command(subcommand)]
         action: SearchAction,
     },
+    /// Triage detection alerts
+    Alerts {
+        #[command(subcommand)]
+        action: AlertsAction,
+    },
     /// Generate a shell completion script
     Completion {
         #[arg(value_enum)]
@@ -403,6 +408,45 @@ pub enum SearchAction {
         /// Add `_id`, `_index`, and `_score` to each rendered row
         #[arg(long)]
         with_meta: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AlertsAction {
+    /// List detection alerts
+    List {
+        /// Filter by workflow status
+        #[arg(long, value_parser = ["open", "acknowledged", "closed"])]
+        status: Option<String>,
+        /// Filter by severity
+        #[arg(long)]
+        severity: Option<String>,
+        /// Filter by rule name or rule_id
+        #[arg(long)]
+        rule: Option<String>,
+        /// Filter by workflow tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Filter by assignee username, or uid:<profile_uid>
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Only alerts newer than a duration (90m, 24h, 7d) or an ISO timestamp
+        #[arg(long)]
+        since: Option<String>,
+        /// Substring match on the rule name and reason text
+        #[arg(long)]
+        search: Option<String>,
+        /// Cap the rows returned (default 100)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Merge _id into each alert document
+        #[arg(long)]
+        with_meta: bool,
+    },
+    /// Show one alert by document id
+    Get {
+        /// The alert document _id
+        alert_id: String,
     },
 }
 
