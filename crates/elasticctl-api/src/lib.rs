@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod alerts;
 pub mod codec;
 pub mod diff;
 pub mod exceptions;
@@ -15,6 +16,7 @@ pub mod search;
 pub mod selection;
 pub mod state;
 
+pub use alerts::{AlertHit, AlertPage, AlertStatus, Conflicts, SignalsOutcome};
 pub use codec::Format;
 pub use diff::{Change, Drift, FieldChange};
 pub use exceptions::{ListDetail, ListFilter, ListReport};
