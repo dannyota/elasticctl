@@ -97,19 +97,24 @@ fn workspace_root() -> PathBuf {
 /// once, Cargo serializes the concurrent compiles behind its workspace build
 /// lock, and the wall-clock win this command exists for stalls into a
 /// compile queue instead (design spec 8.3).
+///
+/// Compiler output is inherited straight through rather than captured: a
+/// broken build must not fail silently while the operator waits, and
+/// `cargo`'s own diagnostics carry no credentials.
 async fn prebuild_live_tests(workspace: &Path) -> Result<(), String> {
-    let output = Command::new("cargo")
+    let status = Command::new("cargo")
         .current_dir(workspace)
         .args(["test", "--locked", "--test", "live", "--no-run"])
-        .output()
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .await
         .map_err(|error| format!("pre-building the live test binary: {error}"))?;
-    if output.status.success() {
+    if status.success() {
         Ok(())
     } else {
         Err(format!(
-            "pre-building the live test binary exited with {}",
-            output.status
+            "pre-building the live test binary exited with {status}"
         ))
     }
 }
@@ -118,7 +123,11 @@ async fn prebuild_live_tests(workspace: &Path) -> Result<(), String> {
 /// against the current executable, so a locally built `xtask` and one
 /// installed elsewhere both dispatch to themselves rather than a `PATH`
 /// lookup. `kill_on_drop` limits how long a live-marker-owning child can
-/// outlive this runner if a leg's task is aborted or panics.
+/// outlive this runner if a leg's task is aborted or panics — including a
+/// Ctrl-C abort of the traditional leg's conformance child mid-mutation,
+/// where `lab/down.sh`'s `compose down -v` is what actually disposes of any
+/// live-marker residue that leaves behind, since the local lab is destroyed
+/// wholesale rather than cleaned up object by object.
 fn spawn_conformance_child(exe: &Path, flavor: &str, report_dir: &Path) -> Command {
     let mut command = Command::new(exe);
     command
@@ -291,6 +300,13 @@ async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
 /// `lab/down.sh` always runs `compose down -v`, so every lab boot starts
 /// empty. Without this, `source_scoping` fails on every matrix run because it
 /// has no prebuilt rules to partition against custom ones (design spec 8.3).
+///
+/// The install response alone does not prove success: `PUT .../prepackaged`
+/// answers `200` with an all-zero `{"rules_installed":0,...}` body when the
+/// Fleet package fetch itself fails, which would otherwise reproduce the
+/// original empty-lab symptom silently. Follow it with the same status check
+/// `xtask record` uses (`crate::prebuilt_is_current`) and fail through the
+/// private log unless it reports the pack current.
 async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), String> {
     let mut profile = elasticctl_core::Profile {
         kibana_url: "http://localhost:5601".to_string(),
@@ -314,7 +330,23 @@ async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), S
         )
         .await
         .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
-    Ok(())
+
+    let status = transport
+        .get("/api/detection_engine/rules/prepackaged/_status")
+        .await
+        .map_err(|error| private_failure(workspace, "lab-seed", error.message.as_bytes()))?;
+    match crate::prebuilt_is_current(&status) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let detail = format!("prebuilt install did not report current: {status}");
+            Err(private_failure(workspace, "lab-seed", detail.as_bytes()))
+        }
+        Err(error) => Err(private_failure(
+            workspace,
+            "lab-seed",
+            error.message.as_bytes(),
+        )),
+    }
 }
 
 fn lab_log_path(workspace: &Path, name: &str) -> PathBuf {
@@ -461,7 +493,7 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
     let down_script = workspace.join("lab").join("down.sh");
 
     let inner_workspace = workspace.clone();
-    let handle = tokio::spawn(run_traditional_boot_and_leg(
+    let mut handle = tokio::spawn(run_traditional_boot_and_leg(
         exe,
         report_dir,
         up_script,
@@ -472,14 +504,22 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
     // Racing the whole sequence against Ctrl-C, rather than only the
     // conformance child, means an interrupt during the up-to-20-minute lab
     // boot also reaches the teardown below instead of killing the process
-    // outright.
+    // outright. Polling `&mut handle` (instead of moving it in) leaves it
+    // ours to await again below if the ctrl_c branch wins.
     let result = tokio::select! {
-        joined = handle => match joined {
+        joined = &mut handle => match joined {
             Ok(inner_result) => inner_result,
             Err(join_error) => Err(format!("traditional leg task panicked: {join_error}")),
         },
         ctrl_c = tokio::signal::ctrl_c() => {
             abort_handle.abort();
+            // Wait for the aborted task to actually stop before teardown
+            // starts, so `lab/down.sh` always runs after the boot, mint,
+            // install, or conformance child has fully unwound rather than
+            // racing it. A `compose` grandchild the aborted conformance
+            // child may have influenced can still outlive the abort itself;
+            // `down.sh` is what reconciles that, not this wait.
+            let _ = handle.await;
             match ctrl_c {
                 Ok(()) => Err("interrupted by ctrl-c; tearing down the lab".to_string()),
                 Err(error) => Err(format!("failed to watch for ctrl-c: {error}")),
@@ -490,12 +530,20 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
     // Always tear the lab down, whether the boot, the key mint, the prebuilt
     // install, the leg itself, or a Ctrl-C interrupt of any of those failed:
     // a partially started compose stack must not survive this command. This
-    // covers every case up to the point the select above resolves. A Ctrl-C
-    // received after that — for example, while a sibling flavor is still
-    // running — no longer stops the process the normal way, because
-    // installing this listener replaces the OS's default interrupt
-    // disposition for the whole run.
+    // covers every case up to the point the select above resolves.
     let teardown = run_lab_script(&down_script, &workspace, "lab-down").await;
+
+    // Installing the `ctrl_c()` listener above replaced the OS's default
+    // SIGINT disposition for the whole process, and that listener does not
+    // survive past this point. Arm a fresh one-shot listener so a later
+    // Ctrl-C — for example while a sibling flavor is still running — still
+    // terminates the run instead of being silently swallowed.
+    tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            std::process::exit(130)
+        }
+    });
+
     match (result, teardown) {
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(teardown_message)) => Err(teardown_message),
@@ -653,19 +701,23 @@ mod tests {
     }
 
     #[test]
-    fn redacts_only_the_api_key_line_from_captured_lab_output() {
-        let captured = redact_lab_output(
-            b"compose provider: docker compose\n\
-              Lab is up.\n\
-              \n\
-              \x20 ELASTICCTL_KIBANA_URL=http://localhost:5601 \\\n\
-              \x20 ELASTICCTL_API_KEY=super-secret-value \\\n\
-              \x20 elasticctl config init --from-env --profile lab\n",
+    fn redacts_the_api_key_line_lab_up_sh_actually_prints() {
+        // Read the real script rather than a hand-written fixture, so a
+        // heredoc reword in `lab/up.sh` breaks this test instead of leaving
+        // the redaction silently pointed at a string nothing prints anymore.
+        let up_script = std::fs::read_to_string(workspace_root().join("lab").join("up.sh"))
+            .expect("lab/up.sh is readable");
+        assert!(
+            up_script.contains("ELASTICCTL_API_KEY="),
+            "lab/up.sh no longer prints ELASTICCTL_API_KEY=; update the redaction target to match"
         );
-        let text = String::from_utf8(captured).unwrap();
-        assert!(!text.contains("super-secret-value"));
-        assert!(text.contains("compose provider: docker compose"));
-        assert!(text.contains("ELASTICCTL_KIBANA_URL=http://localhost:5601"));
+
+        let redacted = redact_lab_output(up_script.as_bytes());
+        let text = String::from_utf8(redacted).unwrap();
+        assert!(!text.contains("ELASTICCTL_API_KEY="));
         assert!(text.contains("[redacted line containing ELASTICCTL_API_KEY]"));
+        // Neighboring lines survive: only the key line is blanked.
+        assert!(text.contains("ELASTICCTL_KIBANA_URL="));
+        assert!(text.contains("Waiting for Kibana..."));
     }
 }

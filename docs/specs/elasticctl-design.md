@@ -1236,20 +1236,24 @@ concurrency this command exists to provide.
 The self-managed leg boots `lab/up.sh` alongside the other two legs, since its
 boot dominates the combined wall clock. Once it succeeds, the leg mints its
 own Elasticsearch API key against the lab's bootstrap user rather than
-parsing `up.sh` output, installs Elastic's prebuilt rule pack with that key
-(a fresh lab boots with no rules, and `lab/down.sh` always destroys the
+parsing `up.sh` output, then installs Elastic's prebuilt rule pack with that
+key (a fresh lab boots with no rules, and `lab/down.sh` always destroys the
 previous session's volumes, so `source_scoping` would otherwise fail on every
-run for having nothing to partition), then runs the conformance child with
-`ELASTICCTL_SPACE=default`. This whole boot-through-conformance sequence
-races against Ctrl-C, and either outcome — completion or interruption — is
-followed by `lab/down.sh`, which also covers a plain panic anywhere in the
-sequence. Because `lab/down.sh` runs `compose down -v`, starting the
-traditional leg destroys any `lab/` session already up on this machine,
-including its volumes, whether or not this run started it. A Ctrl-C received
-after that boot-through-conformance race has already resolved — for example,
-while a sibling flavor is still running — no longer stops the process the
-normal way, because installing the interrupt listener replaces the OS's
-default disposition for the whole run.
+run for having nothing to partition). The install is verified, not assumed:
+`PUT .../prepackaged` answers `200` with an all-zero
+`{"rules_installed":0,...}` body when the underlying Fleet package fetch
+fails, so the leg follows it with the prepackaged status check and fails
+unless that reports the pack current. Only then does it run the conformance
+child, with `ELASTICCTL_SPACE=default`. This whole boot-through-conformance
+sequence races against Ctrl-C, and either outcome — completion or
+interruption — is followed by `lab/down.sh`, which also covers a plain panic
+anywhere in the sequence. Because `lab/down.sh` runs `compose down -v`,
+starting the traditional leg destroys any `lab/` session already up on this
+machine, including its volumes, whether or not this run started it. Once
+that race resolves, the runner immediately arms a fresh interrupt listener
+that exits the process outright, so a later Ctrl-C — for example while a
+sibling flavor is still running — still terminates the run instead of being
+silently swallowed by the OS's now-replaced default disposition.
 
 `lab/up.sh` and `lab/down.sh` output is never streamed live: `up.sh` prints a
 plaintext superuser-derived API key in its final summary block. Both scripts'
