@@ -1,4 +1,5 @@
 use elasticctl_api::alerts::{self, AlertStatus, Conflicts};
+use elasticctl_api::alerts_ops::{self, AlertFilter};
 use elasticctl_api::profiles::{self, UserProfile};
 use elasticctl_core::{Flavor, Profile, Transport};
 use serde_json::json;
@@ -345,4 +346,109 @@ async fn resolve_assignee_bypasses_with_a_uid_prefix() {
         profiles::resolve_assignee(&t, "uid:").await.is_err(),
         "an empty uid is refused"
     );
+}
+
+#[test]
+fn since_accepts_durations_and_passes_timestamps_through() {
+    assert_eq!(
+        alerts_ops::since_clause("24h"),
+        json!({"range": {"@timestamp": {"gte": "now-24h"}}})
+    );
+    assert_eq!(
+        alerts_ops::since_clause("2026-08-30T00:00:00Z"),
+        json!({"range": {"@timestamp": {"gte": "2026-08-30T00:00:00Z"}}})
+    );
+}
+
+#[tokio::test]
+async fn build_query_composes_filters_and_resolves_the_rule() {
+    let server = MockServer::start().await;
+    // `selection::to_rule_id` tries the rule GET first; answer it directly so
+    // no name-search fallback runs.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(wiremock::matchers::query_param("rule_id", "r-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "rule_id": "r-1", "name": "Alpha", "enabled": true
+        })))
+        .mount(&server)
+        .await;
+
+    let t = test_transport(&server.uri());
+    let f = AlertFilter {
+        status: Some(AlertStatus::Open),
+        severity: Some("high".into()),
+        rule: Some("r-1".into()),
+        tag: Some("triaged".into()),
+        since: Some("7d".into()),
+        search: Some("powershell".into()),
+        ..Default::default()
+    };
+    let q = alerts_ops::build_query(&t, &f).await.expect("query");
+    let filters = q["bool"]["filter"].as_array().expect("filter array");
+    assert_eq!(filters.len(), 6);
+    assert!(filters.contains(&json!({"term": {"kibana.alert.workflow_status": "open"}})));
+    assert!(filters.contains(&json!({"term": {"kibana.alert.severity": "high"}})));
+    assert!(filters.contains(&json!({"term": {"kibana.alert.rule.rule_id": "r-1"}})));
+    assert!(filters.contains(&json!({"term": {"kibana.alert.workflow_tags": "triaged"}})));
+    assert!(filters.contains(&json!({"range": {"@timestamp": {"gte": "now-7d"}}})));
+    let search_clause = filters
+        .iter()
+        .find(|f| f.get("bool").is_some())
+        .expect("search clause");
+    let shoulds = search_clause["bool"]["should"].as_array().unwrap();
+    assert_eq!(shoulds.len(), 2);
+    assert_eq!(
+        shoulds[0]["wildcard"]["kibana.alert.rule.name"]["value"],
+        json!("*powershell*")
+    );
+}
+
+#[tokio::test]
+async fn an_empty_filter_is_match_all() {
+    let t = test_transport("http://127.0.0.1:1");
+    let q = alerts_ops::build_query(&t, &AlertFilter::default())
+        .await
+        .expect("query");
+    assert_eq!(q, json!({"match_all": {}}));
+}
+
+#[tokio::test]
+async fn list_peeks_and_reports_truncation() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 5, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {"n": 1}},
+                {"_id": "a2", "_source": {"n": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let out = alerts_ops::list(&t, &AlertFilter::default(), 1)
+        .await
+        .expect("list");
+    assert!(out.truncated, "two hits against limit 1 is a truncation");
+    assert_eq!(out.hits.len(), 1);
+    assert_eq!(out.total, Some(5));
+}
+
+#[tokio::test]
+async fn get_one_returns_not_found_for_a_missing_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = alerts_ops::get_one(&t, "missing")
+        .await
+        .expect_err("absent");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
+    assert!(err.message.contains("missing"), "{}", err.message);
 }
