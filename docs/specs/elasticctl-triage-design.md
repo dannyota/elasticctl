@@ -327,18 +327,19 @@ a named error instead of a misleading 401.
 the shared `.alerts-security.alerts-default` index, the public API has no
 alert delete, and none will be built. The conformance contract therefore
 closes its marker alerts as its final triage step, and baseline verification
-tolerates residual *closed* `elasticctl-sample` alerts instead of proving
-absence. This is a deliberate deviation from the strict back-to-baseline rule
-the other contracts follow: a closed, marker-tagged alert is inert — it
-matches no open-alert workflow, belongs to a deleted marker rule, and is
-scoped out of every baseline count — whereas deleting documents from a
-dot-prefixed system index would depend on privileges the flavors do not
-uniformly grant and on behavior Elastic does not contract. One consequence:
-the recorded `signals_status_query` fixture's `updated`/`total` counts
-include this accumulated closed residue from the shared index, so they grow
-across successive recording sessions rather than staying pinned to the one
-marker alert each session closes — expected, given the deviation above, not
-a regression to chase.
+tolerates residual *closed* alerts from `elasticctl-live-*` rule ids instead
+of proving absence. The fixture recorder applies the same deviation to its
+separate `elasticctl-sample` marker alerts. This is a deliberate deviation
+from the strict back-to-baseline rule the other contracts follow: a closed,
+marker-tagged alert is inert — it matches no open-alert workflow, belongs to a
+deleted marker rule, and is scoped out of every baseline count — whereas
+deleting documents from a dot-prefixed system index would depend on privileges
+the flavors do not uniformly grant and on behavior Elastic does not contract.
+One consequence: the recorded `signals_status_query` fixture's
+`updated`/`total` counts include this accumulated closed residue from the
+shared index, so they grow across successive recording sessions rather than
+staying pinned to the one marker alert each session closes — expected, given
+the deviation above, not a regression to chase.
 
 **Cases carry no such deviation.** Unlike alerts, cases delete cleanly
 through a public API (`DELETE /api/cases`, section 10), so the recording

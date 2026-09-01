@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult<T = ()> = std::result::Result<T, String>;
 
@@ -358,7 +360,7 @@ impl LiveCleanup {
             )
             .await
             .map_err(|e| format!("verifying closed alerts for rule {rule_id}: {}", e.message))?;
-            let open = remaining.total.unwrap_or(0);
+            let open = required_alert_total(remaining.total, "verifying closed marker alerts")?;
             if open == 0 {
                 Ok(())
             } else {
@@ -547,6 +549,14 @@ fn triage_residue_is_clean(open_marker_alerts: u64, marker_cases: u64) -> bool {
     open_marker_alerts == 0 && marker_cases == 0
 }
 
+/// Count queries set `track_total_hits: true`; a response without the total
+/// is malformed and cannot prove cleanup. `AlertPage` keeps this optional for
+/// ordinary searches whose callers do not request a count, so count contexts
+/// enforce the stronger contract here.
+fn required_alert_total(total: Option<u64>, context: &str) -> TestResult<u64> {
+    total.ok_or_else(|| format!("{context}: decoding alerts response field `hits.total.value`"))
+}
+
 /// Count open alerts across every marker rule, not just one contract's rule:
 /// baseline verification must catch any live triage contract's leftovers.
 fn open_marker_alert_count(profile: &Profile) -> TestResult<u64> {
@@ -569,7 +579,7 @@ fn open_marker_alert_count(profile: &Profile) -> TestResult<u64> {
         )
         .await
         .map_err(|e| format!("counting open marker alerts: {}", e.message))?;
-        Ok(page.total.unwrap_or(0))
+        required_alert_total(page.total, "counting open marker alerts")
     })
 }
 
@@ -936,6 +946,41 @@ fn triage_residue_is_clean_truth_table() {
     assert!(!triage_residue_is_clean(1, 0));
     assert!(!triage_residue_is_clean(0, 1));
     assert!(!triage_residue_is_clean(3, 2));
+}
+
+/// A count request sets `track_total_hits: true`, so a successful response
+/// without `hits.total.value` is malformed. Treating the missing count as
+/// zero would let standalone live cleanup certify unknown residue as clean.
+#[tokio::test(flavor = "multi_thread")]
+async fn open_marker_alert_count_refuses_a_response_without_total() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"hits": []}
+        })))
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+
+    let result = tokio::task::spawn_blocking(move || open_marker_alert_count(&profile))
+        .await
+        .expect("count task must not panic");
+
+    let error = result.expect_err("a missing total must fail closed");
+    assert!(
+        error.contains("hits.total.value"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2022,7 +2067,8 @@ fn triage_probe(
             )
             .await
             .map_err(|e| format!("final sweep verifying closed alerts: {}", e.message))?;
-            open_remaining = page.total.unwrap_or(0);
+            open_remaining =
+                required_alert_total(page.total, "final sweep verifying closed alerts")?;
             if open_remaining == 0 {
                 break;
             }
