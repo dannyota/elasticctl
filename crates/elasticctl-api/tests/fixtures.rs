@@ -743,7 +743,40 @@ fn case_fixtures_decode_through_the_typed_decoders() {
             conflict.get("error").is_some(),
             "the stale-version exchange records an error fixture"
         );
-        // case_delete records the exchange; a 204 has no body to decode.
-        let _ = read("case_delete.json");
+        assert_eq!(
+            conflict["error"]["kind"],
+            serde_json::json!("conflict"),
+            "{}: the stale-version PATCH must classify as a conflict",
+            set.display()
+        );
+        assert_eq!(
+            conflict["error"]["http_status"],
+            serde_json::json!(409),
+            "{}: the stale-version PATCH must record the real 409",
+            set.display()
+        );
+
+        // case_delete: a 204 has no body, so the response side is empty; the
+        // request path carries the id array, JSON-encoded then URL-encoded
+        // (`elasticctl_api::cases::delete_path`) — assert on a stable
+        // substring rather than the whole path, since the placeholder id is
+        // itself a scrubbing artifact, not a documented contract.
+        let deleted = read("case_delete.json");
+        assert!(
+            deleted["response"].is_null(),
+            "{}: a 204 delete has no recorded body",
+            set.display()
+        );
+        let deleted_id = deleted["request"]["ids"][0]
+            .as_str()
+            .expect("case_delete request carries the deleted id");
+        let deleted_path = deleted["request"]["path"]
+            .as_str()
+            .expect("case_delete request carries the issued path");
+        assert!(
+            deleted_path.contains(&format!("%5B%22{deleted_id}")),
+            "{}: the delete path must carry the URL-encoded JSON id array: {deleted_path}",
+            set.display()
+        );
     }
 }

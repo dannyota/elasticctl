@@ -176,6 +176,45 @@ async fn a_delete_dry_run_names_titles_and_changes_nothing() {
     assert_eq!(report["applied"], json!(false));
 }
 
+/// The same case id passed twice must collapse to one resolved case: the
+/// dry-run stub reports the resolved count the preview names, not the raw
+/// argv count (finding I1).
+#[tokio::test]
+async fn a_close_dry_run_with_a_duplicate_id_reports_the_resolved_count() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("GET"))
+        .and(path("/api/cases/c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The `.expect(1)` above proves `c1 c1` deduplicates before resolution.
+    // No PATCH mock: a dry run that reaches the route fails the test.
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap(), "--json"])
+        .args(["cases", "close", "c1", "c1"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("[DRY RUN]"), "{err}");
+    assert!(err.contains("Close 1 case"), "{err}");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["applied"], json!(false));
+    assert_eq!(
+        report["total"],
+        json!(1),
+        "the stub must match the preview's resolved count, not the raw argv count: {report}"
+    );
+}
+
 #[tokio::test]
 async fn a_close_with_yes_patches_the_fetched_version() {
     let server = MockServer::start().await;
@@ -210,6 +249,7 @@ async fn a_close_with_yes_patches_the_fetched_version() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["applied"], json!(true));
     assert_eq!(report["updated"], json!(1));
+    assert_eq!(report["failed"], json!(0));
 }
 
 #[tokio::test]

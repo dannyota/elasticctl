@@ -252,18 +252,23 @@ timestamp=…`), which a whole-string match misses. `kibana.alert.url` is
 additionally replaced outright with a fixed placeholder, since its
 `timestamp=` query parameter is a live value nothing decodes.
 
-Volatile fields to normalize: alert `_id`s, `@timestamp`, any
-`kibana.alert.*` key ending `_at`, `.start`, or `.end` (the general suffix
-rule; alert documents flatten `kibana.alert.*` into dotted keys directly on
-`_source`, so a suffix match on the key catches the class without naming
-every occurrence), plus the explicit fields that don't fit that pattern —
-`kibana.alert.uuid`, `kibana.alert.url` (replaced outright, see above),
-`kibana.alert.last_detected`, `kibana.alert.original_time`,
-`kibana.alert.intended_timestamp`, `kibana.alert.rule.execution.timestamp`,
-`kibana.alert.rule.execution.uuid`, `_score`, `max_score` — and `took`,
-`timed_out`, `_shards` (present on every triage mutation response, not only
-`signals/search`), case `id`, `version`, `created_at`, `updated_at`, comment
-ids.
+Volatile fields to normalize: alert `_id`s, `@timestamp`, any key ending
+`_at` (the general suffix rule — applied to every recorded response, not
+scoped to `kibana.alert.*`; it is what normalizes case `created_at`,
+`updated_at`, and `closed_at` too, not only alert fields), and any
+`kibana.alert.*` key ending `.start` or `.end` (alert documents flatten
+`kibana.alert.*` into dotted keys directly on `_source`, so a suffix match on
+the key catches the class without naming every occurrence), plus the explicit
+fields that don't fit that pattern — `kibana.alert.uuid`, `kibana.alert.url`
+(replaced outright, see above), `kibana.alert.last_detected`,
+`kibana.alert.original_time`, `kibana.alert.intended_timestamp`,
+`kibana.alert.rule.execution.timestamp`, `kibana.alert.rule.execution.uuid`,
+`_score`, `max_score` — and `took`, `timed_out`, `_shards` (present on every
+triage mutation response, not only `signals/search`), case `id`, `version`,
+comment ids, and (from the next recording; current fixtures predate this)
+the case workflow-duration numerics `duration`, `time_to_acknowledge`,
+`time_to_investigate`, `time_to_resolve` — elapsed real time between the
+recorder's own steps, so a re-record's values never match the prior ones.
 
 The conformance contract (eighth in the matrix) would: seed marker events,
 enable the marker rule, wait for an alert, transition it
@@ -281,7 +286,19 @@ the other contracts follow: a closed, marker-tagged alert is inert — it
 matches no open-alert workflow, belongs to a deleted marker rule, and is
 scoped out of every baseline count — whereas deleting documents from a
 dot-prefixed system index would depend on privileges the flavors do not
-uniformly grant and on behavior Elastic does not contract.
+uniformly grant and on behavior Elastic does not contract. One consequence:
+the recorded `signals_status_query` fixture's `updated`/`total` counts
+include this accumulated closed residue from the shared index, so they grow
+across successive recording sessions rather than staying pinned to the one
+marker alert each session closes — expected, given the deviation above, not
+a regression to chase.
+
+**Cases carry no such deviation.** Unlike alerts, cases delete cleanly
+through a public API (`DELETE /api/cases`, section 10), so the recording
+session tolerates **no** marker-case residue, closed or otherwise: the cases
+probe deletes its marker case as its final step, and baseline verification
+proves absence the same way every other conformance contract does. The
+alert-residue deviation above does not extend to cases.
 
 ## 10. Measured behavior
 

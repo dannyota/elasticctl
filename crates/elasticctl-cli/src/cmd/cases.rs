@@ -113,7 +113,7 @@ pub async fn status(ctx: &Context, case_ids: &[String], target: CaseStatus) -> R
     if guard::check(ctx, guard_path, &preview) {
         to_value(&cases_ops::apply_status(t, &plan).await?)
     } else {
-        Ok(json!({"applied": false, "total": case_ids.len()}))
+        Ok(json!({"applied": false, "total": plan.resolved}))
     }
 }
 
@@ -143,7 +143,7 @@ pub async fn attach(ctx: &Context, case_id: &str, alerts: &[String]) -> Result<V
     if guard::check(ctx, "cases attach", &preview) {
         to_value(&cases_ops::apply_attach(t, &plan).await?)
     } else {
-        Ok(json!({"applied": false, "total": alerts.len()}))
+        Ok(json!({"applied": false, "total": plan.resolved}))
     }
 }
 

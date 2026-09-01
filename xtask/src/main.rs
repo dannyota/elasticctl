@@ -64,6 +64,19 @@ const CASE_ID_PLACEHOLDER: &str = "elasticctl-fixture-case";
 /// its own placeholder rewrite.
 const CASE_RULE_UUID_PLACEHOLDER: &str = "elasticctl-fixture-case-rule-uuid";
 
+/// Case workflow-duration numerics (triage spec section 9, added 0.4.1):
+/// elapsed real time between the recorder's own steps, so a re-record's
+/// values never match the prior recording's. Stripped like any other
+/// volatile field (`strip_volatile`), not substituted, since they carry no
+/// information a decoder needs — `Case` has no typed field for them, they
+/// only ever land in `extra`.
+const CASE_DURATION_VOLATILE_FIELDS: &[&str] = &[
+    "duration",
+    "time_to_acknowledge",
+    "time_to_investigate",
+    "time_to_resolve",
+];
+
 /// Volatile fields on every recorded triage mutation response: the raw
 /// update-by-query envelope (`signals_status_ids`/`signals_tags`/
 /// `signals_assignees`/`signals_status_query`) and `profile_suggest` all
@@ -2526,6 +2539,7 @@ async fn record_cases(
         let mut request = create_request;
         let mut response = create_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &case_map);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut request, &probe.uid_map);
@@ -2548,6 +2562,7 @@ async fn record_cases(
     {
         let mut response = get_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut response, &probe.uid_map);
         recording.fixtures.push(response_fixture(
@@ -2584,6 +2599,7 @@ async fn record_cases(
         let mut request = json!({"query": find_query_string});
         let mut response = find_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &case_map);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut response, &probe.uid_map);
@@ -2616,6 +2632,7 @@ async fn record_cases(
         let mut request = comment_request;
         let mut response = comment_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &case_map);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut response, &probe.uid_map);
@@ -2671,6 +2688,7 @@ async fn record_cases(
         let mut request = attach_request;
         let mut response = attach_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &case_map);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut request, &probe.id_map);
@@ -2716,6 +2734,7 @@ async fn record_cases(
         let mut request = close_request;
         let mut response = close_response;
         scrub_alert_timestamps(&mut response);
+        strip_volatile(&mut response, CASE_DURATION_VOLATILE_FIELDS);
         scrub_placeholder_values(&mut request, &case_map);
         scrub_placeholder_values(&mut response, &case_map);
         scrub_placeholder_values(&mut response, &probe.uid_map);

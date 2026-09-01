@@ -41,6 +41,36 @@ fn decodes_a_case_and_keeps_unknown_fields() {
     assert_eq!(case.extra["owner"], json!("securitySolution"));
 }
 
+/// `case_row`'s key order is the rendered table-column contract
+/// (`preserve_order`, spec — see `cases_ops::case_row`'s own doc comment):
+/// reordering the struct's `insert` calls would silently reorder every
+/// `cases list` column.
+#[test]
+fn case_row_emits_its_columns_in_the_documented_order() {
+    let case = cases::decode_case(&case_body("c1", "open")).expect("decode");
+    let row = cases_ops::case_row(&case);
+    let keys: Vec<&str> = row
+        .as_object()
+        .expect("case_row returns an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "id",
+            "title",
+            "status",
+            "severity",
+            "tags",
+            "comments",
+            "created_at",
+            "updated_at",
+        ],
+        "case_row key order is the rendered `cases list` column order"
+    );
+}
+
 #[test]
 fn rejects_a_case_missing_its_version() {
     let mut body = case_body("c1", "open");
@@ -333,6 +363,7 @@ async fn a_stale_version_conflict_names_the_remedy() {
     let plan = cases_ops::StatusPlan {
         target: CaseStatus::Closed,
         updates: vec![("c1".into(), "stale".into(), CaseStatus::Closed)],
+        resolved: 1,
         preview_action: "Close 1 case".into(),
         preview_details: vec![],
     };
@@ -342,6 +373,67 @@ async fn a_stale_version_conflict_names_the_remedy() {
         err.message.contains("re-run"),
         "the remediation names the fix: {}",
         err.message
+    );
+}
+
+/// `CaseEditReport::failed` is the exit-code seam: `render::exit_code_for_value`
+/// keys on a positive `failed` count to exit 1, so a PATCH response short of
+/// what was sent must be visible in the report, not just in `updated`.
+#[tokio::test]
+async fn apply_status_reports_zero_failed_on_a_full_patch_and_the_shortfall_otherwise() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/cases"))
+        .and(body_json(json!({"cases": [
+            {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
+            {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
+        ]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            case_body("c1", "closed"),
+            case_body("c2", "closed"),
+        ])))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let full_plan = cases_ops::StatusPlan {
+        target: CaseStatus::Closed,
+        updates: vec![
+            ("c1".into(), "WzEsMV0=".into(), CaseStatus::Closed),
+            ("c2".into(), "WzEsMV0=".into(), CaseStatus::Closed),
+        ],
+        resolved: 2,
+        preview_action: "Close 2 cases".into(),
+        preview_details: vec![],
+    };
+    let report = cases_ops::apply_status(&t, &full_plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.total, 2);
+    assert_eq!(report.updated, 2);
+    assert_eq!(report.failed, 0, "a full response leaves nothing failed");
+
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/cases"))
+        .and(body_json(json!({"cases": [
+            {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
+            {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
+        ]})))
+        // Server-side reality: only one of the two requested cases came
+        // back updated, with no error surfaced elsewhere in the exchange.
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([case_body("c1", "closed")])))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let report = cases_ops::apply_status(&t, &full_plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.total, 2);
+    assert_eq!(report.updated, 1);
+    assert_eq!(
+        report.failed, 1,
+        "a short response must surface the shortfall as failed, since \
+         render::exit_code_for_value keys on `failed` to choose the exit code"
     );
 }
 

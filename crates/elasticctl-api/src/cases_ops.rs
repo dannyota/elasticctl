@@ -181,6 +181,9 @@ pub struct CaseEditReport {
     pub applied: bool,
     pub total: u64,
     pub updated: u64,
+    /// `render::exit_code_for_value` keys on this field: a positive count
+    /// exits 1. Field order is the rendered JSON key order (`preserve_order`).
+    pub failed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,6 +247,9 @@ pub struct StatusPlan {
     pub target: CaseStatus,
     /// Only the cases actually transitioning: (id, version, target).
     pub updates: Vec<(String, String, CaseStatus)>,
+    /// The resolved, deduplicated case count the preview names — what a
+    /// dry-run stub must report, not the raw argv count.
+    pub resolved: usize,
     pub preview_action: String,
     pub preview_details: Vec<String>,
 }
@@ -280,6 +286,7 @@ pub async fn plan_status(t: &Transport, ids: &[String], target: CaseStatus) -> R
         ),
         target,
         updates,
+        resolved: resolved.len(),
         preview_details: details,
     })
 }
@@ -290,6 +297,7 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
             applied: true,
             total: 0,
             updated: 0,
+            failed: 0,
         });
     }
     let updated = cases::patch_status(t, &plan.updates).await.map_err(|e| {
@@ -305,10 +313,13 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
             e
         }
     })?;
+    let total = plan.updates.len() as u64;
+    let updated = updated.len() as u64;
     Ok(CaseEditReport {
         applied: true,
-        total: plan.updates.len() as u64,
-        updated: updated.len() as u64,
+        total,
+        updated,
+        failed: total.saturating_sub(updated),
     })
 }
 
@@ -342,6 +353,7 @@ pub async fn apply_delete(t: &Transport, plan: &DeletePlan) -> Result<CaseEditRe
         applied: true,
         total: plan.targets.len() as u64,
         updated: plan.targets.len() as u64,
+        failed: 0,
     })
 }
 
@@ -357,6 +369,9 @@ pub struct AttachGroup {
 pub struct AttachPlan {
     pub case_id: String,
     pub groups: Vec<AttachGroup>,
+    /// The resolved, deduplicated alert count the preview names — what a
+    /// dry-run stub must report, not the raw argv count.
+    pub resolved: usize,
     pub preview_action: String,
     pub preview_details: Vec<String>,
 }
@@ -448,6 +463,7 @@ pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> 
         ),
         case_id: case.id,
         groups,
+        resolved: unique.len(),
         preview_details: details,
     })
 }
@@ -470,6 +486,7 @@ pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditRe
         applied: true,
         total: attached,
         updated: attached,
+        failed: 0,
     })
 }
 
@@ -500,5 +517,6 @@ pub async fn apply_comment(t: &Transport, plan: &CommentPlan) -> Result<CaseEdit
         applied: true,
         total: 1,
         updated: 1,
+        failed: 0,
     })
 }

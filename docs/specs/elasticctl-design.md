@@ -1337,7 +1337,15 @@ follow whichever name invoked the process — `elkctl --help` and
 `argv[0]` at runtime, not from a compiled-in literal. `elasticctl` remains the
 canonical name in documentation, error text, and the `commands` JSON's own
 `name` field, which stays `"elasticctl"` regardless of invocation so that
-field stays part of the byte-identical surface.
+field stays part of the byte-identical surface. `--version` follows the same
+rule as that `name` field, not the help/completions rule: both binaries print
+`elasticctl <version>`, the canonical name, regardless of which one was
+invoked — only help usage text and completions follow `argv[0]`. Sharing one
+entrypoint across two `[[bin]]` targets has a known, harmless build-time cost:
+`cargo build`/`cargo install` print a "file present in multiple build
+targets" notice for `src/main.rs`. It is a manifest-level Cargo notice, not a
+lint — `cargo clippy -D warnings` does not see it and there is no way to
+suppress it short of duplicating the entrypoint file.
 
 ## 11. Versioning
 
