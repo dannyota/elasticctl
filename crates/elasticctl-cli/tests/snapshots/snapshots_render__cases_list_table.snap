@@ -1,0 +1,7 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+id  title                status  severity  tags        comments  created_at                
+c1  Suspicious activity  open    high      ["triage"]  2         2026-08-30T21:14:02.000Z  
+c2  Follow-up review     closed            []

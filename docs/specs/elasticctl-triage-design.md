@@ -209,9 +209,14 @@ Failure modes, each a typed error:
 - **Ambiguous.** Two or more profiles match exactly (multi-realm) →
   `conflict`, listing username and realm of each candidate, never picking one.
 - **Suggest route unavailable.** 410/404/permission failure on the resolution
-  route → `unsupported`, naming the flavor and the remedy: pass
-  `uid:<profile_uid>` to bypass resolution. The `uid:` prefix always works and
-  is the escape hatch, not the primary interface.
+  route, or a 400 whose message says "is not available" (the internal
+  route's own refusal shape described above, message-scoped so an unrelated
+  400 still surfaces as `http`) → `unsupported`, naming the flavor and the
+  remedy: pass `uid:<profile_uid>` to bypass resolution. On the public
+  route, a profile with no `es_url` configured also names that as the likely
+  cause — without it, the request silently went to the Kibana host instead
+  of Elasticsearch. The `uid:` prefix always works and is the escape hatch,
+  not the primary interface.
 
 Case assignees (0.4.1) take the same uids in `assignees: [{uid}]` and reuse
 the same resolver.
@@ -229,9 +234,12 @@ CLI adapter guards and renders:
   owns the flavor switch between the public and internal suggest routes.
 - `elasticctl-api::cases` / `cases_ops` — same split for the cases routes.
 - `elasticctl-cli::cmd::alerts` / `cmd::cases` — clap parsing, guard, render.
-- `elasticctl-core` — untouched except capability floors; `kbn-xsrf`,
-  `elastic-api-version`, and (new) per-request extra headers for the
-  internal-origin case.
+- `elasticctl-core` — untouched except `kbn-xsrf`, `elastic-api-version`, and
+  (new) per-request extra headers for the internal-origin case. No version
+  floor: the only flavor divergence in the whole triage area is the
+  profile-suggest route, switched at runtime on the probed `Flavor` (section
+  7), not gated behind a `Feature` variant. Every supported stack at the
+  9.5.1 evidence floor (section 10) serves every triage route.
 
 No new crate. The MCP-readiness rule holds: every command returns a struct.
 
@@ -384,7 +392,7 @@ evidence is lost), since measured facts outlive the trial.
 
 | Version | Content |
 |---|---|
-| 0.4.0 | The complete alerts vertical: `alerts list|get|ack|open|close|tag|assign` including `--query` transitions and username resolution; capability floors; fixtures for all of it |
+| 0.4.0 | The complete alerts vertical: `alerts list|get|ack|open|close|tag|assign` including `--query` transitions and username resolution; no version floor — the only flavor divergence is the suggest route, switched at runtime; fixtures for all of it |
 | 0.4.1 | The complete cases surface: `cases list|get|create|close|open|delete|attach|comment`, case assignees; the `elkctl` alias binary |
 | 0.4.2 | Triage conformance contract, cross-flavor matrix run, bounded review patch |
 

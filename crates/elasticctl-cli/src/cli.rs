@@ -441,7 +441,7 @@ pub enum AlertsAction {
         /// Substring match on the rule name and reason text
         #[arg(long)]
         search: Option<String>,
-        /// Cap the rows returned (default 100)
+        /// Cap the rows returned (peek default: 100; --out is uncapped)
         #[arg(long)]
         limit: Option<usize>,
         /// Merge _id into each alert document
@@ -456,7 +456,7 @@ pub enum AlertsAction {
     /// Acknowledge alerts, by id or by query
     Ack {
         /// Alert document ids
-        #[arg(conflicts_with = "query")]
+        #[arg(conflicts_with = "query", required_unless_present = "query")]
         alert_ids: Vec<String>,
         /// Query DSL selecting the alerts: inline JSON or @file
         #[arg(long)]
@@ -465,7 +465,7 @@ pub enum AlertsAction {
     /// Reopen alerts, by id or by query
     Open {
         /// Alert document ids
-        #[arg(conflicts_with = "query")]
+        #[arg(conflicts_with = "query", required_unless_present = "query")]
         alert_ids: Vec<String>,
         /// Query DSL selecting the alerts: inline JSON or @file
         #[arg(long)]
@@ -474,7 +474,7 @@ pub enum AlertsAction {
     /// Close alerts, by id or by query
     Close {
         /// Alert document ids
-        #[arg(conflicts_with = "query")]
+        #[arg(conflicts_with = "query", required_unless_present = "query")]
         alert_ids: Vec<String>,
         /// Query DSL selecting the alerts: inline JSON or @file
         #[arg(long)]
@@ -489,6 +489,7 @@ pub enum AlertsAction {
     /// Add or remove workflow tags on alerts
     Tag {
         /// Alert document ids
+        #[arg(required = true)]
         alert_ids: Vec<String>,
         /// Tag to add (repeatable)
         #[arg(long)]
@@ -500,6 +501,7 @@ pub enum AlertsAction {
     /// Assign or unassign users on alerts
     Assign {
         /// Alert document ids
+        #[arg(required = true)]
         alert_ids: Vec<String>,
         /// Username or uid:<profile_uid> to assign (repeatable)
         #[arg(long)]
@@ -526,7 +528,7 @@ pub enum CasesAction {
         /// Substring match on title and description
         #[arg(long)]
         search: Option<String>,
-        /// Cap the rows returned (default 100)
+        /// Cap the rows returned (peek default: 100; --out is uncapped)
         #[arg(long)]
         limit: Option<usize>,
     },
@@ -556,16 +558,19 @@ pub enum CasesAction {
     /// Close cases
     Close {
         /// Case ids
+        #[arg(required = true)]
         case_ids: Vec<String>,
     },
     /// Reopen cases
     Open {
         /// Case ids
+        #[arg(required = true)]
         case_ids: Vec<String>,
     },
     /// Delete cases permanently
     Delete {
         /// Case ids
+        #[arg(required = true)]
         case_ids: Vec<String>,
     },
     /// Attach alerts to a case

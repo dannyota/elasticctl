@@ -141,11 +141,18 @@ pub struct NewCase {
 }
 
 /// Create a case. The API requires a non-empty description; when the
-/// operator gave none, the title stands in. `connector` and `settings` are
-/// required by the route; elasticctl pins the no-op connector and leaves
-/// alert-status syncing off — alert transitions stay explicit CLI actions.
+/// operator gave none, or gave an empty or whitespace-only one, the title
+/// stands in — `Some("")` must fall back exactly like `None`, or it defeats
+/// the fallback and earns a server 400 on minimum length. `connector` and
+/// `settings` are required by the route; elasticctl pins the no-op connector
+/// and leaves alert-status syncing off — alert transitions stay explicit CLI
+/// actions.
 pub async fn create(t: &Transport, new: &NewCase) -> Result<Case> {
-    let description = new.description.clone().unwrap_or_else(|| new.title.clone());
+    let description = new
+        .description
+        .as_deref()
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or(&new.title);
     let assignees: Vec<Value> = new
         .assignee_uids
         .iter()

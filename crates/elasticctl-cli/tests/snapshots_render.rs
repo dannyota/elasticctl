@@ -9,8 +9,10 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 mod common;
-use common::profile_args;
+use common::{config_for, profile_args};
 use elasticctl_api_test_support::MockStack;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The rules `with_rules` seeds, in the `elasticctl-sample` marker style every
 /// live test uses.
@@ -151,6 +153,117 @@ async fn rendered_output_is_stable() {
             insta::assert_snapshot!(*name, rendered);
         });
     }
+}
+
+/// Two alert hits with overlapping-but-unequal dotted `kibana.alert.*` key
+/// sets: `a1` carries `reason`, which `a2` lacks; `a2` carries
+/// `workflow_tags`, which `a1` lacks. `render::table`'s column set comes
+/// from the *first* row only (`columns()` in `render.rs`), so this pins two
+/// things at once: a later row's missing key renders as a blank cell, and a
+/// later row's *extra* key never gets a column at all — it silently drops
+/// from the table output. `--json` renders every hit's full `_source`
+/// regardless, so the two formats' snapshots are the contrast that shows the
+/// table behavior is table-specific, not a data problem.
+///
+/// Hand-built wiremock bodies, matching this suite's alerts/cases CLI test
+/// convention (`crates/elasticctl-cli/tests/alerts.rs`), not `MockStack`:
+/// `alerts list` needs no capability probe, so the plain
+/// `signals/search` mock is enough.
+fn alert_hits_with_uneven_keys() -> Value {
+    json!({
+        "hits": {
+            "total": {"value": 2, "relation": "eq"},
+            "hits": [
+                {"_id": "a1", "_source": {
+                    "kibana.alert.rule.name": "Suspicious PowerShell Execution",
+                    "kibana.alert.severity": "high",
+                    "kibana.alert.workflow_status": "open",
+                    "kibana.alert.reason": "powershell.exe spawned an encoded command"
+                }},
+                {"_id": "a2", "_source": {
+                    "kibana.alert.rule.name": "Rare DNS Tunnel",
+                    "kibana.alert.severity": "medium",
+                    "kibana.alert.workflow_status": "acknowledged",
+                    "kibana.alert.workflow_tags": ["triaged"]
+                }}
+            ]
+        }
+    })
+}
+
+#[tokio::test]
+async fn alerts_list_table_and_json_render_uneven_keys_differently() {
+    for (name, args) in [
+        (
+            "alerts_list_table",
+            ["alerts", "list", "--format", "table"].as_slice(),
+        ),
+        ("alerts_list_json", ["alerts", "list", "--json"].as_slice()),
+    ] {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = config_for(dir.path(), &server.uri());
+        Mock::given(method("POST"))
+            .and(path("/api/detection_engine/signals/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(alert_hits_with_uneven_keys()))
+            .mount(&server)
+            .await;
+
+        let out = Command::cargo_bin("elasticctl")
+            .unwrap()
+            .args(["--config", cfg.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rendered = String::from_utf8(out.stdout).unwrap();
+        insta::assert_snapshot!(name, rendered);
+    }
+}
+
+/// Two cases with an unequal optional-field set (one carries `severity` and
+/// a comment count, the other neither) over `cases list --format table`.
+/// Unlike alerts, `case_row` fixes its key order by explicit `insert` calls
+/// rather than deriving columns from the first row, so this pins the
+/// contrast: an absent optional field renders as a blank cell in its own
+/// column, it does not shift or drop other columns.
+#[tokio::test]
+async fn cases_list_table_renders_two_cases_with_uneven_optional_fields() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    Mock::given(method("GET"))
+        .and(path("/api/cases/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "cases": [
+                {"id": "c1", "version": "WzEsMV0=", "title": "Suspicious activity",
+                 "status": "open", "severity": "high", "tags": ["triage"],
+                 "totalComment": 2, "created_at": "2026-08-30T21:14:02.000Z"},
+                {"id": "c2", "version": "WzIsMV0=", "title": "Follow-up review",
+                 "status": "closed", "tags": []}
+            ],
+            "page": 1, "per_page": 100, "total": 2
+        })))
+        .mount(&server)
+        .await;
+
+    let out = Command::cargo_bin("elasticctl")
+        .unwrap()
+        .args(["--config", cfg.to_str().unwrap()])
+        .args(["cases", "list", "--format", "table"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rendered = String::from_utf8(out.stdout).unwrap();
+    insta::assert_snapshot!("cases_list_table", rendered);
 }
 
 /// Verify that the request recorder observes writes and ignores reads.

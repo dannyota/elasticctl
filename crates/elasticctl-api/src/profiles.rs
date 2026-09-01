@@ -83,15 +83,31 @@ pub fn decode_internal(value: &Value) -> Result<Vec<UserProfile>> {
 }
 
 /// A resolution route that is missing, withdrawn, or forbidden is a definite
-/// refusal with a remedy, not an unclassified failure.
-fn downgrade_unavailable(e: Error, flavor: Flavor) -> Error {
-    let unavailable =
-        matches!(e.http_status, Some(404) | Some(410)) || e.kind == ErrorKind::Permission;
+/// refusal with a remedy, not an unclassified failure. The internal route
+/// family answers a 400 "exists but is not available" instead of a 404 when
+/// `x-elastic-internal-origin` is absent or the route is otherwise refused;
+/// message-scoped so a genuine bad request (a different 400) still surfaces
+/// as `http`.
+///
+/// `missing_es_url` names a likely cause on the public route: without an
+/// `es_url`, `post_absolute_es` silently falls back to the Kibana host, and
+/// the 404 that follows would otherwise blame the deployment ("unavailable
+/// on elastic-cloud-hosted") for what is really a profile misconfiguration.
+fn downgrade_unavailable(e: Error, flavor: Flavor, missing_es_url: bool) -> Error {
+    let unavailable = matches!(e.http_status, Some(404) | Some(410))
+        || e.kind == ErrorKind::Permission
+        || (e.http_status == Some(400) && e.message.contains("is not available"));
     if unavailable {
+        let cause = if missing_es_url {
+            "; this profile has no es_url configured, so the request went to the Kibana host \
+             instead — set es_url if the Elasticsearch endpoint differs"
+        } else {
+            ""
+        };
         Error::new(
             ErrorKind::Unsupported,
             format!(
-                "profile suggestion is unavailable on {} ({}); pass uid:<profile_uid> to bypass resolution",
+                "profile suggestion is unavailable on {} ({}){cause}; pass uid:<profile_uid> to bypass resolution",
                 flavor.as_str(),
                 e.message
             ),
@@ -109,14 +125,14 @@ pub async fn suggest(t: &Transport, flavor: Flavor, name: &str) -> Result<Vec<Us
             let body = t
                 .get_internal(&internal_find_path(name))
                 .await
-                .map_err(|e| downgrade_unavailable(e, flavor))?;
+                .map_err(|e| downgrade_unavailable(e, flavor, false))?;
             decode_internal(&body)
         }
         Flavor::ElasticCloudHosted | Flavor::SelfManaged => {
             let body = t
                 .post_absolute_es(PUBLIC_SUGGEST_PATH, &json!({ "name": name, "size": 10 }))
                 .await
-                .map_err(|e| downgrade_unavailable(e, flavor))?;
+                .map_err(|e| downgrade_unavailable(e, flavor, !t.has_es_url()))?;
             decode_public(&body)
         }
     }

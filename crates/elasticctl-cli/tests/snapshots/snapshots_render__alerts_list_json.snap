@@ -1,0 +1,20 @@
+---
+source: crates/elasticctl-cli/tests/snapshots_render.rs
+expression: rendered
+---
+[
+  {
+    "kibana.alert.rule.name": "Suspicious PowerShell Execution",
+    "kibana.alert.severity": "high",
+    "kibana.alert.workflow_status": "open",
+    "kibana.alert.reason": "powershell.exe spawned an encoded command"
+  },
+  {
+    "kibana.alert.rule.name": "Rare DNS Tunnel",
+    "kibana.alert.severity": "medium",
+    "kibana.alert.workflow_status": "acknowledged",
+    "kibana.alert.workflow_tags": [
+      "triaged"
+    ]
+  }
+]

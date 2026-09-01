@@ -1,6 +1,7 @@
 //! Case orchestration: filters, list/get, and the guarded mutation plans.
 
 use crate::alerts;
+use crate::alerts_ops::source_str;
 use crate::cases::{self, Case, CaseStatus, NewCase};
 use crate::profiles;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
@@ -184,6 +185,11 @@ pub struct CaseEditReport {
     /// `render::exit_code_for_value` keys on this field: a positive count
     /// exits 1. Field order is the rendered JSON key order (`preserve_order`).
     pub failed: u64,
+    /// One entry per failed unit of work (currently only `apply_attach`'s
+    /// per-rule-group comment POSTs), naming what failed and why. Empty for
+    /// every other mutation's report. Appended after `failed` so existing
+    /// consumers of the field order are unaffected.
+    pub failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -298,6 +304,7 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
             total: 0,
             updated: 0,
             failed: 0,
+            failures: Vec::new(),
         });
     }
     let updated = cases::patch_status(t, &plan.updates).await.map_err(|e| {
@@ -319,7 +326,11 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
         applied: true,
         total,
         updated,
-        failed: total.saturating_sub(updated),
+        // `abs_diff`, not `saturating_sub`: a surplus response (more cases
+        // came back than were sent) is a mismatch too, and `total -
+        // updated` would saturate that at 0 and read it as zero failures.
+        failed: total.abs_diff(updated),
+        failures: Vec::new(),
     })
 }
 
@@ -354,6 +365,7 @@ pub async fn apply_delete(t: &Transport, plan: &DeletePlan) -> Result<CaseEditRe
         total: plan.targets.len() as u64,
         updated: plan.targets.len() as u64,
         failed: 0,
+        failures: Vec::new(),
     })
 }
 
@@ -374,14 +386,6 @@ pub struct AttachPlan {
     pub resolved: usize,
     pub preview_action: String,
     pub preview_details: Vec<String>,
-}
-
-fn attach_source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
-    if let Some(v) = source.get(key).and_then(Value::as_str) {
-        return Some(v);
-    }
-    let pointer = format!("/{}", key.replace('.', "/"));
-    source.pointer(&pointer).and_then(Value::as_str)
 }
 
 /// Resolve the case (for its title) and every alert (id, index, rule),
@@ -423,7 +427,7 @@ pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> 
             .iter()
             .find(|h| &h.id == id)
             .expect("checked above");
-        let rule_id = attach_source_str(&hit.source, "kibana.alert.rule.uuid")
+        let rule_id = source_str(&hit.source, "kibana.alert.rule.uuid")
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::Http,
@@ -431,7 +435,7 @@ pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> 
                 )
             })?
             .to_string();
-        let rule_name = attach_source_str(&hit.source, "kibana.alert.rule.name")
+        let rule_name = source_str(&hit.source, "kibana.alert.rule.name")
             .unwrap_or("(unnamed rule)")
             .to_string();
         let index = hit.index.clone().ok_or_else(|| {
@@ -468,10 +472,18 @@ pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> 
     })
 }
 
+/// One comments POST per rule group (the API takes one `rule` per comment).
+/// A failed group must not discard the groups that already attached: a `?`
+/// on the first error would report only the raw error while leaving earlier
+/// groups attached, and a retry would then double-attach them. Accumulate
+/// per-group outcomes instead, so a partial failure renders as counts plus
+/// per-group detail rather than an opaque error.
 pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditReport> {
+    let total = plan.resolved as u64;
     let mut attached = 0u64;
+    let mut failures = Vec::new();
     for group in &plan.groups {
-        cases::attach_alerts(
+        match cases::attach_alerts(
             t,
             &plan.case_id,
             &group.alert_ids,
@@ -479,14 +491,18 @@ pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditRe
             &group.rule_id,
             &group.rule_name,
         )
-        .await?;
-        attached += group.alert_ids.len() as u64;
+        .await
+        {
+            Ok(_) => attached += group.alert_ids.len() as u64,
+            Err(e) => failures.push(format!("{}: {}", group.rule_name, e.message)),
+        }
     }
     Ok(CaseEditReport {
         applied: true,
-        total: attached,
+        total,
         updated: attached,
-        failed: 0,
+        failed: total.saturating_sub(attached),
+        failures,
     })
 }
 
@@ -518,5 +534,6 @@ pub async fn apply_comment(t: &Transport, plan: &CommentPlan) -> Result<CaseEdit
         total: 1,
         updated: 1,
         failed: 0,
+        failures: Vec::new(),
     })
 }

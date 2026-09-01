@@ -37,6 +37,18 @@ fn case_body(id: &str, status: &str) -> serde_json::Value {
     })
 }
 
+/// Finding 12: same as alerts list — `--limit`'s help text must not claim a
+/// universal default that does not hold on the uncapped `--out` path.
+#[test]
+fn cases_list_help_does_not_claim_a_universal_default_limit() {
+    let out = bin().args(["cases", "list", "--help"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("default 100"),
+        "the --out path is uncapped, not defaulted to 100: {text}"
+    );
+}
+
 #[tokio::test]
 async fn cases_list_renders_compact_rows_and_passes_filters() {
     let server = MockServer::start().await;

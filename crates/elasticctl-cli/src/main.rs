@@ -585,11 +585,26 @@ async fn main() {
                 g
             };
 
+            // `alerts get` renders the raw alert `_source` merged with `_id`,
+            // not one of elasticctl's own report shapes. A top-level `failed`
+            // key there belongs to the source event, not to the `failed`
+            // convention `exit_code_for_value` reads, so it must never derive
+            // an exit code from this payload (finding 2).
+            let payload_drives_exit_code = !matches!(
+                &args.command,
+                Command::Alerts {
+                    action: AlertsAction::Get { .. }
+                }
+            );
             match render::emit(&value, &render_global) {
                 // Render partial-failure details before returning their exit
                 // code.
                 Ok(()) => {
-                    let code = render::exit_code_for_value(&value);
+                    let code = if payload_drives_exit_code {
+                        render::exit_code_for_value(&value)
+                    } else {
+                        0
+                    };
                     if code != 0 {
                         std::process::exit(code);
                     }

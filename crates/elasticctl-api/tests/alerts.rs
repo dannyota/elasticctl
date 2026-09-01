@@ -339,6 +339,76 @@ async fn an_unavailable_suggest_route_downgrades_to_unsupported() {
     );
 }
 
+/// Finding 4: the internal route family's spec-measured unavailability shape
+/// is a 400 whose message says "exists but is not available" (the
+/// `x-elastic-internal-origin` refusal), not a 404/410/Permission.
+/// `downgrade_unavailable` must classify it the same way.
+/// Finding 6: with no `es_url` configured, `post_absolute_es` silently falls
+/// back to the Kibana host, so a public-route 404 gets downgraded to
+/// "profile suggestion is unavailable on <flavor>" — blaming the deployment
+/// for what is actually a profile misconfiguration. The message must name
+/// the missing `es_url` when that is the likely cause.
+#[tokio::test]
+async fn a_missing_es_url_is_named_in_the_suggest_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/_security/profile/_suggest"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404, "error": "Not Found", "message": "Not Found"
+        })))
+        .mount(&server)
+        .await;
+    let t = Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .expect("transport");
+    let err = profiles::suggest(&t, Flavor::ElasticCloudHosted, "danny")
+        .await
+        .expect_err("404");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Unsupported);
+    assert!(
+        err.message.contains("es_url"),
+        "the missing es_url must be named as the likely cause: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("uid:"),
+        "the remedy still names the bypass: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn an_internal_route_400_is_not_available_downgrades_to_unsupported() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/internal/detection_engine/users/_find"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "statusCode": 400,
+            "error": "Bad Request",
+            "message": "uri [/internal/detection_engine/users/_find] exists but is not available with the current configuration"
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = profiles::suggest(&t, Flavor::Serverless, "danny")
+        .await
+        .expect_err("400");
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Unsupported);
+    assert!(
+        err.message.contains("uid:"),
+        "the remedy names the bypass: {}",
+        err.message
+    );
+}
+
 #[tokio::test]
 async fn resolve_assignee_bypasses_with_a_uid_prefix() {
     // No mocks: the uid: path must not touch the network or the flavor probe.
@@ -412,6 +482,34 @@ async fn build_query_composes_filters_and_resolves_the_rule() {
     );
 }
 
+/// Finding 3: `--search` text is interpolated into a `wildcard` value
+/// unescaped, so `--search '*'` matches every alert and text carrying `\`,
+/// `*`, or `?` injects its own wildcards. Mirror the rules-side
+/// `kql_escape_wildcard` behavior: escape `\` first, then `*` and `?`.
+#[tokio::test]
+async fn build_query_escapes_wildcard_metacharacters_in_search_text() {
+    let t = test_transport("http://127.0.0.1:1");
+    let f = AlertFilter {
+        search: Some("a*b".into()),
+        ..Default::default()
+    };
+    let q = alerts_ops::build_query(&t, &f).await.expect("query");
+    let filters = q["bool"]["filter"].as_array().expect("filter array");
+    let search_clause = filters
+        .iter()
+        .find(|f| f.get("bool").is_some())
+        .expect("search clause");
+    let shoulds = search_clause["bool"]["should"].as_array().unwrap();
+    assert_eq!(
+        shoulds[0]["wildcard"]["kibana.alert.rule.name"]["value"],
+        json!("*a\\*b*")
+    );
+    assert_eq!(
+        shoulds[1]["wildcard"]["kibana.alert.reason"]["value"],
+        json!("*a\\*b*")
+    );
+}
+
 #[tokio::test]
 async fn an_empty_filter_is_match_all() {
     let t = test_transport("http://127.0.0.1:1");
@@ -441,6 +539,27 @@ async fn list_peeks_and_reports_truncation() {
     assert!(out.truncated, "two hits against limit 1 is a truncation");
     assert_eq!(out.hits.len(), 1);
     assert_eq!(out.total, Some(5));
+}
+
+/// Finding 9: `list`'s peek sizes the request `limit + 1` so truncation is
+/// observable without a second request; a plain `+` panics in debug builds
+/// (and wraps to 0 in release) at `usize::MAX`. `cmd/search.rs` already
+/// saturates at the same seam — `list` must too.
+#[tokio::test]
+async fn list_saturates_a_huge_limit_instead_of_overflowing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let out = alerts_ops::list(&t, &AlertFilter::default(), usize::MAX)
+        .await
+        .expect("a huge limit must not panic");
+    assert_eq!(out.hits.len(), 0);
 }
 
 #[tokio::test]
@@ -576,6 +695,34 @@ async fn an_empty_query_object_is_rejected() {
     )
     .await
     .expect_err("empty query");
+    assert!(
+        err.message.contains("match_all"),
+        "the remedy names the explicit form: {}",
+        err.message
+    );
+}
+
+/// Finding 7: the empty-`{}` rejection lives only in `plan_status_by_query`.
+/// `QueryStatusPlan`'s public fields plus the public `apply_status_by_query`
+/// let a caller that skips `plan_status_by_query` (the planned MCP server,
+/// or any other `-api` consumer) apply an unscoped query. `apply` must
+/// enforce the same rule, and refuse before any request reaches the mock.
+#[tokio::test]
+async fn apply_status_by_query_refuses_an_unscoped_query_before_any_request() {
+    // No mocks: a request that reaches the server fails the test.
+    let t = test_transport("http://127.0.0.1:1");
+    let plan = alerts_ops::QueryStatusPlan {
+        status: AlertStatus::Closed,
+        reason: None,
+        conflicts: Conflicts::Abort,
+        query: json!({}),
+        matched: 0,
+        preview_action: "Close alerts matching query".into(),
+        preview_details: vec![],
+    };
+    let err = alerts_ops::apply_status_by_query(&t, &plan)
+        .await
+        .expect_err("an empty query must be refused at apply time too");
     assert!(
         err.message.contains("match_all"),
         "the remedy names the explicit form: {}",

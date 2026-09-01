@@ -134,6 +134,43 @@ async fn create_posts_the_documented_body() {
     assert_eq!(case.id, "c9");
 }
 
+/// Finding 8: `Some("")` (an explicit but empty `--description`) defeats the
+/// documented title fallback — `Option::unwrap_or_else` only fires on
+/// `None`, so an empty string is sent as-is and the server 400s on minimum
+/// length. Whitespace-only text must fall back too, not just the empty
+/// string.
+#[tokio::test]
+async fn create_falls_back_to_the_title_when_description_is_empty_or_blank() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/cases"))
+        .and(body_json(json!({
+            "title": "T", "description": "T", "tags": [],
+            "assignees": [],
+            "connector": {"id": "none", "name": "none", "type": ".none", "fields": null},
+            "settings": {"syncAlerts": false},
+            "owner": "securitySolution"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c9", "open")))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    for description in [Some(String::new()), Some("   ".into())] {
+        cases::create(
+            &t,
+            &NewCase {
+                title: "T".into(),
+                description,
+                tags: vec![],
+                severity: None,
+                assignee_uids: vec![],
+            },
+        )
+        .await
+        .expect("create");
+    }
+}
+
 #[tokio::test]
 async fn patch_status_sends_versions_and_delete_encodes_ids() {
     let server = MockServer::start().await;
@@ -435,6 +472,35 @@ async fn apply_status_reports_zero_failed_on_a_full_patch_and_the_shortfall_othe
         "a short response must surface the shortfall as failed, since \
          render::exit_code_for_value keys on `failed` to choose the exit code"
     );
+
+    // Finding 10: `saturating_sub` reads a surplus response (three cases
+    // returned for a two-case PATCH) as zero failures, since `total -
+    // updated` saturates at 0 when `updated > total`. The mismatch itself is
+    // the anomaly to surface, in either direction.
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/cases"))
+        .and(body_json(json!({"cases": [
+            {"id": "c1", "version": "WzEsMV0=", "status": "closed"},
+            {"id": "c2", "version": "WzEsMV0=", "status": "closed"},
+        ]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            case_body("c1", "closed"),
+            case_body("c2", "closed"),
+            case_body("c3", "closed"),
+        ])))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let report = cases_ops::apply_status(&t, &full_plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.total, 2);
+    assert_eq!(report.updated, 3);
+    assert_eq!(
+        report.failed, 1,
+        "a surplus response is a mismatch too, not zero failures"
+    );
 }
 
 #[tokio::test]
@@ -490,6 +556,74 @@ async fn plan_attach_groups_alerts_by_rule() {
     assert_eq!(plan.groups.len(), 2, "two rules, two comment groups");
     assert_eq!(plan.groups[0].rule_name, "Alpha");
     assert_eq!(plan.groups[0].indices, vec!["idx-a".to_string()]);
+}
+
+/// Finding 5: `apply_attach` POSTs one comment per rule group with `?`
+/// propagation, so when the second of two groups fails, the first group's
+/// alerts are already attached but the command exits with only the raw
+/// error — a retry would double-attach the first group. `apply_attach` must
+/// accumulate per-group outcomes instead: the count of already-attached
+/// groups still renders, and the failure is visible through `failed`, not
+/// swallowed by an early `?`.
+#[tokio::test]
+async fn apply_attach_reports_a_partial_failure_instead_of_discarding_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/cases/c1/comments"))
+        .and(body_json(json!({
+            "type": "alert",
+            "alertId": ["a1"],
+            "index": ["idx-a"],
+            "rule": {"id": "ru-1", "name": "Alpha"},
+            "owner": "securitySolution"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/cases/c1/comments"))
+        .and(body_json(json!({
+            "type": "alert",
+            "alertId": ["a2"],
+            "index": ["idx-a"],
+            "rule": {"id": "ru-2", "name": "Beta"},
+            "owner": "securitySolution"
+        })))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "attach failed"
+        })))
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let plan = cases_ops::AttachPlan {
+        case_id: "c1".into(),
+        groups: vec![
+            cases_ops::AttachGroup {
+                rule_id: "ru-1".into(),
+                rule_name: "Alpha".into(),
+                alert_ids: vec!["a1".into()],
+                indices: vec!["idx-a".into()],
+            },
+            cases_ops::AttachGroup {
+                rule_id: "ru-2".into(),
+                rule_name: "Beta".into(),
+                alert_ids: vec!["a2".into()],
+                indices: vec!["idx-a".into()],
+            },
+        ],
+        resolved: 2,
+        preview_action: "Attach 2 alerts to case 'Suspicious activity'".into(),
+        preview_details: vec![],
+    };
+    let report = cases_ops::apply_attach(&t, &plan)
+        .await
+        .expect("a partial failure is a report, not an error");
+    assert_eq!(report.total, 2);
+    assert_eq!(report.updated, 1, "the first group did attach");
+    assert_eq!(
+        report.failed, 1,
+        "the second group's failure must be visible"
+    );
 }
 
 #[tokio::test]

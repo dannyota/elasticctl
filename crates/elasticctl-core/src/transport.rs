@@ -171,6 +171,11 @@ pub struct Transport {
     /// Elasticsearch host. Cloud deployments use a different host from
     /// Kibana; otherwise this uses the Kibana host.
     es_base: String,
+    /// Whether the profile configured an explicit `es_url`. `es_base` falls
+    /// back to the Kibana host either way, so a caller that needs to know
+    /// whether that fallback happened (e.g. to name a likely cause in an
+    /// error message) reads this instead of comparing hosts.
+    has_es_url: bool,
     space: String,
     auth_header: String,
     debug: bool,
@@ -199,6 +204,7 @@ impl Transport {
 
         let base = profile.kibana_url.trim_end_matches('/').to_string();
         let kibana_url = profile.kibana_url.clone();
+        let has_es_url = profile.es_url.is_some();
         let es_base = profile
             .es_url
             .as_deref()
@@ -211,6 +217,7 @@ impl Transport {
             base,
             kibana_url,
             es_base,
+            has_es_url,
             space: profile.space.clone(),
             auth_header: credential.header_value(),
             debug,
@@ -275,6 +282,14 @@ impl Transport {
     /// The Kibana URL this transport targets, exactly as configured.
     pub fn kibana_url(&self) -> &str {
         &self.kibana_url
+    }
+
+    /// Whether the profile configured an explicit `es_url`. When it did not,
+    /// every `*_absolute_es` call silently falls back to the Kibana host —
+    /// callers that need to distinguish "no Elasticsearch host configured"
+    /// from "the real Elasticsearch host answered" read this.
+    pub fn has_es_url(&self) -> bool {
+        self.has_es_url
     }
 
     /// Probe deployment capabilities once for this transport.

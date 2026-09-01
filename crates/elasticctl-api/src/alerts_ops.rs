@@ -49,6 +49,19 @@ pub fn default_sort() -> Value {
     ])
 }
 
+/// Escape `\`, `*`, and `?` so `--search` text cannot inject its own
+/// Elasticsearch `wildcard` metacharacters into the substring match. Escape
+/// backslashes first, or an inserted `\*`/`\?` escape would itself be
+/// re-escaped. Mirrors `rules::kql_escape_wildcard`'s ordering, though this
+/// value sits in a plain Query DSL string, not a quoted KQL literal, so no
+/// quote-escaping applies here.
+fn escape_wildcard(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('?', "\\?")
+}
+
 /// Compose the filter into one boolean query, resolving `rule` and
 /// `assignee` first. An empty filter is an explicit `match_all`.
 pub async fn build_query(t: &Transport, f: &AlertFilter) -> Result<Value> {
@@ -74,7 +87,7 @@ pub async fn build_query(t: &Transport, f: &AlertFilter) -> Result<Value> {
         filter.push(since_clause(since));
     }
     if let Some(text) = &f.search {
-        let pattern = format!("*{text}*");
+        let pattern = format!("*{}*", escape_wildcard(text));
         filter.push(json!({"bool": {"minimum_should_match": 1, "should": [
             {"wildcard": {"kibana.alert.rule.name": {"value": pattern, "case_insensitive": true}}},
             {"wildcard": {"kibana.alert.reason": {"value": pattern, "case_insensitive": true}}}
@@ -101,7 +114,7 @@ pub async fn list(t: &Transport, f: &AlertFilter, limit: usize) -> Result<AlertL
     let body = json!({
         "query": query,
         "sort": default_sort(),
-        "size": limit + 1,
+        "size": limit.saturating_add(1),
         "track_total_hits": true,
     });
     let mut page = alerts::search(t, &body).await?;
@@ -149,8 +162,9 @@ pub const RESOLVE_SOURCE_FIELDS: &[&str] =
     &["kibana.alert.rule.name", "kibana.alert.workflow_status"];
 
 /// Alert documents store dotted field names as flat `_source` keys; older
-/// pipelines may nest them. Read both shapes.
-fn source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
+/// pipelines may nest them. Read both shapes. `pub(crate)` so `cases_ops`
+/// shares this instead of carrying its own copy (finding 11).
+pub(crate) fn source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
     if let Some(v) = source.get(key).and_then(Value::as_str) {
         return Some(v);
     }
@@ -322,15 +336,12 @@ pub struct QueryStatusPlan {
     pub preview_details: Vec<String>,
 }
 
-/// Resolve the operator's query to a count and a sample so the implicit set
-/// is visible before it is mutated (triage spec section 6).
-pub async fn plan_status_by_query(
-    t: &Transport,
-    query: Value,
-    status: AlertStatus,
-    conflicts: Conflicts,
-    reason: Option<String>,
-) -> Result<QueryStatusPlan> {
+/// Refuse an empty `{}` query: it would mutate every alert. Called from both
+/// `plan_status_by_query` and `apply_status_by_query` — `QueryStatusPlan`'s
+/// fields and `apply_status_by_query` are both public, so an `-api` consumer
+/// that builds a plan directly (skipping `plan_status_by_query`, as the
+/// planned MCP server might) must not be able to bypass the check.
+fn require_scoped_query(query: &Value) -> Result<()> {
     let obj = query
         .as_object()
         .ok_or_else(|| Error::new(ErrorKind::Error, "--query must be a JSON object"))?;
@@ -341,6 +352,19 @@ pub async fn plan_status_by_query(
              e.g. an explicit {\"match_all\":{}}",
         ));
     }
+    Ok(())
+}
+
+/// Resolve the operator's query to a count and a sample so the implicit set
+/// is visible before it is mutated (triage spec section 6).
+pub async fn plan_status_by_query(
+    t: &Transport,
+    query: Value,
+    status: AlertStatus,
+    conflicts: Conflicts,
+    reason: Option<String>,
+) -> Result<QueryStatusPlan> {
+    require_scoped_query(&query)?;
     let body = json!({
         "query": &query,
         "size": QUERY_SAMPLE_SIZE,
@@ -383,6 +407,7 @@ pub async fn plan_status_by_query(
 }
 
 pub async fn apply_status_by_query(t: &Transport, plan: &QueryStatusPlan) -> Result<StatusReport> {
+    require_scoped_query(&plan.query)?;
     let outcome = alerts::status_by_query(
         t,
         &plan.query,

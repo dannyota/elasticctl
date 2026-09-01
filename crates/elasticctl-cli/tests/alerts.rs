@@ -100,6 +100,43 @@ async fn alerts_get_merges_the_id_into_the_document() {
     assert_eq!(doc["kibana.alert.rule.name"], json!("Alpha"));
 }
 
+/// Finding 2: `alerts get`'s document is the raw `_source`, which can
+/// legitimately carry a top-level `failed` key from the source event (not
+/// elasticctl's own report convention). `render::exit_code_for_value` must
+/// not be applied to it, or an alert whose event happens to log `"failed":
+/// 2` would print correctly but exit 1.
+#[tokio::test]
+async fn alerts_get_does_not_derive_its_exit_code_from_the_alert_document() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(dir.path(), &server.uri());
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
+                {"_id": "a1", "_source": {
+                    "kibana.alert.rule.name": "Alpha",
+                    "failed": 2}}
+            ]}
+        })))
+        .mount(&server)
+        .await;
+
+    let out = bin()
+        .args(["--config", cfg.to_str().unwrap(), "--json"])
+        .args(["alerts", "get", "a1"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the source's own `failed` field must not drive the exit code: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["failed"], json!(2));
+}
+
 fn one_open_alert() -> serde_json::Value {
     json!({"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
         {"_id": "a1", "_source": {
@@ -214,6 +251,9 @@ async fn a_query_close_previews_count_and_sample() {
     assert!(err.contains("advisory"), "{err}");
 }
 
+/// Both forms at once must be rejected by `clap`'s `conflicts_with`; neither
+/// form is now a `clap`-level `required_unless_present` refusal (exit 2,
+/// usage text), not the adapter's own message (finding 1).
 #[tokio::test]
 async fn ids_and_query_are_mutually_exclusive_and_one_is_required() {
     let dir = tempfile::tempdir().unwrap();
@@ -231,9 +271,17 @@ async fn ids_and_query_are_mutually_exclusive_and_one_is_required() {
         .args(["alerts", "close"])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "neither form must be refused");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "neither form must be refused by clap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("--query") || err.contains("alert id"), "{err}");
+    assert!(
+        err.contains("--query") || err.to_ascii_lowercase().contains("alert_ids"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -375,6 +423,20 @@ async fn conflicts_is_rejected_on_ids_and_applied_on_query() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["applied"], json!(true));
     assert_eq!(report["updated"], json!(42));
+}
+
+/// Finding 12: `--limit`'s help text says "default 100" unconditionally,
+/// but that default only applies to the bounded peek — the `--out` export
+/// path is uncapped unless `--limit` is passed explicitly. The help text
+/// must not claim a default that does not hold on that path.
+#[test]
+fn alerts_list_help_does_not_claim_a_universal_default_limit() {
+    let out = bin().args(["alerts", "list", "--help"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("default 100"),
+        "the --out path is uncapped, not defaulted to 100: {text}"
+    );
 }
 
 /// `alerts list --out` must match `search dsl --out`: JSONL by default, and
