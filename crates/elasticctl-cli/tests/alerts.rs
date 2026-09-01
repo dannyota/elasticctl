@@ -278,9 +278,9 @@ async fn tag_and_assign_dry_runs_preview_edits() {
     assert!(err.contains("add uid:u_1 -> u_1"), "{err}");
 }
 
-/// `ack` and `open` share `transition`'s `guard_path`, which switches on
-/// `AlertStatus`; a copy-paste swap of the match arms would silently preview
-/// the wrong verb (or check the wrong guard entry) while still exiting 0.
+/// `ack` and `open` dispatch different status values from main.rs; a
+/// copy-paste swap in the dispatched status would silently preview the
+/// wrong verb in the banner while still exiting 0.
 #[tokio::test]
 async fn ack_and_open_dry_runs_preview_the_correct_verb() {
     for (subcommand, expected) in [("ack", "Acknowledge 1 alert"), ("open", "Open 1 alert")] {

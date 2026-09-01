@@ -78,8 +78,9 @@ elasticctl alerts list   [--status open|acknowledged|closed] [--severity S]
 elasticctl alerts get <alert_id>
 elasticctl alerts ack    (<alert_id>... | --query <dsl|@file>)             [guarded]
 elasticctl alerts open   (<alert_id>... | --query <dsl|@file>)             [guarded]
-elasticctl alerts close  (<alert_id>... | --query <dsl|@file>) [--reason R]
-                         [--conflicts abort|proceed]                       [guarded]
+elasticctl alerts close  <alert_id>... [--reason R]                         [guarded]
+elasticctl alerts close  --query <dsl|@file> [--conflicts abort|proceed]
+                         [--reason R]                                       [guarded]
 elasticctl alerts tag    <alert_id>... [--add T]... [--remove T]...        [guarded]
 elasticctl alerts assign <alert_id>... [--add USER]... [--remove USER]...  [guarded]
 
