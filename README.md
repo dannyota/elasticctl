@@ -2,6 +2,11 @@
 
 **A safety-first CLI to operate Elastic Security as code.**
 
+Examples in this document run `elkctl`, a short alias for the same binary as
+`elasticctl`. Every install method below puts both names on `PATH`. The
+project, the crate on crates.io, and the GitHub repository stay named
+`elasticctl`.
+
 `elasticctl` is a Rust CLI for managing Elastic Security detection rules as
 code across self-managed stacks, Elastic Cloud Hosted deployments, and Elastic
 Cloud Serverless projects. It is a sibling to
@@ -22,9 +27,7 @@ An MCP server is planned once the CLI surface is stable.
 
 ## Install
 
-Install from crates.io or download a prebuilt binary. Every install method
-also installs `elkctl`, a shorter alias for the same binary; `elasticctl`
-stays the canonical name in documentation and error text.
+Install from crates.io or download a prebuilt binary.
 
 ### From crates.io
 
@@ -34,15 +37,18 @@ Requires the stable Rust toolchain.
 cargo install elasticctl
 ```
 
-Not every release reaches crates.io, so this can be a version behind. GitHub
-Releases always carry the newest version.
+This installs both the `elasticctl` and `elkctl` binaries. Not every release
+reaches crates.io, so this can be a version behind. GitHub Releases always
+carry the newest version.
 
 ### From GitHub Releases
 
 Each release ships prebuilt binaries for Linux (glibc and musl), macOS
-(Intel and Apple Silicon), and Windows. Download the archive for your platform
-from the [latest release](https://github.com/dannyota/elasticctl/releases/latest)
-and put the `elasticctl` binary on your `PATH`, or use an installer script:
+(Intel and Apple Silicon), and Windows. Every archive contains both the
+`elasticctl` and `elkctl` binaries. Download the archive for your platform
+from the [latest release](https://github.com/dannyota/elasticctl/releases/latest),
+put both binaries on your `PATH`, or use an installer script, which does that
+for you:
 
 ```bash
 # macOS and Linux
@@ -66,22 +72,22 @@ rules but cannot enable one.
 ```bash
 export ELASTICCTL_KIBANA_URL=https://YOUR-PROJECT.kb.YOUR-REGION.aws.elastic.cloud
 export ELASTICCTL_API_KEY=...
-elasticctl config init --from-env
+elkctl config init --from-env
 ```
 
 Confirm the stack is reachable, the key scope is right, and rules are readable:
 
 ```bash
-elasticctl doctor
+elkctl doctor
 ```
 
-Manage rules as code:
+## Manage rules as code
 
 ```bash
-elasticctl state pull --dir state   # writes state/rules/*.ndjson
+elkctl state pull --dir state   # writes state/rules/*.ndjson
 # edit rules, or add new ones
-elasticctl state diff --dir state   # field-level drift, no changes made
-elasticctl state push --dir state   # preview; add --yes to apply
+elkctl state diff --dir state   # field-level drift, no changes made
+elkctl state push --dir state   # preview; add --yes to apply
 ```
 
 `push` and every other remote mutation preview by default and apply only with
@@ -95,8 +101,8 @@ that unselected source scope: they first resolve rule IDs, then read those
 rules:
 
 ```bash
-elasticctl state diff --dir state my-rule-id      # one rule
-elasticctl state push --dir state --tag prod      # one tag
+elkctl state diff --dir state my-rule-id      # one rule
+elkctl state push --dir state --tag prod      # one tag
 ```
 
 `diff` and `push` resolve a selector against the directory first, so a rule you
@@ -105,57 +111,73 @@ have only written locally is selectable by name before it exists on the stack.
 Inspect and manage individual rules:
 
 ```bash
-elasticctl rules list
-elasticctl rules get <rule_id-or-name>
-elasticctl rules validate --path rule.yaml
-elasticctl rules enable <rule_id> --yes
-elasticctl rules export --tag my-corpus --out rules.ndjson
-elasticctl rules preview my-rule-id --sample 3
+elkctl rules list
+elkctl rules get <rule_id-or-name>
+elkctl rules validate --path rule.yaml
+elkctl rules enable <rule_id> --yes
+elkctl rules export --tag my-corpus --out rules.ndjson
+elkctl rules preview my-rule-id --sample 3
+```
+
+## Triage alerts and cases
+
+```bash
+elkctl alerts list --status open --severity critical
+elkctl alerts ack <alert_id> --yes
+elkctl alerts close <alert_id> --reason false_positive --yes
+
+elkctl cases create --title "Suspicious PowerShell activity" --severity high --yes
+elkctl cases attach <case_id> --alert <alert_id> --yes
+elkctl cases comment <case_id> --message "Confirmed benign, closing." --yes
 ```
 
 ## Command surface
 
 ```
-elasticctl config init | list | show | test
-elasticctl doctor
-elasticctl info
+elkctl config init | list | show | test
+elkctl doctor
+elkctl info
 
-elasticctl rules list [--source custom|customized|prebuilt|all]
+elkctl rules list [--source custom|customized|prebuilt|all]
   | get | validate | enable | disable | delete
-elasticctl rules export [<selector>...] [--tag TAG] [--source custom|customized|prebuilt|all]
+elkctl rules export [<selector>...] [--tag TAG] [--source custom|customized|prebuilt|all]
   | import [--skip-existing] | preview [--sample N]
-elasticctl rules prebuilt status|install
+elkctl rules prebuilt status|install
 
-elasticctl exceptions list | get | validate | export | import | delete
+elkctl exceptions list | get | validate | export | import | delete
 
-elasticctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
+elkctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
   [--source custom|customized|prebuilt|all]
 
-elasticctl alerts list [--status open|acknowledged|closed] [--severity S] [--rule R]
-                       [--tag T] [--assignee USER] [--since DUR|ISO] [--search TEXT]
-elasticctl alerts get <alert_id>
-elasticctl alerts ack|open|close (<alert_id>... | --query <dsl|@file>) --yes
-elasticctl alerts close <alert_id>... --reason false_positive --yes
-elasticctl alerts tag <alert_id>... --add triaged --remove noise --yes
-elasticctl alerts assign <alert_id>... --add USER --yes
+elkctl search esql <QUERY> [--data-view DV | --index IDX] [--limit N]
+elkctl search dsl <BODY> [--data-view DV | --index IDX] [--limit N] [--with-meta]
 
-elasticctl cases list [--status open|in-progress|closed] [--severity S]
-                      [--tag T] [--search TEXT]
-elasticctl cases get <case_id>
-elasticctl cases create --title T [--description D] [--tag T]... [--severity S]
-                        [--assignee USER]... --yes
-elasticctl cases close|open <case_id>... --yes
-elasticctl cases delete <case_id>... --yes
-elasticctl cases attach <case_id> --alert <alert_id>... --yes
-elasticctl cases comment <case_id> --message TEXT --yes
+elkctl alerts list [--status open|acknowledged|closed] [--severity S] [--rule R]
+                   [--tag T] [--assignee USER] [--since DUR|ISO] [--search TEXT]
+elkctl alerts get <alert_id>
+elkctl alerts ack|open|close (<alert_id>... | --query <dsl|@file>) --yes
+elkctl alerts close <alert_id>... --reason false_positive --yes
+elkctl alerts tag <alert_id>... --add triaged --remove noise --yes
+elkctl alerts assign <alert_id>... --add USER --yes
 
-elasticctl completion bash|elvish|fish|powershell|zsh
-elasticctl commands
+elkctl cases list [--status open|in-progress|closed] [--severity S]
+                  [--tag T] [--search TEXT]
+elkctl cases get <case_id>
+elkctl cases create --title T [--description D] [--tag T]... [--severity S]
+                    [--assignee USER]... --yes
+elkctl cases close|open <case_id>... --yes
+elkctl cases delete <case_id>... --yes
+elkctl cases attach <case_id> --alert <alert_id>... --yes
+elkctl cases comment <case_id> --message TEXT --yes
+
+elkctl completion bash|elvish|fish|powershell|zsh
+elkctl commands
 ```
 
-Global flags: `--profile`, `--config`, `--space`, `--json` / `--format`,
-`--fields`, `--out`, `--yes`, `--timeout`, `--debug`. Run `elasticctl help` for
-details.
+## Global flags
+
+`--profile`, `--config`, `--space`, `--json` / `--format`, `--fields`, `--out`,
+`--yes`, `--timeout`, `--debug`. Run `elkctl help` for details.
 
 ## Development
 

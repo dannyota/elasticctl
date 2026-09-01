@@ -1335,9 +1335,11 @@ JSON output is byte-identical between them. Help text and shell completions
 follow whichever name invoked the process — `elkctl --help` and
 `elkctl completion zsh` both name `elkctl`, never `elasticctl` — derived from
 `argv[0]` at runtime, not from a compiled-in literal. `elasticctl` remains the
-canonical name in documentation, error text, and the `commands` JSON's own
-`name` field, which stays `"elasticctl"` regardless of invocation so that
-field stays part of the byte-identical surface. `--version` follows the same
+canonical name for the package, the crates, artifact names, error text, and
+the `commands` JSON's own `name` field, which stays `"elasticctl"` regardless
+of invocation so that field stays part of the byte-identical surface.
+User-facing documentation and its command examples lead with `elkctl`.
+`--version` follows the same
 rule as that `name` field, not the help/completions rule: both binaries print
 `elasticctl <version>`, the canonical name, regardless of which one was
 invoked — only help usage text and completions follow `argv[0]`. Sharing one
