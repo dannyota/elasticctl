@@ -56,6 +56,8 @@ fn the_command_tree_lists_every_top_level_group() {
         "doctor",
         "info",
         "rules",
+        "exceptions",
+        "data-views",
         "state",
         "alerts",
         "cases",
@@ -67,6 +69,31 @@ fn the_command_tree_lists_every_top_level_group() {
             "command tree must list {expected}: {names:?}"
         );
     }
+}
+
+#[test]
+fn data_view_command_tree_has_the_documented_guarded_paths() {
+    let out = bin().args(["commands", "--json"]).output().unwrap();
+    let tree: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let views = tree["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "data-views")
+        .expect("data-views command");
+    let children = views["subcommands"].as_array().unwrap();
+    let find = |name: &str| children.iter().find(|child| child["name"] == name).unwrap();
+    assert_eq!(find("list")["mutates"], false);
+    assert_eq!(find("get")["mutates"], false);
+    assert_eq!(find("validate")["mutates"], false);
+    assert_eq!(find("export")["mutates"], false);
+    assert_eq!(find("import")["mutates"], true);
+    assert_eq!(find("delete")["mutates"], true);
+    let default = find("default")["subcommands"].as_array().unwrap();
+    let default_find = |name: &str| default.iter().find(|child| child["name"] == name).unwrap();
+    assert_eq!(default_find("get")["mutates"], false);
+    assert_eq!(default_find("set")["mutates"], true);
+    assert_eq!(default_find("unset")["mutates"], true);
 }
 
 #[test]

@@ -159,6 +159,10 @@ mod tests {
             "cases delete",
             "cases attach",
             "cases comment",
+            "data-views import",
+            "data-views delete",
+            "data-views default set",
+            "data-views default unset",
         ];
         expected.sort();
 

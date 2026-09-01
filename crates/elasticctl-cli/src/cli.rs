@@ -142,6 +142,11 @@ pub enum Command {
         #[command(subcommand)]
         action: ExceptionsAction,
     },
+    /// Manage Kibana data views
+    DataViews {
+        #[command(subcommand)]
+        action: DataViewsAction,
+    },
     /// Manage rules as code
     State {
         #[command(subcommand)]
@@ -319,6 +324,66 @@ pub enum ExceptionsAction {
         #[arg(long, value_parser = ["single", "agnostic"])]
         namespace: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataViewsAction {
+    /// List data views
+    List {
+        /// Case-insensitive substring over id, name, and title
+        #[arg(long, value_parser = non_empty)]
+        search: Option<String>,
+    },
+    /// Show one data view by id or exact name
+    Get { selector: String },
+    /// Check a portable data-view file without contacting a server
+    Validate {
+        #[arg(long)]
+        path: PathBuf,
+    },
+    /// Export portable data views
+    Export {
+        /// Data-view ids or exact names. Omit to export every data view.
+        selectors: Vec<String>,
+        /// File format: json or yaml. This is separate from the global renderer.
+        #[arg(long = "format-file", default_value = "json")]
+        format_file: String,
+    },
+    /// Import portable data views
+    Import {
+        #[arg(long)]
+        path: PathBuf,
+        /// Replace data views that already exist
+        #[arg(long, conflicts_with = "skip_existing")]
+        overwrite: bool,
+        /// Leave data views that already exist alone instead of failing
+        #[arg(long, conflicts_with = "overwrite")]
+        skip_existing: bool,
+    },
+    /// Delete unreferenced data views, or replace their references first
+    Delete {
+        /// Data-view ids or exact names
+        #[arg(required = true)]
+        selectors: Vec<String>,
+        /// Target data view for replacing saved-object references
+        #[arg(long)]
+        replace_with: Option<String>,
+    },
+    /// Get, set, or unset the default data view
+    Default {
+        #[command(subcommand)]
+        action: DataViewDefaultAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataViewDefaultAction {
+    /// Show the current default data view
+    Get,
+    /// Set the current default data view
+    Set { selector: String },
+    /// Explicitly clear the current default data view
+    Unset,
 }
 
 #[derive(Debug, Subcommand)]

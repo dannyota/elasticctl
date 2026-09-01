@@ -10,8 +10,9 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    AlertsAction, CasesAction, Cli, Command, ConfigAction, ExceptionsAction, Format, GlobalArgs,
-    PrebuiltAction, RulesAction, SearchAction, SourceArg, StateAction,
+    AlertsAction, CasesAction, Cli, Command, ConfigAction, DataViewDefaultAction, DataViewsAction,
+    ExceptionsAction, Format, GlobalArgs, PrebuiltAction, RulesAction, SearchAction, SourceArg,
+    StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -237,6 +238,61 @@ async fn main() {
             } => match Context::build(&args.global) {
                 Ok(ctx) => cmd::exceptions::delete(&ctx, list_ids, namespace.as_deref()).await,
                 Err(e) => Err(e),
+            },
+        },
+        Command::DataViews { action } => match action {
+            DataViewsAction::List { search } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::data_views::list(&ctx, search.clone()).await,
+                Err(e) => Err(e),
+            },
+            DataViewsAction::Get { selector } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::data_views::get(&ctx, selector).await,
+                Err(e) => Err(e),
+            },
+            // Local artifact validation must not read config or construct a
+            // transport, so it remains usable in an offline checkout.
+            DataViewsAction::Validate { path } => cmd::data_views::validate(path),
+            DataViewsAction::Export {
+                selectors,
+                format_file,
+            } => match parse_content_format(format_file) {
+                Ok(format) => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::data_views::export(&ctx, selectors, args.global.out.as_deref(), format)
+                            .await
+                    }
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            DataViewsAction::Import {
+                path,
+                overwrite,
+                skip_existing,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::data_views::import(&ctx, path, *overwrite, *skip_existing).await,
+                Err(e) => Err(e),
+            },
+            DataViewsAction::Delete {
+                selectors,
+                replace_with,
+            } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::data_views::delete(&ctx, selectors, replace_with.as_deref()).await,
+                Err(e) => Err(e),
+            },
+            DataViewsAction::Default { action } => match action {
+                DataViewDefaultAction::Get => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::data_views::default_get(&ctx).await,
+                    Err(e) => Err(e),
+                },
+                DataViewDefaultAction::Set { selector } => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::data_views::default_set(&ctx, selector).await,
+                    Err(e) => Err(e),
+                },
+                DataViewDefaultAction::Unset => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::data_views::default_unset(&ctx).await,
+                    Err(e) => Err(e),
+                },
             },
         },
         Command::State { action } => match action {
@@ -541,6 +597,8 @@ async fn main() {
                     action: RulesAction::Export { .. }
                 } | Command::Exceptions {
                     action: ExceptionsAction::Export { .. }
+                } | Command::DataViews {
+                    action: DataViewsAction::Export { .. }
                 }
             ) && args.global.out.is_none();
             if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
@@ -557,6 +615,8 @@ async fn main() {
                     action: RulesAction::Export { .. }
                 } | Command::Exceptions {
                     action: ExceptionsAction::Export { .. }
+                } | Command::DataViews {
+                    action: DataViewsAction::Export { .. }
                 }
             ) && args.global.out.is_some();
             let render_global = {
@@ -644,6 +704,20 @@ fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
         other => Err(Error::new(
             ErrorKind::Error,
             format!("unknown format-file '{other}'; expected ndjson or yaml"),
+        )),
+    }
+}
+
+/// Parse a portable data-view artifact format. `--format-file` controls this
+/// file only; the global `--format` still selects report rendering.
+fn parse_content_format(s: &str) -> Result<elasticctl_api::content_codec::ContentFormat, Error> {
+    use elasticctl_api::content_codec::ContentFormat;
+    match s.to_ascii_lowercase().as_str() {
+        "json" => Ok(ContentFormat::Json),
+        "yaml" | "yml" => Ok(ContentFormat::Yaml),
+        other => Err(Error::new(
+            ErrorKind::Error,
+            format!("unknown format-file '{other}'; expected json or yaml"),
         )),
     }
 }

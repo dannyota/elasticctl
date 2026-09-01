@@ -18,7 +18,7 @@ use elasticctl_core::Resolved;
 /// This does not detect mutations that neither call the guard nor appear here.
 /// `config init` is declared but unguarded because it writes a local file.
 /// The enforced relation is `guard ⊆ MUTATING`.
-pub(crate) const MUTATING: [&str; 20] = [
+pub(crate) const MUTATING: [&str; 24] = [
     "rules enable",
     "rules disable",
     "rules delete",
@@ -26,6 +26,10 @@ pub(crate) const MUTATING: [&str; 20] = [
     "rules prebuilt install",
     "exceptions delete",
     "exceptions import",
+    "data-views import",
+    "data-views delete",
+    "data-views default set",
+    "data-views default unset",
     "state push",
     "config init",
     "alerts ack",
