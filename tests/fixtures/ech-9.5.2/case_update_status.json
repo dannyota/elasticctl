@@ -1,0 +1,80 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "case_update_status",
+  "request": {
+    "cases": [
+      {
+        "id": "elasticctl-fixture-case",
+        "version": "WzAsMV0=",
+        "status": "closed"
+      }
+    ]
+  },
+  "response": [
+    {
+      "title": "elasticctl sample case",
+      "description": "elasticctl sample case",
+      "tags": [
+        "elasticctl-sample"
+      ],
+      "owner": "securitySolution",
+      "assignees": [
+        {
+          "uid": "u_REDACTED_1",
+          "username": "REDACTED",
+          "full_name": "REDACTED",
+          "email": "REDACTED"
+        }
+      ],
+      "category": null,
+      "customFields": [],
+      "observables": [],
+      "connector": {
+        "id": "none",
+        "type": ".none",
+        "fields": null,
+        "name": "none"
+      },
+      "severity": "low",
+      "status": "closed",
+      "settings": {
+        "syncAlerts": false,
+        "extractObservables": false
+      },
+      "duration": 2,
+      "closed_at": "2026-01-01T00:00:00.000Z",
+      "closed_by": {
+        "username": "REDACTED",
+        "full_name": "REDACTED",
+        "email": "REDACTED",
+        "profile_uid": "u_REDACTED_1"
+      },
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "created_by": {
+        "username": "REDACTED",
+        "full_name": "REDACTED",
+        "email": "REDACTED",
+        "profile_uid": "REDACTED"
+      },
+      "updated_at": "2026-01-01T00:00:00.000Z",
+      "updated_by": {
+        "username": "REDACTED",
+        "full_name": "REDACTED",
+        "email": "REDACTED",
+        "profile_uid": "REDACTED"
+      },
+      "total_observables": 0,
+      "external_service": null,
+      "time_to_acknowledge": 2,
+      "time_to_investigate": 0,
+      "time_to_resolve": 2,
+      "id": "elasticctl-fixture-case",
+      "version": "WzAsMV0=",
+      "totalComment": 1,
+      "totalAlerts": 1,
+      "totalEvents": 0,
+      "comments": []
+    }
+  ]
+}

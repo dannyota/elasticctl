@@ -3,8 +3,8 @@
   "version": "9.5.1",
   "operation": "status",
   "response": {
-    "name": "7dc054850106",
-    "uuid": "638f6d65-236e-4b59-9543-990968b2941d",
+    "name": "783e2a2a56be",
+    "uuid": "b7f5567c-f86f-42b8-8ba3-c92101a2d611",
     "version": {
       "number": "9.5.1",
       "build_hash": "c9539950cdb7c83db5f1a7d4eda28880aded9a95",

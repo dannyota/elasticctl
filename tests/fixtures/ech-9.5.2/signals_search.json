@@ -55,7 +55,7 @@
             "kibana.alert.workflow_status": "open"
           },
           "sort": [
-            1788247198884,
+            1788257053765,
             "elasticctl-fixture-alert-1"
           ]
         },
@@ -67,7 +67,7 @@
             "kibana.alert.workflow_status": "open"
           },
           "sort": [
-            1788247198883,
+            1788257053764,
             "elasticctl-fixture-alert-2"
           ]
         },
@@ -79,7 +79,7 @@
             "kibana.alert.workflow_status": "open"
           },
           "sort": [
-            1788247198882,
+            1788257053763,
             "elasticctl-fixture-alert-3"
           ]
         }

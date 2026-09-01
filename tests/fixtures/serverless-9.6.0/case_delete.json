@@ -1,0 +1,12 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "case_delete",
+  "request": {
+    "ids": [
+      "elasticctl-fixture-case"
+    ],
+    "path": "/api/cases?ids=%5B%22elasticctl-fixture-case%22%5D"
+  },
+  "response": null
+}

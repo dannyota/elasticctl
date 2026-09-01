@@ -40,6 +40,30 @@ const ALERT_FIXTURE_TIMESTAMP: &str = "2026-01-01T00:00:00.000Z";
 const ALERT_POLL_ATTEMPTS: u32 = 30;
 const ALERT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The cases probe (triage spec section 9, added 0.4.1): a marker case
+/// created, driven through every mutation route — including attaching the
+/// alerts probe's still-open marker alert — then deleted. Unlike alerts,
+/// cases delete cleanly through a public API, so zero residue is tolerated:
+/// there is no "closed is fine" escape hatch here.
+const CASE_TITLE: &str = "elasticctl sample case";
+const CASE_TAG: &str = "elasticctl-sample";
+const CASE_COMMENT: &str = "elasticctl sample comment";
+
+/// Fixed replacement for every case/comment `version` value the recorder
+/// scrubs. Real values are Kibana's base64-encoded `[seq_no, primary_term]`
+/// optimistic-concurrency token and change on every mutation, so they must
+/// not survive a fixture unscrubbed (spec §8); this decodes to `[0,1]`, a
+/// plausible-looking initial token.
+const CASE_VERSION_PLACEHOLDER: &str = "WzAsMV0=";
+/// Fixed replacement for the marker case's server-generated id.
+const CASE_ID_PLACEHOLDER: &str = "elasticctl-fixture-case";
+/// Fixed replacement for the alert's `kibana.alert.rule.uuid` inside the
+/// attach body's `rule.id` field — the same server-owned, per-rule-creation
+/// uuid `is_sensitive` already redacts wherever it appears under its own
+/// dotted key; here it appears under a plain `id` key instead, so it needs
+/// its own placeholder rewrite.
+const CASE_RULE_UUID_PLACEHOLDER: &str = "elasticctl-fixture-case-rule-uuid";
+
 /// Volatile fields on every recorded triage mutation response: the raw
 /// update-by-query envelope (`signals_status_ids`/`signals_tags`/
 /// `signals_assignees`/`signals_status_query`) and `profile_suggest` all
@@ -880,6 +904,12 @@ struct CleanupOwnership {
     /// down right after.
     alert_rule_claimed: bool,
     alert_index_claimed: bool,
+    /// Set before `record_cases` issues the case-create write, cleared once
+    /// `record_cases` has verified its own delete. A case has no fixed,
+    /// caller-chosen id to re-check the way `rule`/`list`/`item` do, so
+    /// `cleanup`'s sweep for this flag identifies it by title+tag instead
+    /// (`sweep_delete_marker_cases`).
+    case: bool,
 }
 
 #[derive(Default)]
@@ -951,6 +981,16 @@ fn owns_alert_index(value: &Value) -> bool {
     value["_source"]["marker"].as_str() == Some(ALERT_MARKER_TAG)
 }
 
+/// True when a case create response proves the fixed marker identity: the
+/// exact title AND the marker tag, mirroring `owns_rule`'s AND semantics.
+fn owns_case(value: &Value) -> bool {
+    value.get("title").and_then(Value::as_str) == Some(CASE_TITLE)
+        && value
+            .get("tags")
+            .and_then(Value::as_array)
+            .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some(CASE_TAG)))
+}
+
 /// The query filter that names every alert the probe rule produced.
 fn alert_probe_filter() -> Value {
     json!({"term": {"kibana.alert.rule.rule_id": ALERT_RULE_ID}})
@@ -1013,10 +1053,71 @@ async fn sweep_close_marker_alerts(t: &elasticctl_core::Transport) -> elasticctl
             elasticctl_api::alerts::STATUS_PATH,
             Some(&close_query_request),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            recording_error(format!("close-by-query sweep retry: {}", error.message))
+        })?;
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
     require_no_open_marker_alerts(t).await
+}
+
+/// The `_find` filter that names every marker case: the fixed title AND the
+/// fixed tag together, matching `owns_case`'s AND semantics.
+fn case_marker_filter() -> elasticctl_api::cases_ops::CaseFilter {
+    elasticctl_api::cases_ops::CaseFilter {
+        search: Some(CASE_TITLE.to_string()),
+        tag: Some(CASE_TAG.to_string()),
+        ..Default::default()
+    }
+}
+
+async fn find_marker_cases(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<(Vec<elasticctl_api::cases::Case>, u64)> {
+    let query = elasticctl_api::cases_ops::find_query(
+        &case_marker_filter(),
+        1,
+        elasticctl_api::cases_ops::PAGE_SIZE,
+    );
+    elasticctl_api::cases::find_page(t, &query).await
+}
+
+async fn require_no_marker_cases(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    let (cases, total) = find_marker_cases(t).await?;
+    if total > 0 || !cases.is_empty() {
+        return Err(recording_error(format!(
+            "refusing to record: {total} case(s) already carry title {CASE_TITLE:?} and tag \
+             {CASE_TAG}. Manual remediation: find the id(s) via GET {}?{} then DELETE {} with \
+             the matching ?ids=[...] query.",
+            elasticctl_api::cases::FIND_PATH,
+            elasticctl_api::cases_ops::find_query(
+                &case_marker_filter(),
+                1,
+                elasticctl_api::cases_ops::PAGE_SIZE
+            ),
+            elasticctl_api::cases::CASES_PATH,
+        )));
+    }
+    Ok(())
+}
+
+/// Delete every marker case found by title+tag, then re-verify none remain.
+/// Cases tolerate zero residue (spec section 9) — unlike the alerts probe's
+/// accepted closed-alert deviation, there is no "closed is fine" escape
+/// hatch here. Shared by `record_cases`'s own delete step and `cleanup`'s
+/// last-resort sweep.
+async fn sweep_delete_marker_cases(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+    let (cases, _) = find_marker_cases(t).await?;
+    let ids: Vec<String> = cases
+        .into_iter()
+        .filter(|c| c.title == CASE_TITLE && c.tags.iter().any(|tag| tag == CASE_TAG))
+        .map(|c| c.id)
+        .collect();
+    if !ids.is_empty() {
+        elasticctl_api::cases::delete(t, &ids).await?;
+    }
+    require_no_marker_cases(t).await
 }
 
 async fn require_absent_rule(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
@@ -1439,6 +1540,16 @@ impl RecordingSession<'_> {
             }
         }
 
+        // Cases have no fixed id to re-check by, so this is a title+tag
+        // sweep-and-verify rather than a get/delete pair like the blocks
+        // above. `record_cases` already clears this flag on its own
+        // successful delete, so this only fires when it failed midway.
+        if self.ownership.case
+            && let Err(error) = sweep_delete_marker_cases(self.transport).await
+        {
+            errors.push(format!("verifying case probe baseline: {}", error.message));
+        }
+
         // A raw total-rule-count comparison would be unsound here: this same
         // pass also deletes the unrelated fixture-probe rule (`self.ownership.rule`,
         // above), so "before" and "after" would straddle a second, independent
@@ -1770,15 +1881,33 @@ async fn record_search(
     Ok(())
 }
 
+/// What `record_alerts_probe` hands to `record_cases` (to attach against)
+/// and to `close_and_clean_alerts` (to finish the close-by-query exchange).
+struct AlertsProbe {
+    /// The real `_id` of the still-open marker alert `record_cases` attaches.
+    first_id: String,
+    /// Real alert doc id (and uuid, when present) -> fixed placeholder.
+    id_map: BTreeMap<String, String>,
+    /// The first activated profile uid, used as the case's assignee.
+    assignee_uid: String,
+    /// Real profile uid -> fixed placeholder.
+    uid_map: BTreeMap<String, String>,
+}
+
 /// Record the alerts probe: a marker rule over a marker index, generating an
 /// alert the recorder transitions, tags, and assigns through every triage
-/// route, then closes. Runs after `record_search` (triage spec section 9).
-async fn record_alerts(
+/// route (triage spec section 9). Runs after `record_search`, and stops with
+/// one open marker alert still live so `record_cases` has a real alert to
+/// attach. Split out of the original single-function `record_alerts` (now
+/// `record_alerts_probe` + `close_and_clean_alerts`) so `record_session` can
+/// run `record_cases` between the two; every pre-write ownership claim and
+/// marker check below is unchanged from the single-function version.
+async fn record_alerts_probe(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,
     version: &str,
-) -> elasticctl_core::Result<()> {
+) -> elasticctl_core::Result<AlertsProbe> {
     require_absent_alert_rule(session.transport).await?;
     require_absent_alert_index(session.transport).await?;
     require_no_open_marker_alerts(session.transport).await?;
@@ -2147,33 +2276,98 @@ async fn record_alerts(
         }
     }
 
-    // Disable the rule before closing: the rule keeps executing on its 1m
-    // interval right up until `cleanup` deletes it, and an execution
-    // in-flight around the close-by-query call can land fresh, unclosed
-    // alerts moments after this "close everything" snapshot. Disabling first
-    // stops any further execution from starting, so the close below is the
-    // last word bar an execution already in progress (handled by the
-    // verify-and-retry loop after it).
+    // Disable the rule now, at the end of the probe, not at the start of the
+    // close: every triage exchange this function needs is already recorded,
+    // and `record_cases` runs next, driving several more live HTTP round
+    // trips before `close_and_clean_alerts` gets a turn. Leaving the rule
+    // enabled for that whole interval lets its 1-minute schedule keep firing
+    // and stacking up fresh alerts underneath `record_cases`, which both
+    // inflates the final close-by-query's `total` well past what
+    // `sweep_close_marker_alerts`'s 15-second retry budget was sized for and
+    // invites a genuine version-conflict race between an in-flight execution
+    // and that close. Disabling here bounds the alert volume to what this
+    // probe itself produced, the same as the single-function original.
     t.patch(
         "/api/detection_engine/rules",
         &json!({"rule_id": ALERT_RULE_ID, "enabled": false}),
     )
     .await?;
 
+    Ok(AlertsProbe {
+        first_id,
+        id_map,
+        assignee_uid,
+        uid_map,
+    })
+}
+
+/// Close every marker alert the probe produced, verifying the close sweep
+/// leaves no open residue. Split out of `record_alerts` (see
+/// `record_alerts_probe`, which already disabled the rule) so `record_cases`
+/// can run in between while one alert is still open.
+async fn close_and_clean_alerts(
+    t: &elasticctl_core::Transport,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+    id_map: &BTreeMap<String, String>,
+) -> elasticctl_core::Result<()> {
+    // Best-effort: `record_alerts_probe` already disabled the rule before
+    // `record_cases` ran. Repeating it here is idempotent and cheap, and
+    // guards against a future caller that skips straight to this function.
+    let _ = t
+        .patch(
+            "/api/detection_engine/rules",
+            &json!({"rule_id": ALERT_RULE_ID, "enabled": false}),
+        )
+        .await;
+
     // Close every marker alert by query. This is also the residue step: the
-    // session's alerts end closed (triage spec section 9).
+    // session's alerts end closed (triage spec section 9). Retried up to 5
+    // times, 3 seconds apart: `record_cases` attaches one of these alerts to
+    // a case just before this runs, and that attach writes
+    // `kibana.alert.case_ids` back onto the alert document — a write that
+    // can still be settling when this call lands, producing a genuine
+    // transient version conflict on exactly the attached document (`abort`
+    // makes the whole call fail rather than partially succeed). The request
+    // itself, including `conflicts: abort`, is unchanged from production.
     let close_query_request = json!({
         "query": alert_probe_filter(),
         "status": "closed",
         "conflicts": "abort",
         "reason": "automated_closure",
     });
-    let close_query_response = t
-        .post(
-            elasticctl_api::alerts::STATUS_PATH,
-            Some(&close_query_request),
-        )
-        .await?;
+    let mut close_query_response = None;
+    for attempt in 1..=5 {
+        match t
+            .post(
+                elasticctl_api::alerts::STATUS_PATH,
+                Some(&close_query_request),
+            )
+            .await
+        {
+            Ok(response) => {
+                close_query_response = Some(response);
+                break;
+            }
+            Err(error) if attempt < 5 => {
+                println!(
+                    "signals/status close-by-query attempt {attempt} failed transiently \
+                     ({}); retrying",
+                    error.message
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            Err(error) => {
+                return Err(recording_error(format!(
+                    "close-by-query: {}",
+                    error.message
+                )));
+            }
+        }
+    }
+    let close_query_response =
+        close_query_response.expect("loop above returns Some or an Err before exiting");
     elasticctl_api::alerts::decode_outcome(&close_query_response).map_err(|error| {
         recording_error(format!(
             "decoding signals_status_query response: {}",
@@ -2184,8 +2378,8 @@ async fn record_alerts(
         let mut request = close_query_request;
         let mut response = close_query_response;
         strip_volatile(&mut response, TRIAGE_ENVELOPE_VOLATILE_FIELDS);
-        scrub_placeholder_values(&mut request, &id_map);
-        scrub_placeholder_values(&mut response, &id_map);
+        scrub_placeholder_values(&mut request, id_map);
+        scrub_placeholder_values(&mut response, id_map);
         recording.fixtures.push(exchange_fixture(
             "signals_status_query",
             flavor,
@@ -2205,6 +2399,392 @@ async fn record_alerts(
             error.message
         ))
     })?;
+
+    Ok(())
+}
+
+/// Register every id/version a case-shaped response carries into `case_map`,
+/// so this step's own fixture and every later one scrub consistently.
+/// Comment ids are discovered, not assumed: whatever shape the live
+/// `comments` array actually carries is what gets a placeholder.
+fn register_case_extras(
+    value: &Value,
+    case_map: &mut BTreeMap<String, String>,
+    next_comment: &mut usize,
+) {
+    // `case_update_status`'s response is a bare array of cases rather than
+    // one case object — recurse into each element so a future call site that
+    // passes the array directly (instead of unwrapping it first) still
+    // registers every version, defense in depth against the exact bug this
+    // function had before: passing the array itself found nothing, since
+    // `Value::get` on an array never matches an object key.
+    if let Some(array) = value.as_array() {
+        for item in array {
+            register_case_extras(item, case_map, next_comment);
+        }
+        return;
+    }
+    if let Some(version) = value.get("version").and_then(Value::as_str) {
+        case_map
+            .entry(version.to_string())
+            .or_insert_with(|| CASE_VERSION_PLACEHOLDER.to_string());
+    }
+    if let Some(comments) = value.get("comments").and_then(Value::as_array) {
+        for comment in comments {
+            if let Some(id) = comment.get("id").and_then(Value::as_str)
+                && !case_map.contains_key(id)
+            {
+                *next_comment += 1;
+                case_map.insert(
+                    id.to_string(),
+                    format!("elasticctl-fixture-case-comment-{next_comment}"),
+                );
+            }
+            if let Some(version) = comment.get("version").and_then(Value::as_str) {
+                case_map
+                    .entry(version.to_string())
+                    .or_insert_with(|| CASE_VERSION_PLACEHOLDER.to_string());
+            }
+        }
+    }
+    // `cases_find`'s response nests each case one level deeper, under
+    // `cases`, rather than being a case itself — recurse into each one so
+    // its own version/comments still get registered regardless of step
+    // order.
+    if let Some(cases) = value.get("cases").and_then(Value::as_array) {
+        for case in cases {
+            register_case_extras(case, case_map, next_comment);
+        }
+    }
+}
+
+/// The cases probe (triage spec section 9): create a marker case, drive it
+/// through every mutation route — including attaching `probe.first_id`, the
+/// alerts probe's still-open marker alert — then delete it and prove zero
+/// residue. Runs between `record_alerts_probe` and `close_and_clean_alerts`
+/// so that alert is still open when the attach exchange needs it.
+async fn record_cases(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+    probe: &AlertsProbe,
+) -> elasticctl_core::Result<()> {
+    require_no_marker_cases(session.transport).await?;
+
+    let t = session.transport;
+    let mut case_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut next_comment = 0usize;
+
+    // Claim ownership before issuing the write, not after a successful
+    // response: unlike the rule/list/item probes, a case has no fixed,
+    // caller-chosen id to re-check later, so if the response is lost after
+    // the server applied the write, only a title+tag search
+    // (`sweep_delete_marker_cases`) can find it regardless of when ownership
+    // was claimed — the same reasoning `record_alerts_probe` uses for the
+    // alert rule and index.
+    session.ownership.case = true;
+    let create_request = json!({
+        "title": CASE_TITLE,
+        "description": CASE_TITLE,
+        "tags": [CASE_TAG],
+        "severity": "low",
+        "assignees": [{"uid": probe.assignee_uid}],
+        "connector": {"id": "none", "name": "none", "type": ".none", "fields": null},
+        "settings": {"syncAlerts": false},
+        "owner": elasticctl_api::cases::OWNER,
+    });
+    let create_response = t
+        .post(elasticctl_api::cases::CASES_PATH, Some(&create_request))
+        .await?;
+    if !owns_case(&create_response) {
+        return Err(recording_error(
+            "case create response did not prove the fixed marker identity",
+        ));
+    }
+    let created = elasticctl_api::cases::decode_case(&create_response).map_err(|error| {
+        recording_error(format!("decoding case_create response: {}", error.message))
+    })?;
+    let case_id = created.id.clone();
+    case_map.insert(case_id.clone(), CASE_ID_PLACEHOLDER.to_string());
+    register_case_extras(&create_response, &mut case_map, &mut next_comment);
+    {
+        let mut request = create_request;
+        let mut response = create_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut request, &probe.uid_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "case_create",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // case_get
+    let get_response = t.get(&elasticctl_api::cases::case_path(&case_id)).await?;
+    elasticctl_api::cases::decode_case(&get_response).map_err(|error| {
+        recording_error(format!("decoding case_get response: {}", error.message))
+    })?;
+    register_case_extras(&get_response, &mut case_map, &mut next_comment);
+    {
+        let mut response = get_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(response_fixture(
+            "case_get", flavor, version, response, None,
+        ));
+    }
+
+    // cases_find: scoped by the fixed title AND tag together, composed from
+    // the real `cases_ops::find_query` (so recorder and production cannot
+    // drift apart) — never an unscoped `_find`; this measures the exact
+    // filter params the CLI sends.
+    let find_query_string = elasticctl_api::cases_ops::find_query(
+        &case_marker_filter(),
+        1,
+        elasticctl_api::cases_ops::PAGE_SIZE,
+    );
+    let find_response = t
+        .get(&format!(
+            "{}?{find_query_string}",
+            elasticctl_api::cases::FIND_PATH
+        ))
+        .await?;
+    let (found, found_total) =
+        elasticctl_api::cases::decode_find(&find_response).map_err(|error| {
+            recording_error(format!("decoding cases_find response: {}", error.message))
+        })?;
+    if found_total == 0 || !found.iter().any(|c| c.id == case_id) {
+        return Err(recording_error(
+            "scoped cases_find did not contain the marker case",
+        ));
+    }
+    register_case_extras(&find_response, &mut case_map, &mut next_comment);
+    {
+        let mut request = json!({"query": find_query_string});
+        let mut response = find_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "cases_find",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // case_comment
+    let comment_request = json!({
+        "type": "user",
+        "comment": CASE_COMMENT,
+        "owner": elasticctl_api::cases::OWNER,
+    });
+    let comment_response = t
+        .post(
+            &elasticctl_api::cases::comments_path(&case_id),
+            Some(&comment_request),
+        )
+        .await?;
+    elasticctl_api::cases::decode_case(&comment_response).map_err(|error| {
+        recording_error(format!("decoding case_comment response: {}", error.message))
+    })?;
+    register_case_extras(&comment_response, &mut case_map, &mut next_comment);
+    {
+        let mut request = comment_request;
+        let mut response = comment_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "case_comment",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // case_attach: the still-open marker alert from `record_alerts_probe`.
+    // `plan_attach` is the real production function (composed from -api so
+    // recorder and production cannot drift apart), used here only to
+    // resolve the alert's rule id/name/index — `record_alerts_probe`'s own
+    // signals_search fixture deliberately restricts `_source` to
+    // `RESOLVE_SOURCE_FIELDS` (proving that minimal shape works, spec
+    // section 10) and does not carry the rule uuid this needs. The comment
+    // POST itself is issued directly so the exact request body is recorded.
+    let attach_plan =
+        elasticctl_api::cases_ops::plan_attach(t, &case_id, std::slice::from_ref(&probe.first_id))
+            .await
+            .map_err(|error| recording_error(format!("planning case attach: {}", error.message)))?;
+    let group = attach_plan.groups.first().ok_or_else(|| {
+        recording_error("case attach plan produced no rule group for the marker alert")
+    })?;
+    // The alert's `kibana.alert.rule.uuid` — the same server-owned,
+    // per-rule-creation uuid `is_sensitive` already redacts under its own
+    // dotted key elsewhere, but here it appears under a plain `id` key.
+    case_map.insert(
+        group.rule_id.clone(),
+        CASE_RULE_UUID_PLACEHOLDER.to_string(),
+    );
+    let attach_request = json!({
+        "type": "alert",
+        "alertId": group.alert_ids,
+        "index": group.indices,
+        "rule": {"id": group.rule_id, "name": group.rule_name},
+        "owner": elasticctl_api::cases::OWNER,
+    });
+    let attach_response = t
+        .post(
+            &elasticctl_api::cases::comments_path(&case_id),
+            Some(&attach_request),
+        )
+        .await?;
+    let attached = elasticctl_api::cases::decode_case(&attach_response).map_err(|error| {
+        recording_error(format!("decoding case_attach response: {}", error.message))
+    })?;
+    register_case_extras(&attach_response, &mut case_map, &mut next_comment);
+    {
+        let mut request = attach_request;
+        let mut response = attach_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut request, &probe.id_map);
+        scrub_placeholder_values(&mut response, &probe.id_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "case_attach",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // case_update_status: close with the latest known version.
+    let close_version = attached.version.clone();
+    let close_request = json!({
+        "cases": [{"id": case_id, "version": close_version, "status": "closed"}],
+    });
+    let close_response = t
+        .patch(elasticctl_api::cases::CASES_PATH, &close_request)
+        .await?;
+    let closed_array = close_response.as_array().ok_or_else(|| {
+        recording_error("decoding case_update_status response: expected an array")
+    })?;
+    let closed_first = closed_array
+        .first()
+        .ok_or_else(|| recording_error("case_update_status response array is empty"))?;
+    let closed = elasticctl_api::cases::decode_case(closed_first).map_err(|error| {
+        recording_error(format!(
+            "decoding case_update_status response: {}",
+            error.message
+        ))
+    })?;
+    if closed.status != "closed" {
+        return Err(recording_error(format!(
+            "case_update_status did not close the case (status: {})",
+            closed.status
+        )));
+    }
+    register_case_extras(closed_first, &mut case_map, &mut next_comment);
+    {
+        let mut request = close_request;
+        let mut response = close_response;
+        scrub_alert_timestamps(&mut response);
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        scrub_placeholder_values(&mut response, &probe.uid_map);
+        recording.fixtures.push(exchange_fixture(
+            "case_update_status",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    // case_conflict: reuse the now-stale pre-close version, attempting
+    // `open`. This measures the optimistic-concurrency contract (triage
+    // spec section 10): a stale version must answer 409.
+    let conflict_request = json!({
+        "cases": [{"id": case_id, "version": close_version, "status": "open"}],
+    });
+    match t
+        .patch(elasticctl_api::cases::CASES_PATH, &conflict_request)
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::Conflict => {
+            let mut sanitized = error;
+            for (real, placeholder) in &case_map {
+                if !real.is_empty() {
+                    sanitized.message = sanitized
+                        .message
+                        .replace(real.as_str(), placeholder.as_str());
+                }
+            }
+            recording
+                .fixtures
+                .push(error_fixture("case_conflict", flavor, version, sanitized));
+        }
+        Err(error) => {
+            return Err(recording_error(format!(
+                "case_conflict: stale-version PATCH failed with an unexpected error \
+                 (kind={:?}, status={:?}) instead of 409 — this is a discovery about the \
+                 optimistic-concurrency contract, not a transient failure: {}",
+                error.kind, error.http_status, error.message
+            )));
+        }
+        Ok(response) => {
+            return Err(recording_error(format!(
+                "case_conflict: stale-version PATCH SUCCEEDED instead of 409 (response: \
+                 {response}) — the API does not enforce optimistic concurrency the way the \
+                 spec documents. Update the spec and `apply_status`'s remediation text before \
+                 recording further flavors."
+            )));
+        }
+    }
+
+    // case_delete
+    let delete_ids = vec![case_id.clone()];
+    let delete_url = elasticctl_api::cases::delete_path(&delete_ids)?;
+    let delete_response = t.delete(&delete_url).await?;
+    {
+        let mut request = json!({"ids": delete_ids, "path": delete_url});
+        let mut response = delete_response;
+        scrub_placeholder_values(&mut request, &case_map);
+        scrub_placeholder_values(&mut response, &case_map);
+        recording.fixtures.push(exchange_fixture(
+            "case_delete",
+            flavor,
+            version,
+            request,
+            response,
+        ));
+    }
+
+    match t.get(&elasticctl_api::cases::case_path(&case_id)).await {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {}
+        Ok(_) => return Err(recording_error("case still exists after case_delete")),
+        Err(error) => {
+            return Err(recording_error(format!(
+                "verifying case deleted: {}",
+                error.message
+            )));
+        }
+    }
+    require_no_marker_cases(t).await?;
+    session.ownership.case = false;
 
     Ok(())
 }
@@ -2568,7 +3148,16 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
     ));
 
     record_search(session, &mut recording, &flavor, &version).await?;
-    record_alerts(session, &mut recording, &flavor, &version).await?;
+    let probe = record_alerts_probe(session, &mut recording, &flavor, &version).await?;
+    record_cases(session, &mut recording, &flavor, &version, &probe).await?;
+    close_and_clean_alerts(
+        session.transport,
+        &mut recording,
+        &flavor,
+        &version,
+        &probe.id_map,
+    )
+    .await?;
 
     Ok(recording)
 }

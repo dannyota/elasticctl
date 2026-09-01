@@ -50,6 +50,18 @@ const V0_4_ALERT_FIXTURES: [&str; 7] = [
     "profile_suggest.json",
 ];
 
+/// Case fixtures added in 0.4.1, recorded by the cases probe.
+const V0_4_1_CASE_FIXTURES: [&str; 8] = [
+    "cases_find.json",
+    "case_get.json",
+    "case_create.json",
+    "case_update_status.json",
+    "case_conflict.json",
+    "case_comment.json",
+    "case_attach.json",
+    "case_delete.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -127,6 +139,20 @@ fn every_fixture_parses_and_carries_its_metadata() {
         assert!(
             missing.is_empty(),
             "{} lacks alert fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
+
+        // The case fixtures are recorded as a set; a set missing any of them
+        // predates the cases probe.
+        let missing: Vec<&str> = V0_4_1_CASE_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks case fixture(s): {}",
             set.display(),
             missing.join(", ")
         );
@@ -665,5 +691,45 @@ fn alert_fixtures_decode_through_the_typed_decoders() {
             // the error envelope instead of a response.
             assert_eq!(suggest["error"]["http_status"], serde_json::json!(410));
         }
+    }
+}
+
+#[test]
+fn case_fixtures_decode_through_the_typed_decoders() {
+    use elasticctl_api::cases;
+    for set in fixture_sets() {
+        let read = |name: &str| -> Value {
+            serde_json::from_str(&fs::read_to_string(set.join(name)).expect(name)).expect(name)
+        };
+        let (cases, total) =
+            cases::decode_find(&read("cases_find.json")["response"]).expect("find");
+        assert!(total >= cases.len() as u64);
+        assert!(
+            !cases.is_empty(),
+            "{}: the recorded find must carry the marker case",
+            set.display()
+        );
+        for name in [
+            "case_get.json",
+            "case_create.json",
+            "case_comment.json",
+            "case_attach.json",
+        ] {
+            cases::decode_case(&read(name)["response"])
+                .unwrap_or_else(|e| panic!("{}/{name}: {e}", set.display()));
+        }
+        let updated = read("case_update_status.json");
+        assert!(
+            updated["response"].is_array(),
+            "bulk update returns an array"
+        );
+        cases::decode_case(&updated["response"][0]).expect("updated case decodes");
+        let conflict = read("case_conflict.json");
+        assert!(
+            conflict.get("error").is_some(),
+            "the stale-version exchange records an error fixture"
+        );
+        // case_delete records the exchange; a 204 has no body to decode.
+        let _ = read("case_delete.json");
     }
 }

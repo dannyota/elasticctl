@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "case_conflict",
+  "error": {
+    "kind": "conflict",
+    "message": "These cases elasticctl-fixture-case have been updated. Please refresh before saving additional updates.",
+    "http_status": 409
+  }
+}
