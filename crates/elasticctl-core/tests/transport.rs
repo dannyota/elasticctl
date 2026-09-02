@@ -701,6 +701,37 @@ async fn post_text_returns_the_raw_body_for_ndjson_export() {
 }
 
 #[tokio::test]
+async fn named_multipart_uses_the_requested_filename() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "successCount": 1, "successResults": [], "errors": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    t.post_multipart_ndjson_named(
+        "/api/saved_objects/_import?overwrite=false",
+        "dashboards.ndjson",
+        "{\"type\":\"dashboard\",\"id\":\"d1\"}\n",
+    )
+    .await
+    .expect("upload");
+    let requests = server.received_requests().await.unwrap();
+    let request = &requests[0];
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("filename=\"dashboards.ndjson\""));
+    assert!(body.contains("\"id\":\"d1\""));
+    assert_eq!(request.headers.get("kbn-xsrf").unwrap(), "true");
+    assert_eq!(
+        request.headers.get("elastic-api-version").unwrap(),
+        "2023-10-31"
+    );
+}
+
+#[tokio::test]
 async fn multipart_retries_a_503_with_the_same_file_and_kibana_headers() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

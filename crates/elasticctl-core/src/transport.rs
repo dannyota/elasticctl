@@ -633,6 +633,17 @@ impl Transport {
 
     /// Upload a multipart NDJSON file for Kibana rule import.
     pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
+        self.post_multipart_ndjson_named(path, "rules.ndjson", ndjson)
+            .await
+    }
+
+    /// Upload a multipart NDJSON file for Kibana import with the requested filename.
+    pub async fn post_multipart_ndjson_named(
+        &self,
+        path: &str,
+        filename: &str,
+        ndjson: &str,
+    ) -> Result<Value> {
         let method = Method::POST;
         let url = self.url(path);
         let response = self
@@ -640,7 +651,7 @@ impl Transport {
                 // Retryable HTTP responses deliberately replay this POST. Part and Form are
                 // recreated here because reqwest consumes multipart bodies while sending.
                 let part = reqwest::multipart::Part::text(ndjson.to_string())
-                    .file_name("rules.ndjson")
+                    .file_name(filename.to_string())
                     .mime_str("application/octet-stream")
                     .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
                 let form = reqwest::multipart::Form::new().part("file", part);

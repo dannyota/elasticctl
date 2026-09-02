@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod report;
 pub mod rules;
 pub mod rules_ops;
+pub mod saved_objects;
 pub mod search;
 pub mod selection;
 pub mod state;
