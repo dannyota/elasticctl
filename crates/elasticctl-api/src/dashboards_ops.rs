@@ -31,8 +31,6 @@ pub struct DashboardList {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DashboardImportPlan {
     pub preview: crate::ops::MutationPlan,
-    /// Canonical artifact descriptor captured before the mutation guard.
-    pub source: String,
     pub specs: Vec<DashboardSpec>,
     pub before: BTreeMap<String, Option<DashboardSpec>>,
     pub skipped: Vec<Value>,
@@ -325,15 +323,13 @@ pub async fn plan_import(
         before.retain(|id, _| specs.iter().any(|spec| spec.id == *id));
     }
 
-    let source = path.display().to_string();
     let preview = crate::ops::MutationPlan {
-        preview_action: format!("Import {} dashboard(s) from {}", specs.len(), source),
+        preview_action: format!("Import {} dashboard(s)", specs.len()),
         preview_details: import_preview_details(&specs, &before),
         targets: specs.iter().map(|spec| spec.id.clone()).collect(),
     };
     Ok(DashboardImportPlan {
         preview,
-        source,
         specs,
         before,
         skipped,
@@ -613,15 +609,8 @@ fn validate_import_plan(plan: &DashboardImportPlan) -> Result<()> {
     if plan.preview.targets != ids {
         return invalid_plan("preview targets do not match pending dashboards");
     }
-    if plan.source.is_empty()
-        || plan.preview.preview_action
-            != format!(
-                "Import {} dashboard(s) from {}",
-                plan.specs.len(),
-                plan.source
-            )
-    {
-        return invalid_plan("preview action does not match dashboard import source");
+    if plan.preview.preview_action != format!("Import {} dashboard(s)", plan.specs.len()) {
+        return invalid_plan("preview action does not match pending dashboards");
     }
     if plan.preview.preview_details != import_preview_details(&plan.specs, &plan.before) {
         return invalid_plan("preview details do not match pending dashboards");

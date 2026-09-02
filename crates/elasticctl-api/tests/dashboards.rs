@@ -90,11 +90,10 @@ fn dashboard_import_plan(
         .collect();
     DashboardImportPlan {
         preview: MutationPlan {
-            preview_action: format!("Import {} dashboard(s) from test", specs.len()),
+            preview_action: format!("Import {} dashboard(s)", specs.len()),
             preview_details,
             targets: specs.iter().map(|spec| spec.id.clone()).collect(),
         },
-        source: "test".into(),
         total: specs.len(),
         specs,
         before,
@@ -1033,7 +1032,7 @@ async fn dashboard_import_apply_refuses_a_tampered_preview_action_before_http() 
         vec![dashboard_spec("dash-1", "Overview")],
         BTreeMap::from([("dash-1".into(), None)]),
     );
-    plan.preview.preview_action = "Import 1 dashboard(s) from altered-source".into();
+    plan.preview.preview_action = "Import 1 dashboard(s) with altered action".into();
 
     let error = dashboards_ops::apply_import(&transport(&server), &plan)
         .await
@@ -1042,7 +1041,7 @@ async fn dashboard_import_apply_refuses_a_tampered_preview_action_before_http() 
     assert_eq!(error.kind, ErrorKind::Error);
     assert_eq!(
         error.message,
-        "preview action does not match dashboard import source"
+        "preview action does not match pending dashboards"
     );
     assert!(
         server
