@@ -1073,6 +1073,25 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
 
     for set in sets {
         let v = fixture_body(&set.join("rules_preview_hits.json"));
+        for field in ["took", "timed_out", "_shards"] {
+            assert!(
+                v["response"].get(field).is_none(),
+                "{}: preview-hit response retained runtime field `{field}`",
+                set.display()
+            );
+        }
+        for hit in v["response"]["hits"]["hits"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: preview-hit response has no hits array", set.display()))
+        {
+            for field in ["_index", "_score", "sort"] {
+                assert!(
+                    hit.get(field).is_none(),
+                    "{}: preview-hit retained runtime hit field `{field}`",
+                    set.display()
+                );
+            }
+        }
         let index = v["request"]["index"].as_str().expect("request.index");
         assert!(
             index.starts_with(".preview.alerts-security.alerts-"),
@@ -1093,8 +1112,9 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // Decode the recorded response through the live client's path.
-        let hits = rules::decode_preview_hits(&v["response"]);
+        // Decode the recorded response through the checked live-client path.
+        let hits = rules::decode_preview_hits_checked(&v["response"])
+            .unwrap_or_else(|error| panic!("{}: {error}", set.display()));
         assert!(
             hits.total >= 1,
             "{}: a recording with zero hits proves nothing — a wrong field name \
@@ -1120,6 +1140,64 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             "{}: the returned document's {matched_by} must equal the queried value",
             set.display()
         );
+    }
+}
+
+#[test]
+fn close_by_query_fixtures_use_canonical_counters_and_keep_the_outcome_invariant() {
+    use elasticctl_api::alerts;
+
+    for set in sets_with("signals_status_query.json") {
+        let fixture = fixture_body(&set.join("signals_status_query.json"));
+        let outcome = alerts::decode_outcome(&fixture["response"])
+            .unwrap_or_else(|error| panic!("{}: {error}", set.display()));
+
+        assert_eq!(
+            outcome.updated,
+            1,
+            "{}: close-by-query updated must be canonical",
+            set.display()
+        );
+        assert_eq!(
+            outcome.total,
+            outcome.updated + outcome.version_conflicts + outcome.noops,
+            "{}: close-by-query counters must retain the decoded outcome invariant",
+            set.display()
+        );
+        assert_eq!(
+            outcome.version_conflicts,
+            0,
+            "{}: close-by-query must be conflict-free",
+            set.display()
+        );
+        assert_eq!(
+            outcome.noops,
+            0,
+            "{}: close-by-query must not canonicalize a no-op",
+            set.display()
+        );
+        assert!(
+            outcome.failures.is_empty(),
+            "{}: close-by-query must not carry failed writes",
+            set.display()
+        );
+        for field in [
+            "took",
+            "timed_out",
+            "_shards",
+            "batches",
+            "deleted",
+            "requests_per_second",
+            "retries",
+            "throttled_millis",
+            "throttled_until_millis",
+        ] {
+            assert!(
+                fixture["response"].get(field).is_none(),
+                "{}: close-by-query response retained runtime field `{field}`",
+                set.display()
+            );
+        }
     }
 }
 

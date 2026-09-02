@@ -479,9 +479,11 @@ and result may name only `type`, `id`, counts, and server error text.
 Fixtures are recorded from real traffic for Serverless, Hosted, and
 self-managed deployments. The recorder creates only unique
 `elasticctl-sample-*` data-view and dashboard ids and an
-`*elasticctl-sample*` index. Every request is explicitly scoped to those ids.
-An unscoped dashboard list or Saved Objects export must never enter public
-fixtures.
+`*elasticctl-sample*` index. Marker mutations, gets, and exports use their
+fixed ids. Dashboard list recording uses the exact marker title as its query,
+then requires one nested row with the fixed marker id and title before it can
+enter a public fixture. An unscoped dashboard list or Saved Objects export
+must never enter public fixtures.
 
 When `ELASTICCTL_FIXTURE_FLAVOR=traditional` exactly, `cargo xtask record`
 activates the headless lab's profile through the existing login-and-verify
@@ -558,6 +560,17 @@ data-view ids. It deterministically normalizes generated panel tokens in
 direct panels and Saved Objects `panelsJSON` (`panelIndex` and `gridData.i`),
 including reference names, to `elasticctl-fixture-dashboard-panel-N`.
 
+Preview-hit fixtures retain the production query and decoder-required search
+shape, but remove response-only runtime fields: `took`, `timed_out`, shard
+metadata, and each hit's concrete `_index`, score, and response sort values.
+The recorder decodes a close-by-query outcome before persistence, requires `updated > 0` and
+zero `version_conflicts`, `noops`, and failures, then persists the typed
+successful outcome as `total: 1`, `updated: 1`, `version_conflicts: 0`, and
+`noops: 0`. It removes the untyped update-by-query runtime envelope
+(`took`, shard metadata, batches, retries, throttling, request rate, and
+deleted counter). This keeps the response production-decodable without making
+a repeated marker cleanup run a fixture diff.
+
 The ninth matrix contract is
 `content_transfers_data_views_and_dashboards_without_residue`. It:
 
@@ -616,6 +629,8 @@ and volumes.
 | Accepted loss | All three flavors accept the marker loss copy but omit root `time_range.mode`; the recorder reports exactly `$.time_range.mode` and deletes that copy immediately. |
 | Saved Objects import | All three flavors return the strict success envelope for overwrite import and the strict conflict envelope without overwrite. |
 | Transport empty body | Existing response handling maps a successful empty body to `Value::Null`; no dashboard-specific 204 exception is needed |
+| Preview-hit fixtures | The production preview query decodes after response-only timing, shard metadata, hit `_index`, score, and response sort values are removed. |
+| Close-by-query fixture | Marker cleanup requires a conflict-free, non-noop successful outcome, persists canonical typed counters, and removes untyped runtime envelope fields. |
 
 The 0.5.1 fixture probe is complete:
 

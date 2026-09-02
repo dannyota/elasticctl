@@ -24,14 +24,6 @@
     "attempts_until_hits": 1
   },
   "response": {
-    "took": 0,
-    "timed_out": false,
-    "_shards": {
-      "total": 1,
-      "successful": 1,
-      "skipped": 0,
-      "failed": 0
-    },
     "hits": {
       "total": {
         "value": 1,
@@ -40,8 +32,6 @@
       "max_score": null,
       "hits": [
         {
-          "_index": ".ds-.preview.alerts-security.alerts-default-2026.08.12-000001",
-          "_score": null,
           "_source": {
             "kibana.version": "9.6.0",
             "kibana.alert.rule.parameters": {
@@ -155,10 +145,7 @@
             "kibana.alert.rule.severity": "low",
             "kibana.alert.intended_timestamp": "2026-08-12T18:00:00.000Z",
             "kibana.alert.rule.execution.type": "manual"
-          },
-          "sort": [
-            1786557600000
-          ]
+          }
         }
       ]
     }

@@ -68,6 +68,7 @@ const DASHBOARD_LOSS_ID: &str = "elasticctl-sample-dashboard-loss";
 const DASHBOARD_DATA_VIEW_ID: &str = "elasticctl-sample-data-view";
 const DASHBOARD_TITLE: &str = "elasticctl sample dashboard";
 const DASHBOARD_DATA_VIEW_TITLE: &str = "elasticctl-sample-dashboard-data-view-*";
+const DASHBOARD_DATA_VIEW_NAME: &str = "elasticctl sample dashboard data view";
 const DASHBOARD_MARKER: &str = "elasticctl-sample";
 const DASHBOARD_UPDATED_DESCRIPTION: &str = "elasticctl-sample updated";
 const DASHBOARD_PANEL_ID_PLACEHOLDER_PREFIX: &str = "elasticctl-fixture-dashboard-panel-";
@@ -122,6 +123,20 @@ const CASE_DURATION_VOLATILE_FIELDS: &[&str] = &[
 /// carry `took`/`timed_out` (spec section 9); none of the mutation envelopes
 /// carry `_shards`, but stripping it if present is harmless.
 const TRIAGE_ENVELOPE_VOLATILE_FIELDS: &[&str] = &["took", "timed_out", "_shards"];
+
+/// Update-by-query reports execution details which are neither part of
+/// `SignalsOutcome` nor stable across a repeated marker cleanup run.
+const CLOSE_BY_QUERY_RUNTIME_FIELDS: &[&str] = &[
+    "took",
+    "timed_out",
+    "_shards",
+    "batches",
+    "deleted",
+    "requests_per_second",
+    "retries",
+    "throttled_millis",
+    "throttled_until_millis",
+];
 
 /// Additional volatile fields on the `signals_search` response beyond the
 /// envelope fields above: relevance scores (meaningless on a `term` query and
@@ -822,6 +837,7 @@ fn preview_exchange_fixture(
 ) -> RecordedFixture {
     strip_volatile(&mut request, PREVIEW_VOLATILE_FIELDS);
     strip_volatile(&mut body, PREVIEW_VOLATILE_FIELDS);
+    strip_volatile(&mut body, PREVIEW_HITS_RESPONSE_VOLATILE_FIELDS);
     exchange_fixture(name, flavor, version, request, body)
 }
 
@@ -938,6 +954,12 @@ const PREVIEW_VOLATILE_FIELDS: &[&str] = &[
     "kibana.alert.start",
     "kibana.alert.last_detected",
 ];
+/// Response-only Elasticsearch search fields from preview-hit readback. The
+/// request keeps its sort because it proves the production query; this list
+/// applies only to the response so re-recording does not preserve runtime or
+/// rollover state as fixture evidence.
+const PREVIEW_HITS_RESPONSE_VOLATILE_FIELDS: &[&str] =
+    &["took", "timed_out", "_shards", "_index", "_score", "sort"];
 
 /// Return a per-run suffix so a re-record cannot match leftover preview alerts.
 fn run_token() -> String {
@@ -1186,6 +1208,13 @@ fn safe_recording_error_summary(error: &elasticctl_core::Error) -> String {
         .http_status
         .map_or_else(|| "none".to_string(), |status| status.to_string());
     format!("class={} status={status}", error.kind.as_str())
+}
+
+fn dashboard_transport<T>(
+    context: &'static str,
+    result: elasticctl_core::Result<T>,
+) -> elasticctl_core::Result<T> {
+    result.map_err(|error| safe_recording_transport_error(context, error))
 }
 
 /// The only recorder flavor that starts headless needs a profile activation
@@ -1570,7 +1599,25 @@ async fn require_absent_dashboard(
             "refusing to record: dashboard {id} already exists and is not cleanup-owned"
         ))),
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => Err(safe_recording_transport_error(
+            "checking dashboard absence failed",
+            error,
+        )),
+    }
+}
+
+async fn require_absent_dashboard_data_view(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    match elasticctl_api::data_views::get(t, DASHBOARD_DATA_VIEW_ID).await {
+        Ok(_) => Err(recording_error(
+            "refusing to record: dashboard companion data view already exists and is not cleanup-owned",
+        )),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(safe_recording_transport_error(
+            "checking dashboard companion data-view absence failed",
+            error,
+        )),
     }
 }
 
@@ -1670,6 +1717,13 @@ fn owns_dashboard(value: &Value, id: &str) -> bool {
             .pointer("/data/description")
             .and_then(Value::as_str)
             .is_some_and(|description| description.contains(DASHBOARD_MARKER))
+}
+
+fn owns_recorded_data_view(value: &serde_json::Map<String, Value>, id: &str) -> bool {
+    value.get("id").and_then(Value::as_str) == Some(id)
+        && (id != DASHBOARD_DATA_VIEW_ID
+            || (value.get("title").and_then(Value::as_str) == Some(DASHBOARD_DATA_VIEW_TITLE)
+                && value.get("name").and_then(Value::as_str) == Some(DASHBOARD_DATA_VIEW_NAME)))
 }
 
 fn require_saved_objects_import(
@@ -2161,23 +2215,27 @@ impl RecordingSession<'_> {
                                 }
                                 Err(error) => errors.push(format!(
                                     "verifying dashboard {id} deletion: {}",
-                                    error.message
+                                    safe_recording_error_summary(&error)
                                 )),
                             }
                         }
                         Ok(_) => errors.push(format!(
                             "deleting dashboard {id}: expected an empty response body"
                         )),
-                        Err(error) => {
-                            errors.push(format!("deleting dashboard {id}: {}", error.message))
-                        }
+                        Err(error) => errors.push(format!(
+                            "deleting dashboard {id}: {}",
+                            safe_recording_error_summary(&error)
+                        )),
                     }
                 }
                 Ok(_) => errors.push(format!(
                     "refusing to delete dashboard {id}: its marker identity no longer matches"
                 )),
                 Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => *owned = false,
-                Err(error) => errors.push(format!("checking dashboard {id}: {}", error.message)),
+                Err(error) => errors.push(format!(
+                    "checking dashboard {id}: {}",
+                    safe_recording_error_summary(&error)
+                )),
             }
         }
 
@@ -2197,7 +2255,7 @@ impl RecordingSession<'_> {
                     continue;
                 }
                 match elasticctl_api::data_views::get(self.transport, id).await {
-                    Ok(view) if view.data_view.get("id").and_then(Value::as_str) == Some(id) => {
+                    Ok(view) if owns_recorded_data_view(&view.data_view, id) => {
                         match elasticctl_api::data_views::delete(self.transport, id).await {
                             Ok(()) => {
                                 match elasticctl_api::data_views::get(self.transport, id).await {
@@ -2210,13 +2268,14 @@ impl RecordingSession<'_> {
                                         .push(format!("data view {id} still exists after delete")),
                                     Err(error) => errors.push(format!(
                                         "verifying data view {id} deletion: {}",
-                                        error.message
+                                        safe_recording_error_summary(&error)
                                     )),
                                 }
                             }
-                            Err(error) => {
-                                errors.push(format!("deleting data view {id}: {}", error.message))
-                            }
+                            Err(error) => errors.push(format!(
+                                "deleting data view {id}: {}",
+                                safe_recording_error_summary(&error)
+                            )),
                         }
                     }
                     Ok(_) => errors.push(format!(
@@ -2225,9 +2284,10 @@ impl RecordingSession<'_> {
                     Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
                         *owned = false
                     }
-                    Err(error) => {
-                        errors.push(format!("checking data view {id}: {}", error.message))
-                    }
+                    Err(error) => errors.push(format!(
+                        "checking data view {id}: {}",
+                        safe_recording_error_summary(&error)
+                    )),
                 }
             }
 
@@ -3625,7 +3685,7 @@ async fn record_dashboards(
     record_trace("dashboards-preflight");
     require_absent_dashboard(t, DASHBOARD_ID).await?;
     require_absent_dashboard(t, DASHBOARD_LOSS_ID).await?;
-    require_absent_data_view(t, DASHBOARD_DATA_VIEW_ID).await?;
+    require_absent_dashboard_data_view(t).await?;
 
     // Claim the dashboard first, then its data view, before the first
     // mutation. Cleanup deletes in this same dependency order even if a
@@ -3636,18 +3696,20 @@ async fn record_dashboards(
         "data_view": {
             "id": DASHBOARD_DATA_VIEW_ID,
             "title": DASHBOARD_DATA_VIEW_TITLE,
-            "name": "elasticctl sample dashboard data view",
+            "name": DASHBOARD_DATA_VIEW_NAME,
             "allowNoIndex": true
         },
         "override": false
     });
     record_trace("dashboards-data-view-create");
-    let dashboard_data_view = t
-        .post(
+    let dashboard_data_view = dashboard_transport(
+        "creating dashboard companion data view failed",
+        t.post(
             "/api/data_views/data_view",
             Some(&dashboard_data_view_request),
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-data-view-check");
     if dashboard_data_view
         .pointer("/data_view/id")
@@ -3668,12 +3730,14 @@ async fn record_dashboards(
     let loss_request = dashboard_spec(DASHBOARD_LOSS_ID, loss_data)?;
     session.ownership.dashboard_loss = true;
     record_trace("dashboards-loss-create");
-    let loss_response = t
-        .put(
+    let loss_response = dashboard_transport(
+        "creating dashboard loss probe failed",
+        t.put(
             &format!("/api/dashboards/{}", urlencode(DASHBOARD_LOSS_ID)),
             &loss_request["data"],
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-loss-check");
     if loss_response.get("id").and_then(Value::as_str) != Some(DASHBOARD_LOSS_ID)
         || !loss_response.get("meta").is_some_and(Value::is_object)
@@ -3707,9 +3771,11 @@ async fn record_dashboards(
         loss_response,
     ));
     record_trace("dashboards-loss-delete");
-    if t.delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_LOSS_ID)))
-        .await?
-        != Value::Null
+    if dashboard_transport(
+        "deleting dashboard loss probe failed",
+        t.delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_LOSS_ID)))
+            .await,
+    )? != Value::Null
     {
         return Err(recording_error(
             "loss probe dashboard delete did not return an empty body",
@@ -3728,17 +3794,24 @@ async fn record_dashboards(
                 "loss probe dashboard still exists after delete",
             ));
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(safe_recording_transport_error(
+                "verifying dashboard loss probe deletion failed",
+                error,
+            ));
+        }
     }
 
     let create_request = dashboard_spec(DASHBOARD_ID, dashboard_data())?;
     record_trace("dashboards-create");
-    let created = t
-        .put(
+    let created = dashboard_transport(
+        "creating dashboard failed",
+        t.put(
             &format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)),
             &create_request["data"],
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-create-check");
     require_dashboard_response(&created, DASHBOARD_ID, DASHBOARD_MARKER, "dashboard create")?;
     recording.fixtures.push(dashboard_exchange_fixture(
@@ -3750,9 +3823,11 @@ async fn record_dashboards(
     ));
 
     record_trace("dashboards-get");
-    let got = t
-        .get(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
-        .await?;
+    let got = dashboard_transport(
+        "getting dashboard failed",
+        t.get(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
+            .await,
+    )?;
     record_trace("dashboards-get-check");
     require_dashboard_response(&got, DASHBOARD_ID, DASHBOARD_MARKER, "dashboard get")?;
     recording
@@ -3761,12 +3836,14 @@ async fn record_dashboards(
 
     let search_request = json!({"query": DASHBOARD_TITLE});
     record_trace("dashboards-search");
-    let searched = t
-        .get(&format!(
+    let searched = dashboard_transport(
+        "searching dashboard failed",
+        t.get(&format!(
             "/api/dashboards?page=1&per_page=1000&query={}",
             urlencode(DASHBOARD_TITLE)
         ))
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-search-check");
     require_dashboard_search_response(&searched)?;
     recording.fixtures.push(dashboard_exchange_fixture(
@@ -3781,12 +3858,14 @@ async fn record_dashboards(
     updated_data["description"] = json!(DASHBOARD_UPDATED_DESCRIPTION);
     let update_request = dashboard_spec(DASHBOARD_ID, updated_data)?;
     record_trace("dashboards-update");
-    let updated = t
-        .put(
+    let updated = dashboard_transport(
+        "updating dashboard failed",
+        t.put(
             &format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)),
             &update_request["data"],
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-update-check");
     require_dashboard_response(
         &updated,
@@ -3808,13 +3887,14 @@ async fn record_dashboards(
         "excludeExportDetails": false,
     });
     record_trace("dashboards-export");
-    let bundle = t
-        .post_text("/api/saved_objects/_export", Some(&export_request))
-        .await?;
+    let bundle = dashboard_transport(
+        "exporting dashboard bundle failed",
+        t.post_text("/api/saved_objects/_export", Some(&export_request))
+            .await,
+    )?;
     record_trace("dashboards-export-check");
-    let scan = elasticctl_api::saved_objects::scan_bundle(&bundle).map_err(|error| {
-        recording_error(format!("scanning dashboard deep export: {}", error.message))
-    })?;
+    let scan = elasticctl_api::saved_objects::scan_bundle(&bundle)
+        .map_err(|_| recording_error("scanning dashboard deep export failed"))?;
     if scan.dashboards != vec![DASHBOARD_ID.to_string()]
         || scan.counts.get("dashboard") != Some(&1)
         || scan.counts.get("index-pattern") != Some(&1)
@@ -3835,9 +3915,11 @@ async fn record_dashboards(
     ));
 
     record_trace("dashboards-delete");
-    let deleted = t
-        .delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
-        .await?;
+    let deleted = dashboard_transport(
+        "deleting dashboard failed",
+        t.delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
+            .await,
+    )?;
     record_trace("dashboards-delete-check");
     if deleted != Value::Null {
         return Err(recording_error(
@@ -3852,22 +3934,26 @@ async fn record_dashboards(
     ));
 
     record_trace("dashboards-data-view-delete");
-    let deleted_data_view = t
-        .delete(&format!(
+    let deleted_data_view = dashboard_transport(
+        "deleting dashboard companion data view failed",
+        t.delete(&format!(
             "/api/data_views/data_view/{DASHBOARD_DATA_VIEW_ID}"
         ))
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-data-view-delete-check");
     require_empty_or_acknowledged_delete_success(&deleted_data_view)?;
 
     record_trace("dashboards-import");
-    let imported = t
-        .post_multipart_ndjson_named(
+    let imported = dashboard_transport(
+        "importing dashboard bundle failed",
+        t.post_multipart_ndjson_named(
             "/api/saved_objects/_import?overwrite=true",
             "dashboards.ndjson",
             &bundle,
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-import-check");
     require_saved_objects_import(&imported, true, "dashboard import")?;
     recording.fixtures.push(dashboard_exchange_fixture(
@@ -3879,13 +3965,15 @@ async fn record_dashboards(
     ));
 
     record_trace("dashboards-import-conflict");
-    let conflict = t
-        .post_multipart_ndjson_named(
+    let conflict = dashboard_transport(
+        "checking dashboard bundle import conflict failed",
+        t.post_multipart_ndjson_named(
             "/api/saved_objects/_import?overwrite=false",
             "dashboards.ndjson",
             &bundle,
         )
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-import-conflict-check");
     require_saved_objects_import(&conflict, false, "dashboard import conflict")?;
     recording.fixtures.push(dashboard_exchange_fixture(
@@ -3897,9 +3985,11 @@ async fn record_dashboards(
     ));
 
     record_trace("dashboards-final-delete");
-    if t.delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
-        .await?
-        != Value::Null
+    if dashboard_transport(
+        "deleting recreated dashboard failed",
+        t.delete(&format!("/api/dashboards/{}", urlencode(DASHBOARD_ID)))
+            .await,
+    )? != Value::Null
     {
         return Err(recording_error(
             "recreated dashboard delete did not return an empty response body",
@@ -3907,11 +3997,13 @@ async fn record_dashboards(
     }
     record_trace("dashboards-final-delete-check");
     record_trace("dashboards-final-data-view-delete");
-    let deleted_data_view = t
-        .delete(&format!(
+    let deleted_data_view = dashboard_transport(
+        "deleting recreated dashboard companion data view failed",
+        t.delete(&format!(
             "/api/data_views/data_view/{DASHBOARD_DATA_VIEW_ID}"
         ))
-        .await?;
+        .await,
+    )?;
     record_trace("dashboards-final-data-view-delete-check");
     require_empty_or_acknowledged_delete_success(&deleted_data_view)?;
 
@@ -3927,7 +4019,12 @@ async fn record_dashboards(
             session.ownership.dashboard = false;
         }
         Ok(_) => return Err(recording_error("dashboard still exists after final delete")),
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(safe_recording_transport_error(
+                "verifying dashboard deletion failed",
+                error,
+            ));
+        }
     }
     record_trace("dashboards-data-view-not-found");
     match t
@@ -3950,7 +4047,12 @@ async fn record_dashboards(
                 "dashboard data view still exists after final delete",
             ));
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(safe_recording_transport_error(
+                "verifying dashboard companion data-view deletion failed",
+                error,
+            ));
+        }
     }
 
     Ok(())
@@ -4509,6 +4611,31 @@ async fn record_alerts_probe(
     })
 }
 
+/// Keep close-by-query fixture counters stable without accepting an invalid
+/// outcome. A recording can close marker alerts from an earlier interrupted
+/// run, so the successful server counters are cumulative; the fixture records
+/// one representative conflict-free update and removes untyped runtime state.
+fn canonicalize_close_by_query_outcome(response: &mut Value) -> elasticctl_core::Result<()> {
+    let outcome = elasticctl_api::alerts::decode_outcome(response)
+        .map_err(|_| recording_error("close-by-query response failed strict outcome decoding"))?;
+    if outcome.updated == 0
+        || outcome.total != outcome.updated
+        || outcome.version_conflicts != 0
+        || outcome.noops != 0
+        || !outcome.failures.is_empty()
+    {
+        return Err(recording_error(
+            "close-by-query response did not prove a successful marker cleanup outcome",
+        ));
+    }
+    response["updated"] = json!(1);
+    response["total"] = json!(1);
+    response["version_conflicts"] = json!(0);
+    response["noops"] = json!(0);
+    strip_volatile(response, CLOSE_BY_QUERY_RUNTIME_FIELDS);
+    Ok(())
+}
+
 /// Close every marker alert the probe produced, verifying the close sweep
 /// leaves no open residue. Split out of `record_alerts` (see
 /// `record_alerts_probe`, which already disabled the rule) so `record_cases`
@@ -4573,14 +4700,9 @@ async fn close_and_clean_alerts(
             }
         }
     }
-    let close_query_response =
+    let mut close_query_response =
         close_query_response.expect("loop above returns Some or an Err before exiting");
-    elasticctl_api::alerts::decode_outcome(&close_query_response).map_err(|error| {
-        recording_error(format!(
-            "decoding signals_status_query response: {}",
-            error.message
-        ))
-    })?;
+    canonicalize_close_by_query_outcome(&mut close_query_response)?;
     {
         let mut request = close_query_request;
         let mut response = close_query_response;
@@ -7482,6 +7604,187 @@ mod tests {
             )
             .is_err(),
             "a replacement response must prove it retained the new description"
+        );
+    }
+
+    #[test]
+    fn preview_hits_fixture_strips_response_runtime_fields_and_still_uses_the_checked_decoder() {
+        let fixture = preview_exchange_fixture(
+            "rules_preview_hits",
+            "serverless",
+            "9.6.0",
+            json!({"sort": [{"@timestamp": {"order": "desc"}}]}),
+            json!({
+                "took": 7,
+                "_shards": {"total": 3, "successful": 3, "skipped": 0, "failed": 0},
+                "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [{
+                        "_index": ".preview.alerts-security.alerts-rollover",
+                        "sort": [123],
+                        "_source": {"kibana.alert.rule.uuid": "fixture-preview"}
+                    }]
+                }
+            }),
+        );
+        let response = &fixture.document["response"];
+
+        assert!(response.get("took").is_none());
+        assert!(response.get("_shards").is_none());
+        assert!(response["hits"]["hits"][0].get("_index").is_none());
+        assert!(response["hits"]["hits"][0].get("sort").is_none());
+        assert_eq!(
+            fixture.document["request"]["sort"],
+            json!([{"@timestamp": {"order": "desc"}}]),
+            "the production request sort is evidence, not response runtime state"
+        );
+        elasticctl_api::rules::decode_preview_hits_checked(response)
+            .expect("the scrubbed response must use the checked production decoder");
+    }
+
+    #[test]
+    fn close_by_query_fixture_canonicalizes_cumulative_counters_with_a_valid_outcome() {
+        let mut response = json!({
+            "total": 7,
+            "updated": 7,
+            "version_conflicts": 0,
+            "noops": 0,
+            "failures": [],
+            "took": 7,
+            "_shards": {"total": 3},
+            "batches": 2,
+            "deleted": 4,
+            "requests_per_second": -1.0,
+            "retries": {"bulk": 1, "search": 1},
+            "throttled_millis": 9,
+            "throttled_until_millis": 10
+        });
+
+        canonicalize_close_by_query_outcome(&mut response)
+            .expect("a decoded successful cumulative outcome");
+        let outcome = elasticctl_api::alerts::decode_outcome(&response)
+            .expect("the canonical fixture must remain production-decodable");
+
+        assert_eq!(outcome.updated, 1);
+        assert_eq!(
+            outcome.total,
+            outcome.updated + outcome.version_conflicts + outcome.noops
+        );
+        assert_eq!(outcome.version_conflicts, 0);
+        assert_eq!(outcome.noops, 0);
+        for field in [
+            "took",
+            "_shards",
+            "batches",
+            "deleted",
+            "requests_per_second",
+            "retries",
+            "throttled_millis",
+            "throttled_until_millis",
+        ] {
+            assert!(
+                response.get(field).is_none(),
+                "{field} is response runtime state"
+            );
+        }
+
+        let mut conflicted = json!({
+            "total": 2,
+            "updated": 1,
+            "version_conflicts": 1,
+            "noops": 0,
+            "failures": []
+        });
+        assert!(
+            canonicalize_close_by_query_outcome(&mut conflicted).is_err(),
+            "a conflict-free cleanup outcome is required before canonicalization"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_recording_transport_error_omits_server_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dashboards/{DASHBOARD_ID}")))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private dashboard server identity"
+            })))
+            .mount(&server)
+            .await;
+
+        let error = require_absent_dashboard(&mock_transport(&server), DASHBOARD_ID)
+            .await
+            .expect_err("a dashboard preflight transport failure");
+
+        assert_eq!(error.message, "checking dashboard absence failed");
+        assert!(!error.message.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_cleanup_transport_error_omits_server_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dashboards/{DASHBOARD_ID}")))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private dashboard cleanup identity"
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                dashboard: true,
+                ..Default::default()
+            },
+        };
+
+        let error = match session.cleanup().await {
+            Err(error) => error,
+            Ok(_) => panic!("dashboard cleanup must report its failed check"),
+        };
+
+        assert!(error.message.contains("class=http status=500"));
+        assert!(!error.message.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_a_same_id_dashboard_data_view_with_mismatched_marker_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/data_views/data_view/{DASHBOARD_DATA_VIEW_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data_view": {
+                    "id": DASHBOARD_DATA_VIEW_ID,
+                    "title": "replacement-without-marker",
+                    "name": "replacement-without-marker"
+                }
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                dashboard_data_view: true,
+                ..Default::default()
+            },
+        };
+
+        let error = match session.cleanup().await {
+            Err(error) => error,
+            Ok(_) => panic!("a same-id replacement must retain ownership for investigation"),
+        };
+        let requests = server.received_requests().await.expect("requests");
+
+        assert!(error.message.contains("marker identity no longer matches"));
+        assert!(session.ownership.dashboard_data_view);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.method.as_str() != "DELETE")
         );
     }
 
