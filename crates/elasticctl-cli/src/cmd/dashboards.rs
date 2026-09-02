@@ -106,23 +106,9 @@ pub async fn import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
-    // A no-flag dry run without data-view references is entirely local. Any
-    // mode that may apply or inspect conflicts uses the authenticated
-    // preflight and retains its API plan.
-    let specs = dashboards_ops::validate(path)?;
-    let has_data_view_references = specs.iter().any(|spec| {
-        !elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(spec.data.clone()))
-            .is_empty()
-    });
-    let needs_server_preflight =
-        ctx.global.yes || overwrite || skip_existing || has_data_view_references;
-    let transport = if needs_server_preflight {
-        ctx.require_credential()?;
-        Some(ctx.transport().await?)
-    } else {
-        None
-    };
-    let plan = dashboards_ops::plan_import(transport, path, overwrite, skip_existing).await?;
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let plan = dashboards_ops::plan_import(Some(transport), path, overwrite, skip_existing).await?;
     let preview = Preview {
         action: plan.preview.preview_action.clone(),
         details: plan.preview.preview_details.clone(),
@@ -135,7 +121,6 @@ pub async fn import(
             "pending": plan.preview.targets.len(),
         }));
     }
-    let transport = transport.expect("--yes requires an authenticated import preflight");
     to_value(&dashboards_ops::apply_import(transport, &plan).await?)
 }
 

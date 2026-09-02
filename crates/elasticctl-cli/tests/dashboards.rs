@@ -483,7 +483,14 @@ async fn dashboard_import_dry_run_previews_without_writing_then_applies_put() {
             && stderr.contains("Pass --yes to apply."),
         "{stderr}"
     );
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "PUT")
+    );
 
     let apply = bin()
         .args(["dashboards", "import", "--path"])
@@ -501,6 +508,51 @@ async fn dashboard_import_dry_run_previews_without_writing_then_applies_put() {
     assert_eq!(
         report["succeeded"][0],
         serde_json::json!({"id": "dash-1", "action": "created"})
+    );
+}
+
+#[tokio::test]
+async fn dashboard_import_dry_run_refuses_an_existing_id_before_the_guard_or_put() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/dash-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(dashboard("dash-1", "Overview")))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = common::config_for(dir.path(), &server.uri());
+    let artifact = dir.path().join("dashboards.json");
+    fs::write(
+        &artifact,
+        r#"[{"id":"dash-1","data":{"title":"Overview","panels":[]}}]"#,
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["dashboards", "import", "--path"])
+        .arg(&artifact)
+        .args(["--json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("[DRY RUN]"), "{stderr}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dashboards already exist: dash-1")
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "PUT")
     );
 }
 
