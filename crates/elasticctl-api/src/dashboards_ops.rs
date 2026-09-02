@@ -4,6 +4,7 @@ use crate::content_codec::{self, ContentFormat};
 use crate::dashboards::{self, Dashboard, DashboardSpec, DashboardSummary};
 use crate::data_views;
 use crate::ops::{DeleteOutcome, ExportOutcome, MutationPlan};
+use crate::saved_objects;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::Serialize;
 use serde_json::Value;
@@ -48,6 +49,25 @@ pub struct DashboardImportReport {
     pub skipped: Vec<Value>,
     pub failed: Vec<Value>,
     pub lossy: Vec<Value>,
+    pub total: usize,
+}
+
+/// The immutable, guard-ready work computed from one opaque Saved Objects
+/// dashboard bundle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BundleImportPlan {
+    pub preview: MutationPlan,
+    pub ndjson: String,
+    pub scan: saved_objects::BundleScan,
+    pub overwrite: bool,
+}
+
+/// The per-object report from applying an opaque Saved Objects bundle import.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BundleImportOutcome {
+    pub applied: bool,
+    pub succeeded: Vec<Value>,
+    pub failed: Vec<Value>,
     pub total: usize,
 }
 
@@ -729,6 +749,76 @@ pub async fn export(
     })
 }
 
+/// Export selected dashboards and their deep Saved Objects references as
+/// opaque NDJSON.
+pub async fn export_bundle(transport: &Transport, selectors: &[String]) -> Result<ExportOutcome> {
+    let selected = if selectors.is_empty() {
+        list_op(transport, &DashboardFilter::default())
+            .await?
+            .dashboards
+    } else {
+        let mut selected = Vec::with_capacity(selectors.len());
+        for selector in selectors {
+            selected.push(resolve(transport, selector).await?);
+        }
+        selected
+    };
+    let ids: Vec<_> = selected
+        .into_iter()
+        .map(|dashboard| dashboard.id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let body = saved_objects::export(transport, &ids).await?;
+    Ok(ExportOutcome {
+        body,
+        exported: ids.len() as u64,
+        missing: Vec::new(),
+    })
+}
+
+/// Fully read and scan an opaque bundle before presenting its mutation guard.
+pub fn plan_bundle_import(path: &Path, overwrite: bool) -> Result<BundleImportPlan> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        Error::new(
+            ErrorKind::Error,
+            format!("reading {}: {error}", path.display()),
+        )
+    })?;
+    let ndjson = String::from_utf8(bytes).map_err(|error| {
+        Error::new(
+            ErrorKind::Error,
+            format!(
+                "reading {}: bundle is not valid UTF-8: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    let scan = saved_objects::scan_bundle(&ndjson)?;
+    let preview = bundle_import_preview(&scan, overwrite);
+    Ok(BundleImportPlan {
+        preview,
+        ndjson,
+        scan,
+        overwrite,
+    })
+}
+
+/// Apply a guard-approved opaque bundle without rereading its source file.
+pub async fn apply_bundle_import(
+    transport: &Transport,
+    plan: &BundleImportPlan,
+) -> Result<BundleImportOutcome> {
+    validate_bundle_import_plan(plan)?;
+    let report = saved_objects::import(transport, &plan.ndjson, plan.overwrite).await?;
+    Ok(BundleImportOutcome {
+        applied: true,
+        succeeded: report.success_results,
+        failed: report.errors,
+        total: plan.scan.total,
+    })
+}
+
 fn summary_from_dashboard(dashboard: Dashboard) -> Result<DashboardSummary> {
     let title = dashboard
         .data
@@ -810,4 +900,45 @@ fn dashboard_title(spec: &DashboardSpec) -> &str {
         .get("title")
         .and_then(Value::as_str)
         .expect("validated dashboard specs have a title")
+}
+
+fn bundle_import_preview(scan: &saved_objects::BundleScan, overwrite: bool) -> MutationPlan {
+    let mut dashboards = scan.dashboards.clone();
+    dashboards.sort();
+    let mut preview_details = dashboards
+        .iter()
+        .map(|id| format!("dashboard/{id}"))
+        .collect::<Vec<_>>();
+    preview_details.extend(
+        scan.counts
+            .iter()
+            .filter(|(object_type, _)| object_type.as_str() != "dashboard")
+            .map(|(object_type, count)| format!("{object_type}  {count}")),
+    );
+    let dashboard_count = scan.dashboards.len();
+    let related_count = scan.total.saturating_sub(dashboard_count);
+    MutationPlan {
+        preview_action: format!(
+            "{} {} dashboard(s) and {related_count} related saved object(s)",
+            if overwrite {
+                "Import or replace"
+            } else {
+                "Import"
+            },
+            dashboard_count,
+        ),
+        preview_details,
+        targets: scan.dashboards.clone(),
+    }
+}
+
+fn validate_bundle_import_plan(plan: &BundleImportPlan) -> Result<()> {
+    let scan = saved_objects::scan_bundle(&plan.ndjson)?;
+    if scan != plan.scan {
+        return invalid_plan("bundle scan does not match the planned NDJSON");
+    }
+    if plan.preview != bundle_import_preview(&scan, plan.overwrite) {
+        return invalid_plan("bundle import preview does not match the planned NDJSON");
+    }
+    Ok(())
 }

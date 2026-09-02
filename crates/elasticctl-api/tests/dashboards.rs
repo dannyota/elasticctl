@@ -1,12 +1,23 @@
 use elasticctl_api::content_codec::ContentFormat;
 use elasticctl_api::dashboards::{self, DashboardSpec};
 use elasticctl_api::dashboards_ops::{self, DashboardFilter};
-use elasticctl_api::{DashboardImportPlan, DashboardImportReport, MutationPlan};
+use elasticctl_api::{
+    BundleImportOutcome, BundleImportPlan, DashboardImportPlan, DashboardImportReport, MutationPlan,
+};
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const BUNDLE: &str = concat!(
+    r#"{"id":"dv-1","type":"index-pattern","attributes":{"title":"logs-*"},"references":[]}"#,
+    "\n",
+    r#"{"id":"dash-1","type":"dashboard","attributes":{"title":"Overview"},"references":[]}"#,
+    "\n",
+    r#"{"exportedCount":2,"missingRefCount":0,"missingReferences":[]}"#,
+    "\n",
+);
 
 fn transport(server: &MockServer) -> Transport {
     Transport::new(&Profile {
@@ -1049,5 +1060,260 @@ async fn dashboard_import_apply_refuses_a_tampered_preview_action_before_http() 
             .await
             .expect("requests")
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_export_resolves_selectors_before_sending_selected_ids() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/Overview"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "dash-1", "title": "Overview"}],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_export"))
+        .and(body_json(json!({
+            "objects": [{"type": "dashboard", "id": "dash-1"}],
+            "includeReferencesDeep": true,
+            "excludeExportDetails": false,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string(BUNDLE))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let outcome = dashboards_ops::export_bundle(&transport(&server), &["Overview".into()])
+        .await
+        .expect("bundle export");
+
+    assert_eq!(outcome.body, BUNDLE);
+    assert_eq!(outcome.exported, 1);
+    assert!(outcome.missing.is_empty());
+}
+
+#[tokio::test]
+async fn dashboard_bundle_export_without_selectors_exports_every_dashboard_not_dependencies() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "dash-1", "title": "Overview"}],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_export"))
+        .and(body_json(json!({
+            "objects": [{"type": "dashboard", "id": "dash-1"}],
+            "includeReferencesDeep": true,
+            "excludeExportDetails": false,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string(BUNDLE))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let outcome = dashboards_ops::export_bundle(&transport(&server), &[])
+        .await
+        .expect("export every dashboard");
+
+    assert_eq!(outcome.body, BUNDLE);
+    assert_eq!(outcome.exported, 1);
+}
+
+#[tokio::test]
+async fn dashboard_bundle_export_does_not_send_an_export_after_a_missing_selector() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/missing"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [],
+            "meta": {"page": 1, "per_page": 1000, "total": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::export_bundle(&transport(&server), &["missing".into()])
+        .await
+        .expect_err("every selector must resolve before export");
+
+    assert_eq!(error.kind, ErrorKind::NotFound);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .all(|request| request.url.path() != "/api/saved_objects/_export")
+    );
+}
+
+#[test]
+fn dashboard_bundle_import_plan_preserves_ndjson_and_sorts_only_preview_dashboards() {
+    let bundle = concat!(
+        r#"{"id":"dash-z","type":"dashboard","attributes":{"title":"Z"}}"#,
+        "\r\n",
+        "\n",
+        r#"{"id":"lens-1","type":"lens","attributes":{}}"#,
+        "\r\n",
+        r#"{"id":"dash-a","type":"dashboard","attributes":{"title":"A"}}"#,
+        "\r\n",
+        r#"{"id":"dv-1","type":"index-pattern","attributes":{}}"#,
+        "\r\n",
+        r#"{"id":"dv-2","type":"index-pattern","attributes":{}}"#,
+        "\r\n",
+        r#"{"exportedCount":5,"missingRefCount":0,"missingReferences":[]}"#,
+        "\r\n",
+    );
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), bundle).expect("write bundle");
+
+    let plan: BundleImportPlan =
+        dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+
+    assert_eq!(plan.ndjson, bundle);
+    assert_eq!(plan.scan.dashboards, vec!["dash-z", "dash-a"]);
+    assert_eq!(plan.scan.total, 5);
+    assert_eq!(
+        plan.preview.preview_action,
+        "Import 2 dashboard(s) and 3 related saved object(s)"
+    );
+    assert_eq!(
+        plan.preview.preview_details,
+        vec![
+            "dashboard/dash-a",
+            "dashboard/dash-z",
+            "index-pattern  2",
+            "lens  1",
+        ]
+    );
+    assert_eq!(plan.preview.targets, vec!["dash-z", "dash-a"]);
+    assert!(!plan.overwrite);
+}
+
+#[test]
+fn dashboard_bundle_import_plan_names_overwrite_as_replace() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+
+    let plan = dashboards_ops::plan_bundle_import(file.path(), true).expect("bundle plan");
+
+    assert_eq!(
+        plan.preview.preview_action,
+        "Import or replace 1 dashboard(s) and 1 related saved object(s)"
+    );
+    assert!(plan.overwrite);
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_apply_preserves_server_rows_and_uploads_planned_ndjson() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+    let plan = dashboards_ops::plan_bundle_import(file.path(), true).expect("bundle plan");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_import"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": false,
+            "successCount": 1,
+            "successResults": [{
+                "type": "dashboard",
+                "id": "dash-1",
+                "created": true,
+            }],
+            "errors": [{
+                "type": "index-pattern",
+                "id": "dv-1",
+                "error": {"message": "conflict"},
+            }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let outcome = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+        .await
+        .expect("bundle import report");
+
+    assert!(outcome.applied);
+    assert_eq!(
+        outcome.succeeded,
+        vec![json!({"type":"dashboard","id":"dash-1","created":true})]
+    );
+    assert_eq!(
+        outcome.failed,
+        vec![json!({
+            "type":"index-pattern",
+            "id":"dv-1",
+            "error":{"message":"conflict"},
+        })]
+    );
+    assert_eq!(outcome.total, 2);
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query(), Some("overwrite=true"));
+    assert!(
+        String::from_utf8_lossy(&requests[0].body).contains(&plan.ndjson),
+        "multipart body must contain the planned opaque input exactly"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_refuses_a_tampered_guard_preview_before_http() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+    let mut plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+    plan.preview.preview_action = "Import every saved object".into();
+    let server = MockServer::start().await;
+
+    let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+        .await
+        .expect_err("a guard preview must describe the immutable bundle");
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[test]
+fn dashboard_bundle_import_outcome_preserves_published_field_order() {
+    let outcome = BundleImportOutcome {
+        applied: true,
+        succeeded: vec![json!({"id": "dash-1"})],
+        failed: vec![json!({"id": "dv-1"})],
+        total: 2,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&outcome).expect("serialize outcome"),
+        "{\"applied\":true,\"succeeded\":[{\"id\":\"dash-1\"}],\"failed\":[{\"id\":\"dv-1\"}],\"total\":2}"
     );
 }

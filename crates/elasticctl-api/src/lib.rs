@@ -38,7 +38,8 @@ pub use cases_ops::{
 };
 pub use codec::Format;
 pub use dashboards_ops::{
-    DashboardDeletePlan, DashboardFilter, DashboardImportPlan, DashboardImportReport, DashboardList,
+    BundleImportOutcome, BundleImportPlan, DashboardDeletePlan, DashboardFilter,
+    DashboardImportPlan, DashboardImportReport, DashboardList,
 };
 pub use data_views_ops::{
     DataViewDeletePlan, DataViewDeleteTarget, DataViewImportPlan, DataViewImportReport,
