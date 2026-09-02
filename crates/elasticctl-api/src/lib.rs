@@ -7,6 +7,7 @@ pub mod cases_ops;
 pub mod codec;
 pub mod content_codec;
 pub mod dashboards;
+pub mod dashboards_ops;
 pub mod data_views;
 pub mod data_views_ops;
 pub mod diff;
@@ -36,6 +37,9 @@ pub use cases_ops::{
     DeletePlan, StatusPlan as CaseStatusPlan,
 };
 pub use codec::Format;
+pub use dashboards_ops::{
+    DashboardDeletePlan, DashboardFilter, DashboardImportPlan, DashboardImportReport, DashboardList,
+};
 pub use data_views_ops::{
     DataViewDeletePlan, DataViewDeleteTarget, DataViewImportPlan, DataViewImportReport,
     DataViewPatch, DefaultPlan,
