@@ -94,6 +94,7 @@ fn dashboard_import_plan(
             preview_details,
             targets: specs.iter().map(|spec| spec.id.clone()).collect(),
         },
+        source: "test".into(),
         total: specs.len(),
         specs,
         before,
@@ -940,4 +941,114 @@ async fn dashboard_delete_apply_continues_after_an_independent_failure() {
         vec![json!({"id": "dash-a", "error": "delete failed"})]
     );
     assert_eq!(report.total, 2);
+}
+
+#[tokio::test]
+async fn dashboard_list_refuses_an_empty_nonfinal_page() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::list_op(&transport(&server), &DashboardFilter::default())
+        .await
+        .expect_err("an empty page before total must be malformed");
+
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding dashboard search: page was short before total"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_resolution_refuses_a_get_with_the_wrong_embedded_id() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/dash-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(dashboard("dash-b", "Wrong")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::resolve(&transport(&server), "dash-a")
+        .await
+        .expect_err("a direct-id GET must identity-check its response");
+
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding dashboard get: expected id 'dash-a', got 'dash-b'"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_import_preflight_refuses_a_data_view_with_the_wrong_embedded_id() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/dash-1"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "missing"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/dv-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data_view": {"id": "dv-b", "title": "logs-*"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let artifact = dashboard_artifact(&[DashboardSpec::try_from(json!({
+        "id": "dash-1",
+        "data": {"title": "Overview", "source": {"type": "data_view_reference", "ref_id": "dv-a"}}
+    }))
+    .expect("spec")]);
+
+    let error = dashboards_ops::plan_import(Some(&transport(&server)), &artifact, false, false)
+        .await
+        .expect_err("reference identity must match its requested id");
+
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding data view: expected id 'dv-a', got 'dv-b'"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_import_apply_refuses_a_tampered_preview_action_before_http() {
+    let server = MockServer::start().await;
+    let mut plan = dashboard_import_plan(
+        vec![dashboard_spec("dash-1", "Overview")],
+        BTreeMap::from([("dash-1".into(), None)]),
+    );
+    plan.preview.preview_action = "Import 1 dashboard(s) from altered-source".into();
+
+    let error = dashboards_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect_err("an altered guard preview must refuse before a GET or PUT");
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(
+        error.message,
+        "preview action does not match dashboard import source"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
 }

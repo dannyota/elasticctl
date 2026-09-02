@@ -31,6 +31,8 @@ pub struct DashboardList {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DashboardImportPlan {
     pub preview: crate::ops::MutationPlan,
+    /// Canonical artifact descriptor captured before the mutation guard.
+    pub source: String,
     pub specs: Vec<DashboardSpec>,
     pub before: BTreeMap<String, Option<DashboardSpec>>,
     pub skipped: Vec<Value>,
@@ -99,7 +101,14 @@ pub fn resolve_from_summaries(
 /// Resolve a dashboard by exact id, then by exact title only after an id miss.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<DashboardSummary> {
     match dashboards::get(transport, selector).await {
-        Ok(dashboard) => summary_from_dashboard(dashboard),
+        Ok(dashboard) if dashboard.id == selector => summary_from_dashboard(dashboard),
+        Ok(dashboard) => Err(Error::new(
+            ErrorKind::Http,
+            format!(
+                "decoding dashboard get: expected id '{selector}', got '{}'",
+                dashboard.id
+            ),
+        )),
         Err(error) if error.kind == ErrorKind::NotFound => {
             let listed = list_op(transport, &DashboardFilter::default()).await?;
             resolve_from_summaries(&listed.dashboards, selector)
@@ -134,12 +143,13 @@ pub async fn list_op(transport: &Transport, filter: &DashboardFilter) -> Result<
         } else {
             total = Some(page.total);
         }
+        let page_len = page.data.len();
         dashboards.extend(page.data);
         let expected_total = total.expect("set from the first page");
         if dashboards.len() as u64 >= expected_total {
             break;
         }
-        if dashboards.len() % 1000 != 0 {
+        if page_len != 1000 {
             return Err(Error::new(
                 ErrorKind::Http,
                 "decoding dashboard search: page was short before total",
@@ -265,7 +275,23 @@ pub async fn plan_import(
         let mut missing = Vec::new();
         for id in references {
             match data_views::get(transport, &id).await {
-                Ok(_) => {}
+                Ok(data_view) => match data_view.data_view.get("id").and_then(Value::as_str) {
+                    Some(actual) if actual == id => {}
+                    Some(actual) => {
+                        return Err(Error::new(
+                            ErrorKind::Http,
+                            format!("decoding data view: expected id '{id}', got '{actual}'"),
+                        ));
+                    }
+                    None => {
+                        return Err(Error::new(
+                            ErrorKind::Http,
+                            format!(
+                                "decoding data view: expected id '{id}', got missing or non-string id"
+                            ),
+                        ));
+                    }
+                },
                 Err(error) if error.kind == ErrorKind::NotFound => missing.push(id),
                 Err(error) => return Err(error),
             }
@@ -299,17 +325,15 @@ pub async fn plan_import(
         before.retain(|id, _| specs.iter().any(|spec| spec.id == *id));
     }
 
+    let source = path.display().to_string();
     let preview = crate::ops::MutationPlan {
-        preview_action: format!(
-            "Import {} dashboard(s) from {}",
-            specs.len(),
-            path.display()
-        ),
+        preview_action: format!("Import {} dashboard(s) from {}", specs.len(), source),
         preview_details: import_preview_details(&specs, &before),
         targets: specs.iter().map(|spec| spec.id.clone()).collect(),
     };
     Ok(DashboardImportPlan {
         preview,
+        source,
         specs,
         before,
         skipped,
@@ -589,11 +613,15 @@ fn validate_import_plan(plan: &DashboardImportPlan) -> Result<()> {
     if plan.preview.targets != ids {
         return invalid_plan("preview targets do not match pending dashboards");
     }
-    let prefix = format!("Import {} dashboard(s) from ", plan.specs.len());
-    if !plan.preview.preview_action.starts_with(&prefix)
-        || plan.preview.preview_action[prefix.len()..].is_empty()
+    if plan.source.is_empty()
+        || plan.preview.preview_action
+            != format!(
+                "Import {} dashboard(s) from {}",
+                plan.specs.len(),
+                plan.source
+            )
     {
-        return invalid_plan("preview action does not match pending dashboards");
+        return invalid_plan("preview action does not match dashboard import source");
     }
     if plan.preview.preview_details != import_preview_details(&plan.specs, &plan.before) {
         return invalid_plan("preview details do not match pending dashboards");
