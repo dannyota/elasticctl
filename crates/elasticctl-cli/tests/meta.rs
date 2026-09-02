@@ -58,6 +58,7 @@ fn the_command_tree_lists_every_top_level_group() {
         "rules",
         "exceptions",
         "data-views",
+        "dashboards",
         "state",
         "alerts",
         "cases",
@@ -69,6 +70,28 @@ fn the_command_tree_lists_every_top_level_group() {
             "command tree must list {expected}: {names:?}"
         );
     }
+}
+
+#[test]
+fn dashboard_command_tree_has_the_documented_guarded_paths() {
+    let out = bin().args(["commands", "--json"]).output().unwrap();
+    let tree: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let dashboards = tree["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "dashboards")
+        .expect("dashboards command");
+    let children = dashboards["subcommands"].as_array().unwrap();
+    let find = |name: &str| children.iter().find(|child| child["name"] == name).unwrap();
+    assert_eq!(find("import")["mutates"], true);
+    assert_eq!(find("delete")["mutates"], true);
+    let bundle = find("bundle")["subcommands"].as_array().unwrap();
+    let import = bundle
+        .iter()
+        .find(|child| child["name"] == "import")
+        .expect("dashboards bundle import");
+    assert_eq!(import["mutates"], true);
 }
 
 #[test]

@@ -3,6 +3,7 @@
 pub mod alerts;
 pub mod cases;
 pub mod config_cmd;
+pub mod dashboards;
 pub mod data_views;
 pub mod doctor;
 pub mod exceptions;

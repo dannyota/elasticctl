@@ -163,6 +163,9 @@ mod tests {
             "data-views delete",
             "data-views default set",
             "data-views default unset",
+            "dashboards import",
+            "dashboards delete",
+            "dashboards bundle import",
         ];
         expected.sort();
 

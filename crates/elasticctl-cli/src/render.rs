@@ -11,13 +11,15 @@ pub fn exit_code_for(_err: &Error) -> i32 {
 }
 
 /// A successful command can report partial failure in its payload. Return a
-/// nonzero exit code so scripts do not miss it. Two shapes carry the signal:
+/// nonzero exit code so scripts do not miss it. Three shapes carry the signal:
 ///
 /// - Per-item report: `failed` is a non-empty array.
 /// - Bulk-action summary: `failed` is a positive count.
+/// - Loss-audit report: `lossy` is a non-empty array.
 ///
-/// An absent `failed`, empty array, or zero count means exit 0. `skipped` is
-/// not a failure because the server left a rule in its target state.
+/// An absent `failed` or `lossy`, an empty array, or a zero count means exit
+/// 0. `skipped` is not a failure because the server left a rule in its target
+/// state.
 ///
 /// Keep this rule in one helper for all mutating commands.
 pub fn exit_code_for_value(value: &Value) -> i32 {
@@ -25,7 +27,7 @@ pub fn exit_code_for_value(value: &Value) -> i32 {
         Some(Value::Array(items)) => !items.is_empty(),
         Some(Value::Number(n)) => n.as_u64().is_some_and(|n| n > 0),
         _ => false,
-    };
+    } || matches!(value.get("lossy"), Some(Value::Array(items)) if !items.is_empty());
     if is_failure { 1 } else { 0 }
 }
 
@@ -350,6 +352,12 @@ mod tests {
     fn exit_code_for_value_is_zero_when_failed_is_an_empty_array() {
         let v = json!({"applied": true, "deleted": ["a", "b"], "failed": []});
         assert_eq!(exit_code_for_value(&v), 0);
+    }
+
+    #[test]
+    fn exit_code_for_value_is_one_when_lossy_is_a_non_empty_array() {
+        let v = json!({"applied": true, "failed": [], "lossy": [{"id": "dash-1"}]});
+        assert_eq!(exit_code_for_value(&v), 1);
     }
 
     #[test]

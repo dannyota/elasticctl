@@ -10,9 +10,9 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    AlertsAction, CasesAction, Cli, Command, ConfigAction, DataViewDefaultAction, DataViewsAction,
-    ExceptionsAction, Format, GlobalArgs, PrebuiltAction, RulesAction, SearchAction, SourceArg,
-    StateAction,
+    AlertsAction, CasesAction, Cli, Command, ConfigAction, DashboardBundleAction, DashboardsAction,
+    DataViewDefaultAction, DataViewsAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction,
+    RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -298,6 +298,77 @@ async fn main() {
                     Ok(ctx) => cmd::data_views::default_unset(&ctx).await,
                     Err(e) => Err(e),
                 },
+            },
+        },
+        Command::Dashboards { action } => match action {
+            DashboardsAction::List { search, tag, limit } => match Context::build(&args.global) {
+                Ok(ctx) => {
+                    let filter = elasticctl_api::dashboards_ops::DashboardFilter {
+                        search: search.clone(),
+                        tag: tag.clone(),
+                        limit: *limit,
+                    };
+                    cmd::dashboards::list(&ctx, &filter).await
+                }
+                Err(e) => Err(e),
+            },
+            DashboardsAction::Get { selector } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::dashboards::get(&ctx, selector).await,
+                Err(e) => Err(e),
+            },
+            // Local artifact validation must not read config or construct a
+            // transport, so it remains usable in an offline checkout.
+            DashboardsAction::Validate { path } => cmd::dashboards::validate(path),
+            DashboardsAction::Export {
+                selectors,
+                format_file,
+            } => match parse_content_format(format_file) {
+                Ok(format) => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::dashboards::export(&ctx, selectors, args.global.out.as_deref(), format)
+                            .await
+                    }
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            DashboardsAction::Import {
+                path,
+                overwrite,
+                skip_existing,
+            } => match cmd::dashboards::validate_import_artifact(path) {
+                Ok(()) => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::dashboards::import(&ctx, path, *overwrite, *skip_existing).await
+                    }
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            // Reject empty selectors before building a context so this cannot
+            // express an unscoped mutation.
+            DashboardsAction::Delete { selectors } if selectors.is_empty() => Err(Error::new(
+                ErrorKind::Error,
+                "Name at least one dashboard to delete",
+            )),
+            DashboardsAction::Delete { selectors } => match Context::build(&args.global) {
+                Ok(ctx) => cmd::dashboards::delete(&ctx, selectors).await,
+                Err(e) => Err(e),
+            },
+            DashboardsAction::Bundle { action } => match action {
+                DashboardBundleAction::Export { selectors } => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::dashboards::export_bundle(&ctx, selectors, args.global.out.as_deref())
+                            .await
+                    }
+                    Err(e) => Err(e),
+                },
+                DashboardBundleAction::Import { path, overwrite } => {
+                    match Context::build(&args.global) {
+                        Ok(ctx) => cmd::dashboards::bundle_import(&ctx, path, *overwrite).await,
+                        Err(e) => Err(e),
+                    }
+                }
             },
         },
         Command::State { action } => match action {
@@ -604,6 +675,12 @@ async fn main() {
                     action: ExceptionsAction::Export { .. }
                 } | Command::DataViews {
                     action: DataViewsAction::Export { .. }
+                } | Command::Dashboards {
+                    action: DashboardsAction::Export { .. }
+                } | Command::Dashboards {
+                    action: DashboardsAction::Bundle {
+                        action: DashboardBundleAction::Export { .. }
+                    }
                 }
             ) && args.global.out.is_none();
             if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
@@ -622,6 +699,12 @@ async fn main() {
                     action: ExceptionsAction::Export { .. }
                 } | Command::DataViews {
                     action: DataViewsAction::Export { .. }
+                } | Command::Dashboards {
+                    action: DashboardsAction::Export { .. }
+                } | Command::Dashboards {
+                    action: DashboardsAction::Bundle {
+                        action: DashboardBundleAction::Export { .. }
+                    }
                 }
             ) && args.global.out.is_some();
             let render_global = {
