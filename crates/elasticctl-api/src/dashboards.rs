@@ -376,6 +376,13 @@ fn decode_dashboard(body: &Value, context: &str) -> Result<Dashboard> {
             format!("decoding {context}: id must be a non-empty string"),
         ));
     }
+    if !matches!(response.data.get("title"), Some(Value::String(title)) if !title.trim().is_empty())
+    {
+        return Err(Error::new(
+            ErrorKind::Http,
+            format!("decoding {context}: data.title must be a non-empty string"),
+        ));
+    }
     Ok(Dashboard {
         id: response.id,
         data: response.data,

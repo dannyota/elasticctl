@@ -5,9 +5,9 @@ use crate::dashboards::{self, Dashboard, DashboardSpec, DashboardSummary};
 use crate::data_views;
 use crate::ops::{DeleteOutcome, ExportOutcome, MutationPlan};
 use crate::saved_objects;
-use elasticctl_core::{Error, ErrorKind, Result, Transport};
+use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -141,6 +141,7 @@ pub async fn list_op(transport: &Transport, filter: &DashboardFilter) -> Result<
     let mut page_number = 1;
     let mut total = None;
     let mut dashboards = Vec::new();
+    let mut ids = BTreeSet::new();
 
     loop {
         let page =
@@ -162,7 +163,18 @@ pub async fn list_op(transport: &Transport, filter: &DashboardFilter) -> Result<
             total = Some(page.total);
         }
         let page_len = page.data.len();
-        dashboards.extend(page.data);
+        for dashboard in page.data {
+            if !ids.insert(dashboard.id.clone()) {
+                return Err(Error::new(
+                    ErrorKind::Http,
+                    format!(
+                        "decoding dashboard search: duplicate dashboard id '{}'",
+                        dashboard.id
+                    ),
+                ));
+            }
+            dashboards.push(dashboard);
+        }
         let expected_total = total.expect("set from the first page");
         if dashboards.len() as u64 >= expected_total {
             break;
@@ -833,13 +845,69 @@ pub async fn apply_bundle_import(
     plan: &BundleImportPlan,
 ) -> Result<BundleImportOutcome> {
     validate_bundle_import_plan(plan)?;
+    transport.require_feature(Feature::Dashboards).await?;
     let report = saved_objects::import(transport, &plan.ndjson, plan.overwrite).await?;
     Ok(BundleImportOutcome {
         applied: true,
-        succeeded: report.success_results,
-        failed: report.errors,
+        succeeded: sanitize_bundle_success_rows(&report.success_results)?,
+        failed: sanitize_bundle_failure_rows(&report.errors)?,
         total: plan.scan.total,
     })
+}
+
+fn sanitize_bundle_success_rows(rows: &[Value]) -> Result<Vec<Value>> {
+    rows.iter()
+        .map(|row| {
+            let object = bundle_report_object(row, "success result")?;
+            let object_type = bundle_report_string(object, "type", "success result")?;
+            let id = bundle_report_string(object, "id", "success result")?;
+            Ok(json!({"type": object_type, "id": id}))
+        })
+        .collect()
+}
+
+fn sanitize_bundle_failure_rows(rows: &[Value]) -> Result<Vec<Value>> {
+    rows.iter()
+        .map(|row| {
+            let object = bundle_report_object(row, "error result")?;
+            let object_type = bundle_report_string(object, "type", "error result")?;
+            let id = bundle_report_string(object, "id", "error result")?;
+            let error = object
+                .get("error")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    bundle_import_response_error("error result error must be an object")
+                })?;
+            let error_type = bundle_report_string(error, "type", "error result error")?;
+            Ok(json!({"type": object_type, "id": id, "error": error_type}))
+        })
+        .collect()
+}
+
+fn bundle_report_object<'a>(row: &'a Value, kind: &str) -> Result<&'a Map<String, Value>> {
+    row.as_object()
+        .ok_or_else(|| bundle_import_response_error(&format!("{kind} must be an object")))
+}
+
+fn bundle_report_string<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    kind: &str,
+) -> Result<&'a str> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            bundle_import_response_error(&format!("{kind} {field} must be a non-empty string"))
+        })
+}
+
+fn bundle_import_response_error(message: &str) -> Error {
+    Error::new(
+        ErrorKind::Http,
+        format!("decoding dashboard bundle import response: {message}"),
+    )
 }
 
 fn summary_from_dashboard(dashboard: Dashboard) -> Result<DashboardSummary> {

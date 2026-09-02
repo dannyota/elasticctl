@@ -61,6 +61,15 @@ fn dashboard(id: &str, title: &str) -> Value {
     })
 }
 
+fn dashboard_search_row(id: impl Into<String>) -> Value {
+    let id = id.into();
+    json!({
+        "id": id,
+        "data": {"title": id, "panels": []},
+        "meta": {},
+    })
+}
+
 fn dashboard_spec(id: &str, title: &str) -> DashboardSpec {
     DashboardSpec::try_from(json!({"id": id, "data": {"title": title, "panels": []}}))
         .expect("dashboard spec")
@@ -381,6 +390,39 @@ async fn delete_accepts_the_measured_null_success_body() {
     dashboards::delete(&transport(&server), "dash-1")
         .await
         .expect("empty delete response");
+}
+
+#[tokio::test]
+async fn dashboard_get_and_put_refuse_success_envelopes_without_a_nonempty_title() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/dash-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "dash-1", "data": {"panels": []}, "meta": {}, "warnings": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = dashboards::get(&transport(&server), "dash-1")
+        .await
+        .expect_err("a successful GET without data.title is malformed");
+    assert_eq!(error.kind, ErrorKind::Http);
+
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("PUT"))
+        .and(path("/api/dashboards/dash-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "dash-1", "data": {"title": ""}, "meta": {}, "warnings": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = dashboards::put(&transport(&server), &dashboard_spec("dash-1", "Overview"))
+        .await
+        .expect_err("a successful PUT with an empty data.title is malformed");
+    assert_eq!(error.kind, ErrorKind::Http);
 }
 
 #[test]
@@ -1338,6 +1380,82 @@ async fn dashboard_bundle_export_does_not_send_an_export_after_a_missing_selecto
     );
 }
 
+#[tokio::test]
+async fn dashboard_bundle_export_refuses_duplicate_ids_within_or_across_pages_before_export() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [dashboard_search_row("dash-1"), dashboard_search_row("dash-1")],
+            "meta": {"page": 1, "per_page": 1000, "total": 2},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::export_bundle(&transport(&server), &[])
+        .await
+        .expect_err("duplicate ids in one page are malformed");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding dashboard search: duplicate dashboard id 'dash-1'"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .all(|request| request.url.path() != "/api/saved_objects/_export")
+    );
+
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    let first_page = (0..1000)
+        .map(|index| dashboard_search_row(format!("dash-{index:04}")))
+        .collect::<Vec<_>>();
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": first_page,
+            "meta": {"page": 1, "per_page": 1000, "total": 1001},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [dashboard_search_row("dash-0000")],
+            "meta": {"page": 2, "per_page": 1000, "total": 1001},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::export_bundle(&transport(&server), &[])
+        .await
+        .expect_err("duplicate ids across pages are malformed");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding dashboard search: duplicate dashboard id 'dash-0000'"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .all(|request| request.url.path() != "/api/saved_objects/_export")
+    );
+}
+
 #[test]
 fn dashboard_bundle_import_plan_preserves_ndjson_and_sorts_only_preview_dashboards() {
     let bundle = concat!(
@@ -1396,11 +1514,12 @@ fn dashboard_bundle_import_plan_names_overwrite_as_replace() {
 }
 
 #[tokio::test]
-async fn dashboard_bundle_import_apply_preserves_server_rows_and_uploads_planned_ndjson() {
+async fn dashboard_bundle_import_apply_sanitizes_server_rows_and_uploads_planned_ndjson() {
     let file = tempfile::NamedTempFile::new().expect("bundle file");
     std::fs::write(file.path(), BUNDLE).expect("write bundle");
     let plan = dashboards_ops::plan_bundle_import(file.path(), true).expect("bundle plan");
     let server = MockServer::start().await;
+    dashboard_capability(&server).await;
     Mock::given(method("POST"))
         .and(path("/api/saved_objects/_import"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1410,11 +1529,15 @@ async fn dashboard_bundle_import_apply_preserves_server_rows_and_uploads_planned
                 "type": "dashboard",
                 "id": "dash-1",
                 "created": true,
+                "managed": true,
+                "attributes": {"title": "private"},
             }],
             "errors": [{
                 "type": "index-pattern",
                 "id": "dv-1",
-                "error": {"message": "conflict"},
+                "managed": true,
+                "attributes": {"title": "private"},
+                "error": {"type": "conflict", "reason": "private details"},
             }],
         })))
         .expect(1)
@@ -1428,23 +1551,117 @@ async fn dashboard_bundle_import_apply_preserves_server_rows_and_uploads_planned
     assert!(outcome.applied);
     assert_eq!(
         outcome.succeeded,
-        vec![json!({"type":"dashboard","id":"dash-1","created":true})]
+        vec![json!({"type":"dashboard","id":"dash-1"})]
     );
     assert_eq!(
         outcome.failed,
         vec![json!({
             "type":"index-pattern",
             "id":"dv-1",
-            "error":{"message":"conflict"},
+            "error":"conflict",
         })]
     );
     assert_eq!(outcome.total, 2);
     let requests = server.received_requests().await.expect("requests");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url.query(), Some("overwrite=true"));
+    assert_eq!(requests.len(), 2);
+    let import = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/saved_objects/_import")
+        .expect("bundle import request");
+    assert_eq!(import.url.query(), Some("overwrite=true"));
     assert!(
-        String::from_utf8_lossy(&requests[0].body).contains(&plan.ndjson),
+        String::from_utf8_lossy(&import.body).contains(&plan.ndjson),
         "multipart body must contain the planned opaque input exactly"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_rejects_malformed_public_rows_after_upload() {
+    let malformed_success_rows = [
+        json!({"id": "dash-1"}),
+        json!({"type": false, "id": "dash-1"}),
+        json!({"type": "dashboard"}),
+        json!({"type": "dashboard", "id": false}),
+    ];
+    for row in malformed_success_rows {
+        let file = tempfile::NamedTempFile::new().expect("bundle file");
+        std::fs::write(file.path(), BUNDLE).expect("write bundle");
+        let plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+        let server = MockServer::start().await;
+        dashboard_capability(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/saved_objects/_import"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true, "successCount": 1, "successResults": [row], "errors": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+            .await
+            .expect_err("malformed success row cannot enter the public outcome");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+
+    let malformed_failure_rows = [
+        json!({"id": "dv-1", "error": {"type": "conflict"}}),
+        json!({"type": false, "id": "dv-1", "error": {"type": "conflict"}}),
+        json!({"type": "index-pattern", "error": {"type": "conflict"}}),
+        json!({"type": "index-pattern", "id": false, "error": {"type": "conflict"}}),
+        json!({"type": "index-pattern", "id": "dv-1"}),
+        json!({"type": "index-pattern", "id": "dv-1", "error": {}}),
+        json!({"type": "index-pattern", "id": "dv-1", "error": {"type": false}}),
+    ];
+    for row in malformed_failure_rows {
+        let file = tempfile::NamedTempFile::new().expect("bundle file");
+        std::fs::write(file.path(), BUNDLE).expect("write bundle");
+        let plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+        let server = MockServer::start().await;
+        dashboard_capability(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/saved_objects/_import"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": false, "successCount": 0, "successResults": [], "errors": [row]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+            .await
+            .expect_err("malformed failure row cannot enter the public outcome");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_requires_the_dashboard_feature_before_upload() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+    let plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.5.0", "build_flavor": "traditional"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+        .await
+        .expect_err("below the dashboard floor must refuse before upload");
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .all(|request| request.url.path() != "/api/saved_objects/_import")
     );
 }
 

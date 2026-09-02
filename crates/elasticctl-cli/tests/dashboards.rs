@@ -677,13 +677,17 @@ async fn dashboard_bundle_import_dry_run_keeps_bytes_then_uploads_multipart() {
         String::from_utf8_lossy(&apply.stderr)
     );
     assert_eq!(
-        serde_json::from_slice::<Value>(&apply.stdout).unwrap()["succeeded"][0]["id"],
-        "dash-1"
+        serde_json::from_slice::<Value>(&apply.stdout).unwrap()["succeeded"],
+        serde_json::json!([{"type": "dashboard", "id": "dash-1"}])
     );
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url.query(), Some("overwrite=true"));
-    assert!(String::from_utf8_lossy(&requests[0].body).contains(BUNDLE));
+    assert_eq!(requests.len(), 2);
+    let import = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/saved_objects/_import")
+        .expect("apply uploads the bundle after the capability probe");
+    assert_eq!(import.url.query(), Some("overwrite=true"));
+    assert!(String::from_utf8_lossy(&import.body).contains(BUNDLE));
 }
 
 #[tokio::test]
