@@ -342,8 +342,41 @@ fn verified_features_accept_9_5_1_and_newer() {
             Feature::ExceptionLists,
             Feature::PrebuiltRules,
             Feature::RuleSourceScoping,
+            Feature::Dashboards,
         ] {
             caps.require_feature(feature).unwrap();
+        }
+    }
+}
+
+#[test]
+fn dashboards_are_verified_from_9_5_1_on_every_flavor() {
+    for flavor in [
+        Flavor::SelfManaged,
+        Flavor::ElasticCloudHosted,
+        Flavor::Serverless,
+    ] {
+        let below_floor = Capabilities {
+            flavor,
+            version: "9.5.0".into(),
+        };
+        let error = below_floor
+            .require_feature(Feature::Dashboards)
+            .expect_err("9.5.0 must refuse dashboards");
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(
+            error.message.contains("dashboards is not verified"),
+            "{}",
+            error.message
+        );
+
+        for version in ["9.5.1", "9.6.0"] {
+            Capabilities {
+                flavor,
+                version: version.into(),
+            }
+            .require_feature(Feature::Dashboards)
+            .expect("dashboard floor accepts this version");
         }
     }
 }

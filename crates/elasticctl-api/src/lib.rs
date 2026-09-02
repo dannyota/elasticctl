@@ -6,6 +6,7 @@ pub mod cases;
 pub mod cases_ops;
 pub mod codec;
 pub mod content_codec;
+pub mod dashboards;
 pub mod data_views;
 pub mod data_views_ops;
 pub mod diff;

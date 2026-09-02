@@ -58,6 +58,7 @@ pub enum Flavor {
 /// contract rather than on the existence of one object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
+    Dashboards,
     ExceptionLists,
     PrebuiltRules,
     RuleSourceScoping,
@@ -66,6 +67,7 @@ pub enum Feature {
 impl Feature {
     fn label(self) -> &'static str {
         match self {
+            Self::Dashboards => "dashboards",
             Self::ExceptionLists => "exception lists",
             Self::PrebuiltRules => "prebuilt rules",
             Self::RuleSourceScoping => "rule source scoping",
