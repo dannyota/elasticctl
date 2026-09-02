@@ -483,6 +483,15 @@ self-managed deployments. The recorder creates only unique
 An unscoped dashboard list or Saved Objects export must never enter public
 fixtures.
 
+When `ELASTICCTL_FIXTURE_FLAVOR=traditional` exactly, `cargo xtask record`
+activates the headless lab's profile through the existing login-and-verify
+helper before it builds its recording session. The command requires generic
+`ELASTICCTL_USERNAME` and `ELASTICCTL_PASSWORD` for this one flavor; either
+missing input fails by its variable name before a marker mutation. Serverless
+and Hosted recording do not activate a profile. The helper discovers the
+deployment's Basic provider, logs in, and verifies a nonempty activated-profile
+response without exposing its contents.
+
 The 0.5.0 fixture set covers:
 
 - data-view list, raw scripted create/get evidence with explicit id and
@@ -544,6 +553,11 @@ The 0.5.1 fixture set covers:
 - Saved Objects import success and conflict response shapes;
 - zero dashboard and data-view marker residue.
 
+Dashboard fixture scrubbing preserves the caller-selected root dashboard and
+data-view ids. It deterministically normalizes generated panel tokens in
+direct panels and Saved Objects `panelsJSON` (`panelIndex` and `gridData.i`),
+including reference names, to `elasticctl-fixture-dashboard-panel-N`.
+
 The ninth matrix contract is
 `content_transfers_data_views_and_dashboards_without_residue`. It:
 
@@ -596,15 +610,21 @@ and volumes.
 | Default restoration | Serverless and Hosted preserve and restore a preexisting nonmarker default, scrubbed to the public placeholder. Fresh traditional 9.5.1 claims raw `""`, first create implicitly makes source default, restores with a null POST, and returns exact raw `""`. |
 | Dashboard create/update | `PUT /api/dashboards/{id}` answers 201 on create and 200 on replacement; replacement is full, not patch semantics |
 | Dashboard response | Top level is `{id, data, meta}` for the measured supported dashboard |
-| Dashboard search | `GET /api/dashboards` answers the documented paginated `{data, meta}` shape |
+| Dashboard search | All three scoped marker responses use paginated `{data, meta}`, with each row shaped as `{id, data: {title, description?, tags?, ...}, meta: {...}}`. elasticctl derives its flat `DashboardSummary` only for rendering. |
 | Dashboard delete | Answers 204 with an empty body on all three flavors, despite documentation that still lists 200 |
 | Deep export | Marker dashboard export with `includeReferencesDeep` contains one `dashboard`, one `index-pattern`, and one export-details trailer |
+| Accepted loss | All three flavors accept the marker loss copy but omit root `time_range.mode`; the recorder reports exactly `$.time_range.mode` and deletes that copy immediately. |
+| Saved Objects import | All three flavors return the strict success envelope for overwrite import and the strict conflict envelope without overwrite. |
 | Transport empty body | Existing response handling maps a successful empty body to `Value::Null`; no dashboard-specific 204 exception is needed |
+
+The 0.5.1 fixture probe is complete:
+
+- 0.5.1: the accepted-but-lossy root `time_range.mode` payload and Saved
+  Objects import success/conflict are recorded and production-decoded on
+  Serverless 9.6.0, Hosted 9.5.2, and traditional 9.5.1.
 
 Still required before the corresponding release ships:
 
-- 0.5.1: one accepted-but-lossy typed dashboard payload and Saved Objects
-  import success/conflict on every flavor;
 - 0.5.2: the complete ninth contract and matrix reports.
 
 ## 15. Version placement

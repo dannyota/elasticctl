@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.1 — 2026-09-02
+
+### Added
+
+- Dashboard administration: list, get, validate, typed JSON/YAML export and
+  import, and guarded delete using stable dashboard ids.
+- Opaque Saved Objects dashboard bundle export/import with deep dependencies.
+
+### Fixed
+
+- Dashboard search now decodes the measured nested row shape and derives the
+  flat rendering summary without accepting the prior unmeasured flat row.
+- Traditional fixture recording activates and verifies the headless lab
+  profile before its marker-scoped alert assignment probe.
+- Dashboard fixture scrubbing now deterministically normalizes generated panel
+  tokens in direct responses and opaque Saved Objects bundles while preserving
+  caller-selected dashboard and data-view ids.
+
+### Verified
+
+- Scrubbed dashboard fixtures cover create, get, scoped search, replacement,
+  delete, final not-found, deep export, import success/conflict, and the
+  accepted loss of `$.time_range.mode` on Serverless 9.6.0, Elastic Cloud
+  Hosted 9.5.2, and self-managed 9.5.1. Every recorder leg completed its
+  marker cleanup audit.
+
 ## 0.5.0 — 2026-09-02
 
 ### Added

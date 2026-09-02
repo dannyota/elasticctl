@@ -24,11 +24,11 @@
     "attempts_until_hits": 1
   },
   "response": {
-    "took": 2,
+    "took": 5,
     "timed_out": false,
     "_shards": {
-      "total": 1,
-      "successful": 1,
+      "total": 2,
+      "successful": 2,
       "skipped": 0,
       "failed": 0
     },
@@ -40,7 +40,7 @@
       "max_score": null,
       "hits": [
         {
-          "_index": ".internal.preview.alerts-security.alerts-default-000001",
+          "_index": ".internal.preview.alerts-security.alerts-default-000002",
           "_score": null,
           "_source": {
             "kibana.version": "9.5.2",

@@ -212,9 +212,12 @@ async fn search_uses_the_dashboard_page_query_contract() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [{
                 "id": "dash-1",
-                "title": "Security overview",
-                "description": "Detection activity",
-                "tags": ["blue"]
+                "data": {
+                    "title": "Security overview",
+                    "description": "Detection activity",
+                    "tags": ["blue"]
+                },
+                "meta": {}
             }],
             "meta": {"page": 1, "per_page": 1000, "total": 1}
         })))
@@ -237,6 +240,63 @@ async fn search_uses_the_dashboard_page_query_contract() {
         search.url.query(),
         Some("page=1&per_page=1000&query=security&tags=blue")
     );
+}
+
+#[tokio::test]
+async fn search_decodes_the_measured_nested_dashboard_data_row() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "id": "dash-1",
+                "data": {
+                    "title": "Security overview",
+                    "description": "Detection activity",
+                    "tags": ["blue"],
+                    "panels": []
+                },
+                "meta": {}
+            }],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let page = dashboards::search(&transport(&server), 1, None, &[])
+        .await
+        .expect("decode measured search row");
+
+    assert_eq!(page.data[0].id, "dash-1");
+    assert_eq!(page.data[0].title, "Security overview");
+    assert_eq!(
+        page.data[0].description.as_deref(),
+        Some("Detection activity")
+    );
+    assert_eq!(page.data[0].tags, Some(vec!["blue".to_string()]));
+}
+
+#[tokio::test]
+async fn search_rejects_the_unmeasured_flat_dashboard_row() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "dash-1", "title": "Security overview"}],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards::search(&transport(&server), 1, None, &[])
+        .await
+        .expect_err("flat dashboard rows are not the measured contract");
+
+    assert_eq!(error.kind, ErrorKind::Http);
 }
 
 #[tokio::test]
@@ -374,7 +434,8 @@ async fn dashboard_list_pages_at_one_thousand_and_sorts_by_stable_id() {
         .map(|index| {
             json!({
                 "id": if index == 0 { "z".to_string() } else { format!("dash-{index:04}") },
-                "title": format!("Security {index}")
+                "data": {"title": format!("Security {index}")},
+                "meta": {}
             })
         })
         .collect::<Vec<_>>();
@@ -398,7 +459,7 @@ async fn dashboard_list_pages_at_one_thousand_and_sorts_by_stable_id() {
         .and(query_param("query", "Security"))
         .and(query_param("tags", "blue"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{"id": "a", "title": "Security final"}],
+            "data": [{"id": "a", "data": {"title": "Security final"}, "meta": {}}],
             "meta": {"page": 2, "per_page": 1000, "total": 1001}
         })))
         .expect(1)
@@ -431,9 +492,9 @@ async fn dashboard_list_marks_a_user_limit_as_truncated() {
         .and(path("/api/dashboards"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "data": [
-                {"id": "c", "title": "C"},
-                {"id": "a", "title": "A"},
-                {"id": "b", "title": "B"}
+                {"id": "c", "data": {"title": "C"}, "meta": {}},
+                {"id": "a", "data": {"title": "A"}, "meta": {}},
+                {"id": "b", "data": {"title": "B"}, "meta": {}}
             ],
             "meta": {"page": 1, "per_page": 1000, "total": 3}
         })))
@@ -1076,7 +1137,7 @@ async fn dashboard_bundle_export_resolves_selectors_before_sending_selected_ids(
     Mock::given(method("GET"))
         .and(path("/api/dashboards"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{"id": "dash-1", "title": "Overview"}],
+            "data": [{"id": "dash-1", "data": {"title": "Overview"}, "meta": {}}],
             "meta": {"page": 1, "per_page": 1000, "total": 1}
         })))
         .expect(1)
@@ -1110,7 +1171,7 @@ async fn dashboard_bundle_export_without_selectors_exports_every_dashboard_not_d
     Mock::given(method("GET"))
         .and(path("/api/dashboards"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "data": [{"id": "dash-1", "title": "Overview"}],
+            "data": [{"id": "dash-1", "data": {"title": "Overview"}, "meta": {}}],
             "meta": {"page": 1, "per_page": 1000, "total": 1}
         })))
         .expect(1)

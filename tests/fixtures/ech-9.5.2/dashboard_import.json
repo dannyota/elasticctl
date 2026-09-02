@@ -1,0 +1,33 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "dashboard_import",
+  "request": {
+    "overwrite": true
+  },
+  "response": {
+    "successCount": 2,
+    "success": true,
+    "warnings": [],
+    "successResults": [
+      {
+        "type": "index-pattern",
+        "id": "elasticctl-sample-data-view",
+        "meta": {
+          "title": "elasticctl sample dashboard data view",
+          "icon": "indexPatternApp"
+        },
+        "managed": false
+      },
+      {
+        "type": "dashboard",
+        "id": "elasticctl-sample-dashboard",
+        "meta": {
+          "title": "elasticctl sample dashboard",
+          "icon": "dashboardApp"
+        },
+        "managed": false
+      }
+    ]
+  }
+}

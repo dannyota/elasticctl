@@ -1,0 +1,104 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "dashboard_create",
+  "request": {
+    "id": "elasticctl-sample-dashboard",
+    "data": {
+      "title": "elasticctl sample dashboard",
+      "description": "elasticctl-sample",
+      "panels": [
+        {
+          "type": "vis",
+          "grid": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "config": {
+            "title": "Sample count",
+            "type": "metric",
+            "data_source": {
+              "type": "data_view_reference",
+              "ref_id": "elasticctl-sample-data-view"
+            },
+            "metrics": [
+              {
+                "type": "primary",
+                "operation": "count"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "id": "elasticctl-sample-dashboard",
+    "data": {
+      "description": "elasticctl-sample",
+      "options": {
+        "auto_apply_filters": true,
+        "hide_panel_borders": false,
+        "hide_panel_titles": false,
+        "sync_colors": false,
+        "sync_cursor": true,
+        "sync_tooltips": false,
+        "use_margins": true
+      },
+      "tags": [],
+      "title": "elasticctl sample dashboard",
+      "filters": [],
+      "panels": [
+        {
+          "grid": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "config": {
+            "title": "Sample count",
+            "data_source": {
+              "type": "data_view_reference",
+              "ref_id": "elasticctl-sample-data-view"
+            },
+            "type": "metric",
+            "sampling": 1,
+            "ignore_global_filters": false,
+            "metrics": [
+              {
+                "type": "primary",
+                "operation": "count",
+                "empty_as_null": false,
+                "color": {
+                  "type": "auto"
+                }
+              }
+            ],
+            "styling": {
+              "density": "default",
+              "primary": {
+                "position": "bottom",
+                "labels": {
+                  "alignment": "left"
+                },
+                "value": {
+                  "sizing": "auto",
+                  "alignment": "right"
+                }
+              }
+            }
+          },
+          "id": "elasticctl-fixture-dashboard-panel-1",
+          "type": "vis"
+        }
+      ],
+      "pinned_panels": []
+    },
+    "meta": {
+      "managed": false
+    }
+  }
+}

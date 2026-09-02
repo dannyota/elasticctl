@@ -140,6 +140,29 @@ elkctl data-views delete old-logs --replace-with logs-default --yes
 a preview unless `--yes` is supplied. Delete refuses a referenced or current
 default data view until its references/default are safely replaced or unset.
 
+## Manage dashboards
+
+Dashboards use stable ids and portable JSON or YAML files. Typed export omits
+server metadata and refuses a dashboard carrying loss warnings. Use an opaque
+Saved Objects bundle when the dashboard needs its deep dependencies moved with
+it.
+
+```bash
+elkctl dashboards list --search security --tag production
+elkctl dashboards get security-overview
+elkctl dashboards validate --path dashboards.yaml
+elkctl dashboards export security-overview --format-file yaml > dashboards.yaml
+
+elkctl dashboards import --path dashboards.yaml --yes
+elkctl dashboards delete retired-overview --yes
+elkctl dashboards bundle export security-overview > dashboards.ndjson
+elkctl dashboards bundle import --path dashboards.ndjson --yes
+```
+
+`import`, `delete`, and `bundle import` are guarded mutations. Typed import
+checks referenced data views before it writes. Bundle bytes stay opaque so the
+server can restore the dashboard and its exported dependencies together.
+
 ## Triage alerts and cases
 
 ```bash
@@ -172,6 +195,14 @@ elkctl data-views export [<id-or-exact-name>...] [--format-file json|yaml]
   | import --path FILE [--overwrite|--skip-existing] --yes
   | delete <id-or-exact-name>... [--replace-with ID] --yes
   | default get | set <id-or-exact-name> --yes | unset --yes
+
+elkctl dashboards list [--search TEXT] [--tag TAG] [--limit N]
+  | get <id-or-exact-title> | validate --path FILE
+elkctl dashboards export [<id-or-exact-title>...] [--format-file json|yaml]
+  | import --path FILE [--overwrite|--skip-existing] --yes
+  | delete <id-or-exact-title>... --yes
+  | bundle export [<id-or-exact-title>...]
+  | bundle import --path FILE [--overwrite] --yes
 
 elkctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
   [--source custom|customized|prebuilt|all]

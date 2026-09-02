@@ -1,0 +1,18 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "dashboard_bundle_export",
+  "request": {
+    "objects": [
+      {
+        "type": "dashboard",
+        "id": "elasticctl-sample-dashboard"
+      }
+    ],
+    "includeReferencesDeep": true,
+    "excludeExportDetails": false
+  },
+  "response": {
+    "ndjson": "{\"attributes\":{\"allowHidden\":false,\"allowNoIndex\":true,\"fieldAttrs\":\"{}\",\"fieldFormatMap\":\"{}\",\"fields\":\"[]\",\"name\":\"elasticctl sample dashboard data view\",\"runtimeFieldMap\":\"{}\",\"sourceFilters\":\"[]\",\"title\":\"elasticctl-sample-dashboard-data-view-*\"},\"id\":\"elasticctl-sample-data-view\",\"managed\":false,\"references\":[],\"type\":\"index-pattern\",\"typeMigrationVersion\":\"8.0.0\"}\n{\"attributes\":{\"description\":\"elasticctl-sample updated\",\"kibanaSavedObjectMeta\":{\"searchSourceJSON\":\"{}\"},\"optionsJSON\":\"{\\\"autoApplyFilters\\\":true,\\\"hidePanelBorders\\\":false,\\\"hidePanelTitles\\\":false,\\\"syncColors\\\":false,\\\"syncCursor\\\":true,\\\"syncTooltips\\\":false,\\\"useMargins\\\":true}\",\"panelsJSON\":\"[{\\\"type\\\":\\\"vis\\\",\\\"embeddableConfig\\\":{\\\"title\\\":\\\"Sample count\\\",\\\"attributes\\\":{\\\"visualizationType\\\":\\\"lnsMetric\\\",\\\"title\\\":\\\"\\\",\\\"references\\\":[{\\\"type\\\":\\\"index-pattern\\\",\\\"id\\\":\\\"elasticctl-sample-data-view\\\",\\\"name\\\":\\\"indexpattern-datasource-layer-layer_0\\\"}],\\\"version\\\":2,\\\"state\\\":{\\\"datasourceStates\\\":{\\\"formBased\\\":{\\\"layers\\\":{\\\"layer_0\\\":{\\\"sampling\\\":1,\\\"ignoreGlobalFilters\\\":false,\\\"columns\\\":{\\\"metric_accessor_metric\\\":{\\\"operationType\\\":\\\"count\\\",\\\"sourceField\\\":\\\"___records___\\\",\\\"dataType\\\":\\\"number\\\",\\\"isBucketed\\\":false,\\\"label\\\":\\\"\\\",\\\"customLabel\\\":false,\\\"params\\\":{\\\"emptyAsNull\\\":false}}},\\\"columnOrder\\\":[\\\"metric_accessor_metric\\\"]}}}},\\\"internalReferences\\\":[],\\\"visualization\\\":{\\\"layerId\\\":\\\"layer_0\\\",\\\"layerType\\\":\\\"data\\\",\\\"metricAccessor\\\":\\\"metric_accessor_metric\\\",\\\"showBar\\\":false,\\\"density\\\":\\\"default\\\"},\\\"adHocDataViews\\\":{},\\\"query\\\":{\\\"language\\\":\\\"kuery\\\",\\\"query\\\":\\\"\\\"},\\\"filters\\\":[]}}},\\\"panelIndex\\\":\\\"elasticctl-fixture-dashboard-panel-1\\\",\\\"gridData\\\":{\\\"x\\\":0,\\\"y\\\":0,\\\"w\\\":12,\\\"h\\\":8,\\\"i\\\":\\\"elasticctl-fixture-dashboard-panel-1\\\"}}]\",\"timeRestore\":false,\"title\":\"elasticctl sample dashboard\"},\"id\":\"elasticctl-sample-dashboard\",\"managed\":false,\"references\":[{\"id\":\"elasticctl-sample-data-view\",\"name\":\"elasticctl-fixture-dashboard-panel-1:indexpattern-datasource-layer-layer_0\",\"type\":\"index-pattern\"}],\"type\":\"dashboard\",\"typeMigrationVersion\":\"10.3.0\"}\n{\"excludedObjects\":[],\"excludedObjectsCount\":0,\"exportedCount\":2,\"missingRefCount\":0,\"missingReferences\":[]}\n"
+  }
+}

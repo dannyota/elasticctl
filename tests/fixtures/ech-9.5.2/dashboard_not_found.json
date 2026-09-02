@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "dashboard_not_found",
+  "error": {
+    "kind": "not_found",
+    "message": "A dashboard with ID [elasticctl-sample-dashboard] was not found.",
+    "http_status": 404
+  }
+}

@@ -5,12 +5,17 @@
 
 use elasticctl_api::Rule;
 use elasticctl_api::codec;
+use elasticctl_api::dashboards::{self, DashboardSpec};
 use elasticctl_api::data_views::{DataViewReference, DataViewSummary};
 use elasticctl_api::data_views_ops;
 use elasticctl_api::rules;
+use elasticctl_api::saved_objects;
+use elasticctl_core::{Profile, Transport};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const V0_2_FIXTURES: [&str; 15] = [
     "exception_lists_find.json",
@@ -89,6 +94,23 @@ const V0_5_DATA_VIEW_FIXTURES: [&str; 21] = [
     "data_view_default_restored_get.json",
     "data_view_delete.json",
     "data_view_delete_not_found.json",
+];
+
+/// Dashboard fixtures added in 0.5.1. They are recorded from the complete
+/// marker lifecycle, including the opaque deep-export import round trip and
+/// a low-level accepted-loss probe that the public import path rejects.
+const V0_5_DASHBOARD_FIXTURES: [&str; 11] = [
+    "dashboard_create.json",
+    "dashboard_get.json",
+    "dashboard_search.json",
+    "dashboard_update.json",
+    "dashboard_bundle_export.json",
+    "dashboard_delete.json",
+    "dashboard_import.json",
+    "dashboard_import_conflict.json",
+    "dashboard_not_found.json",
+    "dashboard_data_view_not_found.json",
+    "dashboard_loss.json",
 ];
 
 fn fixtures_root() -> PathBuf {
@@ -211,6 +233,18 @@ fn every_fixture_parses_and_carries_its_metadata() {
             set.display(),
             missing.join(", ")
         );
+
+        let missing: Vec<&str> = V0_5_DASHBOARD_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks dashboard fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
     }
 }
 
@@ -268,6 +302,68 @@ fn fixture_body(path: &Path) -> Value {
     let body = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
+}
+
+fn fixture_transport(server: &MockServer) -> Transport {
+    Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_fixture".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .expect("fixture transport")
+}
+
+#[tokio::test]
+async fn dashboard_search_decodes_the_measured_nested_data_row() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "version": {"number": "9.6.0", "build_flavor": "serverless"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{
+                "id": "elasticctl-sample-dashboard",
+                "data": {
+                    "title": "elasticctl sample dashboard",
+                    "description": "elasticctl-sample",
+                    "tags": ["elasticctl-sample"]
+                },
+                "meta": {}
+            }],
+            "meta": {"page": 1, "per_page": 1000, "total": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let page = dashboards::search(
+        &fixture_transport(&server),
+        1,
+        Some("elasticctl sample dashboard"),
+        &[],
+    )
+    .await
+    .expect("measured dashboard search row decodes");
+
+    assert_eq!(page.data[0].id, "elasticctl-sample-dashboard");
+    assert_eq!(page.data[0].title, "elasticctl sample dashboard");
+    assert_eq!(
+        page.data[0].description.as_deref(),
+        Some("elasticctl-sample")
+    );
+    assert_eq!(
+        page.data[0].tags,
+        Some(vec!["elasticctl-sample".to_string()])
+    );
 }
 
 #[test]
@@ -514,6 +610,141 @@ fn data_view_fixtures_decode_through_the_production_models() {
             "{}: default restore must carry the exact acknowledgement",
             set.display()
         );
+    }
+}
+
+#[tokio::test]
+async fn dashboard_fixtures_decode_through_the_production_paths() {
+    for set in fixture_sets() {
+        let create = fixture_body(&set.join("dashboard_create.json"));
+        let get = fixture_body(&set.join("dashboard_get.json"));
+        let search = fixture_body(&set.join("dashboard_search.json"));
+        let update = fixture_body(&set.join("dashboard_update.json"));
+        let deleted = fixture_body(&set.join("dashboard_delete.json"));
+        let loss = fixture_body(&set.join("dashboard_loss.json"));
+        let id = create["request"]["id"]
+            .as_str()
+            .expect("dashboard create request id");
+        let title = create["request"]["data"]["title"]
+            .as_str()
+            .expect("dashboard create request title");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "version": {"number": "9.6.0", "build_flavor": "serverless"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(format!("/api/dashboards/{id}")))
+            .respond_with(ResponseTemplate::new(201).set_body_json(create["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dashboards/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(get["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dashboards"))
+            .and(query_param("page", "1"))
+            .and(query_param("per_page", "1000"))
+            .and(query_param("query", title))
+            .respond_with(ResponseTemplate::new(200).set_body_json(search["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(format!("/api/dashboards/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(update["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!("/api/dashboards/{id}")))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let transport = fixture_transport(&server);
+        let create_spec = DashboardSpec::try_from(create["request"].clone())
+            .expect("dashboard create request is a portable spec");
+        let created = dashboards::put(&transport, &create_spec)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode dashboard create: {error}", set.display()));
+        assert_eq!(created.id, id, "{}", set.display());
+        let fetched = dashboards::get(&transport, id)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode dashboard get: {error}", set.display()));
+        assert_eq!(fetched.id, id, "{}", set.display());
+        let page = dashboards::search(&transport, 1, Some(title), &[])
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode dashboard search: {error}", set.display()));
+        assert_eq!(page.data.len(), 1, "{}", set.display());
+        assert_eq!(page.data[0].id, id, "{}", set.display());
+        let update_spec = DashboardSpec::try_from(update["request"].clone())
+            .expect("dashboard update request is a portable spec");
+        let updated = dashboards::put(&transport, &update_spec)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode dashboard update: {error}", set.display()));
+        assert_eq!(updated.id, id, "{}", set.display());
+        dashboards::delete(&transport, id)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode dashboard delete: {error}", set.display()));
+        assert!(deleted["response"].is_null(), "{}", set.display());
+
+        let losses = dashboards::subset_losses(&loss["request"]["data"], &loss["response"]["data"]);
+        assert_eq!(
+            losses
+                .iter()
+                .map(|loss| loss.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["$.time_range.mode"],
+            "{}: accepted dashboard loss path",
+            set.display()
+        );
+
+        let export = fixture_body(&set.join("dashboard_bundle_export.json"));
+        let ndjson = export["response"]["ndjson"]
+            .as_str()
+            .expect("dashboard export is opaque NDJSON");
+        let scan = saved_objects::scan_bundle(ndjson)
+            .unwrap_or_else(|error| panic!("{}: decode dashboard export: {error}", set.display()));
+        assert_eq!(scan.dashboards, vec![id.to_string()], "{}", set.display());
+        assert_eq!(scan.counts.get("dashboard"), Some(&1), "{}", set.display());
+        assert_eq!(
+            scan.counts.get("index-pattern"),
+            Some(&1),
+            "{}",
+            set.display()
+        );
+        assert_eq!(scan.total, 2, "{}", set.display());
+        assert!(scan.has_export_details, "{}", set.display());
+
+        for (name, overwrite, expected_success) in [
+            ("dashboard_import.json", true, true),
+            ("dashboard_import_conflict.json", false, false),
+        ] {
+            let imported = fixture_body(&set.join(name));
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/saved_objects/_import"))
+                .and(query_param("overwrite", overwrite.to_string()))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(imported["response"].clone()),
+                )
+                .mount(&server)
+                .await;
+            let report = saved_objects::import(&fixture_transport(&server), ndjson, overwrite)
+                .await
+                .unwrap_or_else(|error| panic!("{}: decode {name}: {error}", set.display()));
+            assert_eq!(report.success, expected_success, "{}", set.display());
+        }
+
+        let missing = fixture_body(&set.join("dashboard_not_found.json"));
+        assert_eq!(missing["error"]["kind"], "not_found", "{}", set.display());
+        let missing = fixture_body(&set.join("dashboard_data_view_not_found.json"));
+        assert_eq!(missing["error"]["kind"], "not_found", "{}", set.display());
     }
 }
 

@@ -285,8 +285,35 @@ fn json_path_key(key: &str) -> String {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchEnvelope {
-    data: Vec<DashboardSummary>,
+    data: Vec<SearchDashboardRow>,
     meta: SearchMeta,
+}
+
+/// The wire row is intentionally separate from the flat rendering summary.
+/// Kibana nests dashboard fields under `data`; new nested fields do not affect
+/// list selection and are not rejected merely because this CLI does not render
+/// them yet.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchDashboardRow {
+    id: String,
+    data: SearchDashboardData,
+    // The measured row carries its own open metadata object. It is not part
+    // of the flat rendering summary, but requiring its object shape keeps a
+    // malformed successful response from being silently accepted.
+    #[serde(rename = "meta")]
+    _meta: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct SearchDashboardData {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(flatten)]
+    _extra: Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -309,8 +336,32 @@ struct DashboardEnvelope {
 
 fn decode_search(body: &Value) -> Result<DashboardPage> {
     let response = decode_envelope::<SearchEnvelope>(body, "dashboard search")?;
+    let data = response
+        .data
+        .into_iter()
+        .map(|row| {
+            if row.id.trim().is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Http,
+                    "decoding dashboard search: id must be a non-empty string",
+                ));
+            }
+            if row.data.title.trim().is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Http,
+                    "decoding dashboard search: data.title must be a non-empty string",
+                ));
+            }
+            Ok(DashboardSummary {
+                id: row.id,
+                title: row.data.title,
+                description: row.data.description,
+                tags: row.data.tags,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(DashboardPage {
-        data: response.data,
+        data,
         page: response.meta.page,
         per_page: response.meta.per_page,
         total: response.meta.total,

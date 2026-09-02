@@ -210,8 +210,8 @@ async fn dashboard_list_get_and_typed_export_preserve_typed_shapes_and_artifacts
         .and(query_param("tags", "blue"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": [
-                {"id": "dash-2", "title": "Second", "description": "Two", "tags": ["blue"]},
-                {"id": "dash-1", "title": "Overview", "description": "One", "tags": ["blue"]}
+                {"id": "dash-2", "data": {"title": "Second", "description": "Two", "tags": ["blue"]}, "meta": {}},
+                {"id": "dash-1", "data": {"title": "Overview", "description": "One", "tags": ["blue"]}, "meta": {}}
             ],
             "meta": {"page": 1, "per_page": 1000, "total": 2}
         })))
@@ -350,8 +350,8 @@ async fn dashboard_get_refuses_ambiguous_exact_titles() {
         .and(path("/api/dashboards"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": [
-                {"id": "dash-b", "title": "Overview"},
-                {"id": "dash-a", "title": "Overview"}
+                {"id": "dash-b", "data": {"title": "Overview"}, "meta": {}},
+                {"id": "dash-a", "data": {"title": "Overview"}, "meta": {}}
             ],
             "meta": {"page": 1, "per_page": 1000, "total": 2}
         })))

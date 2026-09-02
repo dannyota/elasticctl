@@ -1,0 +1,37 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "dashboard_import_conflict",
+  "request": {
+    "overwrite": false
+  },
+  "response": {
+    "successCount": 0,
+    "success": false,
+    "warnings": [],
+    "errors": [
+      {
+        "type": "index-pattern",
+        "id": "elasticctl-sample-data-view",
+        "meta": {
+          "title": "elasticctl-sample-dashboard-data-view-*",
+          "icon": "indexPatternApp"
+        },
+        "error": {
+          "type": "conflict"
+        }
+      },
+      {
+        "type": "dashboard",
+        "id": "elasticctl-sample-dashboard",
+        "meta": {
+          "title": "elasticctl sample dashboard",
+          "icon": "dashboardApp"
+        },
+        "error": {
+          "type": "conflict"
+        }
+      }
+    ]
+  }
+}

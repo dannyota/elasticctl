@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "dashboard_not_found",
+  "error": {
+    "kind": "not_found",
+    "message": "A dashboard with ID [elasticctl-sample-dashboard] was not found.",
+    "http_status": 404
+  }
+}
