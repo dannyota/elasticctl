@@ -41,6 +41,15 @@ wildcards = "deny"
 # registry wildcards denied while allowing that internal workspace edge to
 # remain versionless so Cargo omits it from published manifests.
 allow-wildcard-paths = true
+# Keep direct dependencies current while approving only the older transitive
+# versions that their latest upstream releases still require. Exact versions
+# make an upstream change visible instead of silently broadening the exception.
+skip = [
+    { crate = "base64@0.22.1", reason = "reqwest 0.13.4 still requires base64 0.22 while elasticctl uses current base64 0.23" },
+    { crate = "getrandom@0.2.17", reason = "directories 6 reaches getrandom 0.2 through its Redox support while current build dependencies use 0.4" },
+    { crate = "syn@2.0.119", reason = "reqwest platform support and ICU derives still require syn 2 while current derive crates use syn 3" },
+    { crate = "windows-sys@0.52.0", reason = "rustix and reqwest platform support still require windows-sys 0.52 while current Tokio and CLI crates use 0.61" },
+]
 
 [sources]
 # Allow only crates.io. A git or private-registry dependency requires an
