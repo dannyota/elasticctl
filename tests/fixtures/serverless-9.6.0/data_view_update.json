@@ -1,0 +1,51 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_view_update",
+  "request": {
+    "data_view": {
+      "title": "elasticctl-sample-data-view-updated-*",
+      "name": "elasticctl sample updated view",
+      "sourceFilters": [
+        {
+          "value": "elasticctl.private.updated.*"
+        }
+      ]
+    },
+    "refresh_fields": true
+  },
+  "response": {
+    "data_view": {
+      "id": "elasticctl-sample-data-view-source",
+      "fields": {},
+      "title": "elasticctl-sample-data-view-updated-*",
+      "timeFieldName": "@timestamp",
+      "sourceFilters": [
+        {
+          "value": "elasticctl.private.updated.*"
+        }
+      ],
+      "fieldFormats": {
+        "bytes": {
+          "id": "bytes"
+        }
+      },
+      "runtimeFieldMap": {
+        "elasticctl.runtime": {
+          "type": "keyword",
+          "script": {
+            "source": "emit('elasticctl-sample');"
+          }
+        }
+      },
+      "fieldAttrs": {
+        "host.name": {
+          "customLabel": "elasticctl sample host"
+        }
+      },
+      "allowNoIndex": true,
+      "name": "elasticctl sample updated view",
+      "allowHidden": true
+    }
+  }
+}

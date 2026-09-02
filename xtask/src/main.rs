@@ -50,6 +50,16 @@ const CASE_TITLE: &str = "elasticctl sample case";
 const CASE_TAG: &str = "elasticctl-sample";
 const CASE_COMMENT: &str = "elasticctl sample comment";
 
+/// The data-view probe owns both ids and its backing index. They are stable
+/// marker identities rather than generated names so every mutation can be
+/// checked and cleaned without enumerating a shared space.
+const DATA_VIEW_INDEX: &str = "elasticctl-sample-data-view-events";
+const DATA_VIEW_SOURCE_ID: &str = "elasticctl-sample-data-view-source";
+const DATA_VIEW_REPLACEMENT_ID: &str = "elasticctl-sample-data-view-replacement";
+const DATA_VIEW_DOC_ID: &str = "elasticctl-sample-data-view-document";
+const DATA_VIEW_DEFAULT_PLACEHOLDER: &str = "elasticctl-fixture-original-default";
+const DATA_VIEW_METADATA_DESCRIPTION: &str = "elasticctl sample metadata";
+
 /// Fixed replacement for every case/comment `version` value the recorder
 /// scrubs. Real values are Kibana's base64-encoded `[seq_no, primary_term]`
 /// optimistic-concurrency token and change on every mutation, so they must
@@ -400,6 +410,17 @@ fn strip_volatile(v: &mut Value, fields: &[&str]) {
         }
         Value::Array(a) => a.iter_mut().for_each(|x| strip_volatile(x, fields)),
         _ => {}
+    }
+}
+
+/// Remove deployment identity and runtime-only values from `/api/status`
+/// while preserving the product build fields used by fixture tests.
+fn scrub_status(status: &mut Value) {
+    let Some(status) = status.as_object_mut() else {
+        return;
+    };
+    for field in ["name", "uuid", "metrics"] {
+        status.remove(field);
     }
 }
 
@@ -914,6 +935,19 @@ struct PreviewHitsExchange {
 /// Return `Err` rather than panicking and return the exchange for the caller to
 /// write after deleting the scratch index and probe rule. No hits are an error,
 /// not a fixture claiming a field matched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingDefaultRestorePhase {
+    CreateMayImplicitlySetSource,
+    ExplicitDefaultMutationMayHaveChanged,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PendingDefaultRestore {
+    raw: Value,
+    canonical: Option<String>,
+    phase: PendingDefaultRestorePhase,
+}
+
 #[derive(Default)]
 struct CleanupOwnership {
     rule: bool,
@@ -938,6 +972,13 @@ struct CleanupOwnership {
     /// `cleanup`'s sweep for this flag identifies it by title+tag instead
     /// (`sweep_delete_marker_cases`).
     case: bool,
+    /// The sole authority to restore a data-view default. It is claimed
+    /// before source create because that route may implicitly set the source
+    /// default, and it clears only after an acknowledged exact raw restore.
+    pending_data_view_default_restore: Option<PendingDefaultRestore>,
+    data_view_source: bool,
+    data_view_replacement: bool,
+    data_view_index: bool,
 }
 
 #[derive(Default)]
@@ -952,6 +993,153 @@ struct RecordingSession<'a> {
 
 fn recording_error(message: impl Into<String>) -> elasticctl_core::Error {
     elasticctl_core::Error::new(elasticctl_core::ErrorKind::Error, message)
+}
+
+const RECORD_TRACE_LABELS: &[&str] = &[
+    "bootstrap",
+    "prebuilt",
+    "prebuilt-status-before",
+    "prebuilt-status-before-check",
+    "prebuilt-install",
+    "prebuilt-install-check",
+    "prebuilt-status-after",
+    "prebuilt-status-compare",
+    "exceptions-rules",
+    "search",
+    "data-views",
+    "alerts",
+    "alerts-preflight-rule",
+    "alerts-preflight-index",
+    "alerts-preflight-open",
+    "alerts-index-write",
+    "alerts-index-proof",
+    "alerts-index-refresh",
+    "alerts-rule-create",
+    "alerts-poll",
+    "alerts-page",
+    "alerts-source",
+    "alerts-status",
+    "alerts-tags-add",
+    "alerts-tags-remove",
+    "alerts-users",
+    "alerts-assignees-add",
+    "alerts-assignees-remove",
+    "alerts-profile-suggest",
+    "alerts-rule-disable",
+    "cases",
+    "alerts-close",
+    "data-views-preflight-source",
+    "data-views-preflight-replacement",
+    "data-views-preflight-index",
+    "data-views-default-snapshot",
+    "data-views-source-not-found",
+    "data-views-index-create",
+    "data-views-index-check",
+    "data-views-index-proof-check",
+    "data-views-default-before-create",
+    "data-views-default-before-create-check",
+    "data-views-source-create",
+    "data-views-default-after-create",
+    "data-views-default-after-create-check",
+    "data-views-source-get",
+    "data-views-scripted-check",
+    "data-views-create-check",
+    "data-views-list",
+    "data-views-list-check",
+    "data-views-update",
+    "data-views-update-check",
+    "data-views-fields",
+    "data-views-fields-check",
+    "data-views-fields-get",
+    "data-views-fields-get-check",
+    "data-views-hidden-update",
+    "data-views-hidden-get",
+    "data-views-hidden-check",
+    "data-views-default-before",
+    "data-views-default-before-check",
+    "data-views-default-claim",
+    "data-views-default-set",
+    "data-views-default-set-check",
+    "data-views-default-unset",
+    "data-views-default-unset-check",
+    "data-views-default-before-swap",
+    "data-views-default-before-swap-check",
+    "data-views-preview",
+    "data-views-preview-request",
+    "data-views-preview-check",
+    "data-views-replacement-build",
+    "data-views-replacement-create",
+    "data-views-replacement-check",
+    "data-views-swap",
+    "data-views-swap-check",
+    "data-views-source-after-swap",
+    "data-views-default-after-swap",
+    "data-views-default-after-swap-check",
+    "data-views-default-restore",
+    "data-views-default-restore-check",
+    "data-views-default-restored-get",
+    "data-views-default-raw-snapshot",
+    "data-views-default-restored-check",
+    "data-views-replacement-delete",
+    "data-views-replacement-delete-check",
+    "data-views-replacement-gone-check",
+    "data-views-index-delete",
+    "data-views-index-delete-check",
+];
+
+fn record_trace_label_is_safe(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+}
+
+/// Emit only an allowlisted, static recorder progress label when explicitly
+/// requested. Labels must never carry remote values or error details.
+fn record_trace(label: &'static str) {
+    debug_assert!(RECORD_TRACE_LABELS.contains(&label));
+    debug_assert!(record_trace_label_is_safe(label));
+    if std::env::var("ELASTICCTL_RECORD_TRACE").ok().as_deref() == Some("1") {
+        eprintln!("record step: {label}");
+    }
+}
+
+/// Recorder errors can carry live object ids in a server message or body.
+/// Preserve only their classification and status at public error boundaries.
+fn safe_recording_transport_error(
+    context: &'static str,
+    error: elasticctl_core::Error,
+) -> elasticctl_core::Error {
+    match error.http_status {
+        Some(status) => elasticctl_core::Error::with_status(error.kind, status, context),
+        None => elasticctl_core::Error::new(error.kind, context),
+    }
+}
+
+fn safe_recording_error_summary(error: &elasticctl_core::Error) -> String {
+    let status = error
+        .http_status
+        .map_or_else(|| "none".to_string(), |status| status.to_string());
+    format!("class={} status={status}", error.kind.as_str())
+}
+
+async fn recorder_get_data_view_default(
+    t: &elasticctl_core::Transport,
+    context: &'static str,
+) -> elasticctl_core::Result<Value> {
+    t.get("/api/data_views/default")
+        .await
+        .map_err(|error| safe_recording_transport_error(context, error))
+}
+
+async fn recorder_post_data_view_default(
+    t: &elasticctl_core::Transport,
+    body: &Value,
+    context: &'static str,
+) -> elasticctl_core::Result<Value> {
+    t.post("/api/data_views/default", Some(body))
+        .await
+        .map_err(|error| safe_recording_transport_error(context, error))
 }
 
 fn has_marker_tags(value: &Value) -> bool {
@@ -1083,11 +1271,13 @@ async fn sweep_close_marker_alerts(t: &elasticctl_core::Transport) -> elasticctl
         )
         .await
         .map_err(|error| {
-            recording_error(format!("close-by-query sweep retry: {}", error.message))
+            safe_recording_transport_error("close-by-query sweep retry failed", error)
         })?;
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
-    require_no_open_marker_alerts(t).await
+    require_no_open_marker_alerts(t).await.map_err(|error| {
+        safe_recording_transport_error("checking close-by-query sweep result failed", error)
+    })
 }
 
 /// The `_find` filter that names every marker case: the fixed title AND the
@@ -1242,6 +1432,106 @@ async fn require_absent_alert_index(t: &elasticctl_core::Transport) -> elasticct
     }
 }
 
+async fn require_absent_data_view(
+    t: &elasticctl_core::Transport,
+    id: &str,
+) -> elasticctl_core::Result<()> {
+    match elasticctl_api::data_views::get(t, id).await {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: data view {id} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn require_absent_data_view_index(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    match t.get_absolute_es(&format!("/{DATA_VIEW_INDEX}")).await {
+        Ok(_) => Err(recording_error(format!(
+            "refusing to record: data-view index {DATA_VIEW_INDEX} already exists and is not cleanup-owned"
+        ))),
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn verify_data_view_index_deleted(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
+    match t.get_absolute_es(&format!("/{DATA_VIEW_INDEX}")).await {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(recording_error(format!(
+            "data-view index {DATA_VIEW_INDEX} still exists after delete"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+fn owns_data_view_index(value: &Value) -> bool {
+    value["_source"]["marker"].as_str() == Some("elasticctl-sample")
+        && value["_source"]["probe"].as_str() == Some("data-view")
+}
+
+/// Remove server-owned data-view details while preserving the portable
+/// configuration and any legacy scripted entry. Mapped fields are generated
+/// cache data and must not turn a fixture into a snapshot of a deployment.
+fn scrub_data_view(value: &mut Value) {
+    let Some(view) = value.get_mut("data_view").and_then(Value::as_object_mut) else {
+        return;
+    };
+    view.remove("version");
+    view.remove("namespaces");
+    for key in [
+        "created_at",
+        "updated_at",
+        "originId",
+        "updatedAt",
+        "createdAt",
+    ] {
+        view.remove(key);
+    }
+    if let Some(Value::Object(fields)) = view.get_mut("fields") {
+        fields.retain(|_, field| field.get("scripted").and_then(Value::as_bool) == Some(true));
+    }
+}
+
+fn scrub_data_view_default(value: &mut Value) {
+    if let Some(Value::String(id)) = value.get_mut("data_view_id")
+        && !id.is_empty()
+        && id != DATA_VIEW_SOURCE_ID
+        && id != DATA_VIEW_REPLACEMENT_ID
+    {
+        *id = DATA_VIEW_DEFAULT_PLACEHOLDER.to_string();
+    }
+}
+
+fn data_view_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut body: Value,
+) -> RecordedFixture {
+    scrub_data_view(&mut body);
+    scrub_data_view_default(&mut body);
+    response_fixture(name, flavor, version, body, None)
+}
+
+fn data_view_exchange_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut request: Value,
+    mut body: Value,
+) -> RecordedFixture {
+    scrub_data_view(&mut request);
+    scrub_data_view(&mut body);
+    scrub_data_view_default(&mut request);
+    scrub_data_view_default(&mut body);
+    exchange_fixture(name, flavor, version, request, body)
+}
+
 async fn create_marked_list(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Value> {
     require_absent_list(session.transport).await?;
     let body = json!({
@@ -1338,6 +1628,115 @@ impl RecordingSession<'_> {
     async fn cleanup(&mut self) -> elasticctl_core::Result<CleanupResponses> {
         let mut errors = Vec::new();
         let mut responses = CleanupResponses::default();
+
+        // Data views can be the active default. Restore that independently
+        // before attempting any delete so a partial recording cannot leave an
+        // absent default id behind. This deliberately runs before every other
+        // cleanup family; the probe owns no dashboard objects.
+        let mut data_view_cleanup_safe = true;
+        if self.ownership.pending_data_view_default_restore.is_some()
+            && let Err(error) = restore_pending_data_view_default(self).await
+        {
+            data_view_cleanup_safe = false;
+            // The lease and marker ownership remain intact. Default envelopes
+            // may carry a pre-existing nonmarker id, so the helper returns
+            // only safe static diagnostics or classified transport errors.
+            errors.push(format!(
+                "restoring original data-view default: {}",
+                error.message
+            ));
+        }
+
+        if data_view_cleanup_safe {
+            for (id, owned) in [
+                (DATA_VIEW_SOURCE_ID, &mut self.ownership.data_view_source),
+                (
+                    DATA_VIEW_REPLACEMENT_ID,
+                    &mut self.ownership.data_view_replacement,
+                ),
+            ] {
+                if !*owned {
+                    continue;
+                }
+                match elasticctl_api::data_views::get(self.transport, id).await {
+                    Ok(view) if view.data_view.get("id").and_then(Value::as_str) == Some(id) => {
+                        match elasticctl_api::data_views::delete(self.transport, id).await {
+                            Ok(()) => {
+                                match elasticctl_api::data_views::get(self.transport, id).await {
+                                    Err(error)
+                                        if error.kind == elasticctl_core::ErrorKind::NotFound =>
+                                    {
+                                        *owned = false
+                                    }
+                                    Ok(_) => errors
+                                        .push(format!("data view {id} still exists after delete")),
+                                    Err(error) => errors.push(format!(
+                                        "verifying data view {id} deletion: {}",
+                                        error.message
+                                    )),
+                                }
+                            }
+                            Err(error) => {
+                                errors.push(format!("deleting data view {id}: {}", error.message))
+                            }
+                        }
+                    }
+                    Ok(_) => errors.push(format!(
+                        "refusing to delete data view {id}: its marker identity no longer matches"
+                    )),
+                    Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                        *owned = false
+                    }
+                    Err(error) => {
+                        errors.push(format!("checking data view {id}: {}", error.message))
+                    }
+                }
+            }
+
+            if self.ownership.data_view_index {
+                match self
+                    .transport
+                    .get_absolute_es(&format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}"))
+                    .await
+                {
+                    Ok(document) if owns_data_view_index(&document) => {
+                        match self
+                            .transport
+                            .delete_absolute_es(&format!("/{DATA_VIEW_INDEX}"))
+                            .await
+                        {
+                            Ok(_) => match verify_data_view_index_deleted(self.transport).await {
+                                Ok(()) => self.ownership.data_view_index = false,
+                                Err(error) => errors.push(format!(
+                                    "verifying data-view index {DATA_VIEW_INDEX} deletion: {}",
+                                    error.message
+                                )),
+                            },
+                            Err(error) => errors.push(format!(
+                                "deleting data-view index {DATA_VIEW_INDEX}: {}",
+                                error.message
+                            )),
+                        }
+                    }
+                    Ok(_) => errors.push(format!(
+                        "refusing to delete data-view index {DATA_VIEW_INDEX}: its marker fields no longer match"
+                    )),
+                    Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                        match verify_data_view_index_deleted(self.transport).await {
+                            Ok(()) => self.ownership.data_view_index = false,
+                            Err(error) => errors.push(format!(
+                                "verifying markerless data-view index {DATA_VIEW_INDEX}: {}",
+                                error.message
+                            )),
+                        }
+                    }
+                    Err(error) => errors.push(format!(
+                        "checking data-view index {DATA_VIEW_INDEX}: {}",
+                        error.message
+                    )),
+                }
+            }
+        }
 
         if self.ownership.rule {
             match self
@@ -1774,6 +2173,84 @@ fn prebuilt_is_current(status: &Value) -> elasticctl_core::Result<bool> {
     })
 }
 
+#[derive(Debug)]
+enum PrebuiltConvergenceError {
+    Put {
+        attempt: usize,
+        error: elasticctl_core::Error,
+    },
+    Get {
+        attempt: usize,
+        error: elasticctl_core::Error,
+    },
+    Schema {
+        attempt: usize,
+        error: elasticctl_core::Error,
+    },
+    Exhausted {
+        attempts: usize,
+        last_status: Value,
+    },
+}
+
+impl PrebuiltConvergenceError {
+    fn public_summary(&self) -> String {
+        let (class, attempt, status) = match self {
+            Self::Put { attempt, error } => ("put", *attempt, error.http_status),
+            Self::Get { attempt, error } => ("get", *attempt, error.http_status),
+            Self::Schema { attempt, .. } => ("schema", *attempt, None),
+            Self::Exhausted { attempts, .. } => ("exhausted", *attempts, None),
+        };
+        let status = status.map_or_else(|| "none".to_string(), |value| value.to_string());
+        format!("class={class} attempt={attempt} status={status}")
+    }
+
+    fn private_detail(&self) -> String {
+        match self {
+            Self::Put { attempt, error } => {
+                format!("prebuilt PUT attempt {attempt}: {}", error.message)
+            }
+            Self::Get { attempt, error } => {
+                format!("prebuilt GET attempt {attempt}: {}", error.message)
+            }
+            Self::Schema { attempt, error } => {
+                format!("prebuilt status attempt {attempt}: {}", error.message)
+            }
+            Self::Exhausted {
+                attempts,
+                last_status,
+            } => format!("prebuilt convergence exhausted after {attempts} attempts: {last_status}"),
+        }
+    }
+}
+
+const PREBUILT_CONVERGENCE_ATTEMPTS: usize = 5;
+
+async fn converge_prebuilt_rules(
+    transport: &elasticctl_core::Transport,
+) -> Result<usize, PrebuiltConvergenceError> {
+    let mut last_status = Value::Null;
+    for attempt in 1..=PREBUILT_CONVERGENCE_ATTEMPTS {
+        transport
+            .put_once("/api/detection_engine/rules/prepackaged", &json!({}))
+            .await
+            .map_err(|error| PrebuiltConvergenceError::Put { attempt, error })?;
+        let status = transport
+            .get("/api/detection_engine/rules/prepackaged/_status")
+            .await
+            .map_err(|error| PrebuiltConvergenceError::Get { attempt, error })?;
+        match prebuilt_is_current(&status) {
+            Ok(true) => return Ok(attempt),
+            Ok(false) => last_status = status,
+            Err(error) => return Err(PrebuiltConvergenceError::Schema { attempt, error }),
+        }
+    }
+    Err(PrebuiltConvergenceError::Exhausted {
+        attempts: PREBUILT_CONVERGENCE_ATTEMPTS,
+        last_status,
+    })
+}
+
 fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Result<bool> {
     let fields = [
         "rules_installed",
@@ -1792,6 +2269,808 @@ fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Result<bool> {
             })?;
         Ok(current && count == 0)
     })
+}
+
+fn data_view_spec_from_response(
+    body: &Value,
+    context: &str,
+) -> elasticctl_core::Result<elasticctl_api::data_views::DataViewSpec> {
+    elasticctl_api::data_views_ops::normalize(&body["data_view"])
+        .map_err(|error| recording_error(format!("{context}: {}", error.message)))
+}
+
+fn require_acknowledged(body: &Value, context: &str) -> elasticctl_core::Result<()> {
+    if matches!(
+        body,
+        Value::Object(values)
+            if values.len() == 1 && values.get("acknowledged") == Some(&Value::Bool(true))
+    ) {
+        Ok(())
+    } else {
+        Err(recording_error(format!(
+            "{context}: response must carry acknowledged: true"
+        )))
+    }
+}
+
+/// Decode the raw default response the recorder puts in a public fixture.
+/// Production canonicalizes the same two no-default values; this separate
+/// strict decoder preserves their raw shape for fixture evidence.
+fn decode_raw_data_view_default(body: &Value) -> elasticctl_core::Result<Option<String>> {
+    let Value::Object(values) = body else {
+        return Err(recording_error(
+            "data-view default GET: expected a one-key object envelope",
+        ));
+    };
+    if values.len() != 1 {
+        return Err(recording_error(
+            "data-view default GET: expected exactly data_view_id",
+        ));
+    }
+    match values.get("data_view_id") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) if id.is_empty() => Ok(None),
+        Some(Value::String(id)) => Ok(Some(id.clone())),
+        _ => Err(recording_error(
+            "data-view default GET: data_view_id must be string or null",
+        )),
+    }
+}
+
+fn require_restored_raw_data_view_default(
+    expected_raw: &Value,
+    restored_raw: &Value,
+    expected_canonical: &Option<String>,
+) -> elasticctl_core::Result<()> {
+    if restored_raw == expected_raw
+        && decode_raw_data_view_default(restored_raw)? == *expected_canonical
+    {
+        Ok(())
+    } else {
+        Err(recording_error(
+            "data-view default did not restore to its exact raw snapshot",
+        ))
+    }
+}
+
+fn data_view_default_restore_request(id: Option<&str>) -> Value {
+    json!({"data_view_id": id, "force": true})
+}
+
+async fn capture_data_view_default_snapshot(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<(Value, Option<String>)> {
+    let raw = recorder_get_data_view_default(t, "reading initial data-view default failed").await?;
+    let original_default = decode_raw_data_view_default(&raw)?;
+    if matches!(
+        original_default.as_deref(),
+        Some(DATA_VIEW_SOURCE_ID | DATA_VIEW_REPLACEMENT_ID)
+    ) {
+        return Err(recording_error(
+            "refusing to record: marker data view is the current default",
+        ));
+    }
+    if original_default
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty())
+    {
+        return Err(recording_error(
+            "refusing to record: default data view id is whitespace-only",
+        ));
+    }
+    if let Some(id) = original_default.as_deref() {
+        elasticctl_api::data_views::get(t, id)
+            .await
+            .map_err(|error| {
+                safe_recording_transport_error("resolving initial data-view default failed", error)
+            })?;
+    }
+    Ok((raw, original_default))
+}
+
+fn require_data_view_fields_success<'a>(
+    body: &'a Value,
+    requested_id: &str,
+) -> elasticctl_core::Result<Option<&'a Value>> {
+    let Value::Object(values) = body else {
+        return Err(recording_error(
+            "data-view field metadata update: expected acknowledged or data_view envelope",
+        ));
+    };
+    if values.len() != 1 {
+        return Err(recording_error(
+            "data-view field metadata update: expected exactly one success envelope key",
+        ));
+    }
+    if values.get("acknowledged") == Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    let Some(Value::Object(data_view)) = values.get("data_view") else {
+        return Err(recording_error(
+            "data-view field metadata update: expected acknowledged: true or data_view object",
+        ));
+    };
+    match data_view.get("id") {
+        Some(Value::String(id)) if !id.is_empty() && id == requested_id => Ok(Some(body)),
+        _ => Err(recording_error(
+            "data-view field metadata update: data_view id must be a non-empty request-matching string",
+        )),
+    }
+}
+
+fn require_persisted_data_view_metadata(body: &Value) -> elasticctl_core::Result<()> {
+    let field_attrs = body
+        .pointer("/data_view/fieldAttrs")
+        .and_then(Value::as_object)
+        .ok_or_else(|| recording_error("data-view metadata GET did not return fieldAttrs"))?;
+    let host = field_attrs
+        .get("host.name")
+        .and_then(Value::as_object)
+        .ok_or_else(|| recording_error("data-view metadata GET did not retain host.name"))?;
+    let metadata = field_attrs
+        .get("elasticctl.metadata")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            recording_error("data-view metadata GET did not retain elasticctl.metadata")
+        })?;
+    if host.get("count").and_then(Value::as_u64) != Some(2)
+        || host.contains_key("customLabel")
+        || metadata.get("count").and_then(Value::as_u64) != Some(1)
+        || metadata.get("customDescription").and_then(Value::as_str)
+            != Some(DATA_VIEW_METADATA_DESCRIPTION)
+    {
+        return Err(recording_error(
+            "data-view metadata GET did not preserve the documented marker values",
+        ));
+    }
+    Ok(())
+}
+
+fn raw_scripted_field_present(body: &Value) -> bool {
+    body.pointer("/data_view/fields/elasticctl.legacy/scripted")
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+fn require_empty_or_acknowledged_delete_success(body: &Value) -> elasticctl_core::Result<()> {
+    match body {
+        Value::Null => Ok(()),
+        Value::Object(values)
+            if values.len() == 1 && values["acknowledged"] == Value::Bool(true) =>
+        {
+            Ok(())
+        }
+        _ => Err(recording_error(
+            "data-view direct delete: expected empty response body or acknowledged: true",
+        )),
+    }
+}
+
+fn require_pending_data_view_default_state(
+    lease: &PendingDefaultRestore,
+    current_raw: &Value,
+) -> elasticctl_core::Result<()> {
+    let current = decode_raw_data_view_default(current_raw)?;
+    let source = current.as_deref() == Some(DATA_VIEW_SOURCE_ID);
+    let no_default = current.is_none();
+    let allowed = current_raw == &lease.raw
+        || match lease.phase {
+            PendingDefaultRestorePhase::CreateMayImplicitlySetSource => {
+                lease.canonical.is_none() && source
+            }
+            PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged => {
+                source || no_default
+            }
+        };
+    if allowed {
+        Ok(())
+    } else {
+        Err(recording_error(
+            "data-view default is outside the pending restore lease",
+        ))
+    }
+}
+
+fn require_pending_data_view_default_restore_state(
+    lease: &PendingDefaultRestore,
+    current_raw: &Value,
+) -> elasticctl_core::Result<()> {
+    // Source create that displaced a preexisting default is a main-flow
+    // failure, but cleanup owns that source and must still be able to restore
+    // the preexisting default without widening normal-flow acceptance.
+    if lease.phase == PendingDefaultRestorePhase::CreateMayImplicitlySetSource
+        && decode_raw_data_view_default(current_raw)?.as_deref() == Some(DATA_VIEW_SOURCE_ID)
+    {
+        return Ok(());
+    }
+    require_pending_data_view_default_state(lease, current_raw)
+}
+
+async fn restore_pending_data_view_default(
+    session: &mut RecordingSession<'_>,
+) -> elasticctl_core::Result<(Value, Value, Value)> {
+    let lease = session
+        .ownership
+        .pending_data_view_default_restore
+        .clone()
+        .ok_or_else(|| recording_error("missing pending data-view default restore lease"))?;
+    let current = recorder_get_data_view_default(
+        session.transport,
+        "checking pending data-view default before restore failed",
+    )
+    .await?;
+    require_pending_data_view_default_restore_state(&lease, &current)?;
+
+    let request = data_view_default_restore_request(lease.canonical.as_deref());
+    let response = recorder_post_data_view_default(
+        session.transport,
+        &request,
+        "restoring original data-view default failed",
+    )
+    .await?;
+    require_acknowledged(&response, "data-view default restore")?;
+    let restored = recorder_get_data_view_default(
+        session.transport,
+        "checking restored data-view default failed",
+    )
+    .await?;
+    require_restored_raw_data_view_default(&lease.raw, &restored, &lease.canonical)?;
+    session.ownership.pending_data_view_default_restore = None;
+    Ok((request, response, restored))
+}
+
+async fn record_empty_data_view_self_preview(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<(Value, Value)> {
+    let request = json!({"fromId": DATA_VIEW_SOURCE_ID, "toId": DATA_VIEW_SOURCE_ID});
+    record_trace("data-views-preview-request");
+    let response = t
+        .post("/api/data_views/swap_references/_preview", Some(&request))
+        .await?;
+    record_trace("data-views-preview-check");
+    let references = serde_json::from_value::<Vec<elasticctl_api::data_views::DataViewReference>>(
+        response["result"].clone(),
+    )
+    .map_err(|error| recording_error(format!("data-view self-swap preview: {error}")))?;
+    if !references.is_empty() {
+        return Err(recording_error(
+            "data-view self-swap preview returned unexpected references",
+        ));
+    }
+    Ok((request, response))
+}
+
+/// Claim the validated raw default immediately before creating the fixed
+/// source. Source create may implicitly set that source as default, so this
+/// pending lease and source ownership must exist before the POST can start.
+async fn create_source_with_pending_default_lease(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+    baseline_raw: &Value,
+    original_default: &Option<String>,
+    create_body: &Value,
+) -> elasticctl_core::Result<Value> {
+    let t = session.transport;
+    record_trace("data-views-default-before-create");
+    let raw_before_create = recorder_get_data_view_default(
+        t,
+        "rereading data-view default before source create failed",
+    )
+    .await?;
+    record_trace("data-views-default-before-create-check");
+    if raw_before_create != *baseline_raw
+        || decode_raw_data_view_default(&raw_before_create)? != *original_default
+    {
+        return Err(recording_error(
+            "data-view default changed since read-only preflight",
+        ));
+    }
+    session.ownership.pending_data_view_default_restore = Some(PendingDefaultRestore {
+        raw: raw_before_create.clone(),
+        canonical: original_default.clone(),
+        phase: PendingDefaultRestorePhase::CreateMayImplicitlySetSource,
+    });
+    recording.fixtures.push(data_view_fixture(
+        "data_view_default_get",
+        flavor,
+        version,
+        raw_before_create,
+    ));
+    session.ownership.data_view_source = true;
+    record_trace("data-views-source-create");
+    let created = t
+        .post("/api/data_views/data_view", Some(create_body))
+        .await?;
+    record_trace("data-views-default-after-create");
+    let default_after_create =
+        recorder_get_data_view_default(t, "checking data-view default after source create failed")
+            .await?;
+    record_trace("data-views-default-after-create-check");
+    let lease = session
+        .ownership
+        .pending_data_view_default_restore
+        .as_ref()
+        .ok_or_else(|| recording_error("missing pending data-view default restore lease"))?;
+    require_pending_data_view_default_state(lease, &default_after_create)?;
+    Ok(created)
+}
+
+/// Record the full marker-scoped data-view lifecycle. Responses remain in
+/// memory until the source, replacement, backing index, and original default
+/// have all been restored or deleted.
+async fn record_data_views(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+) -> elasticctl_core::Result<()> {
+    let t = session.transport;
+    record_trace("data-views-preflight-source");
+    require_absent_data_view(t, DATA_VIEW_SOURCE_ID).await?;
+    record_trace("data-views-preflight-replacement");
+    require_absent_data_view(t, DATA_VIEW_REPLACEMENT_ID).await?;
+    record_trace("data-views-preflight-index");
+    require_absent_data_view_index(t).await?;
+
+    // The direct get is deliberately recorded as a classified 404, proving
+    // the stable route before this run creates its marker source.
+    record_trace("data-views-source-not-found");
+    match t
+        .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => recording
+            .fixtures
+            .push(error_fixture("data_view_not_found", flavor, version, error)),
+        Ok(_) => return Err(recording_error("marker data view appeared before create")),
+        Err(error) => return Err(error),
+    }
+
+    session.ownership.data_view_index = true;
+    record_trace("data-views-index-create");
+    t.post_absolute_es(
+        &format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}?refresh=wait_for"),
+        &json!({"marker": "elasticctl-sample", "probe": "data-view"}),
+    )
+    .await?;
+    record_trace("data-views-index-check");
+    let index_proof = t
+        .get_absolute_es(&format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}"))
+        .await?;
+    record_trace("data-views-index-proof-check");
+    if !owns_data_view_index(&index_proof) {
+        return Err(recording_error(
+            "data-view index write did not prove the fixed marker identity",
+        ));
+    }
+
+    // Validate and resolve the read-only baseline only after the source
+    // direct-404 and backing-index setup. A second exact raw GET immediately
+    // before create becomes the pending cleanup lease and fixture evidence.
+    record_trace("data-views-default-snapshot");
+    let (baseline_raw, original_default) = capture_data_view_default_snapshot(t).await?;
+
+    let source = json!({
+        "id": DATA_VIEW_SOURCE_ID,
+        "title": "elasticctl-sample-data-view-*",
+        "name": "elasticctl sample source view",
+        "timeFieldName": "@timestamp",
+        "allowNoIndex": true,
+        "allowHidden": true,
+        "sourceFilters": [{"value": "elasticctl.private.*"}],
+        "fieldFormats": {"bytes": {"id": "bytes"}},
+        "runtimeFieldMap": {
+            "elasticctl.runtime": {"type": "keyword", "script": {"source": "emit('elasticctl-sample');"}}
+        },
+        "fieldAttrs": {"host.name": {"customLabel": "elasticctl sample host"}},
+        "fields": {
+            "elasticctl.legacy": {"name": "elasticctl.legacy", "scripted": true, "type": "number", "script": "return 1;"}
+        }
+    });
+    let create_body = json!({"data_view": source, "override": false});
+    let created = create_source_with_pending_default_lease(
+        session,
+        recording,
+        flavor,
+        version,
+        &baseline_raw,
+        &original_default,
+        &create_body,
+    )
+    .await?;
+    record_trace("data-views-source-get");
+    let got = t
+        .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
+        .await?;
+    record_trace("data-views-scripted-check");
+    let create_scripted = raw_scripted_field_present(&created);
+    let get_scripted = raw_scripted_field_present(&got);
+    if create_scripted != get_scripted {
+        return Err(recording_error(
+            "data-view raw scripted create and get observations disagree",
+        ));
+    }
+    record_trace("data-views-create-check");
+    if created["data_view"]["id"].as_str() != Some(DATA_VIEW_SOURCE_ID)
+        || got["data_view"]["allowHidden"].as_bool() != Some(true)
+    {
+        return Err(recording_error(
+            "data-view create did not preserve the marker id and allowHidden: true",
+        ));
+    }
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_create",
+        flavor,
+        version,
+        create_body,
+        created,
+    ));
+
+    record_trace("data-views-list");
+    let mut listed = t.get("/api/data_views").await?;
+    let views = listed
+        .get_mut("data_view")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| recording_error("data-view list response must carry data_view array"))?;
+    views.retain(|view| view["id"].as_str() == Some(DATA_VIEW_SOURCE_ID));
+    record_trace("data-views-list-check");
+    if views.len() != 1 {
+        return Err(recording_error(
+            "scoped data-view list did not contain exactly the marker source",
+        ));
+    }
+    recording.fixtures.push(data_view_fixture(
+        "data_views_list",
+        flavor,
+        version,
+        listed,
+    ));
+
+    recording
+        .fixtures
+        .push(data_view_fixture("data_view_get", flavor, version, got));
+
+    let update_body = json!({
+        "data_view": {
+            "title": "elasticctl-sample-data-view-updated-*",
+            "name": "elasticctl sample updated view",
+            "sourceFilters": [{"value": "elasticctl.private.updated.*"}]
+        },
+        "refresh_fields": true
+    });
+    record_trace("data-views-update");
+    let updated = t
+        .post(
+            &format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"),
+            Some(&update_body),
+        )
+        .await?;
+    record_trace("data-views-update-check");
+    if updated["data_view"]["allowHidden"].as_bool() != Some(true)
+        || updated["data_view"]["title"].as_str() != Some("elasticctl-sample-data-view-updated-*")
+    {
+        return Err(recording_error(
+            "data-view update did not preserve allowHidden or its documented base update",
+        ));
+    }
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_update",
+        flavor,
+        version,
+        update_body,
+        updated,
+    ));
+
+    let metadata_body = json!({
+        "fields": {
+            "host.name": {"count": 2, "customLabel": null},
+            "elasticctl.metadata": {
+                "count": 1,
+                "customDescription": DATA_VIEW_METADATA_DESCRIPTION
+            }
+        }
+    });
+    record_trace("data-views-fields");
+    let metadata = t
+        .post(
+            &format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}/fields"),
+            Some(&metadata_body),
+        )
+        .await?;
+    record_trace("data-views-fields-check");
+    if let Some(metadata_envelope) =
+        require_data_view_fields_success(&metadata, DATA_VIEW_SOURCE_ID)?
+    {
+        require_persisted_data_view_metadata(metadata_envelope)?;
+    }
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_fields",
+        flavor,
+        version,
+        metadata_body,
+        metadata,
+    ));
+    record_trace("data-views-fields-get");
+    let metadata_get = t
+        .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
+        .await?;
+    record_trace("data-views-fields-get-check");
+    require_persisted_data_view_metadata(&metadata_get)?;
+    recording.fixtures.push(data_view_fixture(
+        "data_view_fields_get",
+        flavor,
+        version,
+        metadata_get,
+    ));
+
+    let hidden_update = json!({"data_view": {"allowHidden": false}, "refresh_fields": true});
+    record_trace("data-views-hidden-update");
+    match t
+        .post(
+            &format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"),
+            Some(&hidden_update),
+        )
+        .await
+    {
+        Err(error) if error.http_status == Some(400) => recording.fixtures.push(error_fixture(
+            "data_view_allow_hidden_rejected",
+            flavor,
+            version,
+            error,
+        )),
+        Ok(response) => {
+            return Err(recording_error(format!(
+                "data-view update unexpectedly accepted allowHidden: {response}"
+            )));
+        }
+        Err(error) => return Err(error),
+    }
+    record_trace("data-views-hidden-get");
+    let after_rejection = t
+        .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
+        .await?;
+    record_trace("data-views-hidden-check");
+    if after_rejection["data_view"]["allowHidden"].as_bool() != Some(true) {
+        return Err(recording_error(
+            "rejected allowHidden update changed the stored data view",
+        ));
+    }
+
+    record_trace("data-views-default-before");
+    let default_before =
+        recorder_get_data_view_default(t, "reading data-view default before mutation failed")
+            .await?;
+    record_trace("data-views-default-before-check");
+    let lease = session
+        .ownership
+        .pending_data_view_default_restore
+        .as_ref()
+        .ok_or_else(|| recording_error("missing pending data-view default restore lease"))?;
+    require_pending_data_view_default_state(lease, &default_before)?;
+    let default_set = json!({"data_view_id": DATA_VIEW_SOURCE_ID, "force": true});
+    record_trace("data-views-default-claim");
+    session
+        .ownership
+        .pending_data_view_default_restore
+        .as_mut()
+        .ok_or_else(|| recording_error("missing pending data-view default restore lease"))?
+        .phase = PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged;
+    record_trace("data-views-default-set");
+    let default_set_response =
+        recorder_post_data_view_default(t, &default_set, "setting marker data-view default failed")
+            .await?;
+    record_trace("data-views-default-set-check");
+    require_acknowledged(&default_set_response, "data-view default set")?;
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_default_set",
+        flavor,
+        version,
+        default_set,
+        default_set_response,
+    ));
+    let default_unset = json!({"data_view_id": null, "force": true});
+    record_trace("data-views-default-unset");
+    let default_unset_response = recorder_post_data_view_default(
+        t,
+        &default_unset,
+        "unsetting marker data-view default failed",
+    )
+    .await?;
+    record_trace("data-views-default-unset-check");
+    require_acknowledged(&default_unset_response, "data-view default unset")?;
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_default_unset",
+        flavor,
+        version,
+        default_unset,
+        default_unset_response,
+    ));
+    let default_before_swap = json!({"data_view_id": DATA_VIEW_SOURCE_ID, "force": true});
+    record_trace("data-views-default-before-swap");
+    let default_before_swap_response = recorder_post_data_view_default(
+        t,
+        &default_before_swap,
+        "setting marker data-view default before swap failed",
+    )
+    .await?;
+    record_trace("data-views-default-before-swap-check");
+    require_acknowledged(
+        &default_before_swap_response,
+        "data-view default set before swap",
+    )?;
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_default_set_before_swap",
+        flavor,
+        version,
+        default_before_swap,
+        default_before_swap_response,
+    ));
+
+    record_trace("data-views-preview");
+    let (preview_request, preview) = record_empty_data_view_self_preview(t).await?;
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_swap_preview",
+        flavor,
+        version,
+        preview_request,
+        preview,
+    ));
+
+    record_trace("data-views-replacement-build");
+    let replacement: elasticctl_api::data_views::DataViewSpec = serde_json::from_value(json!({
+        "id": DATA_VIEW_REPLACEMENT_ID,
+        "title": "elasticctl-sample-data-view-replacement-*",
+        "name": "elasticctl sample replacement view",
+        "allowNoIndex": true
+    }))
+    .map_err(|error| recording_error(format!("building replacement data view: {error}")))?;
+    let replacement_request = json!({"data_view": replacement, "override": false});
+    session.ownership.data_view_replacement = true;
+    record_trace("data-views-replacement-create");
+    let replacement_created = t
+        .post("/api/data_views/data_view", Some(&replacement_request))
+        .await?;
+    record_trace("data-views-replacement-check");
+    if data_view_spec_from_response(&replacement_created, "replacement create")?.id
+        != DATA_VIEW_REPLACEMENT_ID
+    {
+        return Err(recording_error(
+            "replacement create did not preserve its marker id",
+        ));
+    }
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_replacement_create",
+        flavor,
+        version,
+        replacement_request,
+        replacement_created,
+    ));
+
+    let swap_request = json!({
+        "delete": true,
+        "fromId": DATA_VIEW_SOURCE_ID,
+        "toId": DATA_VIEW_REPLACEMENT_ID
+    });
+    record_trace("data-views-swap");
+    let swapped = t
+        .post("/api/data_views/swap_references", Some(&swap_request))
+        .await?;
+    record_trace("data-views-swap-check");
+    if swapped["result"] != Value::Array(Vec::new())
+        || swapped["deleteStatus"]["deletePerformed"].as_bool() != Some(true)
+        || swapped["deleteStatus"]["remainingRefs"].as_u64() != Some(0)
+    {
+        return Err(recording_error(
+            "data-view swap did not report deleted source with zero remaining references",
+        ));
+    }
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_swap",
+        flavor,
+        version,
+        swap_request,
+        swapped,
+    ));
+    record_trace("data-views-source-after-swap");
+    match t
+        .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            recording.fixtures.push(error_fixture(
+                "data_view_swap_source_not_found",
+                flavor,
+                version,
+                error,
+            ));
+            session.ownership.data_view_source = false;
+        }
+        Ok(_) => return Err(recording_error("source data view still exists after swap")),
+        Err(error) => return Err(error),
+    }
+
+    record_trace("data-views-default-after-swap");
+    let default_after_swap =
+        recorder_get_data_view_default(t, "reading data-view default after swap failed").await?;
+    record_trace("data-views-default-after-swap-check");
+    if default_after_swap["data_view_id"].as_str() != Some(DATA_VIEW_SOURCE_ID) {
+        return Err(recording_error(
+            "data-view swap changed the default instead of retaining the deleted source id",
+        ));
+    }
+    recording.fixtures.push(data_view_fixture(
+        "data_view_default_after_swap",
+        flavor,
+        version,
+        default_after_swap,
+    ));
+
+    record_trace("data-views-default-restore");
+    let (restore_request, restored, restored_get) =
+        restore_pending_data_view_default(session).await?;
+    record_trace("data-views-default-restore-check");
+    record_trace("data-views-default-restored-get");
+    record_trace("data-views-default-restored-check");
+    recording.fixtures.push(data_view_exchange_fixture(
+        "data_view_default_restore",
+        flavor,
+        version,
+        restore_request,
+        restored,
+    ));
+    recording.fixtures.push(data_view_fixture(
+        "data_view_default_restored_get",
+        flavor,
+        version,
+        restored_get,
+    ));
+
+    record_trace("data-views-replacement-delete");
+    let deleted = t
+        .delete(&format!(
+            "/api/data_views/data_view/{DATA_VIEW_REPLACEMENT_ID}"
+        ))
+        .await?;
+    record_trace("data-views-replacement-delete-check");
+    require_empty_or_acknowledged_delete_success(&deleted)?;
+    recording.fixtures.push(data_view_fixture(
+        "data_view_delete",
+        flavor,
+        version,
+        deleted,
+    ));
+    record_trace("data-views-replacement-gone-check");
+    match t
+        .get(&format!(
+            "/api/data_views/data_view/{DATA_VIEW_REPLACEMENT_ID}"
+        ))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            recording.fixtures.push(error_fixture(
+                "data_view_delete_not_found",
+                flavor,
+                version,
+                error,
+            ));
+            session.ownership.data_view_replacement = false;
+        }
+        Ok(_) => {
+            return Err(recording_error(
+                "data view still exists after direct delete",
+            ));
+        }
+        Err(error) => return Err(error),
+    }
+
+    record_trace("data-views-index-delete");
+    t.delete_absolute_es(&format!("/{DATA_VIEW_INDEX}")).await?;
+    record_trace("data-views-index-delete-check");
+    verify_data_view_index_deleted(t).await?;
+    session.ownership.data_view_index = false;
+    Ok(())
 }
 
 /// Record the search probe: a marker-scoped scratch index seeded with three
@@ -1936,8 +3215,11 @@ async fn record_alerts_probe(
     flavor: &str,
     version: &str,
 ) -> elasticctl_core::Result<AlertsProbe> {
+    record_trace("alerts-preflight-rule");
     require_absent_alert_rule(session.transport).await?;
+    record_trace("alerts-preflight-index");
     require_absent_alert_index(session.transport).await?;
+    record_trace("alerts-preflight-open");
     require_no_open_marker_alerts(session.transport).await?;
 
     let t = session.transport;
@@ -1950,6 +3232,7 @@ async fn record_alerts_probe(
     // early cannot cause it to delete a foreign object.
     session.ownership.alert_index = true;
     session.ownership.alert_index_claimed = true;
+    record_trace("alerts-index-write");
     for (id, seq) in [("1", 1_i64), ("2", 2), ("3", 3)] {
         let doc = json!({
             "@timestamp": now_rfc3339(),
@@ -1962,12 +3245,14 @@ async fn record_alerts_probe(
     let proof = t
         .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
         .await?;
+    record_trace("alerts-index-proof");
     if !owns_alert_index(&proof) {
         return Err(recording_error(
             "alert index write did not prove the fixed marker identity",
         ));
     }
     // `_refresh` rejects a body, so use the GET form, which sends none.
+    record_trace("alerts-index-refresh");
     t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
         .await?;
 
@@ -1988,6 +3273,7 @@ async fn record_alerts_probe(
     });
     session.ownership.alert_rule = true;
     session.ownership.alert_rule_claimed = true;
+    record_trace("alerts-rule-create");
     let created_rule = t
         .post("/api/detection_engine/rules", Some(&rule_body))
         .await?;
@@ -2020,6 +3306,7 @@ async fn record_alerts_probe(
     });
     let mut search_response = Value::Null;
     let mut found = false;
+    record_trace("alerts-poll");
     for attempt in 0..ALERT_POLL_ATTEMPTS {
         search_response = t
             .post(elasticctl_api::alerts::SEARCH_PATH, Some(&search_request))
@@ -2051,6 +3338,7 @@ async fn record_alerts_probe(
             error.message
         ))
     })?;
+    record_trace("alerts-page");
     if page.hits.is_empty() {
         return Err(recording_error(
             "signals_search reported a positive total but decoded zero hits",
@@ -2074,6 +3362,7 @@ async fn record_alerts_probe(
             }
         }
     }
+    record_trace("alerts-source");
     let mut id_map: BTreeMap<String, String> = BTreeMap::new();
     for (i, hit) in page.hits.iter().enumerate() {
         let placeholder = format!("elasticctl-fixture-alert-{}", i + 1);
@@ -2108,6 +3397,7 @@ async fn record_alerts_probe(
         "status": "acknowledged",
         "reason": "false_positive",
     });
+    record_trace("alerts-status");
     let (ids_status_request, ids_status_response, ids_reason_accepted) = match t
         .post(elasticctl_api::alerts::STATUS_PATH, Some(&with_reason))
         .await
@@ -2115,8 +3405,8 @@ async fn record_alerts_probe(
         Ok(response) => (with_reason, response, true),
         Err(error) => {
             println!(
-                "signals/status signal_ids+reason failed ({}); retrying without reason",
-                error.message
+                "signals/status signal_ids+reason failed: {}; retrying without reason",
+                safe_recording_error_summary(&error)
             );
             let without_reason = json!({
                 "signal_ids": [first_id.clone()],
@@ -2155,6 +3445,7 @@ async fn record_alerts_probe(
         "ids": [first_id.clone()],
         "tags": {"tags_to_add": ["triage-check"], "tags_to_remove": []},
     });
+    record_trace("alerts-tags-add");
     let add_tags_response = t
         .post(elasticctl_api::alerts::TAGS_PATH, Some(&add_tags_request))
         .await?;
@@ -2165,6 +3456,7 @@ async fn record_alerts_probe(
         "ids": [first_id.clone()],
         "tags": {"tags_to_add": [], "tags_to_remove": ["triage-check"]},
     });
+    record_trace("alerts-tags-remove");
     t.post(
         elasticctl_api::alerts::TAGS_PATH,
         Some(&remove_tags_request),
@@ -2188,6 +3480,7 @@ async fn record_alerts_probe(
     // Activated user profiles. `uid` is rewritten to a per-profile
     // placeholder, never blanket-redacted: the assignees exchange below
     // needs it to stay a decodable, distinguishable value.
+    record_trace("alerts-users");
     let users_body = t
         .get_internal(&elasticctl_api::profiles::internal_find_path(""))
         .await?;
@@ -2225,6 +3518,7 @@ async fn record_alerts_probe(
         "ids": [first_id.clone()],
         "assignees": {"add": [assignee_uid.clone()], "remove": []},
     });
+    record_trace("alerts-assignees-add");
     let add_assignees_response = t
         .post(
             elasticctl_api::alerts::ASSIGNEES_PATH,
@@ -2241,6 +3535,7 @@ async fn record_alerts_probe(
         "ids": [first_id.clone()],
         "assignees": {"add": [], "remove": [assignee_uid.clone()]},
     });
+    record_trace("alerts-assignees-remove");
     t.post(
         elasticctl_api::alerts::ASSIGNEES_PATH,
         Some(&remove_assignees_request),
@@ -2265,6 +3560,7 @@ async fn record_alerts_probe(
 
     // Profile suggest, public route. Serverless answers 410; record
     // whichever shape the live route actually returns.
+    record_trace("alerts-profile-suggest");
     match t
         .post_absolute_es(
             elasticctl_api::profiles::PUBLIC_SUGGEST_PATH,
@@ -2315,6 +3611,7 @@ async fn record_alerts_probe(
     // invites a genuine version-conflict race between an in-flight execution
     // and that close. Disabling here bounds the alert volume to what this
     // probe itself produced, the same as the single-function original.
+    record_trace("alerts-rule-disable");
     t.patch(
         "/api/detection_engine/rules",
         &json!({"rule_id": ALERT_RULE_ID, "enabled": false}),
@@ -2380,17 +3677,16 @@ async fn close_and_clean_alerts(
             }
             Err(error) if attempt < 5 => {
                 println!(
-                    "signals/status close-by-query attempt {attempt} failed transiently \
-                     ({}); retrying",
-                    error.message
+                    "signals/status close-by-query attempt {attempt} failed: {}; retrying",
+                    safe_recording_error_summary(&error)
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
             Err(error) => {
-                return Err(recording_error(format!(
-                    "close-by-query: {}",
-                    error.message
-                )));
+                return Err(safe_recording_transport_error(
+                    "close-by-query failed",
+                    error,
+                ));
             }
         }
     }
@@ -2421,12 +3717,7 @@ async fn close_and_clean_alerts(
     // rule was disabled can still land alerts after the close above.
     // `sweep_close_marker_alerts` is the same helper `cleanup`'s last-resort
     // sweep uses.
-    sweep_close_marker_alerts(t).await.map_err(|error| {
-        recording_error(format!(
-            "alert probe left open residue after retrying the close-by-query sweep: {}",
-            error.message
-        ))
-    })?;
+    sweep_close_marker_alerts(t).await?;
 
     Ok(())
 }
@@ -2824,13 +4115,13 @@ async fn record_cases(
 }
 
 async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
+    record_trace("bootstrap");
     let responded = session.transport.get_with_headers("/api/status").await?;
     let mut status = responded.body.clone();
-    // The `metrics` object is a runtime snapshot (load, memory, uptime, cpu,
-    // `last_updated`) that changes on every poll, so a re-record is not
-    // byte-identical. Drop it (spec §8); flavor and version come from the
-    // stable `version` object.
-    strip_volatile(&mut status, &["metrics"]);
+    // Instance name/UUID identify the deployment and `metrics` is a runtime
+    // snapshot. Drop all three; flavor and version come from the stable
+    // product-build object.
+    scrub_status(&mut status);
     let version = status["version"]["number"]
         .as_str()
         .unwrap_or("unknown")
@@ -2895,9 +4186,12 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         }
     }
 
+    record_trace("prebuilt");
+    record_trace("prebuilt-status-before");
     let prebuilt_before = t
         .get("/api/detection_engine/rules/prepackaged/_status")
         .await?;
+    record_trace("prebuilt-status-before-check");
     if !prebuilt_is_current(&prebuilt_before)? {
         return Err(recording_error(
             "prebuilt rules or timelines are missing or outdated; run the separately guarded `cargo xtask seed` before recording",
@@ -2910,17 +4204,21 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         prebuilt_before.clone(),
         None,
     ));
+    record_trace("prebuilt-install");
     let prebuilt_install = t
         .put("/api/detection_engine/rules/prepackaged", &Value::Null)
         .await?;
+    record_trace("prebuilt-install-check");
     if !prebuilt_install_is_noop(&prebuilt_install)? {
         return Err(recording_error(
             "prebuilt install changed the stack despite a no-op status; refusing to record a mutation",
         ));
     }
+    record_trace("prebuilt-status-after");
     let prebuilt_after = t
         .get("/api/detection_engine/rules/prepackaged/_status")
         .await?;
+    record_trace("prebuilt-status-compare");
     if prebuilt_after != prebuilt_before {
         return Err(recording_error(
             "prebuilt status changed after the measured no-op install",
@@ -2934,6 +4232,7 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         None,
     ));
 
+    record_trace("exceptions-rules");
     let list = create_marked_list(session).await?;
     let list_server_id = list["id"]
         .as_str()
@@ -3181,9 +4480,15 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
         .await?,
     ));
 
+    record_trace("search");
     record_search(session, &mut recording, &flavor, &version).await?;
+    record_trace("data-views");
+    record_data_views(session, &mut recording, &flavor, &version).await?;
+    record_trace("alerts");
     let probe = record_alerts_probe(session, &mut recording, &flavor, &version).await?;
+    record_trace("cases");
     record_cases(session, &mut recording, &flavor, &version, &probe).await?;
+    record_trace("alerts-close");
     close_and_clean_alerts(
         session.transport,
         &mut recording,
@@ -3270,20 +4575,57 @@ async fn seed() {
     // stack. Use a higher default while keeping `ELASTICCTL_TIMEOUT` as an
     // override.
     let t = transport_from_env(600);
-    // Prebuilt Elastic rules give pull, diff, and preview real data.
-    let installed = t
-        .put("/api/detection_engine/rules/prepackaged", &json!({}))
-        .await
-        .expect("install prebuilt rules");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&installed).unwrap_or_default()
-    );
+    match converge_prebuilt_rules(&t).await {
+        Ok(attempts) => println!("prebuilt convergence succeeded: attempts={attempts}"),
+        Err(error) => {
+            eprintln!("prebuilt convergence failed: {}", error.public_summary());
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
 mod scrub_tests {
     use super::*;
+
+    #[test]
+    fn status_scrub_removes_instance_identity_and_runtime_metrics() {
+        let mut status = json!({
+            "name": "private-instance-name",
+            "uuid": "private-instance-uuid",
+            "version": {
+                "number": "9.6.0",
+                "build_hash": "public-product-build"
+            },
+            "metrics": {"process": {"uptime_in_millis": 42}}
+        });
+
+        scrub_status(&mut status);
+
+        assert_eq!(
+            status,
+            json!({
+                "version": {
+                    "number": "9.6.0",
+                    "build_hash": "public-product-build"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn recorder_error_summary_omits_server_messages() {
+        let error = elasticctl_core::Error::with_status(
+            elasticctl_core::ErrorKind::Conflict,
+            409,
+            "private object and index ids",
+        );
+
+        let summary = safe_recording_error_summary(&error);
+
+        assert_eq!(summary, "class=conflict status=409");
+        assert!(!summary.contains("private"));
+    }
 
     #[test]
     fn dotted_identity_keys_are_scrubbed() {
@@ -3572,6 +4914,1366 @@ fn scrub_hosts_handles_authority_boundaries() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn mock_transport(server: &MockServer) -> elasticctl_core::Transport {
+        elasticctl_core::Transport::new(&elasticctl_core::Profile {
+            kibana_url: server.uri(),
+            es_url: Some(server.uri()),
+            api_key: Some("test".into()),
+            username: None,
+            password: None,
+            space: "default".into(),
+            verify: true,
+            timeout_secs: 5,
+        })
+        .expect("transport")
+    }
+
+    fn prebuilt_status(outstanding: u64) -> Value {
+        json!({
+            "rules_not_installed": outstanding,
+            "rules_not_updated": outstanding,
+            "timelines_not_installed": outstanding,
+            "timelines_not_updated": outstanding,
+        })
+    }
+
+    #[tokio::test]
+    async fn alert_sweep_failure_keeps_private_server_ids_out_of_both_call_paths() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(elasticctl_api::alerts::SEARCH_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": {"total": {"value": 1}}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(elasticctl_api::alerts::STATUS_PATH))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "message": "private alert and index ids"
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+
+        let error = sweep_close_marker_alerts(&transport)
+            .await
+            .expect_err("helper failure");
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Conflict);
+        assert_eq!(error.http_status, Some(409));
+        assert_eq!(error.message, "close-by-query sweep retry failed");
+        assert!(!error.message.contains("private"));
+
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let cleanup = match session.cleanup().await {
+            Ok(_) => panic!("cleanup must fail"),
+            Err(error) => error,
+        };
+        assert!(!cleanup.message.contains("private"));
+    }
+
+    #[test]
+    fn prebuilt_current_requires_each_outstanding_counter_to_be_zero_u64() {
+        assert!(prebuilt_is_current(&prebuilt_status(0)).expect("all zero"));
+        for field in [
+            "rules_not_installed",
+            "rules_not_updated",
+            "timelines_not_installed",
+            "timelines_not_updated",
+        ] {
+            let mut noncurrent = prebuilt_status(0);
+            noncurrent[field] = json!(1);
+            assert!(!prebuilt_is_current(&noncurrent).expect("valid noncurrent status"));
+
+            let mut malformed = prebuilt_status(0);
+            malformed[field] = json!("0");
+            assert!(prebuilt_is_current(&malformed).is_err());
+
+            let mut negative = prebuilt_status(0);
+            negative[field] = json!(-1);
+            assert!(prebuilt_is_current(&negative).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_current_on_first_pair_uses_exact_empty_object() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .and(body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(prebuilt_status(0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            converge_prebuilt_rules(&mock_transport(&server))
+                .await
+                .unwrap(),
+            1
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method.as_str(), "PUT");
+        assert_eq!(requests[1].method.as_str(), "GET");
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_retries_only_valid_false_status_in_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .and(body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(prebuilt_status(1)))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(prebuilt_status(0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            converge_prebuilt_rules(&mock_transport(&server))
+                .await
+                .unwrap(),
+            2
+        );
+        let requests = server.received_requests().await.expect("requests");
+        let methods: Vec<_> = requests
+            .iter()
+            .map(|request| request.method.as_str())
+            .collect();
+        assert_eq!(methods, ["PUT", "GET", "PUT", "GET"]);
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_stops_after_exactly_five_pairs() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .and(body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(PREBUILT_CONVERGENCE_ATTEMPTS as u64)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(prebuilt_status(1)))
+            .expect(PREBUILT_CONVERGENCE_ATTEMPTS as u64)
+            .mount(&server)
+            .await;
+
+        let error = converge_prebuilt_rules(&mock_transport(&server))
+            .await
+            .expect_err("five noncurrent statuses must exhaust");
+        assert!(matches!(
+            error,
+            PrebuiltConvergenceError::Exhausted { attempts: 5, .. }
+        ));
+        assert_eq!(
+            error.public_summary(),
+            "class=exhausted attempt=5 status=none"
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 10);
+        for (cycle, pair) in requests.chunks_exact(2).enumerate() {
+            assert_eq!(pair[0].method.as_str(), "PUT", "cycle {cycle}");
+            assert_eq!(
+                pair[0].url.path(),
+                "/api/detection_engine/rules/prepackaged",
+                "cycle {cycle}"
+            );
+            assert_eq!(
+                pair[0].body_json::<Value>().expect("PUT JSON body"),
+                json!({}),
+                "cycle {cycle}"
+            );
+            assert_eq!(pair[1].method.as_str(), "GET", "cycle {cycle}");
+            assert_eq!(
+                pair[1].url.path(),
+                "/api/detection_engine/rules/prepackaged/_status",
+                "cycle {cycle}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_put_failure_is_one_shot_and_does_not_leak() {
+        for response in [
+            ResponseTemplate::new(429).set_body_json(json!({"message": "private-put-429"})),
+            ResponseTemplate::new(500).set_body_json(json!({"message": "private-put-500"})),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .and(path("/api/detection_engine/rules/prepackaged"))
+                .and(body_json(json!({})))
+                .respond_with(response)
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/api/detection_engine/rules/prepackaged"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let error = converge_prebuilt_rules(&mock_transport(&server))
+                .await
+                .expect_err("one-shot prebuilt PUT failure");
+            let summary = error.public_summary();
+            assert!(summary.contains("class=put attempt=1"));
+            assert!(!summary.contains("private-put-429"));
+            assert!(!summary.contains("private-put-500"));
+            let requests = server.received_requests().await.expect("requests");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].method.as_str(), "PUT");
+        }
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_schema_failure_stops_after_one_status_get() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"rules_not_installed": 0})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = converge_prebuilt_rules(&mock_transport(&server))
+            .await
+            .expect_err("schema failure must stop");
+        assert!(error.public_summary().contains("class=schema attempt=1"));
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method.as_str(), "PUT");
+        assert_eq!(requests[1].method.as_str(), "GET");
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_retries_a_transient_status_get_without_a_second_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .and(body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(prebuilt_status(0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            converge_prebuilt_rules(&mock_transport(&server))
+                .await
+                .unwrap(),
+            1
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.method.as_str())
+                .collect::<Vec<_>>(),
+            ["PUT", "GET", "GET"]
+        );
+    }
+
+    #[tokio::test]
+    async fn prebuilt_convergence_stops_after_terminal_status_get_retries_without_a_second_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/detection_engine/rules/prepackaged"))
+            .and(body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules/prepackaged/_status"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(json!({"message": "private-status-body"})),
+            )
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let error = converge_prebuilt_rules(&mock_transport(&server))
+            .await
+            .expect_err("terminal status GET failure must stop convergence");
+        assert_eq!(error.public_summary(), "class=get attempt=1 status=503");
+        assert!(!error.public_summary().contains("private-status-body"));
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (request.method.as_str(), request.url.path()))
+                .collect::<Vec<_>>(),
+            [
+                ("PUT", "/api/detection_engine/rules/prepackaged"),
+                ("GET", "/api/detection_engine/rules/prepackaged/_status"),
+                ("GET", "/api/detection_engine/rules/prepackaged/_status"),
+                ("GET", "/api/detection_engine/rules/prepackaged/_status"),
+            ]
+        );
+    }
+
+    #[test]
+    fn record_trace_labels_are_static_safe_words() {
+        assert!(RECORD_TRACE_LABELS.contains(&"alerts-close"));
+        for label in [
+            "prebuilt-status-before",
+            "prebuilt-status-before-check",
+            "prebuilt-install",
+            "prebuilt-install-check",
+            "prebuilt-status-after",
+            "prebuilt-status-compare",
+        ] {
+            assert!(RECORD_TRACE_LABELS.contains(&label));
+        }
+        assert!(RECORD_TRACE_LABELS.iter().all(|label| {
+            record_trace_label_is_safe(label)
+                && !label.contains("http")
+                && !label.contains("url")
+                && !label.contains("body")
+        }));
+        for unsafe_label in [
+            "data views",
+            "data-views: private",
+            "data_views",
+            "data-views\n",
+        ] {
+            assert!(!record_trace_label_is_safe(unsafe_label));
+        }
+    }
+
+    #[tokio::test]
+    async fn data_view_index_preflight_refuses_an_existing_empty_or_nonmarker_index() {
+        for root in [
+            json!({"settings": {}}),
+            json!({"_source": {"marker": "someone-else"}}),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/{DATA_VIEW_INDEX}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(root))
+                .mount(&server)
+                .await;
+            let error = require_absent_data_view_index(&mock_transport(&server))
+                .await
+                .expect_err("existing root index must refuse");
+            assert!(error.message.contains("already exists"));
+            let requests = server.received_requests().await.expect("requests");
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), format!("/{DATA_VIEW_INDEX}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn data_view_index_delete_verification_retains_ownership_when_root_remains() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{DATA_VIEW_INDEX}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"settings": {}})))
+            .mount(&server)
+            .await;
+        let error = verify_data_view_index_deleted(&mock_transport(&server))
+            .await
+            .expect_err("root index still exists");
+        assert!(error.message.contains("still exists"));
+    }
+
+    #[tokio::test]
+    async fn data_view_recording_default_error_does_not_leak_the_server_envelope() {
+        let server = MockServer::start().await;
+        for id in [DATA_VIEW_SOURCE_ID, DATA_VIEW_REPLACEMENT_ID] {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/data_views/data_view/{id}")))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path(format!("/{DATA_VIEW_INDEX}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": "created"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "_source": {"marker": "elasticctl-sample", "probe": "data-view"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private-main-default-id",
+                "opaque": {"raw": "private-main-envelope"}
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::new(),
+            fixtures: Vec::new(),
+        };
+
+        let error = record_data_views(&mut session, &mut recording, "test", "test")
+            .await
+            .expect_err("initial default error must stop recording");
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+        assert_eq!(error.http_status, Some(500));
+        assert!(
+            !error.message.contains("private-main-default-id")
+                && !error.message.contains("private-main-envelope")
+                && !error.message.contains("opaque"),
+            "recording error leaked default server evidence: {}",
+            error.message
+        );
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn default_snapshot_resolver_error_does_not_leak_or_mutate() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data_view_id": "private-resolver-default"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/data_view/private-resolver-default"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private-resolver-default",
+                "opaque": {"raw": "private-resolver-envelope"}
+            })))
+            .mount(&server)
+            .await;
+
+        let error = capture_data_view_default_snapshot(&mock_transport(&server))
+            .await
+            .expect_err("unresolvable default must stop preflight");
+
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+        assert_eq!(error.http_status, Some(500));
+        for private in [
+            "private-resolver-default",
+            "private-resolver-envelope",
+            "opaque",
+        ] {
+            assert!(
+                !error.message.contains(private),
+                "resolver error leaked {private}: {}",
+                error.message
+            );
+        }
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .iter()
+                .all(|request| request.method.as_str() == "GET"),
+            "read-only snapshot resolution must not mutate"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_index_ownership_when_marker_document_is_missing_but_root_remains() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{DATA_VIEW_INDEX}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"settings": {}})))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(
+            session.cleanup().await.is_err(),
+            "markerless root must fail"
+        );
+
+        assert!(session.ownership.data_view_index);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .iter()
+                .all(|request| !(request.method.as_str() == "DELETE"
+                    && request.url.path() == format!("/{DATA_VIEW_INDEX}")))
+        );
+    }
+
+    #[tokio::test]
+    async fn source_create_response_loss_cleanup_restores_before_data_view_deletes() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(json!({"message": "restore failed"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": DATA_VIEW_SOURCE_ID})),
+            )
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": null}),
+                    canonical: None,
+                    phase: PendingDefaultRestorePhase::CreateMayImplicitlySetSource,
+                }),
+                data_view_source: true,
+                data_view_replacement: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(
+            session.cleanup().await.is_err(),
+            "restore failure after source-create response loss must stop deletes"
+        );
+
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_some()
+        );
+        assert!(session.ownership.data_view_source);
+        assert!(session.ownership.data_view_replacement);
+        assert!(session.ownership.data_view_index);
+        let requests = server.received_requests().await.expect("requests");
+        let deletes: Vec<_> = requests
+            .iter()
+            .filter(|request| request.method.as_str() == "DELETE")
+            .map(|request| request.url.path())
+            .collect();
+        assert!(
+            deletes.iter().all(|path| {
+                *path != format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}")
+                    && *path != format!("/api/data_views/data_view/{DATA_VIEW_REPLACEMENT_ID}")
+                    && *path != format!("/{DATA_VIEW_INDEX}")
+            }),
+            "data-view cleanup deleted after failed restore: {deletes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_default_response_loss_cleanup_retains_the_lease_and_skips_deletes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": DATA_VIEW_SOURCE_ID})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "lost"})))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": null}),
+                    canonical: None,
+                    phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+                }),
+                data_view_source: true,
+                data_view_replacement: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(session.cleanup().await.is_err());
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_some()
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && matches!(
+                    request.url.path(),
+                    "/api/data_views/data_view/elasticctl-sample-data-view-source"
+                        | "/api/data_views/data_view/elasticctl-sample-data-view-replacement"
+                        | "/.kibana-elasticctl-sample-data-views"
+                ))
+        }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_default_errors_do_not_leak_server_envelopes_or_delete_data_views() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private-cleanup-post-id",
+                "opaque": {"raw": "private-cleanup-post-envelope"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private-cleanup-get-id",
+                "opaque": {"raw": "private-cleanup-get-envelope"}
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": "private-original-default"}),
+                    canonical: Some("private-original-default".to_string()),
+                    phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+                }),
+                data_view_source: true,
+                data_view_replacement: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        let error = match session.cleanup().await {
+            Ok(_) => panic!("default errors must fail cleanup"),
+            Err(error) => error,
+        };
+
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_some()
+        );
+        assert!(session.ownership.data_view_source);
+        assert!(session.ownership.data_view_replacement);
+        assert!(session.ownership.data_view_index);
+        for private in [
+            "private-original-default",
+            "private-cleanup-post-id",
+            "private-cleanup-post-envelope",
+            "private-cleanup-get-id",
+            "private-cleanup-get-envelope",
+            "data_view_id",
+            "opaque",
+        ] {
+            assert!(
+                !error.message.contains(private),
+                "cleanup error leaked {private}: {}",
+                error.message
+            );
+        }
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && matches!(
+                    request.url.path(),
+                    "/api/data_views/data_view/elasticctl-sample-data-view-source"
+                        | "/api/data_views/data_view/elasticctl-sample-data-view-replacement"
+                        | "/.kibana-elasticctl-sample-data-views"
+                ))
+        }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_raw_default_mismatch_keeps_ownership_without_leaking_defaults() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": DATA_VIEW_SOURCE_ID})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data_view_id": "private-actual-default"
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": "private-expected-default"}),
+                    canonical: Some("private-expected-default".to_string()),
+                    phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+                }),
+                data_view_source: true,
+                data_view_replacement: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        let error = match session.cleanup().await {
+            Ok(_) => panic!("raw default mismatch must fail cleanup"),
+            Err(error) => error,
+        };
+
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_some()
+        );
+        assert!(session.ownership.data_view_source);
+        assert!(session.ownership.data_view_replacement);
+        assert!(session.ownership.data_view_index);
+        assert!(
+            !error.message.contains("private-expected-default")
+                && !error.message.contains("private-actual-default")
+                && !error.message.contains("data_view_id"),
+            "cleanup diagnostic leaked raw default evidence: {}",
+            error.message
+        );
+
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().any(|request| {
+            request.method.as_str() == "POST" && request.url.path() == "/api/data_views/default"
+        }));
+        assert!(requests.iter().any(|request| {
+            request.method.as_str() == "GET" && request.url.path() == "/api/data_views/default"
+        }));
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && matches!(
+                    request.url.path(),
+                    "/api/data_views/data_view/elasticctl-sample-data-view-source"
+                        | "/api/data_views/data_view/elasticctl-sample-data-view-replacement"
+                        | "/.kibana-elasticctl-sample-data-views"
+                ))
+        }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_unexpected_nonmarker_default_sends_no_restore_or_delete() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "private-other"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": "private-original"}),
+                    canonical: Some("private-original".to_string()),
+                    phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+                }),
+                data_view_source: true,
+                data_view_replacement: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        let error = match session.cleanup().await {
+            Ok(_) => panic!("unexpected default must refuse"),
+            Err(error) => error,
+        };
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_some()
+        );
+        assert!(!error.message.contains("private-original"));
+        assert!(!error.message.contains("private-other"));
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "POST" && request.url.path() == "/api/data_views/default")
+        }));
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && matches!(
+                    request.url.path(),
+                    "/api/data_views/data_view/elasticctl-sample-data-view-source"
+                        | "/api/data_views/data_view/elasticctl-sample-data-view-replacement"
+                        | "/.kibana-elasticctl-sample-data-views"
+                ))
+        }));
+    }
+
+    #[tokio::test]
+    async fn exact_pending_default_restore_clears_the_lease() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": DATA_VIEW_SOURCE_ID})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": ""})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/default"))
+            .and(body_json(json!({"data_view_id": null, "force": true})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                pending_data_view_default_restore: Some(PendingDefaultRestore {
+                    raw: json!({"data_view_id": ""}),
+                    canonical: None,
+                    phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+                }),
+                ..Default::default()
+            },
+        };
+
+        restore_pending_data_view_default(&mut session)
+            .await
+            .expect("exact raw restore");
+        assert!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_each_data_view_owned_until_post_delete_get_is_not_found() {
+        for id in [DATA_VIEW_SOURCE_ID, DATA_VIEW_REPLACEMENT_ID] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(format!("/api/data_views/data_view/{id}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"data_view": {"id": id, "title": "logs-*"}})),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("/api/data_views/data_view/{id}")))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership {
+                    data_view_source: id == DATA_VIEW_SOURCE_ID,
+                    data_view_replacement: id == DATA_VIEW_REPLACEMENT_ID,
+                    ..Default::default()
+                },
+            };
+
+            assert!(
+                session.cleanup().await.is_err(),
+                "post-delete view still exists"
+            );
+
+            assert_eq!(
+                session.ownership.data_view_source,
+                id == DATA_VIEW_SOURCE_ID,
+                "{id} source ownership"
+            );
+            assert_eq!(
+                session.ownership.data_view_replacement,
+                id == DATA_VIEW_REPLACEMENT_ID,
+                "{id} replacement ownership"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nonempty_self_preview_stops_before_replacement_or_swap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/swap_references/_preview"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": [{"id": "unrelated", "type": "dashboard"}]
+            })))
+            .mount(&server)
+            .await;
+
+        record_empty_data_view_self_preview(&mock_transport(&server))
+            .await
+            .expect_err("nonempty preview must refuse");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method.as_str(), "POST");
+        assert_eq!(
+            requests[0].url.path(),
+            "/api/data_views/swap_references/_preview"
+        );
+    }
+
+    #[test]
+    fn data_view_metadata_get_requires_persisted_documented_values() {
+        let value = json!({
+            "data_view": {
+                "fieldAttrs": {
+                    "host.name": {"count": 2},
+                    "elasticctl.metadata": {
+                        "count": 1,
+                        "customDescription": "elasticctl sample metadata"
+                    }
+                }
+            }
+        });
+        require_persisted_data_view_metadata(&value).expect("persisted metadata");
+
+        for invalid in [
+            json!({"data_view": {"fieldAttrs": {}}}),
+            json!({"data_view": {"fieldAttrs": {
+                "host.name": {"count": 2, "customLabel": null},
+                "elasticctl.metadata": {"count": 1, "customDescription": "elasticctl sample metadata"}
+            }}}),
+            json!({"data_view": {"fieldAttrs": {
+                "host.name": {"count": 2},
+                "elasticctl.metadata": {"count": 1, "customDescription": "wrong"}
+            }}}),
+        ] {
+            assert!(
+                require_persisted_data_view_metadata(&invalid).is_err(),
+                "invalid persisted metadata must stop before default mutation"
+            );
+        }
+    }
+
+    #[test]
+    fn data_view_fields_success_requires_the_closed_union_and_matching_id() {
+        assert!(
+            require_data_view_fields_success(&json!({"acknowledged": true}), DATA_VIEW_SOURCE_ID)
+                .expect("acknowledgement")
+                .is_none()
+        );
+        let envelope = json!({
+            "data_view": {
+                "id": DATA_VIEW_SOURCE_ID,
+                "fieldAttrs": {
+                    "host.name": {"count": 2},
+                    "elasticctl.metadata": {
+                        "count": 1,
+                        "customDescription": DATA_VIEW_METADATA_DESCRIPTION
+                    }
+                }
+            }
+        });
+        assert!(
+            require_data_view_fields_success(&envelope, DATA_VIEW_SOURCE_ID)
+                .expect("matching envelope")
+                .is_some()
+        );
+        for malformed in [
+            json!({"acknowledged": false}),
+            json!({"acknowledged": true, "extra": true}),
+            json!({"acknowledged": true, "data_view": {"id": DATA_VIEW_SOURCE_ID}}),
+            json!({"data_view": {"id": DATA_VIEW_SOURCE_ID}, "extra": true}),
+            json!({"data_view": {"id": "other"}}),
+            json!({"data_view": {}}),
+            json!({"data_view": {"id": 1}}),
+            json!({"data_view": {"id": ""}}),
+            json!({"data_view": []}),
+            json!({}),
+            json!([]),
+            json!("ok"),
+            json!(1),
+            json!(true),
+            Value::Null,
+        ] {
+            assert!(
+                require_data_view_fields_success(&malformed, DATA_VIEW_SOURCE_ID).is_err(),
+                "malformed response must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_data_view_default_decoder_preserves_only_the_allowed_shapes() {
+        for (body, expected) in [
+            (json!({"data_view_id": null}), None),
+            (json!({"data_view_id": ""}), None),
+            (json!({"data_view_id": "original"}), Some("original")),
+            (json!({"data_view_id": "  "}), Some("  ")),
+        ] {
+            assert_eq!(
+                decode_raw_data_view_default(&body).expect("default envelope"),
+                expected.map(str::to_string)
+            );
+        }
+        for malformed in [
+            json!({}),
+            json!({"data_view_id": 1}),
+            json!({"data_view_id": null, "extra": true}),
+            json!({"data_view_id": "", "extra": true}),
+        ] {
+            assert!(
+                decode_raw_data_view_default(&malformed).is_err(),
+                "malformed raw default envelope must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_default_lease_create_phase_accepts_only_original_or_source_for_no_default() {
+        let lease = PendingDefaultRestore {
+            raw: json!({"data_view_id": ""}),
+            canonical: None,
+            phase: PendingDefaultRestorePhase::CreateMayImplicitlySetSource,
+        };
+        require_pending_data_view_default_state(&lease, &json!({"data_view_id": ""}))
+            .expect("exact original empty default");
+        require_pending_data_view_default_state(
+            &lease,
+            &json!({"data_view_id": DATA_VIEW_SOURCE_ID}),
+        )
+        .expect("source may become the default during create");
+        for rejected in [
+            json!({"data_view_id": null}),
+            json!({"data_view_id": DATA_VIEW_REPLACEMENT_ID}),
+            json!({"data_view_id": "private-nonmarker"}),
+        ] {
+            let error = require_pending_data_view_default_state(&lease, &rejected)
+                .expect_err("unexpected create-phase default must refuse");
+            assert!(
+                !error.message.contains("private-nonmarker")
+                    && !error.message.contains("data_view_id")
+            );
+        }
+    }
+
+    #[test]
+    fn pending_default_lease_create_phase_requires_exact_original_for_existing_default() {
+        let lease = PendingDefaultRestore {
+            raw: json!({"data_view_id": "private-original"}),
+            canonical: Some("private-original".to_string()),
+            phase: PendingDefaultRestorePhase::CreateMayImplicitlySetSource,
+        };
+        require_pending_data_view_default_state(&lease, &lease.raw)
+            .expect("exact original nonmarker default");
+        for rejected in [
+            json!({"data_view_id": DATA_VIEW_SOURCE_ID}),
+            json!({"data_view_id": null}),
+            json!({"data_view_id": "private-other"}),
+        ] {
+            let error = require_pending_data_view_default_state(&lease, &rejected)
+                .expect_err("create must not displace an existing default");
+            assert!(
+                !error.message.contains("private-original")
+                    && !error.message.contains("private-other")
+                    && !error.message.contains("data_view_id")
+            );
+        }
+    }
+
+    #[test]
+    fn pending_default_lease_explicit_phase_allows_only_original_source_or_no_default() {
+        let lease = PendingDefaultRestore {
+            raw: json!({"data_view_id": "private-original"}),
+            canonical: Some("private-original".to_string()),
+            phase: PendingDefaultRestorePhase::ExplicitDefaultMutationMayHaveChanged,
+        };
+        for allowed in [
+            lease.raw.clone(),
+            json!({"data_view_id": DATA_VIEW_SOURCE_ID}),
+            json!({"data_view_id": null}),
+            json!({"data_view_id": ""}),
+        ] {
+            require_pending_data_view_default_state(&lease, &allowed)
+                .expect("explicit default lifecycle state");
+        }
+        assert!(
+            require_pending_data_view_default_state(
+                &lease,
+                &json!({"data_view_id": DATA_VIEW_REPLACEMENT_ID})
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_raw_default_snapshot_is_canonical_and_never_resolved() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": ""})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            capture_data_view_default_snapshot(&mock_transport(&server))
+                .await
+                .expect("empty raw default"),
+            (json!({"data_view_id": ""}), None)
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1, "empty defaults must not be resolved");
+        assert_eq!(requests[0].url.path(), "/api/data_views/default");
+    }
+
+    #[tokio::test]
+    async fn source_create_claims_the_default_lease_before_the_exact_marker_post() {
+        let server = MockServer::start().await;
+        let claimed_raw = json!({"data_view_id": ""});
+        let create_body = json!({
+            "data_view": {"id": DATA_VIEW_SOURCE_ID, "title": "elasticctl-sample-data-view-*"},
+            "override": false
+        });
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(claimed_raw.clone()))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/data_view"))
+            .and(body_json(create_body.clone()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view": {"id": DATA_VIEW_SOURCE_ID}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data_view_id": DATA_VIEW_SOURCE_ID})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::new(),
+            fixtures: Vec::new(),
+        };
+        create_source_with_pending_default_lease(
+            &mut session,
+            &mut recording,
+            "test",
+            "test",
+            &claimed_raw,
+            &None,
+            &create_body,
+        )
+        .await
+        .expect("claimed source create");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| (request.method.as_str(), request.url.path()))
+                .collect::<Vec<_>>(),
+            [
+                ("GET", "/api/data_views/default"),
+                ("POST", "/api/data_views/data_view"),
+                ("GET", "/api/data_views/default"),
+            ]
+        );
+        let fixture = recording
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.name == "data_view_default_get")
+            .expect("claimed-default fixture");
+        assert_eq!(fixture.document["response"], claimed_raw);
+        assert!(session.ownership.data_view_source);
+        assert_eq!(
+            session
+                .ownership
+                .pending_data_view_default_restore
+                .as_ref()
+                .expect("pending lease")
+                .raw,
+            json!({"data_view_id": ""})
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_default_snapshot_refuses_before_any_recorder_write_or_resolution() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data_view_id": " \t "})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(
+            capture_data_view_default_snapshot(&mock_transport(&server))
+                .await
+                .is_err(),
+            "whitespace default must refuse"
+        );
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1, "whitespace default must not be resolved");
+        assert_eq!(requests[0].url.path(), "/api/data_views/default");
+    }
+
+    #[test]
+    fn data_view_default_acknowledgement_is_exact() {
+        require_acknowledged(&json!({"acknowledged": true}), "default").expect("exact ack");
+        for malformed in [
+            json!({}),
+            json!({"acknowledged": false}),
+            json!({"acknowledged": true, "extra": true}),
+            json!({"acknowledged": true, "data_view": {}}),
+            json!([]),
+            json!(true),
+            json!(null),
+        ] {
+            assert!(
+                require_acknowledged(&malformed, "default").is_err(),
+                "default acknowledgement must be exact"
+            );
+        }
+    }
+
+    #[test]
+    fn restored_raw_default_requires_exact_pre_mutation_shape() {
+        require_restored_raw_data_view_default(
+            &json!({"data_view_id": ""}),
+            &json!({"data_view_id": ""}),
+            &None,
+        )
+        .expect("matching empty default");
+        assert!(
+            require_restored_raw_data_view_default(
+                &json!({"data_view_id": ""}),
+                &json!({"data_view_id": null}),
+                &None,
+            )
+            .is_err(),
+            "canonical None must not hide raw null-to-empty drift"
+        );
+    }
+
+    #[test]
+    fn default_restore_request_uses_null_for_canonical_no_default() {
+        assert_eq!(
+            data_view_default_restore_request(None),
+            json!({"data_view_id": null, "force": true})
+        );
+    }
 
     #[test]
     fn ndjson_scrub_redacts_identity_and_recording_hosts() {
@@ -3723,6 +6425,59 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn scrub_data_view_retains_scripted_probe_evidence_and_drops_generated_fields() {
+        let mut value = json!({
+            "data_view": {
+                "id": DATA_VIEW_SOURCE_ID,
+                "version": "opaque",
+                "namespaces": ["default"],
+                "created_at": "2026-09-01T00:00:00.000Z",
+                "updated_at": "2026-09-01T00:01:00.000Z",
+                "originId": "opaque-origin",
+                "createdAt": "2026-09-01T00:00:00.000Z",
+                "updatedAt": "2026-09-01T00:01:00.000Z",
+                "fields": {
+                    "host.name": {"name": "host.name", "scripted": false},
+                    "elasticctl.legacy": {"scripted": true, "script": "return 1;"}
+                }
+            }
+        });
+
+        scrub_data_view(&mut value);
+
+        assert_eq!(
+            value,
+            json!({
+                "data_view": {
+                    "id": DATA_VIEW_SOURCE_ID,
+                    "fields": {
+                        "elasticctl.legacy": {"scripted": true, "script": "return 1;"}
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn scrub_data_view_default_preserves_shape_without_real_default_id() {
+        let mut nonmarker = json!({"data_view_id": "private-default"});
+        scrub_data_view_default(&mut nonmarker);
+        assert_eq!(nonmarker["data_view_id"], DATA_VIEW_DEFAULT_PLACEHOLDER);
+
+        let mut marker = json!({"data_view_id": DATA_VIEW_SOURCE_ID});
+        scrub_data_view_default(&mut marker);
+        assert_eq!(marker["data_view_id"], DATA_VIEW_SOURCE_ID);
+
+        let mut absent = json!({"data_view_id": null});
+        scrub_data_view_default(&mut absent);
+        assert!(absent["data_view_id"].is_null());
+
+        let mut empty = json!({"data_view_id": ""});
+        scrub_data_view_default(&mut empty);
+        assert_eq!(empty["data_view_id"], "");
     }
 
     #[test]

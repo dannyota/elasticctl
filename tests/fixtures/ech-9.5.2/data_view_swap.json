@@ -1,0 +1,17 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_swap",
+  "request": {
+    "delete": true,
+    "fromId": "elasticctl-sample-data-view-source",
+    "toId": "elasticctl-sample-data-view-replacement"
+  },
+  "response": {
+    "result": [],
+    "deleteStatus": {
+      "remainingRefs": 0,
+      "deletePerformed": true
+    }
+  }
+}

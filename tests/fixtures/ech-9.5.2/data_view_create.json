@@ -1,0 +1,95 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_create",
+  "request": {
+    "data_view": {
+      "id": "elasticctl-sample-data-view-source",
+      "title": "elasticctl-sample-data-view-*",
+      "name": "elasticctl sample source view",
+      "timeFieldName": "@timestamp",
+      "allowNoIndex": true,
+      "allowHidden": true,
+      "sourceFilters": [
+        {
+          "value": "elasticctl.private.*"
+        }
+      ],
+      "fieldFormats": {
+        "bytes": {
+          "id": "bytes"
+        }
+      },
+      "runtimeFieldMap": {
+        "elasticctl.runtime": {
+          "type": "keyword",
+          "script": {
+            "source": "emit('elasticctl-sample');"
+          }
+        }
+      },
+      "fieldAttrs": {
+        "host.name": {
+          "customLabel": "elasticctl sample host"
+        }
+      },
+      "fields": {
+        "elasticctl.legacy": {
+          "name": "elasticctl.legacy",
+          "scripted": true,
+          "type": "number",
+          "script": "return 1;"
+        }
+      }
+    },
+    "override": false
+  },
+  "response": {
+    "data_view": {
+      "id": "elasticctl-sample-data-view-source",
+      "fields": {
+        "elasticctl.legacy": {
+          "count": 0,
+          "script": "return 1;",
+          "name": "elasticctl.legacy",
+          "type": "number",
+          "scripted": true,
+          "searchable": true,
+          "aggregatable": true,
+          "readFromDocValues": false,
+          "format": {
+            "id": "number"
+          }
+        }
+      },
+      "title": "elasticctl-sample-data-view-*",
+      "timeFieldName": "@timestamp",
+      "sourceFilters": [
+        {
+          "value": "elasticctl.private.*"
+        }
+      ],
+      "fieldFormats": {
+        "bytes": {
+          "id": "bytes"
+        }
+      },
+      "runtimeFieldMap": {
+        "elasticctl.runtime": {
+          "type": "keyword",
+          "script": {
+            "source": "emit('elasticctl-sample');"
+          }
+        }
+      },
+      "fieldAttrs": {
+        "host.name": {
+          "customLabel": "elasticctl sample host"
+        }
+      },
+      "allowNoIndex": true,
+      "name": "elasticctl sample source view",
+      "allowHidden": true
+    }
+  }
+}

@@ -139,6 +139,176 @@ fn data_view_spec_names_invalid_nested_field_paths() {
     }
 }
 
+fn scripted_spec() -> DataViewSpec {
+    serde_json::from_value(json!({
+        "id": "scripted", "title": "logs-*",
+        "fields": {"legacy.z": {"scripted": true, "script": "return 1;"}}
+    }))
+    .expect("structurally valid scripted field")
+}
+
+#[test]
+fn valid_legacy_scripted_fields_are_unsupported_before_portable_use() {
+    let spec = scripted_spec();
+    let error = spec.validate().expect_err("unsupported");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("legacy.z"), "{}", error.message);
+
+    let error = DataViewSpec::try_from(serde_json::to_value(&spec).expect("value"))
+        .expect_err("try from applies capability validation");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+}
+
+#[test]
+fn unsupported_scripted_field_names_are_sorted() {
+    let left = DataViewSpec {
+        fields: json!({"z": {"scripted": true}, "a": {"scripted": true}})
+            .as_object()
+            .expect("fields")
+            .clone(),
+        ..spec("dv")
+    };
+    let right = DataViewSpec {
+        fields: json!({"a": {"scripted": true}, "z": {"scripted": true}})
+            .as_object()
+            .expect("fields")
+            .clone(),
+        ..spec("dv")
+    };
+    assert_eq!(
+        left.validate().expect_err("unsupported").message,
+        right.validate().expect_err("unsupported").message
+    );
+    for value in [
+        json!({"id":"dv","title":"logs-*","fields":{"z":{"scripted":true},"a":{"scripted":true}}}),
+        json!({"id":"dv","title":"logs-*","fields":{"a":{"scripted":true},"z":{"scripted":true}}}),
+    ] {
+        let error = data_views_ops::normalize(&value).expect_err("unsupported");
+        assert_eq!(
+            error.message,
+            "legacy scripted fields are unsupported: a, z"
+        );
+    }
+}
+
+#[test]
+fn json_and_yaml_artifacts_reject_legacy_scripted_fields_before_io() {
+    let spec = scripted_spec();
+    for format in [ContentFormat::Json, ContentFormat::Yaml] {
+        let file = tempfile::NamedTempFile::with_suffix(match format {
+            ContentFormat::Json => ".json",
+            ContentFormat::Yaml => ".yaml",
+        })
+        .expect("artifact");
+        std::fs::write(
+            file.path(),
+            content_codec::encode_sequence(std::slice::from_ref(&spec), format).expect("encode"),
+        )
+        .expect("write");
+        let error = data_views_ops::validate(file.path()).expect_err("unsupported");
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+}
+
+#[tokio::test]
+async fn scripted_artifacts_and_forged_plans_refuse_before_http() {
+    let path = artifact(&[scripted_spec()]);
+    let server = MockServer::start().await;
+    for (overwrite, skip_existing) in [(false, false), (true, false), (false, true)] {
+        let error =
+            data_views_ops::plan_import(Some(&transport(&server)), &path, overwrite, skip_existing)
+                .await
+                .expect_err("unsupported before transport");
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+    }
+
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+    let desired = scripted_spec();
+    let plan = import_plan(
+        vec![desired],
+        BTreeMap::from([("scripted".into(), None)]),
+        BTreeMap::new(),
+    );
+    let error = data_views_ops::apply_import(&transport(&server), &plan)
+        .await
+        .expect_err("forged scripted plan must not read");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn build_patch_create_and_update_reject_legacy_fields_before_http() {
+    let server = MockServer::start().await;
+    let scripted = scripted_spec();
+    let error = data_views_ops::build_patch(&spec("scripted"), &scripted)
+        .expect_err("patch refuses scripts");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    let error = data_views::create(&transport(&server), &scripted)
+        .await
+        .expect_err("create refuses scripts");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    let error = data_views::update(
+        &transport(&server),
+        "scripted",
+        &DataViewUpdate {
+            fields: Some(scripted.fields),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("update refuses scripts");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn update_rejects_malformed_field_entries_before_http() {
+    let server = MockServer::start().await;
+    for fields in [
+        json!({"bad": null}),
+        json!({"bad": {}}),
+        json!({"bad": {"scripted": false}}),
+        json!({"bad": {"scripted": "true"}}),
+    ] {
+        let error = data_views::update(
+            &transport(&server),
+            "dv",
+            &DataViewUpdate {
+                fields: Some(fields.as_object().expect("fields").clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("malformed fields");
+        assert_eq!(error.kind, ErrorKind::Error);
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
 #[test]
 fn format_uses_yaml_extensions_and_json_otherwise() {
     assert_eq!(
@@ -208,7 +378,7 @@ fn resolution_reports_exact_name_ambiguity() {
 }
 
 #[test]
-fn normalization_keeps_only_scripted_fields() {
+fn normalization_refuses_live_legacy_scripted_fields() {
     let body = json!({"data_view": {
         "id": "dv", "title": "logs-*", "version": "opaque", "namespaces": ["default"],
         "fields": {
@@ -216,15 +386,19 @@ fn normalization_keeps_only_scripted_fields() {
             "legacy": {"name": "legacy", "scripted": true, "script": "return 1"}
         }
     }});
-    let spec = data_views_ops::normalize(&body["data_view"]).expect("normalize");
-    assert_eq!(spec.id, "dv");
-    assert!(!spec.allow_no_index);
-    assert!(!spec.allow_hidden);
-    assert_eq!(spec.type_meta, None);
-    assert_eq!(spec.fields.keys().collect::<Vec<_>>(), vec!["legacy"]);
-    let value = serde_json::to_value(spec).expect("value");
-    assert!(value.get("version").is_none());
-    assert!(value.get("namespaces").is_none());
+    let error = data_views_ops::normalize(&body["data_view"]).expect_err("refuse script");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("legacy"), "{}", error.message);
+}
+
+#[test]
+fn normalization_omits_generated_non_scripted_fields() {
+    let body = json!({"data_view": {
+        "id": "dv", "title": "logs-*",
+        "fields": {"host.name": {"name": "host.name", "scripted": false}}
+    }});
+    let spec = data_views_ops::normalize(&body["data_view"]).expect("normalize generated cache");
+    assert!(spec.fields.is_empty());
 }
 
 #[test]
@@ -1315,10 +1489,6 @@ fn build_patch_covers_every_documented_update_field_and_metadata_union() {
         .as_object()
         .expect("object")
         .clone(),
-        fields: json!({"old": {"scripted": true, "script": "1"}})
-            .as_object()
-            .expect("object")
-            .clone(),
         view_type: Some("rollup".into()),
         type_meta: Some(json!({"old": true}).as_object().expect("object").clone()),
         ..spec("dv")
@@ -1334,10 +1504,6 @@ fn build_patch_covers_every_documented_update_field_and_metadata_union() {
             .expect("object")
             .clone(),
         runtime_field_map: json!({"runtime": {"type": "keyword"}})
-            .as_object()
-            .expect("object")
-            .clone(),
-        fields: json!({"new": {"scripted": true, "script": "2"}})
             .as_object()
             .expect("object")
             .clone(),
@@ -1360,7 +1526,6 @@ fn build_patch_covers_every_documented_update_field_and_metadata_union() {
         json!({
             "allowNoIndex": false,
             "fieldFormats": {"bytes": {"id": "bytes"}},
-            "fields": {"new": {"scripted": true, "script": "2"}},
             "name": "New name",
             "runtimeFieldMap": {"runtime": {"type": "keyword"}},
             "sourceFilters": [{"value": "secret"}],
@@ -2766,15 +2931,177 @@ async fn fixed_route_envelopes_reject_malformed_responses() {
 }
 
 #[tokio::test]
-async fn default_envelope_requires_data_view_id() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/data_views/default"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .mount(&server)
-        .await;
+async fn delete_accepts_only_empty_or_exact_acknowledged_success() {
+    for response in [None, Some(json!({"acknowledged": true}))] {
+        let server = MockServer::start().await;
+        let template = response.map_or_else(
+            || ResponseTemplate::new(200),
+            |body| ResponseTemplate::new(200).set_body_json(body),
+        );
+        Mock::given(method("DELETE"))
+            .and(path("/api/data_views/data_view/dv"))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        data_views::delete(&transport(&server), "dv")
+            .await
+            .expect("accepted delete response");
+    }
 
-    assert!(data_views::get_default(&transport(&server)).await.is_err());
+    for body in [
+        json!({"acknowledged": false}),
+        json!({"acknowledged": true, "extra": true}),
+        json!({}),
+        json!([]),
+        json!("ok"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/data_views/data_view/dv"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let error = data_views::delete(&transport(&server), "dv")
+            .await
+            .expect_err("malformed delete response");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn field_metadata_accepts_only_acknowledged_or_request_matching_data_view_success() {
+    for response in [
+        json!({"acknowledged": true}),
+        json!({"data_view": {"id": "dv", "server_owned": {"anything": true}}}),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/data_view/dv/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        data_views::update_fields_metadata(
+            &transport(&server),
+            "dv",
+            &json!({"host.name": {"count": 2}})
+                .as_object()
+                .expect("fields")
+                .clone(),
+        )
+        .await
+        .expect("accepted field metadata success");
+    }
+}
+
+#[tokio::test]
+async fn field_metadata_rejects_every_other_success_body_as_http() {
+    for response in [
+        json!({"acknowledged": true, "extra": true}),
+        json!({"acknowledged": true, "data_view": {"id": "dv"}}),
+        json!({"data_view": {"id": "dv"}, "extra": true}),
+        json!({"acknowledged": false}),
+        json!({"data_view": {}}),
+        json!({"data_view": {"id": 1}}),
+        json!({"data_view": {"id": ""}}),
+        json!({"data_view": {"id": "other"}}),
+        json!({"data_view": []}),
+        json!({}),
+        json!([]),
+        json!("ok"),
+        json!(1),
+        json!(true),
+        Value::Null,
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/data_views/data_view/dv/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = data_views::update_fields_metadata(
+            &transport(&server),
+            "dv",
+            &json!({"host.name": {"count": 2}})
+                .as_object()
+                .expect("fields")
+                .clone(),
+        )
+        .await
+        .expect_err("malformed field metadata success body");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn default_envelope_canonicalizes_only_null_and_empty_string() {
+    for (response, expected) in [
+        (json!({"data_view_id": null}), None),
+        (json!({"data_view_id": ""}), None),
+        (json!({"data_view_id": "dv"}), Some("dv")),
+        (json!({"data_view_id": "  "}), Some("  ")),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert_eq!(
+            data_views::get_default(&transport(&server))
+                .await
+                .expect("default envelope"),
+            expected.map(str::to_string)
+        );
+    }
+}
+
+#[tokio::test]
+async fn default_envelope_rejects_malformed_or_extra_values_as_http() {
+    for response in [
+        json!({}),
+        json!({"data_view_id": 1}),
+        json!({"data_view_id": false}),
+        json!({"data_view_id": {}}),
+        json!({"data_view_id": []}),
+        json!({"data_view_id": null, "extra": true}),
+        json!({"data_view_id": "", "extra": true}),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/data_views/default"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = data_views::get_default(&transport(&server))
+            .await
+            .expect_err("malformed default envelope");
+        assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn set_default_rejects_empty_or_whitespace_ids_before_http() {
+    for id in ["", " \t "] {
+        let server = MockServer::start().await;
+        let error = data_views::set_default(&transport(&server), Some(id))
+            .await
+            .expect_err("empty default id");
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty(),
+            "invalid default id must not make an HTTP request"
+        );
+    }
 }
 
 #[test]
@@ -2904,7 +3231,6 @@ async fn export_canonicalizes_nested_objects_for_json_and_yaml() {
         "fieldFormats": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
         "runtimeFieldMap": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
         "fieldAttrs": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}},
-        "fields": {"legacy": {"z": 2, "scripted": true, "a": 1}},
         "typeMeta": {"z": {"z": 2, "a": 1}, "a": {"z": 4, "a": 3}}
     }});
     let second = json!({"data_view": {
@@ -2913,7 +3239,6 @@ async fn export_canonicalizes_nested_objects_for_json_and_yaml() {
         "fieldFormats": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
         "runtimeFieldMap": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
         "fieldAttrs": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}},
-        "fields": {"legacy": {"a": 1, "scripted": true, "z": 2}},
         "typeMeta": {"a": {"a": 3, "z": 4}, "z": {"a": 1, "z": 2}}
     }});
 

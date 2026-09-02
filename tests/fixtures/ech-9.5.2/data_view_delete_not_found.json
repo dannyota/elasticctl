@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_delete_not_found",
+  "error": {
+    "kind": "not_found",
+    "message": "Saved object [index-pattern/elasticctl-sample-data-view-replacement] not found",
+    "http_status": 404
+  }
+}

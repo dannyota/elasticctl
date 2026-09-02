@@ -1,0 +1,29 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_replacement_create",
+  "request": {
+    "data_view": {
+      "id": "elasticctl-sample-data-view-replacement",
+      "title": "elasticctl-sample-data-view-replacement-*",
+      "name": "elasticctl sample replacement view",
+      "allowNoIndex": true,
+      "allowHidden": false
+    },
+    "override": false
+  },
+  "response": {
+    "data_view": {
+      "id": "elasticctl-sample-data-view-replacement",
+      "fields": {},
+      "title": "elasticctl-sample-data-view-replacement-*",
+      "sourceFilters": [],
+      "fieldFormats": {},
+      "runtimeFieldMap": {},
+      "fieldAttrs": {},
+      "allowNoIndex": true,
+      "name": "elasticctl sample replacement view",
+      "allowHidden": false
+    }
+  }
+}

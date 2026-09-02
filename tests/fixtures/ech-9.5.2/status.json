@@ -3,8 +3,6 @@
   "version": "9.5.2",
   "operation": "status",
   "response": {
-    "name": "instance-0000000001",
-    "uuid": "32e1d76b-316c-4558-a917-37e84fcb7c58",
     "version": {
       "number": "9.5.2",
       "build_hash": "37dc1e9d6dbf80bb1cf22da5ed258d3f642d2f9c",

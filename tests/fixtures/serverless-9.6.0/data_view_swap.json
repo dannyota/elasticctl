@@ -1,0 +1,17 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_view_swap",
+  "request": {
+    "delete": true,
+    "fromId": "elasticctl-sample-data-view-source",
+    "toId": "elasticctl-sample-data-view-replacement"
+  },
+  "response": {
+    "result": [],
+    "deleteStatus": {
+      "remainingRefs": 0,
+      "deletePerformed": true
+    }
+  }
+}

@@ -1129,6 +1129,12 @@ recording host in configured-authority and normalized-default-port forms,
 using URL hostname case-insensitive matching. Each fixture records its
 deployment flavor and stack version so drift is visible.
 
+The status fixture removes the top-level instance `name`, deployment `uuid`,
+and runtime `metrics` object. Product build fields under `version` remain as
+the public capability evidence. Recorder progress and retry diagnostics use
+static labels plus error class and HTTP status only; they never print a
+server-provided message or response body.
+
 Fixture scrubbing treats every configured recording authority as sensitive.
 Matching is ASCII case-insensitive, including exact authorities in plain text.
 For HTTP port 80 and HTTPS port 443, zero-padded forms included, the matching
@@ -1240,20 +1246,20 @@ concurrency this command exists to provide.
 The self-managed leg boots `lab/up.sh` alongside the other two legs, since its
 boot dominates the combined wall clock. Once it succeeds, the leg mints its
 own Elasticsearch API key against the lab's bootstrap user rather than
-parsing `up.sh` output, then installs Elastic's prebuilt rule pack with that
-key (a fresh lab boots with no rules, and `lab/down.sh` always destroys the
-previous session's volumes, so `source_scoping` would otherwise fail on every
-run for having nothing to partition). The install is verified, not assumed:
-`PUT .../prepackaged` answers `200` with an all-zero
-`{"rules_installed":0,...}` body when the underlying Fleet package fetch
-fails, so the leg follows it with the prepackaged status check and fails
-unless that reports the pack current. One call is also not enough on a fresh
-lab: measured 2026-09-01 on 9.5.1, the first `PUT` installed 1,963 of the
-pack's 2,069 rules and left `rules_not_installed: 106`, and a second call
-installed exactly those 106 in six seconds and reported the pack current.
-The leg therefore repeats install-then-status up to five times and fails at
-this step, with the last status in the private log, only if it never
-converges. It then activates a Kibana user
+parsing `up.sh` output, then uses the same shared prebuilt convergence helper
+as `cargo xtask seed`. A fresh lab boots with no rules, and `lab/down.sh`
+always destroys the previous session's volumes, so `source_scoping` would
+otherwise have nothing to partition. Each logical cycle sends one exact,
+one-shot `PUT .../prepackaged` body `{}`, then GETs prepackaged status. Success requires
+all four outstanding counters — `rules_not_installed`, `rules_not_updated`,
+`timelines_not_installed`, and `timelines_not_updated` — to be present,
+non-negative integers, and zero. A false status starts another cycle. The GET
+retains the normal read-only transport retry policy, but each PUT is one-shot;
+PUT, terminal GET, or schema failure stops immediately. Five PUTs is the strict
+actual-mutation budget. The 2026-09-02
+fresh-lab check proved one PUT can leave the pack noncurrent, so the PUT
+response never proves convergence. Exhaustion fails at this named step without
+putting a raw status in public output. The leg then activates a Kibana user
 profile by logging in as the lab's bootstrap user
 (`POST /internal/security/login`, `elasticctl-triage-design.md` section 9),
 since the lab boots headless with no browser session ever logging in and the
@@ -1343,8 +1349,9 @@ Two required settings:
 
 Scripts: `lab/up.sh` (compose up, wait for green, set the `kibana_system`
 password, bootstrap the signals index, start a 30-day trial license, mint an
-API key, print a ready-to-paste `config init`), `lab/seed.sh` (sample rules and
-a small event dataset so `rules preview` has data), `lab/down.sh`.
+API key, print a ready-to-paste `config init`), `lab/seed.sh` (provisions the
+complete Elastic prebuilt pack for local rule-source tests; it does not install
+sample events), `lab/down.sh`.
 
 Lab certificates are self-signed, so profiles carry a `verify` field. Setting
 `verify = false` prints a warning on every request. It cannot quietly become a

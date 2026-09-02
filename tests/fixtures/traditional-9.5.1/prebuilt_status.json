@@ -4,7 +4,7 @@
   "operation": "prebuilt_status",
   "response": {
     "rules_custom_installed": 0,
-    "rules_installed": 2069,
+    "rules_installed": 2084,
     "rules_not_installed": 0,
     "rules_not_updated": 0,
     "timelines_installed": 10,

@@ -140,8 +140,8 @@ field formatter, runtime-field, and rollup schemas are extensible server
 contracts.
 
 `typeMeta`, each `fieldAttrs` value, and each portable `fields` value must be
-objects. Every portable `fields` entry must contain `scripted: true`; an
-artifact cannot smuggle a generated mapped-field cache back into Kibana.
+objects. Every submitted `fields` entry must contain `scripted: true`; a false
+or malformed entry is local `error`, not a generated mapped-field cache.
 
 Normalization removes:
 
@@ -150,19 +150,24 @@ Normalization removes:
 - generated mapped entries from `fields`, because they are a cache of the
   source stack's mapping and permissions.
 
-Legacy scripted fields are the only possible portable part of `fields`.
-Before 0.5.0 ships, the recorder must prove that entries with
-`scripted: true` survive create, get, update, and export on all three flavors.
-If they do, `DataViewSpec` carries only those entries under `fields`. If any
-flavor loses them, portable export refuses a data view containing one with an
-`unsupported` error. It never copies the full mapped-field cache.
+Legacy scripted fields are globally unsupported in portable 0.5.0 artifacts.
+Serverless 9.6.0 drops the marker entry from both create and immediate GET.
+A valid non-empty `fields` map therefore fails `unsupported` before planning,
+transport, or a write. `normalize` scans raw live fields before dropping the
+generated cache and also fails `unsupported` when it finds a legacy scripted
+entry. The raw scripted create request is recorder evidence only; it is never
+a portable spec. Hosted 9.5.2 and self-managed 9.5.1 retain the entry in both
+the create response and immediate GET, but that difference cannot relax this
+global refusal.
+Unsupported field names are sorted for deterministic diagnostics. Direct
+partial-update input first rejects malformed entries as local `error`, then
+classifies a structurally valid non-empty scripted map as `unsupported`.
 
 Import sends explicit ids, so dashboards can keep the same reference across
 environments. Create uses `POST /api/data_views/data_view` with the canonical
 file spec under `data_view`. Marker probes prove that create preserves
-`allowHidden: true` on Serverless 9.6.0 and Hosted 9.5.2 even though the
-published create schema omits that property. The self-managed recorder must
-confirm the same result before 0.5.0 ships.
+`allowHidden: true` on Serverless 9.6.0, Hosted 9.5.2, and self-managed 9.5.1,
+even though the published create schema omits that property.
 
 Update is not full replacement. `POST /api/data_views/data_view/{id}` is a
 partial route that accepts `allowNoIndex`, `fieldFormats`, `fields`, `name`,
@@ -174,17 +179,25 @@ that route.
 Field attributes use a second request:
 `POST /api/data_views/data_view/{id}/fields`. elasticctl builds a metadata
 delta over the union of the current and desired field names and metadata
-keys. Desired values are sent as-is. A current key missing from the desired
-spec is sent as `null`, which removes it. An empty delta causes no request.
+keys. The documented metadata properties include `count`, `customLabel`,
+`customDescription`, and formatter data. Desired values are sent as-is. A
+current key missing from the desired spec is sent as `null`, which removes it.
+An empty delta causes no request. The current public operation documents an
+exact `{ "acknowledged": true }` success body. All three measured flavors
+instead return a full `{ "data_view": { ... } }` envelope. The client accepts only
+that exact acknowledgement object or an exact top-level data-view envelope
+whose open inner map has a non-empty string `id` equal to the request id.
+Every other 2xx body is `http`. All three measured flavors return the full
+data-view envelope.
 
 The public update API has no documented way to clear `name`, `timeFieldName`,
 `type`, or a non-empty `typeMeta`. It also has no way to change
 `allowHidden`; marker requests with that property answer 400 on Serverless
-9.6.0 and Hosted 9.5.2. Missing and `false` `allowHidden` values are
-equivalent. Any other overwrite that changes `allowHidden`, or removes one of
-the optional properties without a documented clearing value, fails as
-`unsupported` during planning. Import never deletes and recreates a data view
-to evade that limit.
+9.6.0, Hosted 9.5.2, and self-managed 9.5.1. Missing and `false`
+`allowHidden` values are equivalent. Any other overwrite that changes
+`allowHidden`, or removes one of the optional properties without a documented
+clearing value, fails as `unsupported` during planning. Import never deletes
+and recreates a data view to evade that limit.
 
 After create, or after all required update requests, import GETs and
 normalizes the stored data view. It requires exact equality with the desired
@@ -366,10 +379,10 @@ With `--replace-with TARGET`:
   `{fromId, toId, delete: true}`;
 - success requires `deleteStatus.deletePerformed == true` and
   `deleteStatus.remainingRefs == 0`;
-- marker probes on 2026-09-02 found that Serverless 9.6.0 and Hosted 9.5.2
-  retain the deleted source id as the default after a successful swap/delete.
-  Both probes restored the prior default and left no marker views. This fact
-  has not been measured on self-managed.
+- marker probes on 2026-09-02 found that Serverless 9.6.0, Hosted 9.5.2, and
+  self-managed 9.5.1 retain the deleted source id as the default after a
+  successful swap/delete. Every probe restored the prior default and left no
+  marker views.
 - if the guarded source was default, apply GETs the default again after the
   strict swap and before any forceful default POST. A current default equal to
   the deleted source is updated to the replacement. A current default already
@@ -395,7 +408,12 @@ conditional-write window.
 
 `data-views default set` resolves the selector and sends its id with
 `force: true`. `default unset` sends `data_view_id: null` with `force: true`.
-The client validates ids because Kibana's endpoint does not.
+The client validates ids because Kibana's endpoint does not. `GET
+/api/data_views/default` accepts only the exact `{ "data_view_id": null }` or
+`{ "data_view_id": "" }` envelope as no default, and preserves every
+non-empty string exactly, including whitespace. Missing, non-string, or
+extra-member envelopes are `http`. Writes remain stricter: unset is `null`,
+and an empty or whitespace-only set id is local `error` before I/O.
 
 ## 11. Architecture
 
@@ -438,11 +456,12 @@ Existing error kinds apply:
 - `not_found`: selector or referenced data-view id missing;
 - `conflict`: ambiguous selector, existing import id, changed preflight
   snapshot, or unsafe referenced deletion;
-- `unsupported`: Dashboards API below 9.5.1, warning-bearing typed export, an
-  unportable legacy scripted field, or a data-view overwrite the public update
-  routes cannot express;
-- `http`: malformed success response, failed loss invariant, or transport
-  response outside the documented shapes;
+- `unsupported`: Dashboards API below 9.5.1, any valid portable or live
+  legacy scripted field, warning-bearing typed export, or a data-view
+  overwrite the public update routes cannot express;
+- `http`: malformed success response, an unexpected data-view DELETE success
+  body, failed loss invariant, or transport response outside the documented
+  shapes;
 - `error`: malformed local artifact or invalid command combination.
 
 List and get return ordinary typed values through `render`. Validate returns
@@ -466,11 +485,52 @@ fixtures.
 
 The 0.5.0 fixture set covers:
 
-- data-view list, create with explicit id and `allowHidden: true`, get, partial
-  update, field-metadata merge and null deletion, default get/set/unset,
-  self-swap preview, replacement swap, direct delete, and 404;
-- generated-field normalization and the scripted-field decision in section 5;
+- data-view list, raw scripted create/get evidence with explicit id and
+  `allowHidden: true`, partial update, field-metadata merge and null deletion,
+  its closed acknowledgement-or-data-view response union, and a post-metadata
+  GET that proves persisted `count`, `customDescription`, and label removal,
+  default get/set/unset, self-swap preview, replacement swap, direct delete,
+  post-restore default GET, and post-delete 404;
+- generated-field normalization, the scripted-field refusal in section 5, and
+  the closed direct-delete union of an empty body or exact
+  `{ "acknowledged": true }`;
 - default restoration and zero marker residue.
+
+The recorder proves marker-index absence and deletion with the root index
+route, not just a marker document. After the marker source direct-404 and
+backing-index proof, it reads, strictly decodes, rejects marker or
+whitespace-only defaults, and resolves any nonmarker default read-only. It
+rereads the exact raw envelope immediately before source create. That second
+response is the `data_view_default_get` fixture and becomes one pending restore
+lease before the source-create POST, with no intervening remote I/O. The lease
+holds the raw envelope, its canonical id or no-default state, and a
+`CreateMayImplicitlySetSource` or `ExplicitDefaultMutationMayHaveChanged`
+phase. It clears only after an exact restore acknowledgement and raw GET
+equality.
+
+The unrecorded GET immediately after source create accepts only the exact
+original raw envelope, or, when the original default was absent, the marker
+source id. Before the first explicit default POST it repeats that same audit,
+then moves the lease to the explicit-mutation phase immediately before the
+POST. A preexisting default displaced by source create fails the main flow but
+remains recoverable by cleanup because the source is owned. While the lease is
+pending, cleanup and normal success accept only the original raw envelope,
+the source id, and, in the explicit phase, canonical no-default (`null` or
+empty string); replacement or arbitrary nonmarker defaults are unsafe. They
+restore before every marker delete. Restore failure, timeout, raw mismatch, or
+an unexpected current default retains the lease and all data-view/index
+ownership and skips those deletes. Fixtures replace any real original default
+id with a fixed placeholder. Self-preview and swap responses must be empty;
+source and replacement ownership clear only after their respective
+marker-scoped GET-404 exchanges.
+
+The fresh traditional 9.5.1 lab returns `{ "data_view_id": "" }` before any
+data view is created. The recorder canonicalizes that raw state to no default,
+does not resolve an empty id, claims that exact empty envelope before source
+create, restores with `null`, and requires the post-restore GET to be the same
+empty envelope. Every flavor requires exact raw initial and restored envelope
+equality before clearing the pending lease. A cloud recording keeps a non-empty
+original id redacted to the fixed placeholder.
 
 The 0.5.1 fixture set covers:
 
@@ -515,20 +575,25 @@ adds the nine-contract `v0.5` family. Reports commit under
 
 ## 14. Measured behavior
 
-Read and marker-scoped mutation probes ran on 2026-09-02 against Serverless
-9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed lab 9.5.1. Every probe
-cleaned up its dashboard and data view; the lab was torn down with its volumes.
+The Task 6 read and marker-scoped mutation probe ran on 2026-09-02 against
+Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and self-managed 9.5.1. Every
+leg restored its default and removed all marker data views and indices. The
+Serverless prebuilt baseline was unchanged; the lab teardown left zero services
+and volumes.
 
 | Fact | Measured result |
 |---|---|
-| Data-view lifecycle | Create with explicit id, list, get, update, and delete succeed on all three flavors; create/update/delete answer 200 |
+| Data-view lifecycle | All three flavors create with an explicit id, list, get, update, and delete the marker view. |
+| Legacy scripted fields | Serverless 9.6.0 drops the marker scripted entry from raw create and immediate GET. Hosted 9.5.2 and traditional 9.5.1 retain it in both. Portable legacy scripted fields remain globally unsupported. |
+| Direct delete body | All three flavors succeed with a 200 empty body. elasticctl accepts only an empty body or exact `{ "acknowledged": true }`. |
 | Data-view response | Carries `id`, `title`, the configured optional values, formats, runtime fields, field attributes, generated `fields`, `namespaces`, and `version`; absent and false `allowHidden` normalize to false |
-| Hidden-index create | `allowHidden: true` is accepted and survives GET on Serverless 9.6.0 and Hosted 9.5.2; both probes cleaned up |
-| Hidden-index update | Sending `allowHidden` to the partial update route answers 400 on Serverless 9.6.0 and Hosted 9.5.2; the stored false value is unchanged |
-| Field metadata | The `/fields` route updates count and description and removes a label sent as `null` on Serverless 9.6.0 and Hosted 9.5.2; both probes cleaned up |
-| Reference preview | Self-swap (`fromId == toId`) answers 200 and returns the marker dashboard dependent without mutation |
+| Hidden-index create | `allowHidden: true` is accepted and survives GET on all three flavors. |
+| Hidden-index update | Sending `allowHidden: false` to the partial update route answers 400 and leaves the stored true value unchanged on all three flavors. |
+| Field metadata | `/fields` returns a one-key full data-view envelope on all three flavors. It preserves `count` and `customDescription` and omits a `customLabel` sent as `null`. |
+| Reference preview | A fresh self-swap (`fromId == toId`) decodes to an empty result on all three flavors before replacement creation. |
 | Unsafe direct delete | Direct DELETE of a referenced marker data view answers 200; the dependent dashboard remains readable and broken |
-| Swap default | Serverless 9.6.0 and Hosted 9.5.2 retain the deleted source id as the current default after successful marker swap/delete; both probes restored the prior default and left no marker views. Self-managed was not measured. |
+| Swap default | All three flavors retain the deleted source id as the current default after successful marker swap/delete, with zero references. |
+| Default restoration | Serverless and Hosted preserve and restore a preexisting nonmarker default, scrubbed to the public placeholder. Fresh traditional 9.5.1 claims raw `""`, first create implicitly makes source default, restores with a null POST, and returns exact raw `""`. |
 | Dashboard create/update | `PUT /api/dashboards/{id}` answers 201 on create and 200 on replacement; replacement is full, not patch semantics |
 | Dashboard response | Top level is `{id, data, meta}` for the measured supported dashboard |
 | Dashboard search | `GET /api/dashboards` answers the documented paginated `{data, meta}` shape |
@@ -538,8 +603,6 @@ cleaned up its dashboard and data view; the lab was torn down with its volumes.
 
 Still required before the corresponding release ships:
 
-- 0.5.0: scripted-field round trip, default restoration, and the two
-  data-view update-route facts above on self-managed 9.5.1;
 - 0.5.1: one accepted-but-lossy typed dashboard payload and Saved Objects
   import success/conflict on every flavor;
 - 0.5.2: the complete ninth contract and matrix reports.

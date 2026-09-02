@@ -335,7 +335,13 @@ impl Transport {
         }
     }
 
-    async fn send_retrying<F>(&self, method: Method, url: &str, mut build: F) -> Result<Response>
+    async fn send_retrying<F>(
+        &self,
+        method: Method,
+        url: &str,
+        attempt_limit: u32,
+        mut build: F,
+    ) -> Result<Response>
     where
         F: FnMut() -> Result<reqwest::RequestBuilder>,
     {
@@ -375,7 +381,7 @@ impl Transport {
             // Retry transient failures only. Retrying a 4xx repeats the same
             // caller error.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
-            if transient && attempt < MAX_ATTEMPTS {
+            if transient && attempt < attempt_limit {
                 let backoff = Duration::from_millis(200 * 2u64.pow(attempt - 1));
                 tokio::time::sleep(backoff).await;
                 continue;
@@ -388,9 +394,20 @@ impl Transport {
     }
 
     async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Response> {
+        self.send_with_attempt_limit(method, path, body, MAX_ATTEMPTS)
+            .await
+    }
+
+    async fn send_with_attempt_limit(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+    ) -> Result<Response> {
         let url = self.url(path);
         let request_method = method.clone();
-        self.send_retrying(method, &url, || {
+        self.send_retrying(method, &url, attempt_limit, || {
             let mut req = self
                 .client
                 .request(request_method.clone(), &url)
@@ -411,8 +428,21 @@ impl Transport {
     }
 
     async fn send_json(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
+        self.send_json_with_attempt_limit(method, path, body, MAX_ATTEMPTS)
+            .await
+    }
+
+    async fn send_json_with_attempt_limit(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+    ) -> Result<Value> {
         let url = self.url(path);
-        let response = self.send(method.clone(), path, body).await?;
+        let response = self
+            .send_with_attempt_limit(method.clone(), path, body, attempt_limit)
+            .await?;
         let text = self.response_text(&method, &url, response).await?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
@@ -433,7 +463,7 @@ impl Transport {
         let method = Method::GET;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, || {
+            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
                 Ok(self
                     .client
                     .request(Method::GET, &url)
@@ -466,7 +496,7 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, || {
+            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
                 Ok(self
                     .client
                     .request(Method::POST, &url)
@@ -520,6 +550,16 @@ impl Transport {
         self.send_json(Method::PUT, path, Some(body)).await
     }
 
+    /// Send a JSON PUT exactly once.
+    ///
+    /// This is for mutations whose endpoint does not provide an idempotency
+    /// key. It otherwise uses the same request construction, response parsing,
+    /// timeout handling, and error classification as [`Self::put`].
+    pub async fn put_once(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_json_with_attempt_limit(Method::PUT, path, Some(body), 1)
+            .await
+    }
+
     pub async fn patch(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_json(Method::PATCH, path, Some(body)).await
     }
@@ -564,7 +604,7 @@ impl Transport {
         let url = format!("{}{}", self.es_base, path);
         let request_method = method.clone();
         let response = self
-            .send_retrying(method.clone(), &url, || {
+            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
                 let mut req = self
                     .client
                     .request(request_method.clone(), &url)
@@ -596,7 +636,7 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, || {
+            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
                 // Retryable HTTP responses deliberately replay this POST. Part and Form are
                 // recreated here because reqwest consumes multipart bodies while sending.
                 let part = reqwest::multipart::Part::text(ndjson.to_string())

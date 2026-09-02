@@ -53,11 +53,7 @@
           "_source": {
             "kibana.alert.rule.name": "elasticctl sample alert probe",
             "kibana.alert.workflow_status": "open"
-          },
-          "sort": [
-            1788256958220,
-            "elasticctl-fixture-alert-1"
-          ]
+          }
         },
         {
           "_index": ".ds-.alerts-security.alerts-default-2026.08.12-000001",
@@ -65,11 +61,7 @@
           "_source": {
             "kibana.alert.rule.name": "elasticctl sample alert probe",
             "kibana.alert.workflow_status": "open"
-          },
-          "sort": [
-            1788256958219,
-            "elasticctl-fixture-alert-2"
-          ]
+          }
         },
         {
           "_index": ".ds-.alerts-security.alerts-default-2026.08.12-000001",
@@ -77,11 +69,7 @@
           "_source": {
             "kibana.alert.rule.name": "elasticctl sample alert probe",
             "kibana.alert.workflow_status": "open"
-          },
-          "sort": [
-            1788256958217,
-            "elasticctl-fixture-alert-3"
-          ]
+          }
         }
       ]
     }

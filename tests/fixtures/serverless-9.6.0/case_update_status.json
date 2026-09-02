@@ -42,13 +42,12 @@
         "syncAlerts": false,
         "extractObservables": false
       },
-      "duration": 4,
       "closed_at": "2026-01-01T00:00:00.000Z",
       "closed_by": {
         "username": "REDACTED",
         "full_name": "REDACTED",
         "email": "REDACTED",
-        "profile_uid": "u_REDACTED_1"
+        "profile_uid": "REDACTED"
       },
       "created_at": "2026-01-01T00:00:00.000Z",
       "created_by": {
@@ -66,9 +65,6 @@
       },
       "total_observables": 0,
       "external_service": null,
-      "time_to_acknowledge": 4,
-      "time_to_investigate": 0,
-      "time_to_resolve": 4,
       "id": "elasticctl-fixture-case",
       "version": "WzAsMV0=",
       "totalComment": 1,

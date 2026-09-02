@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 — Unreleased
+
+### Added
+
+- Data-view administration: list, get, validate, export, import, guarded
+  delete with reference replacement, and guarded default get/set/unset.
+- Portable JSON and YAML data-view transfer with stable ids and strict route
+  response decoding.
+
+### Fixed
+
+- Data-view delete and default changes now refuse unsafe referenced/default
+  states and restore a pending original default before marker cleanup.
+- Portable legacy scripted fields are globally rejected before I/O.
+- Fixture recording removes deployment identity from status responses and
+  keeps retry diagnostics free of server-provided object ids.
+
+### Verified
+
+- Scrubbed 21-exchange data-view fixtures now verify strict live response
+  contracts and cleanup on Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and
+  self-managed 9.5.1.
+
 ## 0.4.2 — 2026-09-01
 
 ### Added

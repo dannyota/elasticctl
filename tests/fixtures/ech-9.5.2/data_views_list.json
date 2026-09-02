@@ -1,0 +1,19 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_views_list",
+  "response": {
+    "data_view": [
+      {
+        "id": "elasticctl-sample-data-view-source",
+        "namespaces": [
+          "default"
+        ],
+        "title": "elasticctl-sample-data-view-*",
+        "name": "elasticctl sample source view",
+        "timeFieldName": "@timestamp",
+        "managed": false
+      }
+    ]
+  }
+}

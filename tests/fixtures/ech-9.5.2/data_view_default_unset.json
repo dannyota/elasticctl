@@ -1,0 +1,12 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_default_unset",
+  "request": {
+    "data_view_id": null,
+    "force": true
+  },
+  "response": {
+    "acknowledged": true
+  }
+}

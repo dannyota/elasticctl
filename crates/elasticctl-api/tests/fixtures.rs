@@ -5,6 +5,8 @@
 
 use elasticctl_api::Rule;
 use elasticctl_api::codec;
+use elasticctl_api::data_views::{DataViewReference, DataViewSummary};
+use elasticctl_api::data_views_ops;
 use elasticctl_api::rules;
 use serde_json::Value;
 use std::fs;
@@ -62,6 +64,33 @@ const V0_4_1_CASE_FIXTURES: [&str; 8] = [
     "case_delete.json",
 ];
 
+/// Data-view fixtures added in 0.5.0. They are all marker-scoped and retain
+/// the live route envelopes after the recorder removes server-owned cache and
+/// identity values.
+const V0_5_DATA_VIEW_FIXTURES: [&str; 21] = [
+    "data_view_not_found.json",
+    "data_view_create.json",
+    "data_views_list.json",
+    "data_view_get.json",
+    "data_view_update.json",
+    "data_view_fields.json",
+    "data_view_fields_get.json",
+    "data_view_allow_hidden_rejected.json",
+    "data_view_default_get.json",
+    "data_view_default_set.json",
+    "data_view_default_unset.json",
+    "data_view_default_set_before_swap.json",
+    "data_view_swap_preview.json",
+    "data_view_replacement_create.json",
+    "data_view_swap.json",
+    "data_view_swap_source_not_found.json",
+    "data_view_default_after_swap.json",
+    "data_view_default_restore.json",
+    "data_view_default_restored_get.json",
+    "data_view_delete.json",
+    "data_view_delete_not_found.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -76,6 +105,20 @@ fn fixture_sets() -> Vec<PathBuf> {
     }
     sets.sort();
     sets
+}
+
+fn nontraditional_default_restore_request_is_correlated(
+    initial: &Value,
+    restore_request: &Value,
+) -> bool {
+    match initial {
+        Value::Null => restore_request.is_null(),
+        Value::String(id) if id.is_empty() => restore_request.is_null(),
+        Value::String(id) if id == "elasticctl-fixture-original-default" => {
+            restore_request == initial
+        }
+        _ => false,
+    }
 }
 
 /// The rule that every recorded set creates and deletes.
@@ -156,6 +199,18 @@ fn every_fixture_parses_and_carries_its_metadata() {
             set.display(),
             missing.join(", ")
         );
+
+        let missing: Vec<&str> = V0_5_DATA_VIEW_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks data-view fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
     }
 }
 
@@ -230,6 +285,265 @@ fn every_flavor_carries_every_v0_2_exchange() {
             missing.join(", ")
         );
     }
+}
+
+#[test]
+fn data_view_fixtures_decode_through_the_production_models() {
+    for set in fixture_sets() {
+        let create = fixture_body(&set.join("data_view_create.json"));
+        let got = fixture_body(&set.join("data_view_get.json"));
+        assert_eq!(
+            create["request"]["data_view"]["fields"]["elasticctl.legacy"]["scripted"],
+            true,
+            "{}: raw request carries the legacy scripted-field probe",
+            set.display()
+        );
+        let create_scripted = create["response"]["data_view"]["fields"]
+            .get("elasticctl.legacy")
+            .is_some();
+        let get_scripted = got["response"]["data_view"]["fields"]
+            .get("elasticctl.legacy")
+            .is_some();
+        assert_eq!(create_scripted, get_scripted, "{}", set.display());
+        match create["flavor"].as_str() {
+            Some("serverless") => assert!(
+                !create_scripted,
+                "{}: Serverless drops the raw scripted field",
+                set.display()
+            ),
+            Some("ech" | "traditional") => assert!(
+                create_scripted,
+                "{}: Hosted and traditional retain the raw scripted field",
+                set.display()
+            ),
+            flavor => panic!("{}: unexpected fixture flavor {flavor:?}", set.display()),
+        }
+        assert_eq!(
+            create["response"]["data_view"]["allowHidden"],
+            true,
+            "{}: create preserves allowHidden: true",
+            set.display()
+        );
+        assert_eq!(
+            got["response"]["data_view"]["allowHidden"],
+            true,
+            "{}: immediate GET preserves allowHidden: true",
+            set.display()
+        );
+        for response in [&create["response"], &got["response"]] {
+            if create_scripted {
+                let error = data_views_ops::normalize(&response["data_view"])
+                    .expect_err("live scripted field is unsupported");
+                assert_eq!(error.kind, elasticctl_core::ErrorKind::Unsupported);
+            } else {
+                let created = data_views_ops::normalize(&response["data_view"])
+                    .expect("normalize a scripted-field-free response");
+                assert!(created.fields.is_empty());
+            }
+        }
+
+        let updated = fixture_body(&set.join("data_view_update.json"));
+        assert_eq!(
+            updated["response"]["data_view"]["allowHidden"],
+            true,
+            "{}",
+            set.display()
+        );
+        assert_eq!(
+            updated["response"]["data_view"]["title"],
+            "elasticctl-sample-data-view-updated-*"
+        );
+
+        let listed = fixture_body(&set.join("data_views_list.json"));
+        let listed: Vec<DataViewSummary> =
+            serde_json::from_value(listed["response"]["data_view"].clone())
+                .expect("decode marker-scoped data-view list");
+        assert_eq!(listed.len(), 1, "{}", set.display());
+        assert_eq!(listed[0].id, "elasticctl-sample-data-view-source");
+
+        let fields = fixture_body(&set.join("data_view_fields.json"));
+        let fields_acknowledged = fields["response"] == serde_json::json!({"acknowledged": true});
+        let fields_envelope = fields["response"].as_object().is_some_and(|response| {
+            response.len() == 1
+                && response["data_view"]["id"] == "elasticctl-sample-data-view-source"
+        });
+        assert!(
+            fields_acknowledged || fields_envelope,
+            "{}: field metadata must use the closed success union",
+            set.display()
+        );
+        assert!(
+            fields_envelope,
+            "{}: every measured flavor returns the full data-view envelope",
+            set.display()
+        );
+        assert_eq!(
+            fields["request"]["fields"]["host.name"]["customLabel"],
+            Value::Null,
+            "{}: field metadata null is the removal contract",
+            set.display()
+        );
+        assert_eq!(
+            fields["request"]["fields"]["elasticctl.metadata"]["customDescription"],
+            "elasticctl sample metadata",
+            "{}: use Kibana's documented metadata key",
+            set.display()
+        );
+        let persisted_fields = fixture_body(&set.join("data_view_fields_get.json"));
+        let field_attrs = &persisted_fields["response"]["data_view"]["fieldAttrs"];
+        assert_eq!(field_attrs["host.name"]["count"], 2, "{}", set.display());
+        assert!(
+            field_attrs["host.name"].get("customLabel").is_none(),
+            "{}: null removes the stored label",
+            set.display()
+        );
+        assert_eq!(
+            field_attrs["elasticctl.metadata"]["count"],
+            1,
+            "{}",
+            set.display()
+        );
+        assert_eq!(
+            field_attrs["elasticctl.metadata"]["customDescription"],
+            "elasticctl sample metadata",
+            "{}",
+            set.display()
+        );
+
+        let rejected = fixture_body(&set.join("data_view_allow_hidden_rejected.json"));
+        assert_eq!(rejected["error"]["http_status"], 400);
+        assert_eq!(
+            rejected["error"]["kind"],
+            "http",
+            "{}: unsupported main-route allowHidden update remains a 400",
+            set.display()
+        );
+
+        let preview = fixture_body(&set.join("data_view_swap_preview.json"));
+        let preview_references: Vec<DataViewReference> =
+            serde_json::from_value(preview["response"]["result"].clone())
+                .expect("decode self-swap references");
+        assert!(preview_references.is_empty());
+        assert_eq!(
+            preview["request"]["fromId"],
+            "elasticctl-sample-data-view-source"
+        );
+        assert_eq!(
+            preview["request"]["toId"],
+            "elasticctl-sample-data-view-source"
+        );
+
+        let swap = fixture_body(&set.join("data_view_swap.json"));
+        let swap_references: Vec<DataViewReference> =
+            serde_json::from_value(swap["response"]["result"].clone())
+                .expect("decode swap references");
+        assert!(swap_references.is_empty());
+        assert_eq!(swap["response"]["deleteStatus"]["deletePerformed"], true);
+        assert_eq!(swap["response"]["deleteStatus"]["remainingRefs"], 0);
+        let source = fixture_body(&set.join("data_view_swap_source_not_found.json"));
+        assert_eq!(source["error"]["kind"], "not_found");
+        let after_swap = fixture_body(&set.join("data_view_default_after_swap.json"));
+        assert_eq!(
+            after_swap["response"]["data_view_id"],
+            "elasticctl-sample-data-view-source",
+            "{}: Kibana retains the deleted source as default after swap",
+            set.display()
+        );
+        let deleted = fixture_body(&set.join("data_view_delete.json"));
+        assert!(
+            deleted["response"].is_null(),
+            "{}: every measured flavor returns an empty delete body",
+            set.display()
+        );
+        let deleted = fixture_body(&set.join("data_view_delete_not_found.json"));
+        assert_eq!(deleted["error"]["kind"], "not_found");
+
+        let initial_default = fixture_body(&set.join("data_view_default_get.json"));
+        let restore = fixture_body(&set.join("data_view_default_restore.json"));
+        let restored_default = fixture_body(&set.join("data_view_default_restored_get.json"));
+        assert_eq!(
+            initial_default["response"]["data_view_id"],
+            restored_default["response"]["data_view_id"],
+            "{}: raw initial and restored defaults must match",
+            set.display()
+        );
+        for fixture in [&initial_default, &restore, &restored_default] {
+            for id in [
+                fixture.pointer("/response/data_view_id"),
+                fixture.pointer("/request/data_view_id"),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                assert!(
+                    id.is_null()
+                        || id.as_str() == Some("")
+                        || matches!(
+                            id.as_str(),
+                            Some("elasticctl-sample-data-view-source")
+                                | Some("elasticctl-sample-data-view-replacement")
+                                | Some("elasticctl-fixture-original-default")
+                        ),
+                    "{}: default fixture leaked a nonmarker id",
+                    set.display()
+                );
+            }
+        }
+        if initial_default["flavor"] == "traditional" {
+            assert_eq!(initial_default["response"]["data_view_id"], "");
+            assert!(restore["request"]["data_view_id"].is_null());
+            assert_eq!(restored_default["response"]["data_view_id"], "");
+        } else {
+            for id in [
+                &initial_default["response"]["data_view_id"],
+                &restore["request"]["data_view_id"],
+                &restored_default["response"]["data_view_id"],
+            ] {
+                assert_eq!(
+                    id,
+                    "elasticctl-fixture-original-default",
+                    "{}: cloud defaults use the fixed scrubbed placeholder",
+                    set.display()
+                );
+            }
+        }
+        assert_eq!(restore["request"]["force"], true, "{}", set.display());
+        assert_eq!(
+            restore["response"],
+            serde_json::json!({"acknowledged": true}),
+            "{}: default restore must carry the exact acknowledgement",
+            set.display()
+        );
+    }
+}
+
+#[test]
+fn nontraditional_default_restore_request_must_correlate_with_initial_default() {
+    let placeholder = Value::String("elasticctl-fixture-original-default".to_string());
+    assert!(nontraditional_default_restore_request_is_correlated(
+        &Value::Null,
+        &Value::Null
+    ));
+    assert!(nontraditional_default_restore_request_is_correlated(
+        &Value::String(String::new()),
+        &Value::Null
+    ));
+    assert!(nontraditional_default_restore_request_is_correlated(
+        &placeholder,
+        &placeholder
+    ));
+    assert!(!nontraditional_default_restore_request_is_correlated(
+        &Value::Null,
+        &Value::String(String::new())
+    ));
+    assert!(!nontraditional_default_restore_request_is_correlated(
+        &Value::String(String::new()),
+        &placeholder
+    ));
+    assert!(!nontraditional_default_restore_request_is_correlated(
+        &placeholder,
+        &Value::Null
+    ));
 }
 
 #[test]
@@ -497,6 +811,23 @@ fn fixture_identity_and_version_fields_are_recursively_redacted() {
             if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
                 assert_no_real_identity_values(&fixture_body(&path), &path.display().to_string());
             }
+        }
+    }
+}
+
+#[test]
+fn status_fixtures_remove_deployment_identity_and_runtime_metrics() {
+    for set in fixture_sets() {
+        let status = fixture_body(&set.join("status.json"));
+        let response = status["response"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{}: status response must be an object", set.display()));
+        for field in ["name", "uuid", "metrics"] {
+            assert!(
+                !response.contains_key(field),
+                "{}: status response leaked `{field}`",
+                set.display()
+            );
         }
     }
 }

@@ -1,0 +1,12 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_view_default_restore",
+  "request": {
+    "data_view_id": "elasticctl-fixture-original-default",
+    "force": true
+  },
+  "response": {
+    "acknowledged": true
+  }
+}

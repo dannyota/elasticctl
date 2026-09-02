@@ -9,7 +9,7 @@ use std::os::fd::FromRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_json, body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 struct WithoutHeader(&'static str);
@@ -174,6 +174,80 @@ async fn get_sends_the_authorization_and_version_headers() {
 
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert_eq!(t.get("/api/thing").await.unwrap()["ok"], true);
+}
+
+#[tokio::test]
+async fn put_once_uses_the_normal_put_request_shape_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/s/soc/api/thing"))
+        .and(header("authorization", "ApiKey essu_test"))
+        .and(header("elastic-api-version", "2023-10-31"))
+        .and(header("kbn-xsrf", "true"))
+        .and(body_json(json!({"value": 1})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    profile.space = "soc".into();
+    let t = Transport::new(&profile).unwrap();
+    assert_eq!(
+        t.put_once("/api/thing", &json!({"value": 1}))
+            .await
+            .unwrap()["ok"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn put_once_preserves_transient_http_errors_without_replaying_the_mutation() {
+    for (status, message) in [(429, "rate limited"), (503, "temporarily unavailable")] {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({"message": message})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let t = Transport::new(&profile_for(&server)).unwrap();
+        let error = t
+            .put_once("/api/once", &json!({}))
+            .await
+            .expect_err("one-shot PUT must not replay a transient response");
+        assert_eq!(error.kind, ErrorKind::Http);
+        assert_eq!(error.http_status, Some(status));
+        assert_eq!(error.message, message);
+    }
+}
+
+#[tokio::test]
+async fn ordinary_put_still_retries_a_transient_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/retry"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/retry"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let t = Transport::new(&profile_for(&server)).unwrap();
+    assert_eq!(t.put("/api/retry", &json!({})).await.unwrap()["ok"], true);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]

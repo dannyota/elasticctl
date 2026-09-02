@@ -69,8 +69,10 @@ struct RawDataViewSpec {
 }
 
 impl DataViewSpec {
-    /// Validate portable values that have extensible nested maps.
-    pub fn validate(&self) -> Result<()> {
+    /// Validate the local shape before applying this release's portability
+    /// capability rules. Deserialization uses this boundary so callers that
+    /// validate an artifact receive the stable Unsupported classification.
+    fn validate_shape(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(Error::new(
                 ErrorKind::Error,
@@ -84,17 +86,21 @@ impl DataViewSpec {
             ));
         }
         validate_object_values(&self.field_attrs, "fieldAttrs")?;
-        for (name, field) in &self.fields {
-            let path = format!("fields.{name}");
-            let field = field
-                .as_object()
-                .ok_or_else(|| Error::new(ErrorKind::Error, format!("{path} must be an object")))?;
-            if field.get("scripted").and_then(Value::as_bool) != Some(true) {
-                return Err(Error::new(
-                    ErrorKind::Error,
-                    format!("{path}.scripted must be true"),
-                ));
-            }
+        validate_scripted_fields(&self.fields)?;
+        Ok(())
+    }
+
+    /// Validate a portable 0.5.0 data-view artifact.
+    pub fn validate(&self) -> Result<()> {
+        self.validate_shape()?;
+        if !self.fields.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "legacy scripted fields are unsupported: {}",
+                    sorted_field_names(&self.fields).join(", ")
+                ),
+            ));
         }
         Ok(())
     }
@@ -123,7 +129,7 @@ impl DataViewSpec {
             view_type: raw.view_type,
             type_meta,
         };
-        spec.validate()?;
+        spec.validate_shape()?;
         Ok(spec)
     }
 }
@@ -140,12 +146,37 @@ fn validate_object_values(values: &Map<String, Value>, path: &str) -> Result<()>
     Ok(())
 }
 
+fn validate_scripted_fields(fields: &Map<String, Value>) -> Result<()> {
+    for (name, field) in fields {
+        let path = format!("fields.{name}");
+        let field = field
+            .as_object()
+            .ok_or_else(|| Error::new(ErrorKind::Error, format!("{path} must be an object")))?;
+        if field.get("scripted").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!("{path}.scripted must be true"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sorted_field_names(fields: &Map<String, Value>) -> Vec<String> {
+    let mut names: Vec<_> = fields.keys().cloned().collect();
+    names.sort();
+    names
+}
+
 impl TryFrom<Value> for DataViewSpec {
     type Error = Error;
 
     fn try_from(value: Value) -> Result<Self> {
-        serde_json::from_value(value)
-            .map_err(|error| Error::new(ErrorKind::Error, format!("decoding data view: {error}")))
+        let spec: Self = serde_json::from_value(value).map_err(|error| {
+            Error::new(ErrorKind::Error, format!("decoding data view: {error}"))
+        })?;
+        spec.validate()?;
+        Ok(spec)
     }
 }
 
@@ -255,6 +286,18 @@ pub async fn create(transport: &Transport, spec: &DataViewSpec) -> Result<DataVi
 
 /// Apply the documented partial data-view update.
 pub async fn update(transport: &Transport, id: &str, update: &DataViewUpdate) -> Result<DataView> {
+    if let Some(fields) = &update.fields {
+        validate_scripted_fields(fields)?;
+        if !fields.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "legacy scripted fields are unsupported: {}",
+                    sorted_field_names(fields).join(", ")
+                ),
+            ));
+        }
+    }
     let body = json!({"data_view": update, "refresh_fields": true});
     decode_data_view(
         &transport.post(&data_view_path(id), Some(&body)).await?,
@@ -269,26 +312,22 @@ pub async fn update_fields_metadata(
     fields: &Map<String, Value>,
 ) -> Result<()> {
     let body = json!({"fields": fields});
-    decode_acknowledged(
-        &transport
-            .post(&format!("{}/fields", data_view_path(id)), Some(&body))
-            .await?,
-        "data view field metadata update",
-    )
+    let response = transport
+        .post(&format!("{}/fields", data_view_path(id)), Some(&body))
+        .await?;
+    decode_field_metadata_success(&response, id)
 }
 
 /// Delete one unreferenced data view.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
-    decode_acknowledged(
-        &transport.delete(&data_view_path(id)).await?,
-        "data view delete",
-    )
+    decode_delete_success(&transport.delete(&data_view_path(id)).await?)
 }
 
 /// Get the active space's default data-view id, if one is set.
 pub async fn get_default(transport: &Transport) -> Result<Option<String>> {
     let body = transport.get(&format!("{BASE}/default")).await?;
     match decode_envelope::<DefaultEnvelope>(&body, "data view default")?.data_view_id {
+        Value::String(id) if id.is_empty() => Ok(None),
         Value::String(id) => Ok(Some(id)),
         Value::Null => Ok(None),
         _ => Err(Error::new(
@@ -362,6 +401,48 @@ fn decode_acknowledged(body: &Value, context: &str) -> Result<()> {
             ErrorKind::Http,
             format!("decoding {context} field `acknowledged`: expected true"),
         ))
+    }
+}
+
+fn decode_field_metadata_success(body: &Value, requested_id: &str) -> Result<()> {
+    let Value::Object(values) = body else {
+        return Err(Error::new(
+            ErrorKind::Http,
+            "decoding data view field metadata update: expected acknowledged or data_view envelope",
+        ));
+    };
+    if values.len() != 1 {
+        return Err(Error::new(
+            ErrorKind::Http,
+            "decoding data view field metadata update: expected exactly one success envelope key",
+        ));
+    }
+    if values.get("acknowledged") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
+    let Some(Value::Object(data_view)) = values.get("data_view") else {
+        return Err(Error::new(
+            ErrorKind::Http,
+            "decoding data view field metadata update: expected acknowledged: true or data_view object",
+        ));
+    };
+    match data_view.get("id") {
+        Some(Value::String(id)) if !id.is_empty() && id == requested_id => Ok(()),
+        _ => Err(Error::new(
+            ErrorKind::Http,
+            "decoding data view field metadata update: data_view id must be a non-empty request-matching string",
+        )),
+    }
+}
+
+fn decode_delete_success(body: &Value) -> Result<()> {
+    match body {
+        Value::Null => Ok(()),
+        Value::Object(_) => decode_acknowledged(body, "data view delete"),
+        _ => Err(Error::new(
+            ErrorKind::Http,
+            "decoding data view delete: expected an empty response body or acknowledged: true",
+        )),
     }
 }
 

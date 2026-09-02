@@ -678,15 +678,26 @@ pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
     }
     if let Some(fields) = source.get("fields") {
         let fields = match fields {
-            Value::Object(fields) => Value::Object(
-                fields
+            Value::Object(fields) => {
+                let mut scripted: Vec<_> = fields
                     .iter()
-                    .filter(|(_, field)| {
-                        field.get("scripted").and_then(Value::as_bool) == Some(true)
+                    .filter_map(|(name, field)| {
+                        (field.get("scripted").and_then(Value::as_bool) == Some(true))
+                            .then_some(name.as_str())
                     })
-                    .map(|(name, field)| (name.clone(), field.clone()))
-                    .collect(),
-            ),
+                    .collect();
+                scripted.sort_unstable();
+                if !scripted.is_empty() {
+                    return Err(Error::new(
+                        ErrorKind::Unsupported,
+                        format!(
+                            "legacy scripted fields are unsupported: {}",
+                            scripted.join(", ")
+                        ),
+                    ));
+                }
+                Value::Object(Map::new())
+            }
             other => canonicalize(other),
         };
         portable.insert("fields".to_string(), canonicalize(&fields));
@@ -755,6 +766,8 @@ pub fn validate(path: &Path) -> Result<Vec<DataViewSpec>> {
 
 /// Build the exact documented replacement delta between canonical data views.
 pub fn build_patch(current: &DataViewSpec, desired: &DataViewSpec) -> Result<DataViewPatch> {
+    current.validate()?;
+    desired.validate()?;
     if current.id != desired.id {
         return unsupported("changing data view id is not supported by the data-view update API");
     }

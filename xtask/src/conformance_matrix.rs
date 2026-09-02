@@ -341,23 +341,11 @@ async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
 /// empty. Without this, `source_scoping` fails on every matrix run because it
 /// has no prebuilt rules to partition against custom ones (design spec 8.3).
 ///
-/// The install response alone does not prove success: `PUT .../prepackaged`
-/// answers `200` with an all-zero `{"rules_installed":0,...}` body when the
-/// Fleet package fetch itself fails, which would otherwise reproduce the
-/// original empty-lab symptom silently. Follow it with the same status check
-/// `xtask record` uses (`crate::prebuilt_is_current`) and fail through the
-/// private log unless it reports the pack current.
-///
-/// One install call is not enough on a fresh lab. Measured 2026-09-01 on
-/// 9.5.1: the first `PUT` reported `rules_installed: 1963` and left
-/// `rules_not_installed: 106`; a second call installed exactly those 106 in
-/// six seconds and the status then reported the pack current. So the call is
-/// repeated until the status is current, and only a run of attempts that
-/// stops making progress fails the leg — with the last status in the private
-/// log. Attempts are capped so a stack that can never converge fails at this
-/// named step rather than looping.
-const PREBUILT_INSTALL_ATTEMPTS: usize = 5;
-
+/// The shared convergence helper sends exact `{}` install requests and then
+/// checks the four outstanding prebuilt counters. Only a valid, noncurrent
+/// status starts another PUT cycle; the read-only status GET retains normal
+/// transient retries. Raw failure detail remains solely in this leg's existing
+/// owner-only private log.
 async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), String> {
     let mut profile = elasticctl_core::Profile {
         kibana_url: "http://localhost:5601".to_string(),
@@ -380,58 +368,13 @@ async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), S
             error.message.as_bytes(),
         )
     })?;
-    let mut last_status = serde_json::Value::Null;
-    for _ in 0..PREBUILT_INSTALL_ATTEMPTS {
-        transport
-            .put(
-                "/api/detection_engine/rules/prepackaged",
-                &serde_json::json!({}),
-            )
-            .await
-            .map_err(|error| {
-                private_failure(
-                    workspace,
-                    "traditional",
-                    "lab-seed",
-                    error.message.as_bytes(),
-                )
-            })?;
-
-        last_status = transport
-            .get("/api/detection_engine/rules/prepackaged/_status")
-            .await
-            .map_err(|error| {
-                private_failure(
-                    workspace,
-                    "traditional",
-                    "lab-seed",
-                    error.message.as_bytes(),
-                )
-            })?;
-        match crate::prebuilt_is_current(&last_status) {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(error) => {
-                return Err(private_failure(
-                    workspace,
-                    "traditional",
-                    "lab-seed",
-                    error.message.as_bytes(),
-                ));
-            }
-        }
-    }
-
-    let detail = format!(
-        "prebuilt install did not report current after {PREBUILT_INSTALL_ATTEMPTS} attempts: \
-         {last_status}"
-    );
-    Err(private_failure(
-        workspace,
-        "traditional",
-        "lab-seed",
-        detail.as_bytes(),
-    ))
+    crate::converge_prebuilt_rules(&transport)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            let detail = error.private_detail();
+            private_failure(workspace, "traditional", "lab-seed", detail.as_bytes())
+        })
 }
 
 fn private_log_path(workspace: &Path, flavor: &str, name: &str) -> PathBuf {
@@ -822,5 +765,17 @@ mod tests {
         // Neighboring lines survive: only the key line is blanked.
         assert!(text.contains("ELASTICCTL_KIBANA_URL="));
         assert!(text.contains("Waiting for Kibana..."));
+    }
+
+    #[test]
+    fn lab_provisioning_uses_the_shared_prebuilt_convergence_helper() {
+        let source = include_str!("conformance_matrix.rs");
+        let provisioning = source
+            .split("fn private_log_path")
+            .next()
+            .expect("private log helper follows lab provisioning");
+        assert!(provisioning.contains("crate::converge_prebuilt_rules(&transport)"));
+        assert!(!provisioning.contains("PREBUILT_INSTALL_ATTEMPTS"));
+        assert!(!provisioning.contains("stops making progress"));
     }
 }

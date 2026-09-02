@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_view_allow_hidden_rejected",
+  "error": {
+    "kind": "http",
+    "message": "[request body.data_view.allowHidden]: Additional properties are not allowed ('allowHidden' was unexpected)",
+    "http_status": 400
+  }
+}

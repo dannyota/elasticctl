@@ -12,6 +12,14 @@
         "email": "REDACTED",
         "full_name": "REDACTED"
       }
+    },
+    {
+      "uid": "u_REDACTED_2",
+      "enabled": true,
+      "data": {},
+      "user": {
+        "username": "REDACTED"
+      }
     }
   ]
 }

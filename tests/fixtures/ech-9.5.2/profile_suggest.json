@@ -4,10 +4,23 @@
   "operation": "profile_suggest",
   "response": {
     "total": {
-      "value": 1,
+      "value": 2,
       "relation": "eq"
     },
     "profiles": [
+      {
+        "uid": "u_REDACTED_2",
+        "user": {
+          "username": "REDACTED",
+          "roles": [
+            "superuser"
+          ],
+          "realm_name": "REDACTED",
+          "realm_domain": "cloud-file"
+        },
+        "labels": {},
+        "data": {}
+      },
       {
         "uid": "u_REDACTED_1",
         "user": {

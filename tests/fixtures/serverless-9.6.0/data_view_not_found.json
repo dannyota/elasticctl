@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "data_view_not_found",
+  "error": {
+    "kind": "not_found",
+    "message": "Saved object [index-pattern/elasticctl-sample-data-view-source] not found",
+    "http_status": 404
+  }
+}

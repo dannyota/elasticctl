@@ -1,0 +1,12 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "data_view_default_set_before_swap",
+  "request": {
+    "data_view_id": "elasticctl-sample-data-view-source",
+    "force": true
+  },
+  "response": {
+    "acknowledged": true
+  }
+}

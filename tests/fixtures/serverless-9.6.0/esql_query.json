@@ -3,6 +3,7 @@
   "version": "9.6.0",
   "operation": "esql_query",
   "response": {
+    "read_cpu_nanos": 0,
     "columns": [
       {
         "name": "marker",

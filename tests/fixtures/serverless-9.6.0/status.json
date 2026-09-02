@@ -3,15 +3,13 @@
   "version": "9.6.0",
   "operation": "status",
   "response": {
-    "name": "kb",
-    "uuid": "bc53551a-5d6f-477e-b6fe-652762e43747",
     "version": {
       "number": "9.6.0",
-      "build_hash": "77e2b0ec58dc97303fbf97f7f41cf8073f3c0b7a",
-      "build_number": 109527,
+      "build_hash": "97d22c5dbabd493aadf410f8dfcf1439e3050c8b",
+      "build_number": 109830,
       "build_snapshot": false,
       "build_flavor": "serverless",
-      "build_date": "2026-08-26T01:42:23.740Z"
+      "build_date": "2026-08-30T20:03:48.544Z"
     },
     "status": {
       "overall": {
@@ -61,10 +59,6 @@
           "level": "available",
           "summary": "All services and plugins are available"
         },
-        "nightshiftInvestigations": {
-          "level": "available",
-          "summary": "All services and plugins are available"
-        },
         "contextEngine": {
           "level": "available",
           "summary": "All services and plugins are available"
@@ -109,6 +103,10 @@
           "level": "available",
           "summary": "All services and plugins are available"
         },
+        "streams": {
+          "level": "available",
+          "summary": "All services and plugins are available"
+        },
         "links": {
           "level": "available",
           "summary": "All services and plugins are available"
@@ -146,10 +144,6 @@
           "summary": "All services and plugins are available"
         },
         "alertingVTwo": {
-          "level": "available",
-          "summary": "All services and plugins are available"
-        },
-        "streams": {
           "level": "available",
           "summary": "All services and plugins are available"
         },

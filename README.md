@@ -119,6 +119,27 @@ elkctl rules export --tag my-corpus --out rules.ndjson
 elkctl rules preview my-rule-id --sample 3
 ```
 
+## Manage data views
+
+Data views use stable ids and portable JSON or YAML files. Legacy scripted
+fields are not portable and are rejected before any remote request.
+
+```bash
+elkctl data-views list --search logs
+elkctl data-views get logs-default
+elkctl data-views validate --path data-views.yaml
+elkctl data-views export logs-default --format-file yaml > data-views.yaml
+
+elkctl data-views import --path data-views.yaml --yes
+elkctl data-views default set logs-default --yes
+elkctl data-views default unset --yes
+elkctl data-views delete old-logs --replace-with logs-default --yes
+```
+
+`import`, `delete`, and `default set|unset` are guarded mutations. They print
+a preview unless `--yes` is supplied. Delete refuses a referenced or current
+default data view until its references/default are safely replaced or unset.
+
 ## Triage alerts and cases
 
 ```bash
@@ -145,6 +166,12 @@ elkctl rules export [<selector>...] [--tag TAG] [--source custom|customized|preb
 elkctl rules prebuilt status|install
 
 elkctl exceptions list | get | validate | export | import | delete
+
+elkctl data-views list [--search TEXT] | get <id-or-exact-name> | validate --path FILE
+elkctl data-views export [<id-or-exact-name>...] [--format-file json|yaml]
+  | import --path FILE [--overwrite|--skip-existing] --yes
+  | delete <id-or-exact-name>... [--replace-with ID] --yes
+  | default get | set <id-or-exact-name> --yes | unset --yes
 
 elkctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
   [--source custom|customized|prebuilt|all]
