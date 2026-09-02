@@ -770,6 +770,29 @@ pub async fn export_bundle(transport: &Transport, selectors: &[String]) -> Resul
         .into_iter()
         .collect();
     let body = saved_objects::export(transport, &ids).await?;
+    if !ids.is_empty() {
+        let scan = saved_objects::scan_bundle(&body).map_err(|error| {
+            Error::new(
+                ErrorKind::Http,
+                format!("decoding dashboard bundle export: {}", error.message),
+            )
+        })?;
+        let exported: BTreeSet<_> = scan.dashboards.into_iter().collect();
+        let missing: Vec<_> = ids
+            .iter()
+            .filter(|id| !exported.contains(*id))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Http,
+                format!(
+                    "dashboard bundle export was short: missing {}",
+                    missing.join(", ")
+                ),
+            ));
+        }
+    }
     Ok(ExportOutcome {
         body,
         exported: ids.len() as u64,

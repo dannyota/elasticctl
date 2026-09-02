@@ -1137,6 +1137,112 @@ async fn dashboard_bundle_export_without_selectors_exports_every_dashboard_not_d
 }
 
 #[tokio::test]
+async fn dashboard_bundle_export_refuses_a_short_response_with_every_missing_id() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    for id in ["dash-a", "dash-z"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dashboards/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(dashboard(id, id)))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_export"))
+        .and(body_json(json!({
+            "objects": [
+                {"type": "dashboard", "id": "dash-a"},
+                {"type": "dashboard", "id": "dash-z"},
+            ],
+            "includeReferencesDeep": true,
+            "excludeExportDetails": false,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string(BUNDLE))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error =
+        dashboards_ops::export_bundle(&transport(&server), &["dash-z".into(), "dash-a".into()])
+            .await
+            .expect_err("a short Saved Objects response must not report a complete export");
+
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "dashboard bundle export was short: missing dash-a, dash-z"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_export_refuses_a_malformed_success_response() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards/dash-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(dashboard("dash-1", "Overview")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_export"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not NDJSON\n"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = dashboards_ops::export_bundle(&transport(&server), &["dash-1".into()])
+        .await
+        .expect_err("a malformed Saved Objects success body must fail closed");
+
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        error
+            .message
+            .starts_with("decoding dashboard bundle export:"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_export_with_no_dashboards_sends_an_explicit_empty_objects_request() {
+    let server = MockServer::start().await;
+    dashboard_capability(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [],
+            "meta": {"page": 1, "per_page": 1000, "total": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let export_details = r#"{"exportedCount":0,"missingRefCount":0,"missingReferences":[]}
+"#;
+    Mock::given(method("POST"))
+        .and(path("/api/saved_objects/_export"))
+        .and(body_json(json!({
+            "objects": [],
+            "includeReferencesDeep": true,
+            "excludeExportDetails": false,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_string(export_details))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let outcome = dashboards_ops::export_bundle(&transport(&server), &[])
+        .await
+        .expect("an empty all-dashboard selection is an explicit empty export");
+
+    assert_eq!(outcome.body, export_details);
+    assert_eq!(outcome.exported, 0);
+    assert!(outcome.missing.is_empty());
+}
+
+#[tokio::test]
 async fn dashboard_bundle_export_does_not_send_an_export_after_a_missing_selector() {
     let server = MockServer::start().await;
     dashboard_capability(&server).await;
@@ -1294,6 +1400,58 @@ async fn dashboard_bundle_import_refuses_a_tampered_guard_preview_before_http() 
         .expect_err("a guard preview must describe the immutable bundle");
 
     assert_eq!(error.kind, ErrorKind::Error);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_refuses_changed_ndjson_before_http() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+    let mut plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+    plan.ndjson = plan.ndjson.replace("dash-1", "dash-2");
+    let server = MockServer::start().await;
+
+    let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+        .await
+        .expect_err("changed NDJSON must not bypass the reviewed scan");
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(
+        error.message,
+        "bundle scan does not match the planned NDJSON"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn dashboard_bundle_import_refuses_a_changed_scan_before_http() {
+    let file = tempfile::NamedTempFile::new().expect("bundle file");
+    std::fs::write(file.path(), BUNDLE).expect("write bundle");
+    let mut plan = dashboards_ops::plan_bundle_import(file.path(), false).expect("bundle plan");
+    plan.scan.dashboards.push("dash-other".into());
+    let server = MockServer::start().await;
+
+    let error = dashboards_ops::apply_bundle_import(&transport(&server), &plan)
+        .await
+        .expect_err("a changed scan must not bypass the reviewed plan");
+
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(
+        error.message,
+        "bundle scan does not match the planned NDJSON"
+    );
     assert!(
         server
             .received_requests()
