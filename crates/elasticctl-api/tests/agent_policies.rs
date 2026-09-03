@@ -321,3 +321,380 @@ async fn every_route_requires_the_fleet_feature_floor() {
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
+
+use elasticctl_api::fleet::agent_policy_ops::{self, AgentPolicyFilter};
+
+fn platform_item(id: &str) -> Value {
+    let mut value = item(id);
+    value["is_managed"] = json!(true);
+    value["is_preconfigured"] = json!(true);
+    value["data_output_id"] = json!("es-default");
+    value
+}
+
+async fn mount_pages(server: &MockServer, pages: Vec<(u64, Vec<Value>, u64)>) {
+    for (page, items, total) in pages {
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("page", page.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": items, "total": total, "page": page, "perPage": 1000
+            })))
+            .mount(server)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn collect_walks_every_page_and_sorts_by_id() {
+    let server = verified_server().await;
+    let first: Vec<Value> = (0..1000).map(|n| item(&format!("ap-{n:04}"))).collect();
+    mount_pages(
+        &server,
+        vec![(1, first, 1001), (2, vec![item("ap-0000-last")], 1001)],
+    )
+    .await;
+    let items = agent_policy_ops::collect(&transport_for(&server))
+        .await
+        .expect("collect");
+    assert_eq!(items.len(), 1001);
+    assert_eq!(items[0]["id"], "ap-0000");
+    assert_eq!(items[1]["id"], "ap-0000-last");
+}
+
+#[tokio::test]
+async fn collect_fails_closed_on_paging_contradictions() {
+    let duplicate = verified_server().await;
+    mount_pages(&duplicate, vec![(1, vec![item("ap-1"), item("ap-1")], 2)]).await;
+    let error = agent_policy_ops::collect(&transport_for(&duplicate))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        error.message.contains("duplicate agent policy id 'ap-1'"),
+        "{}",
+        error.message
+    );
+
+    let short = verified_server().await;
+    mount_pages(&short, vec![(1, vec![item("ap-1")], 5)]).await;
+    let error = agent_policy_ops::collect(&transport_for(&short))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("page was short before total"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn list_filters_locally_sorts_and_truncates() {
+    let server = verified_server().await;
+    mount_pages(
+        &server,
+        vec![(1, vec![item("zeta"), item("alpha"), item("beta")], 3)],
+    )
+    .await;
+    let transport = transport_for(&server);
+    let list = agent_policy_ops::list_op(
+        &transport,
+        &AgentPolicyFilter {
+            search: Some("POLICY".into()),
+            limit: Some(2),
+        },
+    )
+    .await
+    .expect("list");
+    assert_eq!(list.total, 3);
+    assert!(list.truncated);
+    let ids: Vec<_> = list
+        .agent_policies
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect();
+    assert_eq!(ids, ["alpha", "beta"]);
+}
+
+#[tokio::test]
+async fn resolve_prefers_the_id_route_then_exact_names() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/ap-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("ap-1")})))
+        .mount(&server)
+        .await;
+    // Names without spaces: wiremock's `path` matcher compares the encoded path.
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/policy-two"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/Twin"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    let mut two = item("ap-2");
+    two["name"] = json!("policy-two");
+    let mut twin_a = item("twin-a");
+    twin_a["name"] = json!("Twin");
+    let mut twin_b = item("twin-b");
+    twin_b["name"] = json!("Twin");
+    mount_pages(
+        &server,
+        vec![(1, vec![item("ap-1"), two, twin_a, twin_b], 4)],
+    )
+    .await;
+    let transport = transport_for(&server);
+
+    assert_eq!(
+        agent_policy_ops::resolve(&transport, "ap-1")
+            .await
+            .unwrap()
+            .id,
+        "ap-1"
+    );
+    assert_eq!(
+        agent_policy_ops::resolve(&transport, "policy-two")
+            .await
+            .unwrap()
+            .id,
+        "ap-2"
+    );
+    let ambiguous = agent_policy_ops::resolve(&transport, "Twin")
+        .await
+        .unwrap_err();
+    assert_eq!(ambiguous.kind, ErrorKind::Conflict);
+    assert!(
+        ambiguous.message.contains("twin-a, twin-b"),
+        "{}",
+        ambiguous.message
+    );
+}
+
+#[tokio::test]
+async fn get_returns_sanitized_detail_without_raw_audit_or_integration_data() {
+    let server = verified_server().await;
+    let mut live = platform_item("hosted");
+    live["agents"] = json!(2);
+    live["package_policies"] = json!([{"id": "system-1", "inputs": {"secret": "must-not-leak"}}]);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/hosted"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live})))
+        .mount(&server)
+        .await;
+    let detail = agent_policy_ops::get_op(&transport_for(&server), "hosted")
+        .await
+        .unwrap();
+    let value = serde_json::to_value(detail).unwrap();
+    assert_eq!(value["agents"], 2);
+    assert_eq!(value["attached_integrations"], json!(["system-1"]));
+    assert_eq!(
+        value["blocked_by"],
+        json!(["data_output_id", "is_managed", "is_preconfigured"])
+    );
+    assert!(value.get("updated_by").is_none());
+    assert!(!value.to_string().contains("must-not-leak"));
+}
+
+#[tokio::test]
+async fn get_classifies_missing_agent_and_attachment_facts() {
+    // Kibana populates `agents` only for a caller with Fleet agents read, so
+    // its absence is a privilege gap; a missing `package_policies` is malformed.
+    for (missing, kind) in [
+        ("agents", ErrorKind::Permission),
+        ("package_policies", ErrorKind::Http),
+    ] {
+        let server = verified_server().await;
+        let mut live = item("broken");
+        live.as_object_mut().unwrap().remove(missing);
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/broken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live})))
+            .mount(&server)
+            .await;
+        let error = agent_policy_ops::get_op(&transport_for(&server), "broken")
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, kind, "{missing}: {}", error.message);
+        if missing == "agents" {
+            assert!(
+                error.message.contains("Fleet agents read"),
+                "{}",
+                error.message
+            );
+        }
+    }
+}
+
+#[test]
+fn normalize_drops_server_fields_fills_defaults_and_equates_null_with_absent() {
+    let mut live = item("ap-1");
+    live.as_object_mut().unwrap().remove("inactivity_timeout");
+    live["overrides"] = Value::Null;
+    live["is_verifier"] = Value::Null;
+    let spec =
+        agent_policy_ops::normalize(live.as_object().unwrap(), "default").expect("normalize");
+    assert_eq!(spec.inactivity_timeout, 1209600);
+    assert_eq!(spec.overrides, None);
+    let value = serde_json::to_value(&spec).unwrap();
+    for gone in [
+        "status",
+        "revision",
+        "version",
+        "updated_at",
+        "agents",
+        "package_policies",
+        "space_ids",
+        "is_managed",
+    ] {
+        assert!(value.get(gone).is_none(), "{gone} must be normalized away");
+    }
+}
+
+#[test]
+fn normalize_refuses_platform_environment_and_cross_space_state() {
+    let error = agent_policy_ops::normalize(platform_item("ap-1").as_object().unwrap(), "default")
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "agent policy 'ap-1' is not portable: data_output_id, is_managed, is_preconfigured"
+    );
+
+    let mut shared = item("ap-2");
+    shared["space_ids"] = json!(["default", "soc"]);
+    let error = agent_policy_ops::normalize(shared.as_object().unwrap(), "default").unwrap_err();
+    assert!(error.message.ends_with("space_ids"), "{}", error.message);
+
+    let mut upgrade = item("ap-3");
+    upgrade["required_versions"] = json!([]);
+    let error = agent_policy_ops::normalize(upgrade.as_object().unwrap(), "default").unwrap_err();
+    assert!(
+        error.message.ends_with("required_versions"),
+        "{}",
+        error.message
+    );
+
+    let mut agentless = item("ap-4");
+    agentless["agentless"] = json!({"cloudShellUrl": "https://example.invalid"});
+    let error = agent_policy_ops::normalize(agentless.as_object().unwrap(), "default").unwrap_err();
+    assert!(error.message.ends_with("agentless"), "{}", error.message);
+}
+
+#[test]
+fn normalize_rejects_malformed_server_owned_fields_as_http() {
+    for (field, value) in [
+        ("is_managed", json!("false")),
+        ("agentless", json!(false)),
+        ("required_versions", json!({})),
+        ("data_output_id", json!(7)),
+        ("space_ids", json!(["default", 7])),
+    ] {
+        let mut live = item("bad");
+        live[field] = value;
+        let error = agent_policy_ops::normalize(live.as_object().unwrap(), "default").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Http, "{field}: {}", error.message);
+    }
+}
+
+#[test]
+fn validate_rejects_duplicate_ids_and_names_then_sorts() {
+    let dir = tempfile::tempdir().unwrap();
+    let dup = dir.path().join("dup.json");
+    std::fs::write(&dup, r#"[{"id":"b","name":"B","namespace":"default"},{"id":"b","name":"B2","namespace":"default"}]"#).unwrap();
+    let error = agent_policy_ops::validate(&dup).unwrap_err();
+    assert!(
+        error.message.contains("duplicate agent policy ids: b"),
+        "{}",
+        error.message
+    );
+
+    let duplicate_name = dir.path().join("duplicate-name.json");
+    std::fs::write(&duplicate_name, r#"[{"id":"a","name":"Same","namespace":"default"},{"id":"b","name":"Same","namespace":"default"}]"#).unwrap();
+    let error = agent_policy_ops::validate(&duplicate_name).unwrap_err();
+    assert!(
+        error.message.contains("duplicate agent policy names: Same"),
+        "{}",
+        error.message
+    );
+
+    let ok = dir.path().join("ok.yaml");
+    std::fs::write(
+        &ok,
+        "- id: b\n  name: B\n  namespace: default\n- id: a\n  name: A\n  namespace: default\n",
+    )
+    .unwrap();
+    let specs = agent_policy_ops::validate(&ok).unwrap();
+    assert_eq!(
+        specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+#[tokio::test]
+async fn export_requires_a_selection_and_refuses_platform_policies() {
+    let server = verified_server().await;
+    let transport = transport_for(&server);
+    let bare = agent_policy_ops::export(&transport, &[], false, ContentFormat::Json)
+        .await
+        .unwrap_err();
+    assert_eq!(bare.kind, ErrorKind::Error);
+    assert!(
+        bare.message.contains("selectors or --all-custom"),
+        "{}",
+        bare.message
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/platform"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": platform_item("platform")})),
+        )
+        .mount(&server)
+        .await;
+    let explicit =
+        agent_policy_ops::export(&transport, &["platform".into()], false, ContentFormat::Json)
+            .await
+            .unwrap_err();
+    assert_eq!(explicit.kind, ErrorKind::Unsupported);
+}
+
+#[tokio::test]
+async fn all_custom_export_skips_platform_policies_and_sorts_by_id() {
+    let server = verified_server().await;
+    mount_pages(
+        &server,
+        vec![(
+            1,
+            vec![item("zeta"), platform_item("platform"), item("alpha")],
+            3,
+        )],
+    )
+    .await;
+    for id in ["zeta", "alpha"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item(id)})))
+            .mount(&server)
+            .await;
+    }
+    let outcome = agent_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+        .await
+        .expect("export");
+    assert_eq!(outcome.exported, 2);
+    let specs: Vec<AgentPolicySpec> = serde_json::from_str(&outcome.body).unwrap();
+    assert_eq!(
+        specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        ["alpha", "zeta"]
+    );
+    assert_eq!(specs[0].inactivity_timeout, 1209600);
+}
