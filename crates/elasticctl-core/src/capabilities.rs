@@ -60,6 +60,7 @@ pub enum Flavor {
 pub enum Feature {
     Dashboards,
     ExceptionLists,
+    FleetPolicies,
     PrebuiltRules,
     RuleSourceScoping,
 }
@@ -69,6 +70,7 @@ impl Feature {
         match self {
             Self::Dashboards => "dashboards",
             Self::ExceptionLists => "exception lists",
+            Self::FleetPolicies => "fleet policies",
             Self::PrebuiltRules => "prebuilt rules",
             Self::RuleSourceScoping => "rule source scoping",
         }

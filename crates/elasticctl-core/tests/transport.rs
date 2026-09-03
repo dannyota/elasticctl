@@ -821,3 +821,19 @@ async fn a_400_from_multipart_is_never_retried() {
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
+
+#[test]
+fn transport_exposes_the_configured_space() {
+    let profile = Profile {
+        kibana_url: "https://kb.example.com".into(),
+        es_url: None,
+        api_key: Some("essu_abc".into()),
+        username: None,
+        password: None,
+        space: "soc".into(),
+        verify: true,
+        timeout_secs: 30,
+    };
+    let transport = Transport::new(&profile).unwrap();
+    assert_eq!(transport.space(), "soc");
+}

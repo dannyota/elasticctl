@@ -284,6 +284,12 @@ impl Transport {
         &self.kibana_url
     }
 
+    /// The Kibana space this transport targets, exactly as the profile
+    /// resolved it. Fleet normalization compares `space_ids` against it.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
     /// Whether the profile configured an explicit `es_url`. When it did not,
     /// every `*_absolute_es` call silently falls back to the Kibana host —
     /// callers that need to distinguish "no Elasticsearch host configured"

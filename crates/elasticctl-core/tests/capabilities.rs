@@ -343,10 +343,33 @@ fn verified_features_accept_9_5_1_and_newer() {
             Feature::PrebuiltRules,
             Feature::RuleSourceScoping,
             Feature::Dashboards,
+            Feature::FleetPolicies,
         ] {
             caps.require_feature(feature).unwrap();
         }
     }
+}
+
+#[test]
+fn fleet_policies_share_the_fixture_evidence_floor() {
+    let below = Capabilities {
+        flavor: Flavor::SelfManaged,
+        version: "9.5.0".into(),
+    };
+    let error = below.require_feature(Feature::FleetPolicies).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        error.message.contains("fleet policies"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("9.5.1"), "{}", error.message);
+
+    let supported = Capabilities {
+        flavor: Flavor::Serverless,
+        version: "9.6.0".into(),
+    };
+    supported.require_feature(Feature::FleetPolicies).unwrap();
 }
 
 #[test]
