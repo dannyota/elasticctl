@@ -836,10 +836,30 @@ pub async fn apply_import(
                 }
 
                 let (action, applied, route_error) = match (before, current) {
-                    (None, None) => match agent_policies::create(transport, desired).await {
-                        Ok(_) => ("created", true, None),
-                        Err(error) => ("created", false, Some(error.message)),
-                    },
+                    (None, None) => {
+                        match other_owner_of_name(transport, &desired.name).await {
+                            Ok(Some(owner)) => {
+                                failed.push(failed_row(
+                                    &desired.id,
+                                    false,
+                                    format!(
+                                        "agent policy name appeared since preview: {} ({owner})",
+                                        desired.name
+                                    ),
+                                ));
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                failed.push(failed_row(&desired.id, false, error));
+                                continue;
+                            }
+                        }
+                        match agent_policies::create(transport, desired).await {
+                            Ok(_) => ("created", true, None),
+                            Err(error) => ("created", false, Some(error.message)),
+                        }
+                    }
                     (Some(before), Some(_)) if before.spec == *desired => {
                         unchanged.push(json!({"id": desired.id}));
                         continue;
@@ -918,6 +938,24 @@ async fn verify_stored(
         Ok(_) => Err("server stored a different agent-policy spec".into()),
         Err(error) => Err(error.message),
     }
+}
+
+/// Recheck the live list for a policy name claimed by a different id, right
+/// before a planned create's POST. Fleet enforces unique names with a 409 on
+/// create, so a name another client claimed since planning must fail the row
+/// locally rather than reach the server.
+async fn other_owner_of_name(
+    transport: &Transport,
+    name: &str,
+) -> std::result::Result<Option<String>, String> {
+    let items = collect(transport).await.map_err(|error| error.message)?;
+    for item in &items {
+        let row = AgentPolicySummary::from_item(item).map_err(|error| error.message)?;
+        if row.name == name {
+            return Ok(Some(row.id));
+        }
+    }
+    Ok(None)
 }
 
 /// Re-read the monitoring package after a write that could install it. The

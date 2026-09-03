@@ -1378,3 +1378,65 @@ async fn apply_import_rejects_a_tampered_plan_before_any_request() {
         before_requests
     );
 }
+
+#[tokio::test]
+async fn apply_import_refuses_a_planned_create_whose_name_appeared_since_preview() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/new"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "status": "not_installed"
+        }})))
+        .mount(&server)
+        .await;
+    let mut taken = item("other");
+    taken["name"] = json!("Policy new");
+    // Empty at plan time; another client claims the name by apply time.
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies"))
+        .and(query_param("page", "1"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [], "total": 0, "page": 1, "perPage": 1000
+            })),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [taken], "total": 1, "page": 1, "perPage": 1000
+            })),
+        ]))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("new")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "new",
+            "applied": false,
+            "error": "agent policy name appeared since preview: Policy new (other)"
+        })]
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "POST"),
+        "no create request must be issued once the name conflict is detected"
+    );
+}
