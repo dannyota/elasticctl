@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.2 — 2026-09-03
+
+### Fixed
+
+- Content cleanup now retains data views and their backing index when an
+  earlier dashboard or data-view cleanup step fails, preserving dependencies
+  for the retry.
+- Live content checks refresh their marker index through the bodyless route
+  accepted by every supported deployment flavor.
+
+### Verified
+
+- The nine-contract conformance matrix passes on Serverless 9.6.0, Elastic
+  Cloud Hosted 9.5.2, and self-managed 9.5.1. Each target finished with no
+  marker content residue, its original default data view restored, and its
+  prebuilt-rule baseline unchanged.
+
 ## 0.5.1 — 2026-09-02
 
 ### Added
