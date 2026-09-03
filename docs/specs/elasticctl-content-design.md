@@ -571,7 +571,7 @@ successful outcome as `total: 1`, `updated: 1`, `version_conflicts: 0`, and
 deleted counter). This keeps the response production-decodable without making
 a repeated marker cleanup run a fixture diff.
 
-The ninth matrix contract is
+The implemented ninth matrix contract is
 `content_transfers_data_views_and_dashboards_without_residue`. It:
 
 1. refuses a dirty target containing any `elasticctl-live-*` data view or
@@ -582,12 +582,14 @@ The ninth matrix contract is
    data-view id;
 5. gets, lists, exports, updates, and strictly round-trips that dashboard;
 6. deep-exports the dashboard and proves the bundle contains its data view;
-7. previews the self-swap, creates a second marker data view, replaces the
-   dashboard reference while deleting the first, and verifies the dashboard
-   now resolves to the second id;
-8. deletes the dashboard and second data view;
-9. deletes the marker index and proves the original default is restored;
-10. concludes with zero marker dashboards, data views, or indices and the
+7. deletes both objects, imports the opaque bundle, and proves the same ids and
+   reference are restored;
+8. creates a second marker data view, replaces the dashboard reference while
+   deleting the first, and verifies the dashboard and default now resolve to
+   the second id;
+9. deletes the dashboard and second data view;
+10. deletes the marker index and proves the original default is restored;
+11. concludes with zero marker dashboards, data views, or indices and the
     unchanged prebuilt-rule baseline.
 
 Cleanup registers ids before each mutation. Baseline capture rejects a marker
@@ -599,10 +601,10 @@ restore succeed, and deletes the marker index only after every data-view delete
 succeeds. A failed prerequisite retains its dependents for the Drop retry. The
 content contract tolerates no residue.
 
-`xtask::CONTRACTS` grows eight to nine with `name: "content"` and
+`xtask::CONTRACTS` contains nine entries, ending with `name: "content"` and
 `features: &[DASHBOARDS]`, where `DASHBOARDS` wraps `Feature::Dashboards`.
 `scripts/check-conformance-reports.sh`
-adds the nine-contract `v0.5` family. Reports commit under
+recognizes the nine-contract `v0.5` family. Reports belong under
 `docs/conformance/v0.5.2/`.
 
 ## 14. Measured behavior

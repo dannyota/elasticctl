@@ -105,8 +105,12 @@ const PREBUILT_RULES: RequiredFeature = RequiredFeature {
     feature: Feature::PrebuiltRules,
     label: "prebuilt-rules",
 };
+const DASHBOARDS: RequiredFeature = RequiredFeature {
+    feature: Feature::Dashboards,
+    label: "dashboards",
+};
 
-const CONTRACTS: [Contract; 8] = [
+const CONTRACTS: [Contract; 9] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -146,6 +150,11 @@ const CONTRACTS: [Contract; 8] = [
         name: "triage",
         test: "triage_transitions_alerts_and_cases_and_leaves_only_closed_residue",
         features: &[],
+    },
+    Contract {
+        name: "content",
+        test: "content_transfers_data_views_and_dashboards_without_residue",
+        features: &[DASHBOARDS],
     },
 ];
 
@@ -241,6 +250,9 @@ struct TargetState {
     marked_rules: u64,
     marked_lists: usize,
     marked_indices: usize,
+    marked_data_views: usize,
+    marked_dashboards: u64,
+    default_data_view: Option<String>,
     /// Open (non-`closed`) `elasticctl-live-*` marker alerts. Closed marker
     /// alerts are never counted here at all — the capture query below
     /// excludes them, which *is* the triage contract's accepted alert-residue
@@ -350,6 +362,25 @@ impl TargetState {
             }) => 0,
             Err(error) => return Err(error),
         };
+        let marked_data_views = elasticctl_api::data_views::list(transport)
+            .await?
+            .into_iter()
+            .filter(|view| view.id.starts_with("elasticctl-live-"))
+            .count();
+        let marked_dashboards = if feature_available(capabilities, Feature::Dashboards) {
+            elasticctl_api::dashboards_ops::list_op(
+                transport,
+                &elasticctl_api::dashboards_ops::DashboardFilter::default(),
+            )
+            .await?
+            .dashboards
+            .into_iter()
+            .filter(|dashboard| dashboard.id.starts_with("elasticctl-live-"))
+            .count() as u64
+        } else {
+            0
+        };
+        let default_data_view = elasticctl_api::data_views::get_default(transport).await?;
 
         // Same prefix + must_not-closed body live.rs's own baseline counter
         // sends (crates/elasticctl-cli/tests/live.rs::open_marker_alert_count):
@@ -400,6 +431,9 @@ impl TargetState {
             marked_rules,
             marked_lists,
             marked_indices,
+            marked_data_views,
+            marked_dashboards,
+            default_data_view,
             open_marked_alerts,
             marked_cases,
         })
@@ -415,6 +449,8 @@ impl TargetState {
         self.marked_rules == 0
             && self.marked_lists == 0
             && self.marked_indices == 0
+            && self.marked_data_views == 0
+            && self.marked_dashboards == 0
             && self.open_marked_alerts == 0
             && self.marked_cases == 0
     }
@@ -432,6 +468,7 @@ impl TargetState {
             && self.custom == baseline.custom
             && self.prebuilt == baseline.prebuilt
             && self.customized == baseline.customized
+            && self.default_data_view == baseline.default_data_view
         {
             Ok(())
         } else {
@@ -794,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_eight_in_order() {
+    fn contract_table_is_the_approved_nine_in_order() {
         assert_eq!(
             CONTRACTS.map(|contract| contract.name),
             [
@@ -806,8 +843,12 @@ mod tests {
                 "rule_round_trip",
                 "search",
                 "triage",
+                "content",
             ]
         );
+        assert_eq!(CONTRACTS[8].features.len(), 1);
+        assert_eq!(CONTRACTS[8].features[0].feature, Feature::Dashboards);
+        assert_eq!(CONTRACTS[8].features[0].label, "dashboards");
     }
 
     #[test]
@@ -928,6 +969,9 @@ mod tests {
             marked_rules: 0,
             marked_lists: 0,
             marked_indices: 0,
+            marked_data_views: 0,
+            marked_dashboards: 0,
+            default_data_view: Some("stable-default".to_string()),
             open_marked_alerts: 0,
             marked_cases: 0,
         }
@@ -949,6 +993,7 @@ mod tests {
         assert!(!feature_available(&below, Feature::RuleSourceScoping));
         assert!(!feature_available(&below, Feature::ExceptionLists));
         assert!(!feature_available(&below, Feature::PrebuiltRules));
+        assert!(!feature_available(&below, Feature::Dashboards));
 
         let floor = elasticctl_core::Capabilities {
             flavor: elasticctl_core::Flavor::SelfManaged,
@@ -957,6 +1002,7 @@ mod tests {
         assert!(feature_available(&floor, Feature::RuleSourceScoping));
         assert!(feature_available(&floor, Feature::ExceptionLists));
         assert!(feature_available(&floor, Feature::PrebuiltRules));
+        assert!(feature_available(&floor, Feature::Dashboards));
     }
 
     #[test]
@@ -980,6 +1026,15 @@ mod tests {
         variants.push(state);
         let mut state = baseline.clone();
         state.marked_indices = 1;
+        variants.push(state);
+        let mut state = baseline.clone();
+        state.marked_data_views = 1;
+        variants.push(state);
+        let mut state = baseline.clone();
+        state.marked_dashboards = 1;
+        variants.push(state);
+        let mut state = baseline.clone();
+        state.default_data_view = Some("different-default".to_string());
         variants.push(state);
         let mut state = baseline.clone();
         state.open_marked_alerts = 1;

@@ -1206,13 +1206,17 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same eight contracts serially against each target: diagnostics,
+It runs the same nine contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
-repair, source scoping, rule export/import round-trip, search, and triage
-(`elasticctl-triage-design.md` section 9). Before the
-first mutation, it captures custom, prebuilt, and customized rule counts and
-refuses a target with existing live-marker objects. It checks marker cleanup after
-every contract and compares the final rule partitions with that baseline.
+repair, source scoping, rule export/import round-trip, search, triage
+(`elasticctl-triage-design.md` section 9), and content transfer
+(`elasticctl-content-design.md` section 13). Before the first mutation, it
+captures custom, prebuilt, and customized rule counts, the exact default data
+view, and all marker partitions. It refuses a target with existing live-marker
+objects. It checks marker cleanup and default stability after every contract,
+then compares the final state with that baseline. Dashboard marker capture is
+gated below the verified dashboard floor so the content contract can report an
+explicit capability skip; every other required baseline route fails closed.
 
 An ordinary contract failure is valid 0.2.3 evidence when cleanup succeeds. A
 cleanup, harness, or baseline failure invalidates the run and blocks further
