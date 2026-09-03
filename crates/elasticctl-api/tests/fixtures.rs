@@ -1478,7 +1478,33 @@ async fn agent_policy_fixtures_decode_through_the_production_paths() {
             .respond_with(ResponseTemplate::new(200).set_body_json(got["response"].clone()))
             .mount(&server)
             .await;
+        let package = fixture_body(&set.join("package_elastic_agent.json"));
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/elastic_agent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(package["response"].clone()))
+            .mount(&server)
+            .await;
+        let delete = fixture_body(&set.join("agent_policy_delete.json"));
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(delete["response"].clone()))
+            .mount(&server)
+            .await;
         let transport = fixture_transport(&server);
+
+        let package_status = agent_policies::package_status(&transport, "elastic_agent")
+            .await
+            .expect("package status decodes through the production path");
+        assert_eq!(
+            package_status,
+            agent_policies::PackageStatus {
+                name: "elastic_agent".into(),
+                status: "not_installed".into(),
+                installed_version: None,
+            },
+            "{}",
+            set.display()
+        );
 
         let items = agent_policy_ops::collect(&transport)
             .await
@@ -1537,6 +1563,9 @@ async fn agent_policy_fixtures_decode_through_the_production_paths() {
 
         let deleted = fixture_body(&set.join("agent_policy_delete.json"));
         assert_eq!(deleted["response"]["id"], "elasticctl-sample-agent-policy");
+        agent_policies::delete(&transport, "elasticctl-sample-agent-policy")
+            .await
+            .expect("delete decodes through the production path");
         let conflict = fixture_body(&set.join("agent_policy_name_conflict.json"));
         assert_eq!(conflict["error"]["kind"], "conflict", "{}", set.display());
     }

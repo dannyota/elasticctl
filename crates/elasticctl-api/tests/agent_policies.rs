@@ -611,6 +611,18 @@ fn normalize_rejects_malformed_server_owned_fields_as_http() {
 }
 
 #[test]
+fn normalize_refuses_an_unknown_live_top_level_field() {
+    let mut live = item("x");
+    live["future_field"] = json!(1);
+    let error = agent_policy_ops::normalize(live.as_object().unwrap(), "default").unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "agent policy 'x' carries unknown field 'future_field'"
+    );
+}
+
+#[test]
 fn validate_rejects_duplicate_ids_and_names_then_sorts() {
     let dir = tempfile::tempdir().unwrap();
     let dup = dir.path().join("dup.json");
@@ -826,6 +838,42 @@ async fn plan_import_classifies_conflicts_skips_and_replacements() {
         overwrite.package_installs,
         ["elastic_agent@server-selected"]
     );
+}
+
+#[tokio::test]
+async fn plan_import_does_not_normalize_an_existing_policy_it_will_skip_or_refuse_as_conflict() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/existing"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": platform_item("existing")})),
+        )
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![platform_item("existing")], 1)]).await;
+    let transport = transport_for(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "policies.json", &[spec("existing")]);
+
+    let skipped = agent_policy_ops::plan_import(&transport, &path, false, true)
+        .await
+        .expect("skip-existing must not normalize the existing platform-owned policy");
+    assert_eq!(
+        skipped.skipped,
+        vec![json!({"id": "existing", "reason": "exists"})]
+    );
+    assert_eq!(skipped.total, 1);
+
+    let conflict = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .expect_err("default mode must not normalize the existing platform-owned policy");
+    assert_eq!(conflict.kind, ErrorKind::Conflict);
+    assert_eq!(conflict.message, "agent policies already exist: existing");
+
+    let overwrite = agent_policy_ops::plan_import(&transport, &path, true, false)
+        .await
+        .expect_err("overwrite still cannot replace a platform-owned policy");
+    assert_eq!(overwrite.kind, ErrorKind::Unsupported);
 }
 
 #[tokio::test]
@@ -1074,7 +1122,11 @@ async fn apply_import_rechecks_agent_counts_from_the_full_snapshot() {
         .await;
     mount_pages(&server, vec![(1, vec![first], 1)]).await;
     let dir = tempfile::tempdir().unwrap();
-    let path = write_artifact(dir.path(), "p.json", &[spec("agents-race")]);
+    // A description change makes this a planned replace row, not unchanged,
+    // so the recheck below must stop it before issuing the PUT.
+    let mut changed = spec("agents-race");
+    changed.description = Some("changed".into());
+    let path = write_artifact(dir.path(), "p.json", &[changed]);
     let transport = transport_for(&server);
     let plan = agent_policy_ops::plan_import(&transport, &path, true, false)
         .await
@@ -1088,6 +1140,15 @@ async fn apply_import_rechecks_agent_counts_from_the_full_snapshot() {
             "id": "agents-race", "applied": false,
             "error": "agent policy changed since preview"
         })]
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "PUT"),
+        "no replace request must be issued once the recheck sees a changed agent count"
     );
 }
 
@@ -1107,7 +1168,11 @@ async fn apply_import_rechecks_attachment_ids_from_the_full_snapshot() {
         .await;
     mount_pages(&server, vec![(1, vec![first], 1)]).await;
     let dir = tempfile::tempdir().unwrap();
-    let path = write_artifact(dir.path(), "p.json", &[spec("attachment-race")]);
+    // A description change makes this a planned replace row, not unchanged,
+    // so the recheck below must stop it before issuing the PUT.
+    let mut changed = spec("attachment-race");
+    changed.description = Some("changed".into());
+    let path = write_artifact(dir.path(), "p.json", &[changed]);
     let transport = transport_for(&server);
     let plan = agent_policy_ops::plan_import(&transport, &path, true, false)
         .await
@@ -1118,6 +1183,15 @@ async fn apply_import_rechecks_attachment_ids_from_the_full_snapshot() {
     assert_eq!(
         report.failed[0]["error"],
         "agent policy changed since preview"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "PUT"),
+        "no replace request must be issued once the recheck sees a changed attachment set"
     );
 }
 
@@ -1508,7 +1582,10 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
     assert_eq!(report.deleted, vec![json!({"id": "idle"})]);
     assert_eq!(
         report.failed,
-        vec![json!({"id": "gone", "error": "agent policy disappeared since preview"})]
+        vec![json!({
+            "id": "gone", "applied": false,
+            "error": "agent policy disappeared since preview"
+        })]
     );
     assert_eq!(report.total, 2);
     assert_eq!(report.affected_agents, 0);
@@ -1548,7 +1625,10 @@ async fn apply_delete_fails_a_target_that_changed_since_preview() {
     assert!(report.deleted.is_empty());
     assert_eq!(
         report.failed,
-        vec![json!({"id": "idle", "error": "agent policy changed since preview"})]
+        vec![json!({
+            "id": "idle", "applied": false,
+            "error": "agent policy changed since preview"
+        })]
     );
     assert!(
         !server
@@ -1558,6 +1638,43 @@ async fn apply_delete_fails_a_target_that_changed_since_preview() {
             .iter()
             .any(|request| request.method == "POST"),
         "no delete request must be issued once the recheck sees a change"
+    );
+}
+
+#[tokio::test]
+async fn apply_delete_reports_applied_true_when_the_route_echoes_a_different_id() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/idle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies/delete"))
+        .and(body_json(json!({"agentPolicyId": "idle"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "other", "name": "Other"})),
+        )
+        .mount(&server)
+        .await;
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_delete(&transport, &["idle".into()])
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .unwrap();
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0]["id"], "idle");
+    assert_eq!(report.failed[0]["applied"], true);
+    assert!(
+        report.failed[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected id 'idle', got 'other'"),
+        "{:?}",
+        report.failed[0]
     );
 }
 

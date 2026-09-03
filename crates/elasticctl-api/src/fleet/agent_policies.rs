@@ -385,8 +385,11 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
         .await?;
     let deleted: DeleteEnvelope = decode(&response, "agent policy delete")?;
     if deleted.id != id {
-        return Err(Error::new(
+        // The route call above only surfaces the decoded body, not its HTTP
+        // status, and a body that decodes at all was a 2xx response.
+        return Err(Error::with_status(
             ErrorKind::Http,
+            200,
             format!(
                 "decoding agent policy delete: expected id '{id}', got '{}'",
                 deleted.id

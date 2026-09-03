@@ -158,7 +158,7 @@ A portable artifact is a JSON array, or the same array as a YAML sequence, of
 configuration may also carry:
 
 - `description`;
-- `monitoring_enabled`;
+- `monitoring_enabled` (each entry one of `logs`, `metrics`, or `traces`);
 - `unenroll_timeout` and `inactivity_timeout`;
 - `agent_features` and `global_data_tags`;
 - `advanced_settings` and `overrides`;
@@ -193,9 +193,9 @@ section 10 compares the filled forms. The 0.6.0 table is:
 
 Recording extends the table only from measured create responses. A default the
 table does not know surfaces as a post-write mismatch, which fails closed
-rather than silently drifting. The 2026-09-04 recordings confirm this: create
-responses on Serverless 9.6.0, Hosted 9.5.2, and self-managed 9.5.1 filled
-nothing beyond this table.
+rather than silently drifting. The 2026-09-04 recordings confirm this (section
+15.1): create responses on Serverless 9.6.0, Hosted 9.5.2, and self-managed
+9.5.1 filled nothing beyond this table.
 
 Normalization treats a null and an absent optional value as the same state.
 Hosted 9.5.2 returns null for `has_fleet_server`, `supports_agentless`,
@@ -209,7 +209,7 @@ absent or safe.
 Normalization removes server-owned or derived values:
 
 - `status`, `revision`, `schema_version`, and saved-object `version`;
-- `created_at`, `updated_at`, and `updated_by`;
+- `created_at`, `created_by`, `updated_at`, and `updated_by`;
 - `agents`, `unprivileged_agents`, `fips_agents`, `agents_per_version`,
   `min_agent_version`, `package_agent_version_conditions`, and
   `has_agent_version_conditions`;
@@ -217,6 +217,10 @@ Normalization removes server-owned or derived values:
 - every boolean platform flag from section 4 plus `is_protected` when it is
   false or null, and a null `agentless`; and
 - the active space's `space_ids` entry.
+
+A live top-level field outside this list and the portable set is
+`unsupported` and names the field, so a new Fleet field is a loud refusal
+rather than a silent loss from the artifact.
 
 The following states make a live policy unsupported for portable export,
 overwrite, or deletion:
@@ -514,7 +518,9 @@ snapshot, then sends
 `POST /api/fleet/agent_policies/delete` with `{"agentPolicyId": id}` and no
 `force`. Fleet's own checks refuse a policy with active or inactive agents, a
 hosted policy, and a policy containing managed integrations; elasticctl refuses
-earlier and with the same outcome.
+earlier and with the same outcome. A 2xx response whose body echoes a
+different id than the one deleted is reported failed with `applied: true`,
+since the server acknowledged deleting something.
 
 Integration-policy delete requires portable ownership from section 6. Preview
 names every parent and the agent count that can receive the change. Apply
@@ -578,9 +584,10 @@ returns `{exported, path, failed}`; without it, stdout is the artifact.
 
 Import reports `{applied, succeeded, unchanged, skipped, failed, total,
 affected_agents, package_installs}`. Delete reports `{applied, deleted, failed,
-total, affected_agents}`. Each agent belongs to one agent policy, so summing
-counts across distinct affected parents does not double-count agents. A
-non-empty failed collection exits 1.
+total, affected_agents}`; each failed delete row also carries `applied`, with
+the same meaning as an import row's. Each agent belongs to one agent policy, so
+summing counts across distinct affected parents does not double-count agents.
+A non-empty failed collection exits 1.
 
 `package_installs` uses exact `name@version` coordinates for integration
 dependencies. A planned internal monitoring installation is reported as
@@ -725,7 +732,8 @@ the supported flavors.
 | Force bypass | Update and delete routes expose `force` for restricted state |
 | Delete cascade | Agent delete removes single-parent integrations and detaches reusable ones |
 | Delete refusals | Assigned agents, a hosted policy, or managed integrations refuse without `force` |
-| Flattened agent-policy fields | `advanced_settings`, `overrides`, `monitoring_http`, `monitoring_diagnostics`, `global_data_tags`, and `required_versions` |
+| Agent count | The single read populates `agents` only for a caller with Fleet agents read |
+| Flattened agent-policy fields | `advanced_settings`, `overrides`, `monitoring_http`, `monitoring_diagnostics`, `global_data_tags`, and `required_versions` are mapped `flattened` and replaced whole on update; the top-level merge itself is measured in 15.1 |
 | Monitoring install | Create installs `elastic_agent` for non-empty monitoring and tolerates an install error; update installs only when the stored `monitoring_enabled` is absent or null |
 | Agent-policy defaults | `inactivity_timeout` defaults to 1209600 in the shared create and update request schema; `unenroll_timeout` is optional and not nullable |
 | Nullable agent-policy fields | `data_output_id`, `monitoring_output_id`, `download_source_id`, `fleet_server_host_id`, `overrides`, `keep_monitoring_alive`, `supports_agentless`, `required_versions` |

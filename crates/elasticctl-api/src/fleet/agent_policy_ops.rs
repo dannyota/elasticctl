@@ -214,6 +214,45 @@ const PORTABLE_OPTIONAL: [&str; 13] = [
     "namespace",
 ];
 
+/// Live top-level fields normalization removes or refuses as server-owned or
+/// derived, per spec 5.2: audit and saved-object identity, agent and
+/// version-condition facts, populated `package_policies`, the platform and
+/// portability-refusal fields, and the active space's `space_ids`. Sorted.
+/// A live field outside this list and the portable set is `unsupported`.
+const REMOVED_FIELDS: [&str; 31] = [
+    "agentless",
+    "agents",
+    "agents_per_version",
+    "created_at",
+    "created_by",
+    "data_output_id",
+    "download_source_id",
+    "fips_agents",
+    "fleet_server_host_id",
+    "has_agent_version_conditions",
+    "has_fleet_server",
+    "is_default",
+    "is_default_fleet_server",
+    "is_managed",
+    "is_preconfigured",
+    "is_protected",
+    "is_verifier",
+    "min_agent_version",
+    "monitoring_output_id",
+    "package_agent_version_conditions",
+    "package_policies",
+    "required_versions",
+    "revision",
+    "schema_version",
+    "space_ids",
+    "status",
+    "supports_agentless",
+    "unprivileged_agents",
+    "updated_at",
+    "updated_by",
+    "version",
+];
+
 /// Convert a live policy into its filled portable form, or refuse it.
 pub fn normalize(item: &Map<String, Value>, active_space: &str) -> Result<AgentPolicySpec> {
     let id = item
@@ -243,6 +282,22 @@ pub fn normalize(item: &Map<String, Value>, active_space: &str) -> Result<AgentP
         {
             portable.insert(key.to_string(), value.clone());
         }
+    }
+    let known: BTreeSet<&str> = ["id", "name"]
+        .into_iter()
+        .chain(PORTABLE_OPTIONAL)
+        .chain(REMOVED_FIELDS)
+        .collect();
+    let unknown: BTreeSet<&str> = item
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !known.contains(key))
+        .collect();
+    if let Some(first) = unknown.into_iter().next() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!("agent policy '{id}' carries unknown field '{first}'"),
+        ));
     }
     AgentPolicySpec::try_from(Value::Object(portable))
         .map_err(|error| http(format!("decoding agent policy '{id}': {}", error.message)))
@@ -336,7 +391,20 @@ fn optional_server_bool(item: &Map<String, Value>, field: &str) -> Result<Option
 /// Read one policy and reduce it to the facts planning compares and rechecks.
 pub(crate) async fn read_live(transport: &Transport, id: &str) -> Result<LiveAgentPolicy> {
     let policy = agent_policies::get(transport, id).await?;
-    let spec = normalize(&policy.item, transport.space())?;
+    live_from_policy(&policy, id, transport.space())
+}
+
+/// Reduce an already-read policy to the facts planning compares and rechecks,
+/// without a further route call. Shared by `read_live` and `plan_import`'s
+/// conversion of a raw existing snapshot, which must defer this call (and its
+/// `normalize` refusal) until the row is known to need it: a skipped or
+/// conflicting existing policy is never normalized.
+fn live_from_policy(
+    policy: &agent_policies::AgentPolicy,
+    id: &str,
+    active_space: &str,
+) -> Result<LiveAgentPolicy> {
+    let spec = normalize(&policy.item, active_space)?;
     if spec.id != id {
         return Err(http(format!(
             "decoding agent policy: expected id '{id}', got '{}'",
@@ -618,18 +686,21 @@ pub async fn plan_import(
     }
     let total = specs.len();
 
-    let mut before = BTreeMap::new();
+    // Read raw first: an existing policy that will only be skipped or
+    // reported conflict must never pay `normalize`'s portability refusal.
+    // Only a policy that survives to the overwrite path below is normalized.
+    let mut before_raw = BTreeMap::new();
     let mut conflicts = Vec::new();
     for spec in &specs {
-        match read_live(transport, &spec.id).await {
-            Ok(live) => {
+        match agent_policies::get(transport, &spec.id).await {
+            Ok(policy) => {
                 if !overwrite && !skip_existing {
                     conflicts.push(spec.id.clone());
                 }
-                before.insert(spec.id.clone(), Some(live));
+                before_raw.insert(spec.id.clone(), Some(policy));
             }
             Err(error) if error.kind == ErrorKind::NotFound => {
-                before.insert(spec.id.clone(), None);
+                before_raw.insert(spec.id.clone(), None);
             }
             Err(error) => return Err(error),
         }
@@ -671,14 +742,28 @@ pub async fn plan_import(
     }
     let mut skipped = Vec::new();
     if skip_existing {
-        specs.retain(|spec| match before.get(&spec.id) {
+        specs.retain(|spec| match before_raw.get(&spec.id) {
             Some(Some(_)) => {
                 skipped.push(json!({"id": spec.id, "reason": "exists"}));
                 false
             }
             _ => true,
         });
-        before.retain(|id, _| specs.iter().any(|spec| spec.id == *id));
+        before_raw.retain(|id, _| specs.iter().any(|spec| spec.id == *id));
+    }
+
+    // Every id remaining here is either absent or, having passed both the
+    // conflict guard above and the skip filter, is about to be replaced:
+    // `--overwrite` is required by this point for any `Some` entry. Only now
+    // is the existing policy normalized, so an unsupported existing policy
+    // still fails the plan here, exactly as it must for a replace.
+    let mut before = BTreeMap::new();
+    for (id, raw) in before_raw {
+        let live = match raw {
+            Some(policy) => Some(live_from_policy(&policy, &id, transport.space())?),
+            None => None,
+        };
+        before.insert(id, live);
     }
 
     let mut bodies = BTreeMap::new();
@@ -1217,23 +1302,36 @@ pub async fn apply_delete(
         let live = match read_live(transport, &target.id).await {
             Ok(live) => live,
             Err(error) if error.kind == ErrorKind::NotFound => {
-                failed.push(
-                    json!({"id": target.id, "error": "agent policy disappeared since preview"}),
-                );
+                failed.push(failed_delete_row(
+                    &target.id,
+                    false,
+                    "agent policy disappeared since preview",
+                ));
                 continue;
             }
             Err(error) => {
-                failed.push(json!({"id": target.id, "error": error.message}));
+                failed.push(failed_delete_row(&target.id, false, error.message));
                 continue;
             }
         };
         if live != target.snapshot {
-            failed.push(json!({"id": target.id, "error": "agent policy changed since preview"}));
+            failed.push(failed_delete_row(
+                &target.id,
+                false,
+                "agent policy changed since preview",
+            ));
             continue;
         }
         match agent_policies::delete(transport, &target.id).await {
             Ok(()) => deleted.push(json!({"id": target.id})),
-            Err(error) => failed.push(json!({"id": target.id, "error": error.message})),
+            Err(error) => {
+                // A 2xx echoing the wrong id means the server acknowledged
+                // deleting something; only a non-2xx status (or none, for a
+                // transport/decode failure) leaves the target untouched.
+                let applied =
+                    matches!(error.http_status, Some(status) if (200..300).contains(&status));
+                failed.push(failed_delete_row(&target.id, applied, error.message));
+            }
         }
     }
     Ok(AgentPolicyDeleteReport {
@@ -1243,6 +1341,10 @@ pub async fn apply_delete(
         total: plan.targets.len(),
         affected_agents: 0,
     })
+}
+
+fn failed_delete_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
+    json!({"id": id, "applied": applied, "error": error.into()})
 }
 
 fn validate_delete_plan(plan: &AgentPolicyDeletePlan) -> Result<()> {
