@@ -2633,6 +2633,7 @@ async fn refresh_content_index(transport: &Transport, index: &str) -> elasticctl
         .map(|_| ())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn content_probe(
     config: &Path,
     profile: &Profile,
@@ -3099,18 +3100,16 @@ fn content_transfers_data_views_and_dashboards_without_residue() {
     cleanup.dashboard(dashboard.clone());
     cleanup.restore_default_data_view(baseline.default_data_view.clone());
 
-    let result = (|| -> TestResult {
-        content_probe(
-            &config,
-            &profile,
-            dir.path(),
-            &index,
-            &first_view,
-            &second_view,
-            &dashboard,
-            &mut cleanup,
-        )
-    })();
+    let result = content_probe(
+        &config,
+        &profile,
+        dir.path(),
+        &index,
+        &first_view,
+        &second_view,
+        &dashboard,
+        &mut cleanup,
+    );
     conclude(result, &mut cleanup, baseline);
 }
 
