@@ -70,14 +70,21 @@ removes remote policies that the file omits.
 | Agent-policy identity | Stored agent-policy `id` | Names are mutable; references use the id |
 | Integration-policy identity | Stored package-policy `id` | Parent relationships and API mutations use the id |
 | API terminology | CLI says integration policy; `-api` may say package policy | It matches Elastic's UI without hiding the wire contract |
+| Hosted and managed | "Hosted" is an agent policy with `is_managed: true`; "managed" is an integration with `is_managed: true` | Elastic's UI and error text use both words for the same flag on different objects |
 | Portable format | Stable JSON array by default, YAML sequence on request | It matches the 0.5 content contract |
+| Bare export | A local error; `--all-custom` is the explicit whole-space selector | Fleet spaces hold platform-owned policies, so "everything" is never a safe default. This differs from the 0.5 content surface on purpose |
 | Import conflicts | Refuse by default; `--overwrite` replaces; `--skip-existing` omits | It matches the other transfer surfaces |
+| List paging | `sortField=created_at&sortOrder=asc`, pages of 1000, then local id sort | Both list routes answer 400 `Unknown sort field id` (measured) |
+| `--search` | Local case-insensitive substring over id and name | KQL over `id` is a 400 on package policies and is silently ignored on agent policies (measured) |
+| Agent-policy replace | Send the complete desired spec plus an explicit null for each clearable field the artifact omits; refuse every other removal as `unsupported` at planning | The update route merges attributes, so an omitted field survives the write |
+| Server defaults | Validate fills a fixed default table and export always writes those fields | Fleet fills `inactivity_timeout` on create, so a sparse artifact never round-trips exactly |
 | Mutation force | Never send or expose Fleet's `force` field | `force` bypasses hosted, managed, or deletion checks |
 | Package version | Exact name and version in each integration artifact | Inputs and variables depend on package version |
 | Missing package | Preview it; let Fleet's create path install the exact version | Fleet couples install and policy compilation |
 | Different installed version | Refuse | Changing it can affect policies outside the command |
 | Integration secrets | Refuse portable export and import in 0.6 | Fleet cannot return the original value; plaintext is not a safe fallback |
-| Version floor | `Feature::FleetPolicies` requires 9.5.1 | It matches the measured compatibility floor |
+| Version floor | `Feature::FleetPolicies` shares the 9.5.1 fixture-evidence floor | `require_feature` has one floor for every feature. It says where fixtures exist, not where Fleet APIs begin |
+| Conformance package | The contract installs the registry's latest `system` when absent and uninstalls it at cleanup only if it installed it | Neither cloud target has `system` installed, and no attachable installed package is shared by both (measured) |
 
 ## 4. Command surface
 
@@ -106,14 +113,18 @@ artifact verbatim under every global renderer format. `--format-file` controls
 only the portable file and defaults to `json`.
 
 Export requires one or more selectors or `--all-custom`. A bare export is a
-local error. `--all-custom` excludes known platform-owned policies: default,
-managed, preconfigured, agentless, verifier, and Fleet Server agent policies,
-plus managed integrations or integrations whose parent is platform-owned. It
-does not silently exclude an unsupported user-owned policy. An environment
-reference, protected state, secret, cross-space share, or other unsupported
-custom object fails the whole export rather than producing an incomplete
-artifact. An explicit selector for a platform-owned object also fails as
-`unsupported`.
+local error. `--all-custom` excludes platform-owned policies. An agent policy
+is platform-owned when any of `is_default`, `is_default_fleet_server`,
+`has_fleet_server`, `is_managed`, `is_preconfigured`, `supports_agentless`, or
+`is_verifier` is true, or when `agentless` is non-null. `agentless` is a
+configuration object, not a boolean flag. `is_verifier` marks the short-lived
+policy Fleet creates to verify OTel permissions. An integration is
+platform-owned when it is `is_managed` or its parent is platform-owned.
+`--all-custom` does not silently exclude an unsupported user-owned policy. An
+environment reference, protected state, secret, cross-space share, or other
+unsupported custom object fails the whole export rather than producing an
+incomplete artifact. An explicit selector for a platform-owned object also
+fails as `unsupported`.
 
 Mutating commands reject an empty target before building a transport.
 
@@ -121,7 +132,7 @@ Mutating commands reject an empty target before building a transport.
 
 An agent policy is the Fleet configuration assigned to Elastic Agents. Its
 integration policies supply inputs and streams. Fleet distributes saved
-changes to enrolled agents immediately.
+changes to enrolled agents on their next check-in.
 
 A portable artifact is a JSON array, or the same array as a YAML sequence, of
 `AgentPolicySpec` objects sorted by `id`:
@@ -133,7 +144,9 @@ A portable artifact is a JSON array, or the same array as a YAML sequence, of
     "name": "Production Linux",
     "namespace": "production",
     "description": "Linux server agents",
+    "inactivity_timeout": 1209600,
     "monitoring_enabled": ["logs", "metrics"],
+    "agent_features": [],
     "global_data_tags": [
       {"name": "environment", "value": "production"}
     ]
@@ -156,36 +169,103 @@ configuration may also carry:
 Unknown top-level fields are rejected locally. Open nested maps remain JSON
 values because Fleet's advanced settings evolve independently. Validation
 checks their documented outer shapes and preserves nested keys.
+`agent_features` entries require a non-empty `name` and boolean `enabled`.
+`global_data_tags` entries require a non-empty whitespace-free `name` and a
+string or number `value`; tag names must be unique.
 
-Validation canonicalizes absent `monitoring_enabled`, `agent_features`, and
-`global_data_tags` to empty arrays. Export writes those arrays. Optional null
-and absent values normalize together only when live evidence proves they are
-the same reset-to-default state.
+### 5.1 Server-applied defaults
+
+Fleet fills defaults on create. The schema gives `inactivity_timeout` a
+default of 1209600 seconds, so a created policy always carries it even when
+the artifact omits it. Hosted 9.5.2's preconfigured policy carries 86400
+instead, so the default is a create-time fill, not an invariant.
+
+`-api` holds one fixed default table. Validation fills every absent entry from
+it, export always writes those fields, and the post-write equality check in
+section 10 compares the filled forms. The 0.6.0 table is:
+
+| Field | Default |
+|---|---|
+| `inactivity_timeout` | `1209600` |
+| `monitoring_enabled` | `[]` |
+| `agent_features` | `[]` |
+| `global_data_tags` | `[]` |
+
+Recording extends the table only from measured create responses. A default the
+table does not know surfaces as a post-write mismatch, which fails closed
+rather than silently drifting.
+
+Normalization treats a null and an absent optional value as the same state.
+Hosted 9.5.2 returns null for `has_fleet_server`, `supports_agentless`,
+`agentless`, and `is_verifier` on its preconfigured policy, so the two forms
+must compare equal. A malformed non-null platform flag, `agentless`,
+`required_versions`, or `space_ids` value is `http`; it is never treated as
+absent or safe.
+
+### 5.2 Normalization and unsupported states
 
 Normalization removes server-owned or derived values:
 
 - `status`, `revision`, `schema_version`, and saved-object `version`;
-- creation and update timestamps and usernames;
-- agent and version counts plus computed minimum-version conditions;
+- `created_at`, `updated_at`, and `updated_by`;
+- `agents`, `unprivileged_agents`, `fips_agents`, `agents_per_version`,
+  `min_agent_version`, `package_agent_version_conditions`, and
+  `has_agent_version_conditions`;
 - populated `package_policies` and compiled policy output;
-- default/Fleet Server role flags; and
+- every boolean platform flag from section 4 plus `is_protected` when it is
+  false or null, and a null `agentless`; and
 - the active space's `space_ids` entry.
 
 The following states make a live policy unsupported for portable export,
 overwrite, or deletion:
 
-- default, managed, preconfigured, protected, agentless, verifier, or Fleet
-  Server;
-- a non-null data output, monitoring output, download source, or Fleet Server
-  host id;
-- automatic-upgrade configuration; or
-- sharing beyond the active space.
+- any boolean platform flag from section 4 true, non-null `agentless`, or
+  `is_protected` true;
+- a non-null `data_output_id`, `monitoring_output_id`, `download_source_id`,
+  or `fleet_server_host_id`;
+- a non-null `required_versions` automatic-upgrade configuration; or
+- `space_ids` naming any space other than the active one.
 
-Import never sends those fields. Create uses the explicit artifact id and
-`sys_monitoring=false`, so Fleet does not silently attach a System integration.
-The artifact's `monitoring_enabled` remains explicit. Non-empty monitoring can
+Import never sends those fields.
+
+### 5.3 Create and replace
+
+Create uses `POST /api/fleet/agent_policies?sys_monitoring=false` with the
+explicit artifact id, so Fleet does not silently attach a System integration.
+The artifact's `monitoring_enabled` remains explicit. A create with non-empty
+monitoring, or a replace that changes monitoring from empty to non-empty, can
 cause Fleet to install its internal `elastic_agent` package when it is absent.
-Planning detects and previews that server-selected built-in installation.
+Planning reads `GET /api/fleet/epm/packages/elastic_agent` and previews that
+server-selected installation. A replace whose current monitoring is already
+non-empty does not plan an install. The recorder and the conformance contract
+use empty monitoring so a recording or matrix run never changes package
+inventory through this path.
+
+Replace uses `PUT /api/fleet/agent_policies/{id}`. The service spreads the
+supplied attributes into a saved-object update, which is a merge: an omitted
+field keeps its stored value, and a nested key omitted from an object keeps
+its stored value too. Planning therefore compares the normalized current
+policy with the filled desired spec and:
+
+- sends the complete desired spec, never a delta;
+- adds an explicit null for each nullable field the desired spec omits and the
+  current policy has. The nullable fields are `overrides`,
+  `keep_monitoring_alive`, `required_versions`, `supports_agentless`,
+  `data_output_id`, `monitoring_output_id`, `download_source_id`, and
+  `fleet_server_host_id`. Section 5.2 already refuses a true
+  `supports_agentless`, any non-null `required_versions`, and a non-null value
+  in the four ids, so in practice `overrides` and `keep_monitoring_alive` are
+  clearable author fields;
+- fails `unsupported` before the guard when the desired spec removes any other
+  optional field the current policy has, such as `unenroll_timeout` or
+  `description`; and
+- fails `unsupported` before the guard when the desired spec drops a nested
+  key from `advanced_settings`, `monitoring_http`, or `monitoring_diagnostics`
+  that the current policy has.
+
+These rules are source-derived from Kibana v9.5.1. The post-write equality
+check is the measured backstop: a merge that leaves an unexpected value fails
+the row rather than reporting success.
 
 ## 6. Integration-policy model
 
@@ -202,49 +282,74 @@ A portable artifact is a JSON array, or the same array as a YAML sequence, of
     "name": "System integration",
     "namespace": "production",
     "policy_ids": ["production-linux"],
-    "package": {"name": "system", "version": "2.5.0"},
+    "package": {"name": "system", "version": "2.23.4"},
     "inputs": {}
   }
 ]
 ```
 
 `id`, `name`, `policy_ids`, `package.name`, `package.version`, and `inputs` are
-required. `policy_ids` is a non-empty, deduplicated, sorted list. It preserves
-reusable integration policies when the target supports them.
+required. `policy_ids` is a non-empty, deduplicated, sorted list. Fleet also
+allows an empty list for an orphaned integration; 0.6 does not transfer those.
 
 The portable configuration may also carry:
 
-- `description`, `namespace`, and `enabled`;
+- `description` and `namespace`;
 - package-level `vars` and `var_group_selections`;
 - simplified input and stream enablement, variables, conditions, and streams;
 - top-level `condition`; and
-- `additional_datastreams_permissions` and `create_dataset_templates`.
+- `additional_datastreams_permissions`.
 
 The artifact uses `format=simplified` with object-shaped `inputs`. The legacy
 array, generated input ids, compiled inputs, and compiled streams are not
 portable. Unknown top-level fields are rejected. Package-owned input, stream,
 and variable maps remain open.
 
+Two response fields are deliberately not portable. `create_dataset_templates`
+exists only in the create request schemas and never comes back from a read, so
+carrying it would break round-trip equality. Top-level `enabled` comes back
+from every read but the simplified create schema does not accept it; only
+per-input and per-stream `enabled` are portable. Normalization requires the
+top-level value to be true and drops it. A false value is `unsupported`.
+
 Normalization removes:
 
-- revision, saved-object version, latest-revision state, and audit fields;
-- generated ids, compiled content, and derived Elasticsearch privileges;
-- registry-derived package title and compatibility metadata;
-- agent counts; and
-- `secret_references`.
+- `revision`, saved-object `version`, and the `created_at`, `created_by`,
+  `updated_at`, and `updated_by` audit fields;
+- the deprecated singular `policy_id`, which duplicates `policy_ids[0]`;
+- `spaceIds`, the camelCase package-policy form of the agent policy's
+  `space_ids`, after checking it names only the active space;
+- generated input ids, compiled content, and the derived `elasticsearch`
+  privileges block;
+- the registry-derived `package.title`, `package.requires_root`,
+  `package.fips_compatible`, and `package_agent_version_condition`;
+- `agents`;
+- `secret_references`; and
+- `is_managed`, `supports_agentless`, `supports_cloud_connector`,
+  `cloud_connector_id`, `cloud_connector_name`, and `output_id` when false,
+  null, or absent.
+
+Hosted 9.5.2 returns package policies without `is_managed`,
+`secret_references`, or `vars` when they are unset, so absent means not
+managed, no secrets, and no variables.
 
 The following states make a live integration unsupported for portable export,
 overwrite, or deletion:
 
-- managed integration or managed parent;
-- hosted, protected, agentless, or Fleet Server parent;
-- non-null output or cloud-connector id;
-- sharing outside the active space; or
+- `is_managed` true (a managed integration), or a parent that is platform-owned
+  or `is_protected` under section 4 and 5.2;
+- a non-null `output_id` or `cloud_connector_id`, or `supports_agentless` or
+  `supports_cloud_connector` true;
+- `spaceIds` naming any space other than the active one; or
 - a secret reference or a configured variable declared secret by the exact
   package version.
 
-Changing `package.name` or `package.version` on an existing id is unsupported.
-Package upgrade and rollback use separate Fleet contracts and are deferred.
+Replace uses `PUT /api/fleet/package_policies/{id}` with the complete desired
+simplified spec. The service recompiles every input from the package and the
+supplied values, so this route is a full replacement, unlike the agent-policy
+route. Changing `package.name` or `package.version` on an existing id is
+unsupported. Package upgrade and rollback use separate Fleet contracts and are
+deferred.
 
 ## 7. Secrets and environment references
 
@@ -253,11 +358,15 @@ reference or hidden placeholder, not the original value. Export fails closed
 if the policy has secret references. Its error names sorted policy and field
 paths but never prints reference ids or values.
 
-Offline `validate` checks document structure. Import planning adds server-aware
-validation: it loads metadata for the exact package version and rejects every
-supplied package, input, or stream variable declared secret. If metadata cannot
-prove whether a field is secret, planning fails before the guard. Secret
-injection from an environment, file, or secret store is a future capability.
+A deployment without secret storage keeps a secret variable in plaintext and
+returns it on read, so references alone cannot prove absence. Export and
+import planning both read `GET /api/fleet/epm/packages/{name}/{version}` for
+the exact package version and reject every supplied package, input, or stream
+variable the package declares secret. If that read fails, the classified
+transport error stands. If the metadata cannot prove whether a configured
+variable is secret, the operation fails `unsupported` before the guard.
+Offline `validate` checks document structure only. Secret injection from an
+environment, file, or secret store is a future capability.
 
 Output, download-source, Fleet Server host, cloud-connector, and extra-space
 ids name target-local infrastructure. 0.6 neither exports nor remaps them. A
@@ -287,56 +396,89 @@ deletion also leaves the package installed.
 
 ## 9. Selection and listing
 
-Both list APIs are paginated. elasticctl requests deterministic id ordering,
-collects pages until the reported total or `--limit`, then sorts by id. It
-rejects a page that makes no progress or contradicts response metadata.
+Both list routes are paginated and reject `sortField=id` with 400 `Unknown
+sort field id` (measured on Serverless 9.6.0 and Hosted 9.5.2). elasticctl
+requests `sortField=created_at&sortOrder=asc` in pages of 1000, collects until
+the reported `total`, then sorts by id locally. It fails `http` when page
+metadata disagrees with the request, `total` changes between pages, an id
+repeats, or a page is short before `total`. This mirrors the dashboard list.
+Package-policy lists add `format=simplified`.
 
-`--search` maps to a safely constructed Fleet KQL query over id and name.
-Exact filtering remains local so analyzer differences cannot change selector
-semantics.
+`--search` is a local case-insensitive substring match over id and name after
+collection. KQL over `id` is not a usable server contract: the package-policy
+route answers 400 because `id` is not a saved-object attribute, and the
+agent-policy route silently ignores the clause and returns every policy. Name
+KQL works but would give `--search` two different semantics, so neither is
+used. `--limit` truncates after sorting and the list reports `truncated`.
 
-Resolution tries exact id with the single-object endpoint first. If that
-misses, it keeps exact name matches from the list route. Zero matches is
+Resolution tries the exact id with the single-object endpoint first. On
+`not_found` it collects the list and keeps exact name matches. Zero matches is
 `not_found`; more than one is `conflict`. A name never becomes stored identity.
 
 Selectors are deduplicated by id. Every selector resolves before export or
-delete. Mutation planning requests populated integration policies and agent
-counts. Ordinary list output does not request compiled full policies.
+delete. The single-object agent-policy read carries `agents` and populated
+`package_policies`, which mutation planning uses for blast radius and attached
+integrations; a read without either field, or with either field malformed, is
+`http`. Ordinary list output does not request compiled full policies.
+
+Agent-policy get returns a sanitized `AgentPolicyDetail`, never the raw Fleet
+item. It contains `id`, `name`, `namespace`, `description`, `agents`, `status`,
+sorted `attached_integrations` ids, and sorted `blocked_by` field names. The
+last list explains why the live policy cannot be exported or mutated without
+exposing environment ids, the `agentless` configuration, usernames, or
+populated integration objects.
 
 ## 10. Import planning and races
 
 Import reads and structurally validates the whole file before any server call.
-It then performs the semantic and dependency reads required by sections 5-8.
+It rejects duplicate ids and duplicate names in the artifact, then performs
+the semantic and dependency reads required by sections 5-8. A dry run performs
+the same authenticated reads and builds the same plan as apply; it differs
+only by stopping at the guard.
 
 With neither conflict flag, any existing id or conflicting unique name fails
 the plan before the guard. `--skip-existing` reports and removes existing ids.
 `--overwrite` classifies each row as create, replace, or unchanged. A name
-owned by another id is always conflict.
+owned by another id is always conflict. An unchanged row counts in `total`, is
+rechecked at apply, and is never written.
 
 The plan retains canonical file specs; normalized existing snapshots; parent
-flags, ids, and agent counts; installed package versions; implicit installs;
-and the profile, host, and active space.
+flags, ids, attached integration ids, and agent counts; exact package-status
+snapshots; implicit installs; and the profile, host, and active space.
 
 Preview reports every action plus affected parent policies and agent count.
-Because Fleet distributes changes immediately, blast radius is part of the
-mutation contract.
+Because Fleet distributes changes to enrolled agents, blast radius is part of
+the mutation contract.
 
 Apply does not reread the file. Immediately before each write it repeats the
 relevant object, parent, count, and package reads:
 
 - planned create refuses if its id or name appeared;
-- replace or unchanged refuses if its object changed;
+- replace or unchanged refuses if its object, agent count, or attached
+  integration ids changed;
 - integration refuses if a parent, count, or package version changed; and
+- a monitoring transition refuses if the `elastic_agent` package status
+  changed; and
 - a missing planned replacement is conflict, not create.
 
 The routes expose no conditional-write token, so a change can still race the
 final recheck and write. Reports name this unavoidable window.
 
-Rows apply in stable-id order. After each decoded mutation success, import GETs
-the object in simplified form, normalizes it, and requires exact equality with
-the desired spec. A mismatch is failed with `applied: true`. Successful earlier
-writes are not rolled back. Multi-object imports continue across independent
-failures; a dependency failure blocks only dependent rows.
+Rows apply in stable-id order. Create and replace send the complete desired
+spec under sections 5.3 and 6. After each decoded mutation success, import GETs
+the object, normalizes it, and requires exact equality with the filled desired
+spec. A mismatch is failed with `applied: true`. Successful earlier writes are
+not rolled back. Multi-object imports continue across independent failures; a
+dependency failure blocks only dependent rows.
+
+After any agent-policy write that could trigger the internal monitoring
+package installation, apply re-reads package state. An installed result must
+carry a non-empty resolved version, which is reported as
+`elastic_agent@<version>`. A decoded policy success followed by a missing,
+malformed, or non-installed package result is failed with `applied: true`. A
+policy error is still reported as failed, but the package read records any
+installation that occurred before Fleet rejected the policy. elasticctl never
+swallows the package read or rolls the package back.
 
 ## 11. Safe deletion
 
@@ -344,14 +486,18 @@ Fleet can delete single-parent integration policies and detach reusable ones
 as part of agent-policy deletion. elasticctl refuses that cascade.
 
 Agent-policy delete requires zero assigned agents, zero attached integrations,
-no unsupported state from section 5, and active-space-only visibility. Preview
-names the id, name, flags, agent count, and attached integration ids. Apply
-repeats the snapshot, then sends the single-id delete without `force`.
+no unsupported state from section 5.2, and active-space-only visibility.
+Preview names the id, name, flags, agent count, and attached integration ids.
+Apply repeats the snapshot, then sends
+`POST /api/fleet/agent_policies/delete` with `{"agentPolicyId": id}` and no
+`force`. Fleet's own checks refuse a policy with active or inactive agents, a
+hosted policy, and a policy containing managed integrations; elasticctl refuses
+earlier and with the same outcome.
 
 Integration-policy delete requires portable ownership from section 6. Preview
 names every parent and the agent count that can receive the change. Apply
 rechecks the policy, parents, counts, and package version before the single-id
-DELETE without `force`.
+`DELETE /api/fleet/package_policies/{id}` without `force`.
 
 A target that disappears after planning is a failed `not_found`, not a no-op.
 Delete never uninstalls a package. Multi-id deletion continues across
@@ -365,14 +511,15 @@ Dependency direction remains:
 elasticctl-cli  ->  elasticctl-api  ->  elasticctl-core
 ```
 
-`elasticctl-api` owns the Fleet vertical:
+`elasticctl-api` owns the Fleet vertical under `src/fleet/`:
 
-- `fleet::agent_policies` owns route wrappers and response models;
-- `fleet::agent_policy_ops` owns selection, normalization, portability,
+- `fleet/agent_policies.rs` owns route wrappers, strict response decoders, and
+  the `AgentPolicySpec` model with its default table;
+- `fleet/agent_policy_ops.rs` owns selection, normalization, portability,
   planning, apply, and deletion;
-- `fleet::integration_policies` owns package-policy route wrappers and
+- `fleet/integration_policies.rs` owns package-policy route wrappers and
   simplified response models;
-- `fleet::integration_policy_ops` owns package validation, portability,
+- `fleet/integration_policy_ops.rs` owns package validation, portability,
   planning, apply, and deletion; and
 - existing `content_codec` owns portable JSON/YAML.
 
@@ -384,22 +531,26 @@ types and output use integration-policy names unless a raw server field such as
 guard, serializes typed results, and hands values to `render`. It does not own
 multi-request orchestration or parse response bodies.
 
-`elasticctl-core` gains `Feature::FleetPolicies` at floor 9.5.1. No Fleet model
-or orchestration enters `-core`.
+`elasticctl-core` gains `Feature::FleetPolicies`, which `require_feature`
+checks against the shared 9.5.1 floor. No Fleet model or orchestration enters
+`-core`.
 
 ## 13. Errors and reports
 
 - `not_found`: selector, target, parent, or exact package missing.
 - `conflict`: ambiguous selector, existing import id, duplicate name, changed
   snapshot, different installed package version, or unsafe delete.
-- `unsupported`: managed or hosted state, environment reference, cross-space
-  policy, agentless/protected/Fleet Server policy, secret, or package change.
-- `http`: malformed success response or failed post-write invariant.
+- `unsupported`: hosted agent policy or managed integration, platform flag,
+  environment reference, cross-space policy, protected policy, secret, package
+  change, or an overwrite that removes a field the update route cannot clear.
+- `http`: malformed success response, paging contradiction, or failed
+  post-write invariant.
 - `error`: malformed artifact or invalid command combination.
 
-List and get return typed values through `render`. Validate returns
-`{valid, total}`. Export with `--out` returns `{exported, path, failed}`;
-without it, stdout is the artifact.
+List and get return typed values through `render`. A truncated list emits
+`capped at <limit> rows` on stderr while the typed API result retains
+`truncated: true`. Validate returns `{valid, total}`. Export with `--out`
+returns `{exported, path, failed}`; without it, stdout is the artifact.
 
 Import reports `{applied, succeeded, unchanged, skipped, failed, total,
 affected_agents, package_installs}`. Delete reports `{applied, deleted, failed,
@@ -424,16 +575,24 @@ self-managed deployments. Every created id and name starts with
 `elasticctl-sample-`. The recorder registers ids before create and deletes
 integrations before agent policies.
 
+Fleet setup is idempotent and required before the first Fleet read on a fresh
+stack. The recorder and the conformance runner call `POST /api/fleet/setup`
+once per session. The self-managed lab's Kibana container must reach the
+Elastic package registry, or no package can be installed there; `lab/` gains
+no other Fleet configuration.
+
 Recording requests are exact-id or exact-marker queries. No unscoped policy
 list or full-policy response enters a public fixture. The recorder strictly
 decodes responses, requires every policy to be an owned marker, and scrubs
 usernames, timestamps, secret references, space ids, deployment details, and
-unrelated package inventory.
+unrelated package inventory. Marker agent policies use empty
+`monitoring_enabled`, so recording never installs `elastic_agent`.
 
 0.6.0 fixtures cover agent-policy paginated list, get, explicit-id create,
 update, delete, name conflict, not found, agent counts, attached integrations,
-default and other unsupported-state refusals, the internal monitoring-package
-preflight, and normalized round trips.
+default and other unsupported-state refusals, the read-only `elastic_agent`
+package status that drives the monitoring preflight, and normalized round
+trips.
 
 0.6.1 fixtures cover integration-policy simplified list, get, explicit-id
 create, update, delete, parent validation, exact package state, conflicts,
@@ -448,27 +607,56 @@ residue rules. Planner behavior still has offline unit coverage.
 
 1. refuses a dirty target with any `elasticctl-live-*` Fleet policy;
 2. captures marker counts, installed-package inventory, and prebuilt baseline;
-3. imports, gets, lists, exports, conflicts, skips, overwrites, and exactly
-   round-trips a marker agent policy;
-4. discovers the installed `system` package version;
-5. performs the same lifecycle for a marker integration attached to the agent
-   policy;
+3. ensures a `system` package: when `GET /api/fleet/epm/packages/system` reports
+   `installed`, it records that version; otherwise it installs the reported
+   `latestVersion` with `POST /api/fleet/epm/packages/system/{version}` and
+   claims that install for cleanup;
+4. imports, gets, lists, exports, conflicts, skips, overwrites, and exactly
+   round-trips a marker agent policy with empty monitoring;
+5. performs the same lifecycle for a marker `system` integration attached to
+   the agent policy;
 6. proves parent deletion is refused while the integration is attached;
 7. deletes the integration, then the agent policy;
 8. imports both again in dependency order and proves the same ids;
-9. deletes both again; and
-10. requires zero markers, unchanged package inventory, and unchanged prebuilt
-    rule count.
+9. deletes both again;
+10. uninstalls `system` with `DELETE /api/fleet/epm/packages/system/{version}`
+    only when step 3 installed it; and
+11. requires zero markers, an installed-package inventory equal to the step 2
+    capture, and an unchanged prebuilt rule count.
 
-The contract creates no agents and changes no unmarked policy. Cloud legs use
-an already-installed package and never install or uninstall one. Cleanup owns
-ids before mutation. A remaining integration blocks parent cleanup until retry.
-Every cleanup mutation names an explicit marker id and omits `force`.
+The contract creates no agents and changes no unmarked policy. A package the
+contract did not install is never uninstalled. Cleanup owns ids before
+mutation. A remaining integration blocks parent cleanup until retry, and a
+remaining marker integration blocks the package uninstall. Every cleanup
+mutation names an explicit marker id or the claimed package version and omits
+`force`.
 
 Current design targets are Serverless 9.6.x, Hosted 9.5.x, and the self-managed
 9.5.1 lab. Reports record actual versions under `docs/conformance/v0.6.2/`.
 
 ## 15. Research basis
+
+### 15.1 Measured
+
+These read-only probes ran on 2026-09-03 against Serverless 9.6.0 and Elastic
+Cloud Hosted 9.5.2 with the project-scoped keys. They created nothing.
+
+| Probe | Serverless 9.6.0 | Hosted 9.5.2 |
+|---|---|---|
+| `GET /api/fleet/agent_policies?sortField=id` | 400 `Unknown sort field id` | same |
+| `GET /api/fleet/package_policies?sortField=id` | 400 `Unknown sort field id` | same |
+| `sortField=created_at` and `sortField=name` | 200 | 200 |
+| KQL `ingest-package-policies.id:"x"` | 400, key does not exist in the saved-object index pattern | same |
+| KQL `ingest-agent-policies.id:"nonexistent"` | 200, total 0 (no policies exist) | 200, total 1: the clause is ignored |
+| KQL `ingest-agent-policies.name:"nonexistent"` | 200, total 0 | 200, total 0 |
+| `format=simplified` package-policy list | 200 | 200 |
+| Agent policies in the space | 0 | 1, preconfigured and hosted |
+| Package policies in the space | 0 | 2 (`apm`, `fleet_server`), each with `policy_id` beside `policy_ids` and `spaceIds` |
+| Preconfigured policy fields | n/a | `is_managed: true`, `is_preconfigured: true`, non-null data and monitoring output ids, `inactivity_timeout: 86400`, null `has_fleet_server`, `supports_agentless`, `agentless`, and `is_verifier` |
+| `system` and `elastic_agent` packages | `not_installed` | `not_installed` |
+| Installed packages | endpoint, fleet_server, security_ai_prompts, security_detection_engine | those plus apm and synthetics |
+
+### 15.2 Source-derived
 
 These facts were verified on 2026-09-03 against Elastic's current docs and
 Kibana `v9.5.1` source. They remain source-derived until 0.6 records them on
@@ -483,8 +671,18 @@ the supported flavors.
 | Pagination | Both list routes return page, per-page, and total |
 | Simplified form | Package-policy routes support object-shaped simplified inputs |
 | Force bypass | Update and delete routes expose `force` for restricted state |
-| Delete cascade | Agent delete can delete or detach integration policies |
+| Delete cascade | Agent delete removes single-parent integrations and detaches reusable ones |
+| Delete refusals | Assigned agents, a hosted policy, or managed integrations refuse without `force` |
+| Agent-policy update | The service spreads supplied attributes into a saved-object update, a merge |
+| Agent-policy defaults | `inactivity_timeout` defaults to 1209600; `unenroll_timeout` is optional and not nullable |
+| Nullable agent-policy fields | `data_output_id`, `monitoring_output_id`, `download_source_id`, `fleet_server_host_id`, `overrides`, `keep_monitoring_alive`, `supports_agentless`, `required_versions` |
+| `agentless` | A nullable configuration object, not a boolean platform flag |
+| `sys_monitoring` | A create query parameter that adds the System integration |
+| `is_verifier` | Marks a short-lived policy used for OTel permission verification |
+| Package-policy update | Inputs are recompiled from the package; the write is a full replacement |
 | Package dependency | Package-policy create ensures the exact package version |
+| `create_dataset_templates` | Present only in the create request schemas |
+| Simplified create schema | Has no top-level `enabled`; `enabled` is per input and stream |
 | Secrets | Fleet stores secrets separately and later exposes references |
 
 Primary references:
@@ -500,7 +698,10 @@ Primary references:
 - [Delete a package policy](https://www.elastic.co/docs/api/doc/kibana/v9/operation/operation-delete-fleet-package-policies-packagepolicyid)
 - [Install an exact package version](https://www.elastic.co/docs/api/doc/kibana/v9/operation/operation-post-fleet-epm-packages-pkgname-pkgversion)
 - [Kibana agent-policy model](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/common/types/models/agent_policy.ts)
+- [Kibana agent-policy request schema](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/types/models/agent_policy.ts)
+- [Kibana agent-policy routes](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/types/rest_spec/agent_policy.ts)
 - [Kibana agent-policy service](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/services/agent_policy.ts)
+- [Kibana package-policy model](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/common/types/models/package_policy.ts)
 - [Kibana package-policy schema](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/common/types/models/package_policy_schema.ts)
 - [Kibana package-policy service](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/services/package_policy.ts)
 - [Kibana secret handling](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/services/secrets/package_policies.ts)
@@ -525,10 +726,20 @@ does not publish to crates.io without explicit approval for that exact version.
 3. List, get, validate, export, import, and delete are complete; import owns
    create and update.
 4. Artifacts are explicit transfer, not desired-state reconciliation.
-5. Target-local infrastructure, cross-space sharing, managed state, and secrets
-   fail closed.
+5. Target-local infrastructure, cross-space sharing, hosted and managed state,
+   and secrets fail closed.
 6. Exact packages are dependencies; absent packages may be installed by
    guarded create, but 0.6 never upgrades, downgrades, or uninstalls them.
 7. Agent-policy delete refuses attached integrations even though Fleet can
    cascade or detach them.
 8. The cut line is 0.6.0 agent policies, 0.6.1 integrations, and 0.6.2 proof.
+9. Lists page by `created_at` and sort by id locally; `--search` is local,
+   because the routes reject or ignore `id` in sorts and KQL.
+10. Agent-policy replace sends the full spec with explicit nulls and refuses
+    removals the merge route cannot express; validate fills a fixed default
+    table so sparse artifacts round-trip.
+11. `create_dataset_templates` and top-level `enabled` are not portable
+    integration fields; `policy_id` and `spaceIds` are normalized away.
+12. The conformance contract may install and later uninstall exactly one
+    `system` package version on a target that lacks it, and never touches a
+    package it did not install.
