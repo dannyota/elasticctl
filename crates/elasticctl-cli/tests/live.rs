@@ -1390,6 +1390,39 @@ fn content_artifacts_decode_through_the_production_codec() {
     );
 }
 
+#[tokio::test]
+async fn content_index_refresh_uses_the_bodyless_get_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/elasticctl-live-content-index/_refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "_shards": {"total": 1, "successful": 1, "failed": 0}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: Some(server.uri()),
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let transport = Transport::new(&profile).expect("transport");
+
+    refresh_content_index(&transport, "elasticctl-live-content-index")
+        .await
+        .expect("bodyless refresh");
+
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "GET");
+    assert!(requests[0].body.is_empty());
+}
+
 #[test]
 fn content_residue_requires_empty_markers_and_the_exact_default() {
     assert!(content_residue_is_clean(
@@ -2593,6 +2626,13 @@ fn set_cli_default(config: &Path, id: Option<&str>, what: &str) -> TestResult {
     Ok(())
 }
 
+async fn refresh_content_index(transport: &Transport, index: &str) -> elasticctl_core::Result<()> {
+    transport
+        .get_absolute_es(&format!("/{index}/_refresh"))
+        .await
+        .map(|_| ())
+}
+
 fn content_probe(
     config: &Path,
     profile: &Profile,
@@ -2624,8 +2664,7 @@ fn content_probe(
             )
             .await
             .map_err(|e| format!("creating and seeding content index: {}", e.message))?;
-        transport
-            .post_absolute_es(&format!("/{index}/_refresh"), &json!({}))
+        refresh_content_index(&transport, index)
             .await
             .map_err(|e| format!("refreshing content index: {}", e.message))?;
         Ok::<(), String>(())
