@@ -1333,6 +1333,19 @@ target:
 | Elastic Cloud Hosted | 9.5.2 | 8 pass | Verified | [report](../conformance/v0.4.2/ech-9.5.2.json) |
 | Self-managed | 9.5.1 | 8 pass | Verified | [report](../conformance/v0.4.2/traditional-9.5.1.json) |
 
+The 0.5.2 measured matrix adds the `content` contract; all nine pass on every
+target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 9 pass | Verified | [report](../conformance/v0.5.2/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.2 | 9 pass | Verified | [report](../conformance/v0.5.2/ech-9.5.2.json) |
+| Self-managed | 9.5.1 | 9 pass | Verified | [report](../conformance/v0.5.2/traditional-9.5.1.json) |
+
+Every content leg restored the exact captured default and left zero marker
+dashboards, data views, or indices. Each target's prebuilt-rule count matched
+its baseline. The self-managed leg removed its containers and volumes.
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day

@@ -607,7 +607,7 @@ tolerates no residue.
 `xtask::CONTRACTS` contains nine entries, ending with `name: "content"` and
 `features: &[DASHBOARDS]`, where `DASHBOARDS` wraps `Feature::Dashboards`.
 `scripts/check-conformance-reports.sh`
-recognizes the nine-contract `v0.5` family. Reports belong under
+recognizes the nine-contract `v0.5` family. The measured reports are under
 `docs/conformance/v0.5.2/`.
 
 ## 14. Measured behavior
@@ -642,15 +642,29 @@ and volumes.
 | Preview-hit fixtures | The production preview query decodes after response-only timing, shard metadata, hit `_index`, score, and response sort values are removed. |
 | Close-by-query fixture | Marker cleanup requires a conflict-free, non-noop successful outcome, persists canonical typed counters, and removes untyped runtime envelope fields. |
 
-The 0.5.1 fixture probe is complete:
+The 0.5.2 conformance matrix ran on 2026-09-03. All nine contracts passed on
+each measured flavor:
+
+| Flavor | Version | Result | Report |
+|---|---|---|---|
+| Serverless | 9.6.0 | 9 pass | [report](../conformance/v0.5.2/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.2 | 9 pass | [report](../conformance/v0.5.2/ech-9.5.2.json) |
+| Self-managed | 9.5.1 | 9 pass | [report](../conformance/v0.5.2/traditional-9.5.1.json) |
+
+Every leg finished with zero marker dashboards, data views, and indices. The
+persistent cloud targets restored their exact captured defaults, every
+prebuilt-rule count matched its captured baseline, and the self-managed lab
+removed its containers and volumes. The public
+[findings](../conformance/v0.5.2/findings.md) record no new cross-flavor
+deviation.
+
+The 0.5 content evidence is complete:
 
 - 0.5.1: the accepted-but-lossy root `time_range.mode` payload and Saved
   Objects import success/conflict are recorded and production-decoded on
   Serverless 9.6.0, Hosted 9.5.2, and traditional 9.5.1.
-
-Still required before the corresponding release ships:
-
-- 0.5.2: the complete ninth contract and matrix reports.
+- 0.5.2: the ninth contract and three-flavor matrix prove transfer, exact
+  default restoration, unchanged prebuilt counts, and zero content residue.
 
 ## 15. Version placement
 
