@@ -2239,6 +2239,8 @@ impl RecordingSession<'_> {
             }
         }
 
+        data_view_cleanup_safe &= !self.ownership.dashboard && !self.ownership.dashboard_loss;
+
         if data_view_cleanup_safe {
             for (id, owned) in [
                 (DATA_VIEW_SOURCE_ID, &mut self.ownership.data_view_source),
@@ -2291,7 +2293,10 @@ impl RecordingSession<'_> {
                 }
             }
 
-            if self.ownership.data_view_index {
+            let data_view_index_cleanup_safe = !self.ownership.data_view_source
+                && !self.ownership.data_view_replacement
+                && !self.ownership.dashboard_data_view;
+            if data_view_index_cleanup_safe && self.ownership.data_view_index {
                 match self
                     .transport
                     .get_absolute_es(&format!("/{DATA_VIEW_INDEX}/_doc/{DATA_VIEW_DOC_ID}"))
@@ -7746,6 +7751,83 @@ mod tests {
 
         assert!(error.message.contains("class=http status=500"));
         assert!(!error.message.contains("private"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_cleanup_failure_retains_data_views_and_their_index() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dashboards/{DASHBOARD_ID}")))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private dashboard cleanup identity"
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                dashboard: true,
+                dashboard_data_view: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(session.cleanup().await.is_err());
+        assert!(session.ownership.dashboard);
+        assert!(session.ownership.dashboard_data_view);
+        assert!(session.ownership.data_view_index);
+        let requests = server.received_requests().await.expect("requests");
+        assert!(
+            requests
+                .iter()
+                .any(|request| { request.url.path() == format!("/api/dashboards/{DASHBOARD_ID}") })
+        );
+        assert!(requests.iter().all(|request| {
+            !request.url.path().starts_with("/api/data_views/data_view/")
+                && !request
+                    .url
+                    .path()
+                    .starts_with(&format!("/{DATA_VIEW_INDEX}"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn data_view_cleanup_failure_retains_its_index() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "message": "private data-view cleanup identity"
+            })))
+            .mount(&server)
+            .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                data_view_source: true,
+                data_view_index: true,
+                ..Default::default()
+            },
+        };
+
+        assert!(session.cleanup().await.is_err());
+        assert!(session.ownership.data_view_source);
+        assert!(session.ownership.data_view_index);
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().any(|request| {
+            request.url.path() == format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}")
+        }));
+        assert!(requests.iter().all(|request| {
+            !request
+                .url
+                .path()
+                .starts_with(&format!("/{DATA_VIEW_INDEX}"))
+        }));
     }
 
     #[tokio::test]

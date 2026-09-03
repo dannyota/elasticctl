@@ -599,7 +599,10 @@ owned marker state; it does not overwrite an unexpected nonmarker default. It
 deletes data views only after every dashboard delete and the verified default
 restore succeed, and deletes the marker index only after every data-view delete
 succeeds. A failed prerequisite retains its dependents for the Drop retry. The
-content contract tolerates no residue.
+recorder derives each phase gate from the ownership that remains after the prior
+phase. Any dashboard ownership blocks all data-view and backing-index cleanup;
+any data-view ownership blocks backing-index cleanup. The content contract
+tolerates no residue.
 
 `xtask::CONTRACTS` contains nine entries, ending with `name: "content"` and
 `features: &[DASHBOARDS]`, where `DASHBOARDS` wraps `Feature::Dashboards`.
