@@ -792,3 +792,141 @@ async fn package_metadata_rejects_blank_requested_coordinates_before_the_route()
         assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
 }
+
+#[tokio::test]
+async fn get_reads_exact_parent_snapshot_and_returns_only_safe_detail() {
+    let server = verified_server().await;
+    let policy = live_item("integration-1");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 3,
+            "package_policies": ["integration-1"], "is_managed": false, "is_protected": false,
+            "data_output_id": "environment-only"
+        }})))
+        .mount(&server)
+        .await;
+
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect("safe detail");
+    assert_eq!(detail.id, "integration-1");
+    assert_eq!(detail.affected_agents, 3);
+    assert!(detail.blocked_by.is_empty());
+    let rendered = serde_json::to_value(detail).unwrap().to_string();
+    assert!(!rendered.contains("inputs"));
+    assert!(!rendered.contains("environment-only"));
+}
+
+#[tokio::test]
+async fn export_rejects_bare_selection_before_transport_io() {
+    let server = verified_server().await;
+    let error =
+        integration_policy_ops::export(&transport_for(&server), &[], false, ContentFormat::Json)
+            .await
+            .expect_err("bare export");
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn export_rejects_contradictory_package_state_before_metadata() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 0,
+            "package_policies": ["integration-1"]
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "status": "not_installed",
+            "installationInfo": {"version": "2.0.0"}
+        }})))
+        .mount(&server)
+        .await;
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("contradictory package state");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.url.path().contains("/system/2.0.0"))
+    );
+}
+
+#[tokio::test]
+async fn export_refuses_package_declared_secrets_without_leaking_values_or_references() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("vars".into(), json!({"password": "plaintext-secret"}));
+    policy.insert("secret_references".into(), json!([]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 0,
+            "package_policies": ["integration-1"]
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "status": "installed",
+            "installationInfo": {"version": "2.0.0"}
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "version": "2.0.0",
+            "vars": [{"name": "password", "secret": true}], "policy_templates": []
+        }})))
+        .mount(&server)
+        .await;
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("secret");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("integration-1:vars.password"));
+    assert!(!error.message.contains("plaintext-secret"));
+    assert!(!error.message.contains("secret_references"));
+}

@@ -41,6 +41,21 @@ pub struct LiveAgentPolicy {
     pub attached: Vec<String>,
 }
 
+/// The narrow parent facts an integration-policy operation needs to compare
+/// attachment, namespace, ownership, and blast radius. This deliberately does
+/// not apply agent-policy portability checks: environment references are not
+/// integration-parent facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentPolicyParentSnapshot {
+    pub id: String,
+    pub name: String,
+    pub namespace: String,
+    pub agents: u64,
+    pub attached_integrations: Vec<String>,
+    pub platform_owned: bool,
+    pub protected: bool,
+}
+
 /// Collect every page in the measured deterministic order, then sort by id.
 pub async fn collect(transport: &Transport) -> Result<Vec<Map<String, Value>>> {
     let mut page_number = 1;
@@ -218,6 +233,56 @@ pub fn is_platform_owned(item: &Map<String, Value>) -> Result<bool> {
             "decoding agent policy: agentless must be an object or null",
         )),
     }
+}
+
+/// Read one agent-policy parent while retaining only integration-operation
+/// facts. Missing `agents` is a Fleet privilege error; all other malformed
+/// known parent fields are malformed HTTP responses.
+pub(crate) async fn read_parent_snapshot(
+    transport: &Transport,
+    id: &str,
+) -> Result<AgentPolicyParentSnapshot> {
+    let policy = agent_policies::get(transport, id).await?;
+    let item = &policy.item;
+    let returned_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| http("decoding agent policy parent: id must be a non-empty string"))?;
+    if returned_id != id {
+        return Err(http(format!(
+            "decoding agent policy parent: expected id '{id}', got '{returned_id}'"
+        )));
+    }
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            http(format!(
+                "decoding agent policy '{id}': name must be a non-empty string"
+            ))
+        })?
+        .to_owned();
+    let namespace = item
+        .get("namespace")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            http(format!(
+                "decoding agent policy '{id}': namespace must be a non-empty string"
+            ))
+        })?
+        .to_owned();
+    Ok(AgentPolicyParentSnapshot {
+        id: returned_id.to_owned(),
+        name,
+        namespace,
+        agents: required_agents(item, id)?,
+        attached_integrations: attached_integration_ids(item, id)?,
+        platform_owned: is_platform_owned(item)?,
+        protected: optional_server_bool(item, "is_protected")?.unwrap_or(false),
+    })
 }
 
 const PORTABLE_OPTIONAL: [&str; 13] = [
