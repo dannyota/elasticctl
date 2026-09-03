@@ -12,6 +12,7 @@ pub mod data_views;
 pub mod data_views_ops;
 pub mod diff;
 pub mod exceptions;
+pub mod fleet;
 pub mod health;
 pub mod model;
 pub mod normalize;
