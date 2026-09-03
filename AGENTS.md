@@ -175,8 +175,10 @@ The Serverless dev project holds ~2,066 Elastic prebuilt rules for scale testing
 read-only ground truth: never mutate an untagged rule. Every object a live test creates carries
 the `elasticctl-sample` marker: a `rule_id` prefix and tag for rules, and
 `*elasticctl-sample*` in index names. Every remote mutation targets explicit ids. A run ends by
-verifying the project is back to baseline: unchanged prebuilt-rule count, no sample rules, and no
-sample indices.
+verifying the project is back to baseline: unchanged prebuilt-rule count, no sample rules, and
+no sample indices. Fleet packages are the exception: the trial stacks are development
+environments, so a package a test installs (for example `system` or `elastic_agent`) may stay
+installed and needs no cleanup. Marker objects are still removed.
 
 ## Sample data
 
