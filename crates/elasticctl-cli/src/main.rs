@@ -10,9 +10,10 @@ mod resolve;
 
 use clap::Parser;
 use cli::{
-    AlertsAction, CasesAction, Cli, Command, ConfigAction, DashboardBundleAction, DashboardsAction,
-    DataViewDefaultAction, DataViewsAction, ExceptionsAction, Format, GlobalArgs, PrebuiltAction,
-    RulesAction, SearchAction, SourceArg, StateAction,
+    AgentPoliciesAction, AlertsAction, CasesAction, Cli, Command, ConfigAction,
+    DashboardBundleAction, DashboardsAction, DataViewDefaultAction, DataViewsAction,
+    ExceptionsAction, FleetAction, Format, GlobalArgs, PrebuiltAction, RulesAction, SearchAction,
+    SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -371,6 +372,63 @@ async fn main() {
                 }
             },
         },
+        Command::Fleet { action } => match action {
+            FleetAction::AgentPolicies { action } => match action {
+                AgentPoliciesAction::List { search, limit } => match Context::build(&args.global) {
+                    Ok(ctx) => {
+                        cmd::fleet::list(
+                            &ctx,
+                            &elasticctl_api::fleet::agent_policy_ops::AgentPolicyFilter {
+                                search: search.clone(),
+                                limit: *limit,
+                            },
+                        )
+                        .await
+                    }
+                    Err(e) => Err(e),
+                },
+                AgentPoliciesAction::Get { selector } => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::fleet::get(&ctx, selector).await,
+                    Err(e) => Err(e),
+                },
+                AgentPoliciesAction::Validate { path } => cmd::fleet::validate(path),
+                AgentPoliciesAction::Export {
+                    selectors,
+                    all_custom,
+                    format_file,
+                } => match parse_content_format(format_file) {
+                    Ok(format) => match Context::build(&args.global) {
+                        Ok(ctx) => {
+                            cmd::fleet::export(
+                                &ctx,
+                                selectors,
+                                *all_custom,
+                                args.global.out.as_deref(),
+                                format,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                },
+                AgentPoliciesAction::Import {
+                    path,
+                    overwrite,
+                    skip_existing,
+                } => match cmd::fleet::validate_import_artifact(path) {
+                    Ok(()) => match Context::build(&args.global) {
+                        Ok(ctx) => cmd::fleet::import(&ctx, path, *overwrite, *skip_existing).await,
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                },
+                AgentPoliciesAction::Delete { selectors } => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::fleet::delete(&ctx, selectors).await,
+                    Err(e) => Err(e),
+                },
+            },
+        },
         Command::State { action } => match action {
             StateAction::Pull {
                 dir,
@@ -681,6 +739,10 @@ async fn main() {
                     action: DashboardsAction::Bundle {
                         action: DashboardBundleAction::Export { .. }
                     }
+                } | Command::Fleet {
+                    action: FleetAction::AgentPolicies {
+                        action: AgentPoliciesAction::Export { .. }
+                    }
                 }
             ) && args.global.out.is_none();
             if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
@@ -704,6 +766,10 @@ async fn main() {
                 } | Command::Dashboards {
                     action: DashboardsAction::Bundle {
                         action: DashboardBundleAction::Export { .. }
+                    }
+                } | Command::Fleet {
+                    action: FleetAction::AgentPolicies {
+                        action: AgentPoliciesAction::Export { .. }
                     }
                 }
             ) && args.global.out.is_some();

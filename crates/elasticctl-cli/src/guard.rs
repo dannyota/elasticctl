@@ -4,9 +4,9 @@ use crate::context::Context;
 use elasticctl_core::Resolved;
 
 /// Mutating commands: remote `rules`, `exceptions`, `data-views`,
-/// `dashboards`, `state`, `alerts`, and `cases` commands, plus local `config
-/// init`. Use full command paths so a non-mutating command with the same leaf
-/// name cannot be mislabeled.
+/// `dashboards`, `fleet`, `state`, `alerts`, and `cases` commands, plus local
+/// `config init`. Use full command paths so a non-mutating command with the
+/// same leaf name cannot be mislabeled.
 ///
 /// Keep this list with its enforcement. `cmd::meta` reads it for the command
 /// tree, avoiding an unchecked duplicate.
@@ -19,7 +19,7 @@ use elasticctl_core::Resolved;
 /// This does not detect mutations that neither call the guard nor appear here.
 /// `config init` is declared but unguarded because it writes a local file.
 /// The enforced relation is `guard ⊆ MUTATING`.
-pub(crate) const MUTATING: [&str; 27] = [
+pub(crate) const MUTATING: [&str; 29] = [
     "rules enable",
     "rules disable",
     "rules delete",
@@ -34,6 +34,8 @@ pub(crate) const MUTATING: [&str; 27] = [
     "dashboards import",
     "dashboards delete",
     "dashboards bundle import",
+    "fleet agent-policies import",
+    "fleet agent-policies delete",
     "state push",
     "config init",
     "alerts ack",

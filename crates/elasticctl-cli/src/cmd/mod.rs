@@ -7,6 +7,7 @@ pub mod dashboards;
 pub mod data_views;
 pub mod doctor;
 pub mod exceptions;
+pub mod fleet;
 pub mod info;
 pub mod meta;
 pub mod rules;
