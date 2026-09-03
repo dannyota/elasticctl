@@ -1515,6 +1515,53 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
 }
 
 #[tokio::test]
+async fn apply_delete_fails_a_target_that_changed_since_preview() {
+    let server = verified_server().await;
+    // idle: resolve and the plan read see it clean, the apply recheck sees agents acquired.
+    let mut acquired = item("idle");
+    acquired["agents"] = json!(2);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/idle"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": acquired})),
+        ]))
+        .mount(&server)
+        .await;
+    // Mounted so a wrongly issued delete would show up as a request, not a 404.
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies/delete"))
+        .and(body_json(json!({"agentPolicyId": "idle"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "idle", "name": "Policy idle"})),
+        )
+        .mount(&server)
+        .await;
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_delete(&transport, &["idle".into()])
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .unwrap();
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "idle", "error": "agent policy changed since preview"})]
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "POST"),
+        "no delete request must be issued once the recheck sees a change"
+    );
+}
+
+#[tokio::test]
 async fn apply_delete_rejects_tampered_plan_targets() {
     let server = verified_server().await;
     Mock::given(method("GET"))
@@ -1527,9 +1574,15 @@ async fn apply_delete_rejects_tampered_plan_targets() {
         .await
         .unwrap();
     plan.targets.push(plan.targets[0].clone());
+    let requests_before = server.received_requests().await.unwrap().len();
     let error = agent_policy_ops::apply_delete(&transport, &plan)
         .await
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Error);
     assert_eq!(error.message, "invalid agent-policy delete plan");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        requests_before,
+        "a tampered plan must be rejected before any request"
+    );
 }

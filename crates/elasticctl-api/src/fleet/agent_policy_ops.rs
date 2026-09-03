@@ -1192,7 +1192,15 @@ fn delete_preview(targets: &[AgentPolicyDeleteTarget]) -> MutationPlan {
         preview_action: format!("Delete {} agent policy(ies)", targets.len()),
         preview_details: targets
             .iter()
-            .map(|target| format!("{}  {}  agents 0  integrations 0", target.id, target.name))
+            .map(|target| {
+                format!(
+                    "{}  {}  agents {}  integrations {}",
+                    target.id,
+                    target.name,
+                    target.snapshot.agents,
+                    target.snapshot.attached.len()
+                )
+            })
             .collect(),
         targets: targets.iter().map(|target| target.id.clone()).collect(),
     }

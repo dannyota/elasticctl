@@ -501,8 +501,11 @@ as part of agent-policy deletion. elasticctl refuses that cascade.
 
 Agent-policy delete requires zero assigned agents, zero attached integrations,
 no unsupported state from section 5.2, and active-space-only visibility.
-Preview names the id, name, flags, agent count, and attached integration ids.
-Apply repeats the snapshot, then sends
+Preview names each target's id, name, agent count, and attached-integration
+count, all read from the planning snapshot. A plan that reaches the guard
+holds only targets with zero of both and no true platform flag, because
+planning and normalization refuse everything else. Apply repeats the
+snapshot, then sends
 `POST /api/fleet/agent_policies/delete` with `{"agentPolicyId": id}` and no
 `force`. Fleet's own checks refuse a policy with active or inactive agents, a
 hosted policy, and a policy containing managed integrations; elasticctl refuses
