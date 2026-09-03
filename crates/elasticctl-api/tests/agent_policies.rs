@@ -561,6 +561,32 @@ async fn get_classifies_missing_agent_and_attachment_facts() {
     }
 }
 
+#[tokio::test]
+async fn parent_snapshot_facts_fail_closed_through_the_safe_agent_read() {
+    for (field, value, kind) in [
+        ("agents", json!(-1), ErrorKind::Http),
+        ("agents", json!("1"), ErrorKind::Http),
+        ("package_policies", json!(["", "a"]), ErrorKind::Http),
+        ("package_policies", json!(["a", "a"]), ErrorKind::Http),
+        ("namespace", json!(""), ErrorKind::Http),
+        ("is_managed", json!("false"), ErrorKind::Http),
+        ("is_protected", json!("false"), ErrorKind::Http),
+    ] {
+        let server = verified_server().await;
+        let mut live = item("parent-1");
+        live[field] = value;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live})))
+            .mount(&server)
+            .await;
+        let error = agent_policy_ops::get_op(&transport_for(&server), "parent-1")
+            .await
+            .expect_err(field);
+        assert_eq!(error.kind, kind, "{field}");
+    }
+}
+
 #[test]
 fn normalize_drops_server_fields_fills_defaults_and_equates_null_with_absent() {
     let mut live = item("ap-1");

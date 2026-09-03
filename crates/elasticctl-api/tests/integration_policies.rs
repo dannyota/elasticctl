@@ -1,4 +1,5 @@
 use elasticctl_api::content_codec::{self, ContentFormat};
+use elasticctl_api::fleet::agent_policies::PLATFORM_FLAGS;
 use elasticctl_api::fleet::integration_policies::{self, IntegrationPolicySpec};
 use elasticctl_api::fleet::integration_policy_ops::{self, IntegrationPolicyFilter};
 use elasticctl_core::{ErrorKind, Feature, Profile, Transport};
@@ -929,4 +930,388 @@ async fn export_refuses_package_declared_secrets_without_leaking_values_or_refer
     assert!(error.message.contains("integration-1:vars.password"));
     assert!(!error.message.contains("plaintext-secret"));
     assert!(!error.message.contains("secret_references"));
+}
+
+#[tokio::test]
+async fn get_reports_disabled_policy_as_a_safe_blocker() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("enabled".into(), json!(false));
+    policy.insert("vars".into(), json!({"password": "must-not-leak"}));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 0,
+            "package_policies": ["integration-1"]
+        }})))
+        .mount(&server)
+        .await;
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect("safe disabled detail");
+    assert_eq!(detail.blocked_by, vec!["enabled"]);
+    assert!(
+        !serde_json::to_string(&detail)
+            .unwrap()
+            .contains("must-not-leak")
+    );
+}
+
+#[tokio::test]
+async fn all_custom_skips_rows_that_become_managed_on_the_full_read() {
+    let server = verified_server().await;
+    mount_integration_pages(&server, vec![(1, vec![item("integration-1")], 1)]).await;
+    let mut managed = live_item("integration-1");
+    managed.insert("is_managed".into(), json!(true));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": managed})))
+        .mount(&server)
+        .await;
+    let result =
+        integration_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+            .await
+            .expect("managed row skipped");
+    assert_eq!(result.exported, 0);
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.url.path().contains("agent_policies"))
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.url.path().contains("epm/packages"))
+    );
+}
+
+#[tokio::test]
+async fn export_rejects_duplicate_metadata_input_keys_before_secret_classification() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "inputs".into(),
+        json!({"system-system": {"vars": {"password": "must-not-leak"}}}),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 0,
+            "package_policies": ["integration-1"]
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "status": "installed", "installationInfo": {"version": "2.0.0"}
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "version": "2.0.0", "policy_templates": [
+                {"name": "system", "inputs": [{"type": "system", "vars": [{"name": "password", "secret": false}]}]},
+                {"name": "system", "inputs": [{"type": "system", "vars": [{"name": "password", "secret": true}]}]}
+            ]
+        }})))
+        .mount(&server)
+        .await;
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("duplicate metadata key");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        error
+            .message
+            .contains("duplicate input key 'system-system'")
+    );
+    assert!(!error.message.contains("must-not-leak"));
+}
+
+#[tokio::test]
+async fn get_blocks_namespace_that_differs_from_its_parent_without_exposing_inputs() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("namespace".into(), json!("integration-space"));
+    policy.insert(
+        "inputs".into(),
+        json!({"hidden": {"value": "must-not-leak"}}),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 2,
+            "package_policies": ["integration-1"], "data_output_id": "ignored-environment-id"
+        }})))
+        .mount(&server)
+        .await;
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect("safe detail");
+    assert_eq!(detail.blocked_by, vec!["namespace"]);
+    assert_eq!(detail.affected_agents, 2);
+    let rendered = serde_json::to_string(&detail).unwrap();
+    assert!(!rendered.contains("must-not-leak"));
+    assert!(!rendered.contains("ignored-environment-id"));
+}
+
+#[tokio::test]
+async fn export_package_dependency_state_matrix_stops_before_metadata_when_unsafe() {
+    let cases = [
+        ("installed", Some("2.0.0"), None, true),
+        ("not_installed", None, Some(ErrorKind::Conflict), false),
+        ("installed", None, Some(ErrorKind::Http), false),
+        ("not_installed", Some("2.0.0"), Some(ErrorKind::Http), false),
+        ("installing", None, Some(ErrorKind::Http), false),
+        ("failed", None, Some(ErrorKind::Http), false),
+        ("future", None, Some(ErrorKind::Http), false),
+        ("installed", Some("3.0.0"), Some(ErrorKind::Conflict), false),
+    ];
+    for (status, version, expected_error, metadata_expected) in cases {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "id": "parent-1", "name": "Parent", "namespace": "default", "agents": 0,
+                "package_policies": ["integration-1"]
+            }})))
+            .mount(&server)
+            .await;
+        let mut package = json!({"name": "system", "status": status});
+        if let Some(version) = version {
+            package["installationInfo"] = json!({"version": version});
+        }
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": package})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "system", "version": "2.0.0", "policy_templates": []
+            }})))
+            .mount(&server)
+            .await;
+        let result = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await;
+        match expected_error {
+            Some(kind) => assert_eq!(result.expect_err(status).kind, kind, "{status}/{version:?}"),
+            None => assert_eq!(result.expect(status).exported, 1),
+        }
+        let metadata_seen = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.url.path() == "/api/fleet/epm/packages/system/2.0.0");
+        assert_eq!(metadata_seen, metadata_expected, "{status}/{version:?}");
+    }
+}
+
+#[tokio::test]
+async fn get_rejects_malformed_parent_snapshots_and_sanitizes_parent_ownership() {
+    let cases = [
+        ("agents", Value::Null, ErrorKind::Permission),
+        ("agents", json!(-1), ErrorKind::Http),
+        ("agents", json!(1.5), ErrorKind::Http),
+        ("agents", json!("1"), ErrorKind::Http),
+        ("id", Value::Null, ErrorKind::Http),
+        ("id", json!(""), ErrorKind::Http),
+        ("id", json!("wrong"), ErrorKind::Http),
+        ("id", json!(1), ErrorKind::Http),
+        ("name", Value::Null, ErrorKind::Http),
+        ("name", json!(""), ErrorKind::Http),
+        ("name", json!(1), ErrorKind::Http),
+        ("namespace", Value::Null, ErrorKind::Http),
+        ("namespace", json!(""), ErrorKind::Http),
+        ("namespace", json!(1), ErrorKind::Http),
+        ("package_policies", Value::Null, ErrorKind::Http),
+        ("package_policies", json!({}), ErrorKind::Http),
+        ("package_policies", json!([""]), ErrorKind::Http),
+        ("package_policies", json!([{}]), ErrorKind::Http),
+        ("package_policies", json!([{"id": ""}]), ErrorKind::Http),
+        (
+            "package_policies",
+            json!(["integration-1", "integration-1"]),
+            ErrorKind::Http,
+        ),
+        ("is_managed", json!("false"), ErrorKind::Http),
+        ("agentless", json!(true), ErrorKind::Http),
+        ("is_protected", json!("false"), ErrorKind::Http),
+    ];
+    for (field, value, kind) in cases {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            )
+            .mount(&server)
+            .await;
+        let mut parent = json!({"id":"parent-1","name":"Parent","namespace":"default","agents":1,"package_policies":["integration-1"]});
+        if value.is_null() {
+            parent.as_object_mut().unwrap().remove(field);
+        } else {
+            parent[field] = value;
+        }
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item":parent})))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+                .await
+                .expect_err(field)
+                .kind,
+            kind,
+            "{field}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn parent_ownership_markers_block_safe_get_and_explicit_export_before_packages() {
+    let mut cases: Vec<(&str, Value)> = PLATFORM_FLAGS
+        .iter()
+        .map(|flag| (*flag, json!(true)))
+        .collect();
+    cases.extend([
+        ("agentless", json!({"environment": "must-not-leak"})),
+        ("is_protected", json!(true)),
+    ]);
+    for (field, value) in cases {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            )
+            .mount(&server)
+            .await;
+        let mut parent = json!({"id":"parent-1","name":"Parent","namespace":"default","agents":1,"package_policies":["integration-1"],"data_output_id":"ignored"});
+        parent[field] = value;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item":parent})))
+            .mount(&server)
+            .await;
+        let transport = transport_for(&server);
+        let detail = integration_policy_ops::get_op(&transport, "integration-1")
+            .await
+            .unwrap();
+        let expected = if field == "is_protected" {
+            "parent:parent-1.is_protected"
+        } else {
+            "parent:parent-1.platform_owned"
+        };
+        assert_eq!(detail.blocked_by, vec![expected]);
+        assert!(
+            !serde_json::to_string(&detail)
+                .unwrap()
+                .contains("must-not-leak")
+        );
+        assert_eq!(
+            integration_policy_ops::export(
+                &transport,
+                &["integration-1".into()],
+                false,
+                ContentFormat::Json
+            )
+            .await
+            .unwrap_err()
+            .kind,
+            ErrorKind::Unsupported
+        );
+        assert!(
+            !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.url.path().contains("epm/packages"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_fails_before_parent_reads_for_duplicate_ids_and_rejects_parent_attachment_races() {
+    for (ids, attachment, kind) in [
+        (
+            json!(["parent-1", "parent-1"]),
+            json!(["integration-1"]),
+            ErrorKind::Http,
+        ),
+        (
+            json!(["parent-1"]),
+            json!(["integration-1", "integration-1"]),
+            ErrorKind::Http,
+        ),
+        (json!(["parent-1"]), json!(["other"]), ErrorKind::Http),
+    ] {
+        let server = verified_server().await;
+        let mut policy = live_item("integration-1");
+        policy.insert("policy_ids".into(), ids);
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item":policy})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item":{"id":"parent-1","name":"Parent","namespace":"default","agents":1,"package_policies":attachment}}))).mount(&server).await;
+        assert_eq!(
+            integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+                .await
+                .unwrap_err()
+                .kind,
+            kind
+        );
+    }
 }

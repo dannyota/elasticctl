@@ -218,6 +218,21 @@ pub async fn get_op(transport: &Transport, selector: &str) -> Result<Integration
             blocked_by.insert(format!("parent:{}.is_protected", parent.id));
         }
     }
+    if parents
+        .values()
+        .map(|parent| parent.namespace.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        != 1
+    {
+        blocked_by.insert("namespace".into());
+    }
+    if parents
+        .values()
+        .any(|parent| parent.namespace != resolved.summary.namespace)
+    {
+        blocked_by.insert("namespace".into());
+    }
     Ok(IntegrationPolicyDetail {
         id: resolved.summary.id,
         name: resolved.summary.name,
@@ -260,6 +275,9 @@ pub async fn export(
                 continue;
             }
             let live = integration_policies::get(transport, &summary.id).await?;
+            if optional_bool(&live.item, "is_managed", &summary.id)? == Some(true) {
+                continue;
+            }
             rows.insert(
                 summary.id.clone(),
                 ResolvedIntegrationPolicy {
@@ -379,7 +397,7 @@ async fn effective_spec(
     }
     let dependency =
         read_dependencies(transport, &package_coordinate(item, "integration policy")?).await?;
-    let spec = normalize(item, transport.space())?;
+    let mut spec = normalize(item, transport.space())?;
     if let Some(namespace) = &spec.namespace {
         if parents
             .values()
@@ -399,6 +417,7 @@ async fn effective_spec(
                 "integration policy '{id}' is not portable: parents have different namespaces"
             ));
         }
+        spec.namespace = namespaces.into_iter().next().map(str::to_owned);
     }
     // A package policy can only have been compiled from the exact installed
     // coordinate. Treat a divergent or absent state as a loud conflict.
@@ -627,7 +646,16 @@ fn secret_schema(metadata: &Map<String, Value>) -> Result<(SecretSchema, KnownSc
                 &mut secret_vars,
                 "package metadata input vars",
             )?;
-            known.input_vars.insert(input_key.clone(), known_vars);
+            match known.input_vars.entry(input_key.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(known_vars);
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(http(format!(
+                        "decoding package metadata: duplicate input key '{input_key}'"
+                    )));
+                }
+            }
             if !secret_vars.is_empty() {
                 secrets.input_vars.insert(input_key.clone(), secret_vars);
             }
@@ -660,9 +688,19 @@ fn secret_schema(metadata: &Map<String, Value>) -> Result<(SecretSchema, KnownSc
                     "package metadata stream vars",
                 )?;
                 let key = (input_key.clone(), dataset);
-                known.stream_vars.insert(key.clone(), known_vars);
+                match known.stream_vars.entry(key.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(known_vars);
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        return Err(http(format!(
+                            "decoding package metadata: duplicate stream key '{}:{}'",
+                            key.0, key.1
+                        )));
+                    }
+                }
                 if !secret_vars.is_empty() {
-                    secrets.stream_vars.insert(key, secret_vars);
+                    secrets.stream_vars.insert(key.clone(), secret_vars);
                 }
             }
         }
@@ -726,7 +764,17 @@ fn live_blocked_by(
     active_space: &str,
 ) -> Result<BTreeSet<String>> {
     let mut reasons = BTreeSet::new();
-    required_true(item, "enabled", id)?;
+    match item.get("enabled") {
+        Some(Value::Bool(true)) => {}
+        Some(Value::Bool(false)) => {
+            reasons.insert("enabled".into());
+        }
+        _ => {
+            return Err(http(format!(
+                "decoding integration policy '{id}': enabled must be true or false"
+            )));
+        }
+    }
     for field in [
         "is_managed",
         "supports_agentless",
