@@ -146,6 +146,41 @@ fn unique_name(kind: &str) -> String {
     format!("{LIVE_PREFIX}{kind}-{nanos}")
 }
 
+fn data_view_artifact(id: &str, index: &str) -> Value {
+    json!([{
+        "id": id,
+        "title": index,
+        "name": id,
+        "timeFieldName": "@timestamp",
+        "allowNoIndex": false,
+        "allowHidden": false,
+        "sourceFilters": [],
+        "fieldFormats": {},
+        "runtimeFieldMap": {},
+        "fieldAttrs": {}
+    }])
+}
+
+fn dashboard_artifact(id: &str, view_id: &str, description: &str) -> Value {
+    json!([{
+        "id": id,
+        "data": {
+            "title": id,
+            "description": description,
+            "panels": [{
+                "type": "vis",
+                "grid": {"x": 0, "y": 0, "w": 12, "h": 8},
+                "config": {
+                    "title": "Live count",
+                    "type": "metric",
+                    "data_source": {"type": "data_view_reference", "ref_id": view_id},
+                    "metrics": [{"type": "primary", "operation": "count"}]
+                }
+            }]
+        }
+    }])
+}
+
 fn command_is_not_found(out: &Output) -> bool {
     let text = format!(
         "{}{}",
@@ -1318,6 +1353,44 @@ fn cleanup_tracks_content_and_original_default_once() {
 }
 
 #[test]
+fn content_artifacts_decode_through_the_production_codec() {
+    let view_id = "elasticctl-live-view";
+    let index = "elasticctl-live-index";
+    let dashboard_id = "elasticctl-live-dashboard";
+
+    let views =
+        elasticctl_api::content_codec::decode_sequence::<elasticctl_api::data_views::DataViewSpec>(
+            &data_view_artifact(view_id, index).to_string(),
+            elasticctl_api::content_codec::ContentFormat::Json,
+            "data view",
+        )
+        .expect("data-view fixture must decode");
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].id, view_id);
+    assert_eq!(views[0].title, index);
+    assert_eq!(views[0].name.as_deref(), Some(view_id));
+    assert_eq!(views[0].time_field_name.as_deref(), Some("@timestamp"));
+
+    let dashboards = elasticctl_api::content_codec::decode_sequence::<
+        elasticctl_api::dashboards::DashboardSpec,
+    >(
+        &dashboard_artifact(dashboard_id, view_id, "initial").to_string(),
+        elasticctl_api::content_codec::ContentFormat::Json,
+        "dashboard",
+    )
+    .expect("dashboard fixture must decode");
+    assert_eq!(dashboards.len(), 1);
+    assert_eq!(dashboards[0].id, dashboard_id);
+    assert_eq!(dashboards[0].data["description"], "initial");
+    assert_eq!(
+        elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(
+            dashboards[0].data.clone(),
+        )),
+        [view_id]
+    );
+}
+
+#[test]
 fn content_residue_requires_empty_markers_and_the_exact_default() {
     assert!(content_residue_is_clean(
         0,
@@ -2444,6 +2517,562 @@ fn rule_line_in_export(path: &Path, rule_id: &str) -> TestResult<String> {
         .find(|line| line.contains(&needle))
         .map(str::to_string)
         .ok_or_else(|| format!("exported file is missing rule {rule_id}: {body}"))
+}
+
+fn write_json_artifact(path: &Path, value: &Value, what: &str) -> TestResult {
+    let body =
+        serde_json::to_vec_pretty(value).map_err(|e| format!("encoding {what} artifact: {e}"))?;
+    std::fs::write(path, body).map_err(|e| format!("writing {what} artifact: {e}"))
+}
+
+fn assert_single_import_report(report: &Value, id: &str, what: &str) -> TestResult {
+    let succeeded = report["succeeded"]
+        .as_array()
+        .ok_or_else(|| format!("{what} report has no succeeded array"))?;
+    let skipped = report["skipped"]
+        .as_array()
+        .ok_or_else(|| format!("{what} report has no skipped array"))?;
+    let failed = report["failed"]
+        .as_array()
+        .ok_or_else(|| format!("{what} report has no failed array"))?;
+    if report["applied"] != true
+        || report["total"] != 1
+        || succeeded.len() != 1
+        || succeeded[0]["id"] != id
+        || !skipped.is_empty()
+        || !failed.is_empty()
+    {
+        return Err(format!("{what} did not report one clean success: {report}"));
+    }
+    if let Some(lossy) = report.get("lossy")
+        && !lossy.as_array().is_some_and(Vec::is_empty)
+    {
+        return Err(format!("{what} reported lossy persistence: {report}"));
+    }
+    Ok(())
+}
+
+fn assert_single_delete_report(report: &Value, id: &str, what: &str) -> TestResult {
+    let deleted = report["deleted"]
+        .as_array()
+        .ok_or_else(|| format!("{what} report has no deleted array"))?;
+    let failed = report["failed"]
+        .as_array()
+        .ok_or_else(|| format!("{what} report has no failed array"))?;
+    if report["applied"] != true
+        || report["total"] != 1
+        || deleted.len() != 1
+        || deleted[0]["id"] != id
+        || !failed.is_empty()
+    {
+        return Err(format!("{what} did not report one clean delete: {report}"));
+    }
+    Ok(())
+}
+
+fn set_cli_default(config: &Path, id: Option<&str>, what: &str) -> TestResult {
+    let output = match id {
+        Some(id) => checked(
+            cli(config)
+                .args(["data-views", "default", "set"])
+                .arg(id)
+                .args(["--yes", "--json"]),
+            what,
+        )?,
+        None => checked(
+            cli(config).args(["data-views", "default", "unset", "--yes", "--json"]),
+            what,
+        )?,
+    };
+    let report = json_output(&output, what)?;
+    if report["applied"] != true || report["data_view_id"] != id.map_or(Value::Null, Value::from) {
+        return Err(format!(
+            "{what} did not report the requested default: {report}"
+        ));
+    }
+    Ok(())
+}
+
+fn content_probe(
+    config: &Path,
+    profile: &Profile,
+    temp: &Path,
+    index: &str,
+    first_view: &str,
+    second_view: &str,
+    dashboard: &str,
+    cleanup: &mut LiveCleanup,
+) -> TestResult {
+    let original_default = cleanup
+        .default_data_view
+        .clone()
+        .ok_or_else(|| "content cleanup did not capture the original default".to_string())?;
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("building content runtime: {e}"))?;
+    let transport = Transport::new(profile)
+        .map_err(|e| format!("building content transport: {}", e.message))?;
+
+    runtime.block_on(async {
+        transport
+            .post_absolute_es(
+                &format!("/{index}/_doc?refresh=wait_for"),
+                &json!({
+                    "@timestamp": current_rfc3339(),
+                    "message": "elasticctl live content",
+                    "marker": LIVE_TAG,
+                }),
+            )
+            .await
+            .map_err(|e| format!("creating and seeding content index: {}", e.message))?;
+        transport
+            .post_absolute_es(&format!("/{index}/_refresh"), &json!({}))
+            .await
+            .map_err(|e| format!("refreshing content index: {}", e.message))?;
+        Ok::<(), String>(())
+    })?;
+
+    let first_path = temp.join("first-view.json");
+    write_json_artifact(
+        &first_path,
+        &data_view_artifact(first_view, index),
+        "first data-view",
+    )?;
+    let first_import = checked(
+        cli(config)
+            .args(["data-views", "import", "--path"])
+            .arg(&first_path)
+            .args(["--yes", "--json"]),
+        "first data-view import",
+    )?;
+    assert_single_import_report(
+        &json_output(&first_import, "first data-view import")?,
+        first_view,
+        "first data-view import",
+    )?;
+    runtime.block_on(async {
+        let view = elasticctl_api::data_views::get(&transport, first_view)
+            .await
+            .map_err(|e| format!("reading first data view: {}", e.message))?;
+        if view.data_view.get("id").and_then(Value::as_str) != Some(first_view)
+            || view.data_view.get("title").and_then(Value::as_str) != Some(index)
+        {
+            return Err("first data view did not persist its exact id and title".to_string());
+        }
+        Ok::<(), String>(())
+    })?;
+
+    set_cli_default(config, Some(first_view), "set first data-view default")?;
+    runtime.block_on(async {
+        let current = elasticctl_api::data_views::get_default(&transport)
+            .await
+            .map_err(|e| format!("reading first data-view default: {}", e.message))?;
+        if current.as_deref() == Some(first_view) {
+            Ok(())
+        } else {
+            Err("first data view was not set as the default".to_string())
+        }
+    })?;
+
+    let dashboard_path = temp.join("dashboard.json");
+    write_json_artifact(
+        &dashboard_path,
+        &dashboard_artifact(dashboard, first_view, "initial"),
+        "dashboard",
+    )?;
+    let dashboard_import = checked(
+        cli(config)
+            .args(["dashboards", "import", "--path"])
+            .arg(&dashboard_path)
+            .args(["--yes", "--json"]),
+        "dashboard import",
+    )?;
+    assert_single_import_report(
+        &json_output(&dashboard_import, "dashboard import")?,
+        dashboard,
+        "dashboard import",
+    )?;
+    runtime.block_on(async {
+        let value = elasticctl_api::dashboards::get(&transport, dashboard)
+            .await
+            .map_err(|e| format!("reading initial dashboard: {}", e.message))?;
+        let refs = elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(value.data));
+        if refs == [first_view] {
+            Ok(())
+        } else {
+            Err(format!(
+                "initial dashboard has unexpected data-view refs: {refs:?}"
+            ))
+        }
+    })?;
+
+    let list = checked(
+        cli(config).args(["dashboards", "list", "--json"]),
+        "dashboard list",
+    )?;
+    let listed = json_output(&list, "dashboard list")?;
+    if !listed
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["id"] == dashboard))
+    {
+        return Err("dashboard list omitted the marker dashboard".to_string());
+    }
+    let get = checked(
+        cli(config)
+            .args(["dashboards", "get"])
+            .arg(dashboard)
+            .arg("--json"),
+        "dashboard get",
+    )?;
+    if json_output(&get, "dashboard get")?["id"] != dashboard {
+        return Err("dashboard get returned a different id".to_string());
+    }
+    let export = checked(
+        cli(config).args(["dashboards", "export"]).arg(dashboard),
+        "portable dashboard export",
+    )?;
+    let export_value: Value = serde_json::from_slice(&export.stdout)
+        .map_err(|e| format!("decoding portable dashboard export as JSON: {e}"))?;
+    let export_row = export_value
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| "portable dashboard export has no first row".to_string())?;
+    if export_row["id"] != dashboard || export_row.get("meta").is_some() {
+        return Err("portable dashboard export changed the id or included meta".to_string());
+    }
+    let exported_specs = elasticctl_api::content_codec::decode_sequence::<
+        elasticctl_api::dashboards::DashboardSpec,
+    >(
+        std::str::from_utf8(&export.stdout)
+            .map_err(|e| format!("portable dashboard export is not UTF-8: {e}"))?,
+        elasticctl_api::content_codec::ContentFormat::Json,
+        "dashboard",
+    )
+    .map_err(|e| format!("decoding portable dashboard export: {}", e.message))?;
+    if exported_specs.len() != 1 || exported_specs[0].id != dashboard {
+        return Err("portable dashboard export did not decode to the exact id".to_string());
+    }
+    let portable_path = temp.join("portable-dashboard.json");
+    std::fs::write(&portable_path, &export.stdout)
+        .map_err(|e| format!("writing portable dashboard re-import: {e}"))?;
+    let reimport = checked(
+        cli(config)
+            .args(["dashboards", "import", "--path"])
+            .arg(&portable_path)
+            .args(["--overwrite", "--yes", "--json"]),
+        "portable dashboard re-import",
+    )?;
+    assert_single_import_report(
+        &json_output(&reimport, "portable dashboard re-import")?,
+        dashboard,
+        "portable dashboard re-import",
+    )?;
+
+    write_json_artifact(
+        &dashboard_path,
+        &dashboard_artifact(dashboard, first_view, "updated"),
+        "updated dashboard",
+    )?;
+    let update = checked(
+        cli(config)
+            .args(["dashboards", "import", "--path"])
+            .arg(&dashboard_path)
+            .args(["--overwrite", "--yes", "--json"]),
+        "dashboard update import",
+    )?;
+    assert_single_import_report(
+        &json_output(&update, "dashboard update import")?,
+        dashboard,
+        "dashboard update import",
+    )?;
+    runtime.block_on(async {
+        let value = elasticctl_api::dashboards::get(&transport, dashboard)
+            .await
+            .map_err(|e| format!("reading updated dashboard: {}", e.message))?;
+        let refs =
+            elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(value.data.clone()));
+        if value.data.get("description").and_then(Value::as_str) != Some("updated")
+            || !value.data.get("panels").is_some_and(Value::is_array)
+            || refs != [first_view]
+        {
+            return Err(
+                "dashboard update did not preserve its panel and first view ref".to_string(),
+            );
+        }
+        Ok::<(), String>(())
+    })?;
+
+    let bundle_path = temp.join("dashboard.ndjson");
+    let bundle_export = checked(
+        cli(config)
+            .args(["dashboards", "bundle", "export"])
+            .arg(dashboard)
+            .args(["--out"])
+            .arg(&bundle_path)
+            .arg("--json"),
+        "dashboard bundle export",
+    )?;
+    if json_output(&bundle_export, "dashboard bundle export")?["exported"] != 1 {
+        return Err("dashboard bundle export did not report one dashboard".to_string());
+    }
+    let bundle = std::fs::read_to_string(&bundle_path)
+        .map_err(|e| format!("reading dashboard bundle: {e}"))?;
+    let scan = elasticctl_api::saved_objects::scan_bundle(&bundle)
+        .map_err(|e| format!("scanning dashboard bundle: {}", e.message))?;
+    if scan.dashboards != [dashboard]
+        || scan.counts.get("dashboard") != Some(&1)
+        || scan.counts.get("index-pattern") != Some(&1)
+        || !scan.has_export_details
+    {
+        return Err(format!(
+            "dashboard bundle has unexpected contents: {scan:?}"
+        ));
+    }
+
+    set_cli_default(
+        config,
+        original_default.as_deref(),
+        "restore original default before bundle round trip",
+    )?;
+    let dashboard_delete = checked(
+        cli(config)
+            .args(["dashboards", "delete"])
+            .arg(dashboard)
+            .args(["--yes", "--json"]),
+        "dashboard delete before bundle import",
+    )?;
+    assert_single_delete_report(
+        &json_output(&dashboard_delete, "dashboard delete before bundle import")?,
+        dashboard,
+        "dashboard delete before bundle import",
+    )?;
+    let first_delete = checked(
+        cli(config)
+            .args(["data-views", "delete"])
+            .arg(first_view)
+            .args(["--yes", "--json"]),
+        "first data-view delete before bundle import",
+    )?;
+    assert_single_delete_report(
+        &json_output(&first_delete, "first data-view delete before bundle import")?,
+        first_view,
+        "first data-view delete before bundle import",
+    )?;
+    runtime.block_on(async {
+        match elasticctl_api::dashboards::get(&transport, dashboard).await {
+            Err(error) if error.kind == ErrorKind::NotFound => {}
+            Ok(_) => return Err("deleted dashboard still exists".to_string()),
+            Err(error) => return Err(format!("checking deleted dashboard: {}", error.message)),
+        }
+        match elasticctl_api::data_views::get(&transport, first_view).await {
+            Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err("deleted first data view still exists".to_string()),
+            Err(error) => Err(format!(
+                "checking deleted first data view: {}",
+                error.message
+            )),
+        }
+    })?;
+
+    let bundle_import = checked(
+        cli(config)
+            .args(["dashboards", "bundle", "import", "--path"])
+            .arg(&bundle_path)
+            .args(["--yes", "--json"]),
+        "dashboard bundle import",
+    )?;
+    let bundle_report = json_output(&bundle_import, "dashboard bundle import")?;
+    let bundle_succeeded = bundle_report["succeeded"]
+        .as_array()
+        .ok_or_else(|| "dashboard bundle import has no succeeded array".to_string())?;
+    if bundle_report["applied"] != true
+        || bundle_report["total"] != scan.total
+        || !bundle_report["failed"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        || !bundle_succeeded
+            .iter()
+            .any(|row| row["type"] == "dashboard" && row["id"] == dashboard)
+        || !bundle_succeeded
+            .iter()
+            .any(|row| row["type"] == "index-pattern" && row["id"] == first_view)
+    {
+        return Err(format!(
+            "dashboard bundle import did not recreate both objects: {bundle_report}"
+        ));
+    }
+    runtime.block_on(async {
+        let view = elasticctl_api::data_views::get(&transport, first_view)
+            .await
+            .map_err(|e| format!("reading bundle-imported data view: {}", e.message))?;
+        let restored_dashboard = elasticctl_api::dashboards::get(&transport, dashboard)
+            .await
+            .map_err(|e| format!("reading bundle-imported dashboard: {}", e.message))?;
+        let refs = elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(
+            restored_dashboard.data,
+        ));
+        if view.data_view.get("id").and_then(Value::as_str) == Some(first_view)
+            && refs == [first_view]
+        {
+            Ok(())
+        } else {
+            Err("bundle import did not preserve ids and first-view reference".to_string())
+        }
+    })?;
+
+    let second_path = temp.join("second-view.json");
+    write_json_artifact(
+        &second_path,
+        &data_view_artifact(second_view, index),
+        "second data-view",
+    )?;
+    let second_import = checked(
+        cli(config)
+            .args(["data-views", "import", "--path"])
+            .arg(&second_path)
+            .args(["--yes", "--json"]),
+        "second data-view import",
+    )?;
+    assert_single_import_report(
+        &json_output(&second_import, "second data-view import")?,
+        second_view,
+        "second data-view import",
+    )?;
+    set_cli_default(
+        config,
+        Some(first_view),
+        "set first default before replacement",
+    )?;
+    let replace = checked(
+        cli(config)
+            .args(["data-views", "delete"])
+            .arg(first_view)
+            .args(["--replace-with"])
+            .arg(second_view)
+            .args(["--yes", "--json"]),
+        "replace first data view",
+    )?;
+    assert_single_delete_report(
+        &json_output(&replace, "replace first data view")?,
+        first_view,
+        "replace first data view",
+    )?;
+    runtime.block_on(async {
+        match elasticctl_api::data_views::get(&transport, first_view).await {
+            Err(error) if error.kind == ErrorKind::NotFound => {}
+            Ok(_) => return Err("replaced first data view still exists".to_string()),
+            Err(error) => {
+                return Err(format!(
+                    "checking replaced first data view: {}",
+                    error.message
+                ));
+            }
+        }
+        let value = elasticctl_api::dashboards::get(&transport, dashboard)
+            .await
+            .map_err(|e| format!("reading reference-replaced dashboard: {}", e.message))?;
+        let refs = elasticctl_api::dashboards::collect_data_view_refs(&Value::Object(value.data));
+        let current = elasticctl_api::data_views::get_default(&transport)
+            .await
+            .map_err(|e| format!("reading replaced default: {}", e.message))?;
+        if refs == [second_view] && current.as_deref() == Some(second_view) {
+            Ok(())
+        } else {
+            Err(format!(
+                "data-view replacement left refs {refs:?} or the wrong default"
+            ))
+        }
+    })?;
+
+    set_cli_default(
+        config,
+        original_default.as_deref(),
+        "restore original default after replacement",
+    )?;
+    let final_dashboard_delete = checked(
+        cli(config)
+            .args(["dashboards", "delete"])
+            .arg(dashboard)
+            .args(["--yes", "--json"]),
+        "final dashboard delete",
+    )?;
+    assert_single_delete_report(
+        &json_output(&final_dashboard_delete, "final dashboard delete")?,
+        dashboard,
+        "final dashboard delete",
+    )?;
+    let second_delete = checked(
+        cli(config)
+            .args(["data-views", "delete"])
+            .arg(second_view)
+            .args(["--yes", "--json"]),
+        "final data-view delete",
+    )?;
+    assert_single_delete_report(
+        &json_output(&second_delete, "final data-view delete")?,
+        second_view,
+        "final data-view delete",
+    )?;
+    runtime.block_on(async {
+        transport
+            .delete_absolute_es(&format!("/{index}"))
+            .await
+            .map_err(|e| format!("deleting content index: {}", e.message))?;
+        Ok::<(), String>(())
+    })?;
+
+    let marker_dashboards = marked_dashboard_ids(profile)?;
+    let marker_data_views = marked_data_view_ids(profile)?;
+    let current_default = read_default_data_view(profile)?;
+    if !content_residue_is_clean(
+        marker_dashboards.len(),
+        marker_data_views.len(),
+        current_default.as_deref(),
+        original_default.as_deref(),
+    ) {
+        return Err(format!(
+            "content probe left {} marker dashboard(s), {} marker data view(s), or default drift",
+            marker_dashboards.len(),
+            marker_data_views.len()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a live stack"]
+fn content_transfers_data_views_and_dashboards_without_residue() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serialize = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config, &profile).unwrap();
+    let index = unique_name("content-index");
+    let first_view = unique_name("data-view-a");
+    let second_view = unique_name("data-view-b");
+    let dashboard = unique_name("dashboard");
+    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
+    cleanup.index(index.clone());
+    cleanup.data_view(first_view.clone());
+    cleanup.data_view(second_view.clone());
+    cleanup.dashboard(dashboard.clone());
+    cleanup.restore_default_data_view(baseline.default_data_view.clone());
+
+    let result = (|| -> TestResult {
+        content_probe(
+            &config,
+            &profile,
+            dir.path(),
+            &index,
+            &first_view,
+            &second_view,
+            &dashboard,
+            &mut cleanup,
+        )
+    })();
+    conclude(result, &mut cleanup, baseline);
 }
 
 #[test]
