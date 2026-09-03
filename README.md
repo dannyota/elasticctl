@@ -163,6 +163,18 @@ elkctl dashboards bundle import --path dashboards.ndjson --yes
 checks referenced data views before it writes. Bundle bytes stay opaque so the
 server can restore the dashboard and its exported dependencies together.
 
+## Manage Fleet agent policies
+
+```bash
+elkctl fleet agent-policies list --search linux
+elkctl fleet agent-policies get production-linux
+elkctl fleet agent-policies validate --path agent-policies.yaml
+elkctl fleet agent-policies export --all-custom --format-file yaml > agent-policies.yaml
+
+elkctl fleet agent-policies import --path agent-policies.yaml --yes
+elkctl fleet agent-policies delete retired-linux --yes
+```
+
 ## Triage alerts and cases
 
 ```bash
@@ -203,6 +215,12 @@ elkctl dashboards export [<id-or-exact-title>...] [--format-file json|yaml]
   | delete <id-or-exact-title>... --yes
   | bundle export [<id-or-exact-title>...]
   | bundle import --path FILE [--overwrite] --yes
+
+elkctl fleet agent-policies list [--search TEXT] [--limit N] | get <id-or-exact-name>
+  | validate --path FILE
+elkctl fleet agent-policies export [<id-or-exact-name>...|--all-custom] [--format-file json|yaml]
+  | import --path FILE [--overwrite|--skip-existing] --yes
+  | delete <id-or-exact-name>... --yes
 
 elkctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
   [--source custom|customized|prebuilt|all]

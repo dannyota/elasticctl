@@ -1,0 +1,35 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "agent_policy_get_after_omit",
+  "response": {
+    "item": {
+      "id": "elasticctl-sample-agent-policy",
+      "agents_per_version": [],
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "space_ids": [
+        "default"
+      ],
+      "description": "elasticctl sample agent policy omitted",
+      "monitoring_enabled": [],
+      "unenroll_timeout": 3600,
+      "inactivity_timeout": 1209600,
+      "schema_version": "1.1.1",
+      "package_policies": [],
+      "agents": 0,
+      "name": "elasticctl-sample-agent-policy",
+      "namespace": "default",
+      "status": "active",
+      "is_managed": false,
+      "revision": 3,
+      "updated_at": "2026-01-01T00:00:00.000Z",
+      "updated_by": "REDACTED",
+      "is_protected": false,
+      "has_agent_version_conditions": false,
+      "min_agent_version": null,
+      "package_agent_version_conditions": null,
+      "unprivileged_agents": 0,
+      "fips_agents": 0
+    }
+  }
+}

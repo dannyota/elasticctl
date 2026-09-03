@@ -1,0 +1,10 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "agent_policy_delete_not_found",
+  "error": {
+    "kind": "not_found",
+    "message": "Saved object [fleet-agent-policies/elasticctl-sample-agent-policy] not found",
+    "http_status": 404
+  }
+}

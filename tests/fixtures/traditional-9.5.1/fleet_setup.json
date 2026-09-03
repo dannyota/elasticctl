@@ -1,0 +1,9 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "fleet_setup",
+  "response": {
+    "isInitialized": true,
+    "nonFatalErrors": []
+  }
+}

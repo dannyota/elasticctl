@@ -1,0 +1,9 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "fleet_setup",
+  "response": {
+    "isInitialized": true,
+    "nonFatalErrors": []
+  }
+}

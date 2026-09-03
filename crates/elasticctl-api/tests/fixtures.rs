@@ -113,6 +113,22 @@ const V0_5_DASHBOARD_FIXTURES: [&str; 11] = [
     "dashboard_loss.json",
 ];
 
+/// Agent-policy fixtures added in 0.6.0, recorded from the marker lifecycle.
+const V0_6_AGENT_POLICY_FIXTURES: [&str; 12] = [
+    "fleet_setup.json",
+    "agent_policy_not_found.json",
+    "package_elastic_agent.json",
+    "agent_policy_create.json",
+    "agent_policy_get.json",
+    "agent_policies_list.json",
+    "agent_policy_name_conflict.json",
+    "agent_policy_update.json",
+    "agent_policy_update_omitted.json",
+    "agent_policy_get_after_omit.json",
+    "agent_policy_delete.json",
+    "agent_policy_delete_not_found.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -242,6 +258,18 @@ fn every_fixture_parses_and_carries_its_metadata() {
         assert!(
             missing.is_empty(),
             "{} lacks dashboard fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
+
+        let missing: Vec<&str> = V0_6_AGENT_POLICY_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks agent-policy fixture(s): {}",
             set.display(),
             missing.join(", ")
         );
@@ -1418,5 +1446,98 @@ fn case_fixtures_decode_through_the_typed_decoders() {
             "{}: the delete path must carry the URL-encoded JSON id array: {deleted_path}",
             set.display()
         );
+    }
+}
+
+#[tokio::test]
+async fn agent_policy_fixtures_decode_through_the_production_paths() {
+    use elasticctl_api::fleet::agent_policies::{self, AgentPolicySpec};
+    use elasticctl_api::fleet::agent_policy_ops;
+    for set in fixture_sets() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(fixture_body(&set.join("status.json"))["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+        let list = fixture_body(&set.join("agent_policies_list.json"));
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sortField", "created_at"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(list["response"].clone()))
+            .mount(&server)
+            .await;
+        let got = fixture_body(&set.join("agent_policy_get.json"));
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/fleet/agent_policies/elasticctl-sample-agent-policy",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(got["response"].clone()))
+            .mount(&server)
+            .await;
+        let transport = fixture_transport(&server);
+
+        let items = agent_policy_ops::collect(&transport)
+            .await
+            .expect("collect");
+        assert_eq!(items.len(), 1, "{}", set.display());
+        assert_eq!(items[0]["id"], "elasticctl-sample-agent-policy");
+
+        let live = agent_policies::get(&transport, "elasticctl-sample-agent-policy")
+            .await
+            .expect("get");
+        let spec = agent_policy_ops::normalize(&live.item, "default").expect("normalize");
+        assert_eq!(spec.inactivity_timeout, 1209600, "{}", set.display());
+        assert!(spec.monitoring_enabled.is_empty());
+
+        let create = fixture_body(&set.join("agent_policy_create.json"));
+        assert_eq!(
+            create["request"]["monitoring_enabled"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            create["response"]["item"]["id"],
+            "elasticctl-sample-agent-policy"
+        );
+        // The default table is complete only if the stored policy, normalized,
+        // equals the spec that was sent. This is the offline round-trip proof.
+        let requested = AgentPolicySpec::try_from(create["request"].clone())
+            .expect("recorded create request is a valid spec");
+        let stored = agent_policy_ops::normalize(
+            create["response"]["item"]
+                .as_object()
+                .expect("created item"),
+            "default",
+        )
+        .expect("normalize the created policy");
+        assert_eq!(
+            stored,
+            requested,
+            "{}: the create response carries a server default the table lacks",
+            set.display()
+        );
+
+        let updated = fixture_body(&set.join("agent_policy_update.json"));
+        assert_eq!(
+            updated["response"]["item"]["unenroll_timeout"],
+            3600,
+            "{}",
+            set.display()
+        );
+        let after_omit = fixture_body(&set.join("agent_policy_get_after_omit.json"));
+        assert_eq!(
+            after_omit["response"]["item"]["unenroll_timeout"],
+            3600,
+            "{}: the update route merges, so an omitted field survives",
+            set.display()
+        );
+
+        let deleted = fixture_body(&set.join("agent_policy_delete.json"));
+        assert_eq!(deleted["response"]["id"], "elasticctl-sample-agent-policy");
+        let conflict = fixture_body(&set.join("agent_policy_name_conflict.json"));
+        assert_eq!(conflict["error"]["kind"], "conflict", "{}", set.display());
     }
 }

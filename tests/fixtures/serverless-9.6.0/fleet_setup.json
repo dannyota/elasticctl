@@ -1,0 +1,9 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "fleet_setup",
+  "response": {
+    "isInitialized": true,
+    "nonFatalErrors": []
+  }
+}

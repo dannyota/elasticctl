@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 — Unreleased
+
+### Added
+
+- Fleet agent-policy administration: list, get, validate, portable JSON/YAML
+  export and import, and guarded delete over stable policy ids.
+- A fixed server-default table so sparse agent-policy artifacts round-trip
+  exactly, and fail-closed refusal of platform-owned, environment-bound,
+  cross-space, and unclearable state.
+
+### Verified
+
+- Marker-scoped agent-policy fixtures record create, read, paged list, name
+  conflict, update, delete, and the update route's merge behavior on
+  Serverless, Elastic Cloud Hosted, and self-managed deployments.
+
 ## 0.5.2 — 2026-09-03
 
 ### Fixed

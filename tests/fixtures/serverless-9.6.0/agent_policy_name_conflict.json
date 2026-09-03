@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "agent_policy_name_conflict",
+  "error": {
+    "kind": "conflict",
+    "message": "Agent Policy 'elasticctl-sample-agent-policy' already exists with name 'elasticctl-sample-agent-policy'",
+    "http_status": 409
+  }
+}

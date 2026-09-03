@@ -193,7 +193,9 @@ section 10 compares the filled forms. The 0.6.0 table is:
 
 Recording extends the table only from measured create responses. A default the
 table does not know surfaces as a post-write mismatch, which fails closed
-rather than silently drifting.
+rather than silently drifting. The 2026-09-04 recordings confirm this: create
+responses on Serverless 9.6.0, Hosted 9.5.2, and self-managed 9.5.1 filled
+nothing beyond this table.
 
 Normalization treats a null and an absent optional value as the same state.
 Hosted 9.5.2 returns null for `has_fleet_server`, `supports_agentless`,
@@ -270,9 +272,12 @@ filled desired spec and:
   or `description`. A nested object is always sent whole, so dropping a key
   inside one needs no rule.
 
-These rules are source-derived from Kibana v9.5.1. The post-write equality
-check is the measured backstop: a merge that leaves an unexpected value fails
-the row rather than reporting success.
+The top-level merge is measured on Serverless 9.6.0, Hosted 9.5.2, and
+self-managed 9.5.1 (2026-09-04, section 15.1): an update omitting a top-level
+field keeps its stored value. The flattened-object replacement remains
+source-derived from Kibana v9.5.1. The post-write equality check is the
+measured backstop: a merge that leaves an unexpected value fails the row
+rather than reporting success.
 
 ## 6. Integration-policy model
 
@@ -679,6 +684,30 @@ Cloud Hosted 9.5.2 with the project-scoped keys. They created nothing.
 | `system` and `elastic_agent` packages | `not_installed` | `not_installed` |
 | Installed packages | endpoint, fleet_server, security_ai_prompts, security_detection_engine | those plus apm and synthetics |
 
+The marker agent-policy lifecycle recorded again on 2026-09-04, against
+Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed 9.5.1 lab.
+Every probe measured identically on all three flavors.
+
+| Probe | Serverless 9.6.0 | Hosted 9.5.2 | Self-managed 9.5.1 |
+|---|---|---|---|
+| `POST /api/fleet/setup` with `{}` | 200 `{"isInitialized": true, "nonFatalErrors": []}` | same | same |
+| `POST /api/fleet/agent_policies?sys_monitoring=false` with explicit `id`, `name`, `namespace`, `description`, `monitoring_enabled: []`, `inactivity_timeout: 1209600` | 200; `item` echoes the id and adds `is_managed: false`, `is_protected: false`, `status: "active"`, `revision: 1`, `schema_version: "1.1.1"`, `space_ids: ["default"]`, `created_at`, `updated_at`, `updated_by`; no `agent_features`, `global_data_tags`, `keep_monitoring_alive`, output ids, or `agentless` | same | same |
+| Server-filled defaults beyond the 5.1 table | none | none | none |
+| `GET /api/fleet/agent_policies/{id}` | adds `agents: 0`, `unprivileged_agents`, `fips_agents`, `agents_per_version`, `package_policies: []` | same | same |
+| `GET /api/fleet/agent_policies?page=1&perPage=1000&sortField=created_at&sortOrder=asc` | 200 `{items, total, page, perPage}` and no other key | same | same |
+| Create with a taken name and a new id | 409, classified `conflict`, message `Agent Policy '<existing id>' already exists with name '<name>'` | same | same |
+| `PUT /api/fleet/agent_policies/{id}` adding `unenroll_timeout: 3600` | 200, `item.unenroll_timeout: 3600` | same | same |
+| `PUT` again omitting `unenroll_timeout` (description changed), then `GET` | `unenroll_timeout` still `3600`: the update route merges top-level fields | same | same |
+| `POST /api/fleet/agent_policies/delete` `{"agentPolicyId": id}` | 200 `{"id", "name"}`; `GET` after is 404 `not_found` | same | same |
+| `GET /api/fleet/epm/packages/elastic_agent` | `status: "not_installed"`, `version: "2.9.6"`, `latestVersion: "2.9.6"` | same | same |
+| Installed-package inventory after the lifecycle | unchanged from before | unchanged | unchanged |
+
+Fixtures: `tests/fixtures/<flavor>-<version>/{fleet_setup,
+agent_policy_not_found, package_elastic_agent, agent_policy_create,
+agent_policy_get, agent_policies_list, agent_policy_name_conflict,
+agent_policy_update, agent_policy_update_omitted, agent_policy_get_after_omit,
+agent_policy_delete, agent_policy_delete_not_found}.json`.
+
 ### 15.2 Source-derived
 
 These facts were verified on 2026-09-03 against Elastic's current docs and
@@ -696,10 +725,8 @@ the supported flavors.
 | Force bypass | Update and delete routes expose `force` for restricted state |
 | Delete cascade | Agent delete removes single-parent integrations and detaches reusable ones |
 | Delete refusals | Assigned agents, a hosted policy, or managed integrations refuse without `force` |
-| Agent-policy update | The service spreads supplied attributes into a saved-object update; Kibana merges top-level fields and replaces `flattened` objects whole |
 | Flattened agent-policy fields | `advanced_settings`, `overrides`, `monitoring_http`, `monitoring_diagnostics`, `global_data_tags`, and `required_versions` |
 | Monitoring install | Create installs `elastic_agent` for non-empty monitoring and tolerates an install error; update installs only when the stored `monitoring_enabled` is absent or null |
-| Agent count | The single read populates `agents` only for a caller with Fleet agents read |
 | Agent-policy defaults | `inactivity_timeout` defaults to 1209600 in the shared create and update request schema; `unenroll_timeout` is optional and not nullable |
 | Nullable agent-policy fields | `data_output_id`, `monitoring_output_id`, `download_source_id`, `fleet_server_host_id`, `overrides`, `keep_monitoring_alive`, `supports_agentless`, `required_versions` |
 | `agentless` | A nullable configuration object, not a boolean platform flag |

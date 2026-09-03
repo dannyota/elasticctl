@@ -1,0 +1,13 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "package_elastic_agent",
+  "response": {
+    "item": {
+      "name": "elastic_agent",
+      "version": "2.9.6",
+      "status": "not_installed",
+      "latestVersion": "2.9.6"
+    }
+  }
+}

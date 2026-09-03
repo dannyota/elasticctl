@@ -1,0 +1,34 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "agent_policy_create",
+  "request": {
+    "id": "elasticctl-sample-agent-policy",
+    "name": "elasticctl-sample-agent-policy",
+    "namespace": "default",
+    "description": "elasticctl sample agent policy",
+    "monitoring_enabled": [],
+    "inactivity_timeout": 1209600
+  },
+  "response": {
+    "item": {
+      "id": "elasticctl-sample-agent-policy",
+      "is_protected": false,
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "space_ids": [
+        "default"
+      ],
+      "description": "elasticctl sample agent policy",
+      "monitoring_enabled": [],
+      "inactivity_timeout": 1209600,
+      "schema_version": "1.1.1",
+      "name": "elasticctl-sample-agent-policy",
+      "namespace": "default",
+      "status": "active",
+      "is_managed": false,
+      "revision": 1,
+      "updated_at": "2026-01-01T00:00:00.000Z",
+      "updated_by": "REDACTED"
+    }
+  }
+}
