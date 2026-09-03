@@ -590,9 +590,14 @@ The ninth matrix contract is
 10. concludes with zero marker dashboards, data views, or indices and the
     unchanged prebuilt-rule baseline.
 
-Cleanup registers ids before each mutation. It deletes dashboards before data
-views and restores the captured default before deleting a default marker view.
-The content contract tolerates no residue.
+Cleanup registers ids before each mutation. Baseline capture rejects a marker
+or whitespace-only default and resolves any nonempty default before mutation.
+Cleanup reads the current default and restores the captured value only from an
+owned marker state; it does not overwrite an unexpected nonmarker default. It
+deletes data views only after every dashboard delete and the verified default
+restore succeed, and deletes the marker index only after every data-view delete
+succeeds. A failed prerequisite retains its dependents for the Drop retry. The
+content contract tolerates no residue.
 
 `xtask::CONTRACTS` grows eight to nine with `name: "content"` and
 `features: &[DASHBOARDS]`, where `DASHBOARDS` wraps `Feature::Dashboards`.

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult<T = ()> = std::result::Result<T, String>;
@@ -186,7 +186,32 @@ struct LiveCleanup {
     /// the rest of cleanup runs. Alerts have no delete API (triage spec
     /// section 9), so "cleaned" means "closed", not "gone".
     alert_rules: BTreeSet<String>,
+    dashboards: BTreeSet<String>,
+    data_views: BTreeSet<String>,
+    /// `None` means no content mutation can affect the default. `Some(None)`
+    /// records an original no-default state.
+    default_data_view: Option<Option<String>>,
     finished: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DefaultRestoreDecision {
+    AlreadyRestored,
+    Restore,
+}
+
+fn default_restore_decision(
+    current: Option<&str>,
+    original: Option<&str>,
+    owned_data_views: &BTreeSet<String>,
+) -> TestResult<DefaultRestoreDecision> {
+    if current == original {
+        return Ok(DefaultRestoreDecision::AlreadyRestored);
+    }
+    if current.is_some_and(|id| owned_data_views.contains(id)) {
+        return Ok(DefaultRestoreDecision::Restore);
+    }
+    Err("data-view default is outside the cleanup lease".to_string())
 }
 
 impl LiveCleanup {
@@ -201,6 +226,9 @@ impl LiveCleanup {
             cases: BTreeSet::new(),
             case_scopes: BTreeSet::new(),
             alert_rules: BTreeSet::new(),
+            dashboards: BTreeSet::new(),
+            data_views: BTreeSet::new(),
+            default_data_view: None,
             finished: false,
         }
     }
@@ -247,6 +275,22 @@ impl LiveCleanup {
 
     fn alert_rule(&mut self, rule_id: impl Into<String>) {
         self.alert_rules.insert(rule_id.into());
+    }
+
+    fn dashboard(&mut self, id: impl Into<String>) {
+        self.dashboards.insert(id.into());
+    }
+
+    fn data_view(&mut self, id: impl Into<String>) {
+        self.data_views.insert(id.into());
+    }
+
+    fn restore_default_data_view(&mut self, original: Option<String>) {
+        match &self.default_data_view {
+            None => self.default_data_view = Some(original),
+            Some(registered) if registered == &original => {}
+            Some(_) => panic!("data-view default cleanup baseline changed after registration"),
+        }
     }
 
     fn tracks(&self, rule_id: &str, list_id: &str) -> bool {
@@ -303,6 +347,92 @@ impl LiveCleanup {
         } else {
             Err(format!("exception delete exited {}", out.status))
         }
+    }
+
+    fn delete_dashboard(&self, id: &str) -> TestResult {
+        let profile = self.profile.clone();
+        let id = id.to_string();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building dashboard-cleanup runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = Transport::new(&profile).map_err(|e| {
+                format!("building dashboard-cleanup transport: {}", e.kind.as_str())
+            })?;
+            match elasticctl_api::dashboards::delete(&transport, &id).await {
+                Ok(())
+                | Err(elasticctl_core::Error {
+                    kind: ErrorKind::NotFound,
+                    ..
+                }) => Ok(()),
+                Err(e) => Err(format!("dashboard delete failed: {}", e.kind.as_str())),
+            }
+        })
+    }
+
+    fn delete_data_view(&self, id: &str) -> TestResult {
+        let profile = self.profile.clone();
+        let id = id.to_string();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building data-view-cleanup runtime: {e}"))?;
+        runtime.block_on(async move {
+            let transport = Transport::new(&profile).map_err(|e| {
+                format!("building data-view-cleanup transport: {}", e.kind.as_str())
+            })?;
+            match elasticctl_api::data_views::delete(&transport, &id).await {
+                Ok(())
+                | Err(elasticctl_core::Error {
+                    kind: ErrorKind::NotFound,
+                    ..
+                }) => Ok(()),
+                Err(e) => Err(format!("data-view delete failed: {}", e.kind.as_str())),
+            }
+        })
+    }
+
+    fn restore_default(&mut self) -> TestResult {
+        let Some(original) = self.default_data_view.clone() else {
+            return Ok(());
+        };
+        let profile = self.profile.clone();
+        let owned_data_views = self.data_views.clone();
+        let restored = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("building default-cleanup runtime: {e}"))?
+            .block_on(async move {
+                let transport = Transport::new(&profile).map_err(|e| {
+                    format!("building default-cleanup transport: {}", e.kind.as_str())
+                })?;
+                let current = elasticctl_api::data_views::get_default(&transport)
+                    .await
+                    .map_err(|e| format!("checking data-view default: {}", e.kind.as_str()))?;
+                match default_restore_decision(
+                    current.as_deref(),
+                    original.as_deref(),
+                    &owned_data_views,
+                )? {
+                    DefaultRestoreDecision::AlreadyRestored => Ok(()),
+                    DefaultRestoreDecision::Restore => {
+                        elasticctl_api::data_views::set_default(&transport, original.as_deref())
+                            .await
+                            .map_err(|e| {
+                                format!("restoring data-view default: {}", e.kind.as_str())
+                            })?;
+                        let current = elasticctl_api::data_views::get_default(&transport)
+                            .await
+                            .map_err(|e| {
+                                format!("verifying restored data-view default: {}", e.kind.as_str())
+                            })?;
+                        if current == original {
+                            Ok(())
+                        } else {
+                            Err("data-view default did not restore to its baseline".to_string())
+                        }
+                    }
+                }
+            });
+        if restored.is_ok() {
+            self.default_data_view = None;
+        }
+        restored
     }
 
     fn delete_index(&self, index: &str) -> TestResult {
@@ -432,7 +562,7 @@ impl LiveCleanup {
         })
     }
 
-    fn clean(&self) -> TestResult {
+    fn clean(&mut self) -> TestResult {
         let mut failures = Vec::new();
 
         // Alerts are closed, and cases deleted, before the rule/list/index
@@ -462,6 +592,36 @@ impl LiveCleanup {
             }
         }
 
+        // A remaining dashboard may still refer to a tracked data view. A
+        // failed default restore may leave a tracked view as the active
+        // default. Either failure retains every dependent view and index for a
+        // later Drop retry rather than leaving broken shared-space state.
+        let mut content_dependencies_clean = true;
+        for dashboard in &self.dashboards {
+            if let Err(error) = Self::retry(&format!("dashboard {dashboard}"), || {
+                self.delete_dashboard(dashboard)
+            }) {
+                content_dependencies_clean = false;
+                failures.push(error);
+            }
+        }
+        if self.default_data_view.is_some()
+            && let Err(error) = Self::retry("data-view default", || self.restore_default())
+        {
+            content_dependencies_clean = false;
+            failures.push(error);
+        }
+        if content_dependencies_clean {
+            for data_view in &self.data_views {
+                if let Err(error) = Self::retry(&format!("data view {data_view}"), || {
+                    self.delete_data_view(data_view)
+                }) {
+                    content_dependencies_clean = false;
+                    failures.push(error);
+                }
+            }
+        }
+
         for rule_id in &self.rules {
             if let Err(error) =
                 Self::retry(&format!("rule {rule_id}"), || self.delete_rule(rule_id))
@@ -486,10 +646,13 @@ impl LiveCleanup {
                 ));
             }
         }
-        for index in &self.indices {
-            if let Err(error) = Self::retry(&format!("index {index}"), || self.delete_index(index))
-            {
-                failures.push(error);
+        if self.data_views.is_empty() || content_dependencies_clean {
+            for index in &self.indices {
+                if let Err(error) =
+                    Self::retry(&format!("index {index}"), || self.delete_index(index))
+                {
+                    failures.push(error);
+                }
             }
         }
 
@@ -523,11 +686,12 @@ impl Drop for LiveCleanup {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LiveBaseline {
     custom: usize,
     prebuilt: usize,
     customized: usize,
+    default_data_view: Option<String>,
 }
 
 fn listed_rules(config: &Path, source: &str) -> TestResult<Vec<Value>> {
@@ -563,6 +727,98 @@ fn listed_marked_lists(config: &Path) -> TestResult<Vec<Value>> {
         .ok_or_else(|| "marked exception lists JSON must be an array".to_string())
 }
 
+fn marked_data_view_ids(profile: &Profile) -> TestResult<Vec<String>> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building marked-data-view runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building marked-data-view transport: {}", e.kind.as_str()))?;
+        let mut ids = elasticctl_api::data_views::list(&transport)
+            .await
+            .map_err(|e| format!("listing marked data views: {}", e.kind.as_str()))?
+            .into_iter()
+            .filter(|view| view.id.starts_with(LIVE_PREFIX))
+            .map(|view| view.id)
+            .collect::<Vec<_>>();
+        ids.sort();
+        Ok(ids)
+    })
+}
+
+fn marked_dashboard_ids(profile: &Profile) -> TestResult<Vec<String>> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building marked-dashboard runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building marked-dashboard transport: {}", e.kind.as_str()))?;
+        let mut ids = elasticctl_api::dashboards_ops::list_op(
+            &transport,
+            &elasticctl_api::dashboards_ops::DashboardFilter::default(),
+        )
+        .await
+        .map_err(|e| format!("listing marked dashboards: {}", e.kind.as_str()))?
+        .dashboards
+        .into_iter()
+        .filter(|dashboard| dashboard.id.starts_with(LIVE_PREFIX))
+        .map(|dashboard| dashboard.id)
+        .collect::<Vec<_>>();
+        ids.sort();
+        Ok(ids)
+    })
+}
+
+fn validate_default_baseline_id(default: Option<&str>) -> TestResult {
+    match default {
+        Some(id) if id.trim().is_empty() => {
+            Err("pre-test default data-view id is whitespace-only".to_string())
+        }
+        Some(id) if id.starts_with(LIVE_PREFIX) => {
+            Err("pre-test default data view is a live marker".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn read_validated_default_data_view(profile: &Profile) -> TestResult<Option<String>> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building default-baseline runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building default-baseline transport: {}", e.kind.as_str()))?;
+        let default = elasticctl_api::data_views::get_default(&transport)
+            .await
+            .map_err(|e| format!("reading pre-test default data view: {}", e.kind.as_str()))?;
+        validate_default_baseline_id(default.as_deref())?;
+        if let Some(id) = default.as_deref() {
+            let view = elasticctl_api::data_views::get(&transport, id)
+                .await
+                .map_err(|e| {
+                    format!("resolving pre-test default data view: {}", e.kind.as_str())
+                })?;
+            if view.data_view.get("id").and_then(Value::as_str) != Some(id) {
+                return Err("resolving pre-test default data view: response id changed".to_string());
+            }
+        }
+        Ok(default)
+    })
+}
+
+fn read_default_data_view(profile: &Profile) -> TestResult<Option<String>> {
+    let profile = profile.clone();
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("building default-read runtime: {e}"))?;
+    runtime.block_on(async move {
+        let transport = Transport::new(&profile)
+            .map_err(|e| format!("building default-read transport: {}", e.kind.as_str()))?;
+        elasticctl_api::data_views::get_default(&transport)
+            .await
+            .map_err(|e| format!("reading data-view default: {}", e.kind.as_str()))
+    })
+}
+
 fn marked_indices(profile: &Profile) -> TestResult<Vec<String>> {
     let profile = profile.clone();
     let runtime = tokio::runtime::Runtime::new()
@@ -596,6 +852,15 @@ fn marked_indices(profile: &Profile) -> TestResult<Vec<String>> {
 /// (triage spec section 9).
 fn triage_residue_is_clean(open_marker_alerts: u64, marker_cases: u64) -> bool {
     open_marker_alerts == 0 && marker_cases == 0
+}
+
+fn content_residue_is_clean(
+    marker_dashboards: usize,
+    marker_data_views: usize,
+    current_default: Option<&str>,
+    original_default: Option<&str>,
+) -> bool {
+    marker_dashboards == 0 && marker_data_views == 0 && current_default == original_default
 }
 
 /// Count queries set `track_total_hits: true`; a response without the total
@@ -669,10 +934,21 @@ fn require_clean_triage_baseline(profile: &Profile) -> TestResult {
 
 fn capture_baseline(config: &Path, profile: &Profile) -> TestResult<LiveBaseline> {
     require_clean_triage_baseline(profile)?;
+    let marked_data_views = marked_data_view_ids(profile)?;
+    let marked_dashboards = marked_dashboard_ids(profile)?;
+    if !marked_data_views.is_empty() || !marked_dashboards.is_empty() {
+        return Err(format!(
+            "pre-test content baseline is dirty: {} marker data view(s), {} marker dashboard(s)",
+            marked_data_views.len(),
+            marked_dashboards.len()
+        ));
+    }
+    let default_data_view = read_validated_default_data_view(profile)?;
     Ok(LiveBaseline {
         custom: listed_rules(config, "custom")?.len(),
         prebuilt: listed_rules(config, "prebuilt")?.len(),
         customized: listed_rules(config, "customized")?.len(),
+        default_data_view,
     })
 }
 
@@ -705,6 +981,22 @@ fn assert_clean_baseline(
         return Err(format!(
             "marked indices remain after cleanup: {}",
             indices.join(", ")
+        ));
+    }
+    let marker_data_views = marked_data_view_ids(&cleanup.profile)?;
+    let marker_dashboards = marked_dashboard_ids(&cleanup.profile)?;
+    let current_default = read_default_data_view(&cleanup.profile)?;
+    if !content_residue_is_clean(
+        marker_dashboards.len(),
+        marker_data_views.len(),
+        current_default.as_deref(),
+        baseline.default_data_view.as_deref(),
+    ) {
+        return Err(format!(
+            "content residue remains after cleanup: {} marker dashboard(s), {} marker data view(s), default restored: {}",
+            marker_dashboards.len(),
+            marker_data_views.len(),
+            current_default == baseline.default_data_view
         ));
     }
     let open_marker_alerts = open_marker_alert_count(&cleanup.profile)?;
@@ -998,6 +1290,464 @@ fn cleanup_guard_tracks_triage_identities_registered_before_a_mutation() {
     cleanup.alert_rule("elasticctl-live-alert-rule");
     assert!(cleanup.tracks_triage("elasticctl-live-case", "elasticctl-live-alert-rule"));
     cleanup.finished = true;
+}
+
+#[test]
+fn cleanup_tracks_content_and_original_default_once() {
+    let mut cleanup = LiveCleanup::for_test();
+    cleanup.dashboard("elasticctl-live-dashboard");
+    cleanup.data_view("elasticctl-live-view");
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    assert!(cleanup.dashboards.contains("elasticctl-live-dashboard"));
+    assert!(cleanup.data_views.contains("elasticctl-live-view"));
+    assert_eq!(
+        cleanup.default_data_view,
+        Some(Some("original-view".to_string()))
+    );
+
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+    let changed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cleanup.restore_default_data_view(Some("another-view".to_string()));
+    }));
+    assert!(
+        changed.is_err(),
+        "a cleanup lease cannot change its baseline"
+    );
+    cleanup.finished = true;
+}
+
+#[test]
+fn content_residue_requires_empty_markers_and_the_exact_default() {
+    assert!(content_residue_is_clean(
+        0,
+        0,
+        Some("original"),
+        Some("original")
+    ));
+    assert!(content_residue_is_clean(0, 0, None, None));
+    assert!(!content_residue_is_clean(
+        1,
+        0,
+        Some("original"),
+        Some("original")
+    ));
+    assert!(!content_residue_is_clean(
+        0,
+        1,
+        Some("original"),
+        Some("original")
+    ));
+    assert!(!content_residue_is_clean(
+        0,
+        0,
+        Some("other"),
+        Some("original")
+    ));
+    assert!(!content_residue_is_clean(0, 0, None, Some("original")));
+}
+
+#[test]
+fn default_restore_decision_refuses_to_clobber_an_unowned_default() {
+    let owned = BTreeSet::from([
+        "elasticctl-live-data-view-a".to_string(),
+        "elasticctl-live-data-view-b".to_string(),
+    ]);
+
+    assert_eq!(
+        default_restore_decision(Some("original"), Some("original"), &owned),
+        Ok(DefaultRestoreDecision::AlreadyRestored)
+    );
+    assert_eq!(
+        default_restore_decision(
+            Some("elasticctl-live-data-view-a"),
+            Some("original"),
+            &owned
+        ),
+        Ok(DefaultRestoreDecision::Restore)
+    );
+    assert_eq!(
+        default_restore_decision(Some("other"), Some("original"), &owned),
+        Err("data-view default is outside the cleanup lease".to_string())
+    );
+    assert_eq!(
+        default_restore_decision(Some("other"), None, &owned),
+        Err("data-view default is outside the cleanup lease".to_string())
+    );
+}
+
+#[test]
+fn default_baseline_rejects_marker_and_unsettable_ids() {
+    assert_eq!(validate_default_baseline_id(None), Ok(()));
+    assert_eq!(validate_default_baseline_id(Some("ordinary-view")), Ok(()));
+    assert_eq!(
+        validate_default_baseline_id(Some("  ")),
+        Err("pre-test default data-view id is whitespace-only".to_string())
+    );
+    assert_eq!(
+        validate_default_baseline_id(Some("elasticctl-live-leftover")),
+        Err("pre-test default data view is a live marker".to_string())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_baseline_finds_marker_ids_with_nonmarker_titles() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.6.0", "build_flavor": "serverless"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dashboards"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [
+                {
+                    "id": "elasticctl-live-renamed-dashboard",
+                    "data": {"title": "Renamed by a failed run"},
+                    "meta": {}
+                },
+                {
+                    "id": "ordinary-dashboard",
+                    "data": {"title": "Ordinary"},
+                    "meta": {}
+                }
+            ],
+            "meta": {"page": 1, "per_page": 1000, "total": 2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+
+    let ids = tokio::task::spawn_blocking(move || marked_dashboard_ids(&profile))
+        .await
+        .expect("dashboard baseline task must not panic")
+        .expect("dashboard baseline");
+    assert_eq!(ids, ["elasticctl-live-renamed-dashboard"]);
+    let requests = server.received_requests().await.expect("requests");
+    let dashboard_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/api/dashboards")
+        .expect("dashboard list request");
+    assert_eq!(dashboard_request.url.query(), Some("page=1&per_page=1000"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn default_baseline_refuses_an_unresolvable_nonmarker_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "missing-view"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/data_view/missing-view"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "private"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+
+    let error = tokio::task::spawn_blocking(move || read_validated_default_data_view(&profile))
+        .await
+        .expect("default baseline task must not panic")
+        .expect_err("a stale default must refuse the live baseline");
+    assert_eq!(error, "resolving pre-test default data view: not_found");
+    assert!(!error.contains("missing-view") && !error.contains("private"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_does_not_rewrite_an_already_restored_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "original-view"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    let cleanup = tokio::task::spawn_blocking(move || {
+        let result = cleanup.finish();
+        (result, cleanup)
+    })
+    .await
+    .expect("cleanup task must not panic");
+    assert_eq!(cleanup.0, Ok(()));
+    assert_eq!(cleanup.1.default_data_view, None);
+    let requests = server.received_requests().await.expect("requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method.as_str() != "POST")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_restores_an_owned_default_before_deleting_its_data_view() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data_view_id": "elasticctl-live-view"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/data_views/default"))
+        .and(body_json(json!({
+            "data_view_id": "original-view",
+            "force": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "original-view"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/elasticctl-live-view"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.data_view("elasticctl-live-view");
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    let (result, cleanup) = tokio::task::spawn_blocking(move || {
+        let result = cleanup.finish();
+        (result, cleanup)
+    })
+    .await
+    .expect("cleanup task must not panic");
+    assert_eq!(result, Ok(()));
+    assert_eq!(cleanup.default_data_view, None);
+    let requests = server.received_requests().await.expect("requests");
+    let restore = requests
+        .iter()
+        .position(|request| {
+            request.method.as_str() == "POST" && request.url.path() == "/api/data_views/default"
+        })
+        .expect("default restore");
+    let delete = requests
+        .iter()
+        .position(|request| {
+            request.method.as_str() == "DELETE"
+                && request.url.path() == "/api/data_views/data_view/elasticctl-live-view"
+        })
+        .expect("data-view delete");
+    assert!(
+        restore < delete,
+        "default restoration must precede deletion"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_refuses_an_unowned_default_without_deleting_dependencies() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "other-view"})),
+        )
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: Some(server.uri()),
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.data_view("elasticctl-live-view");
+    cleanup.index("elasticctl-live-index");
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    let (result, mut cleanup) = tokio::task::spawn_blocking(move || {
+        let result = cleanup.finish();
+        (result, cleanup)
+    })
+    .await
+    .expect("cleanup task must not panic");
+    cleanup.finished = true;
+    assert_eq!(
+        result,
+        Err("cleanup left data-view default after 3 attempts: data-view default is outside the cleanup lease".to_string())
+    );
+    let requests = server.received_requests().await.expect("requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method.as_str() != "POST")
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method.as_str() != "DELETE")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_keeps_data_views_and_indices_when_dashboard_delete_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "version": {"number": "9.6.0", "build_flavor": "serverless"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/dashboards/elasticctl-live-dashboard"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"unexpected": true})))
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "original-view"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: Some(server.uri()),
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.dashboard("elasticctl-live-dashboard");
+    cleanup.data_view("elasticctl-live-view");
+    cleanup.index("elasticctl-live-index");
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    let (result, mut cleanup) = tokio::task::spawn_blocking(move || {
+        let result = cleanup.finish();
+        (result, cleanup)
+    })
+    .await
+    .expect("cleanup task must not panic");
+    cleanup.finished = true;
+    assert!(result.is_err(), "dashboard response loss must fail cleanup");
+    let requests = server.received_requests().await.expect("requests");
+    assert!(requests.iter().all(|request| {
+        request.url.path() != "/api/data_views/data_view/elasticctl-live-view"
+            && request.url.path() != "/elasticctl-live-index"
+    }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_keeps_an_index_when_its_data_view_delete_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data_views/default"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data_view_id": "original-view"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/data_views/data_view/elasticctl-live-view"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"unexpected": true})))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let profile = Profile {
+        kibana_url: server.uri(),
+        es_url: Some(server.uri()),
+        api_key: Some("test".to_string()),
+        username: None,
+        password: None,
+        space: "default".to_string(),
+        verify: true,
+        timeout_secs: 1,
+    };
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.data_view("elasticctl-live-view");
+    cleanup.index("elasticctl-live-index");
+    cleanup.restore_default_data_view(Some("original-view".to_string()));
+
+    let (result, mut cleanup) = tokio::task::spawn_blocking(move || {
+        let result = cleanup.finish();
+        (result, cleanup)
+    })
+    .await
+    .expect("cleanup task must not panic");
+    cleanup.finished = true;
+    assert!(result.is_err(), "data-view response loss must fail cleanup");
+    let requests = server.received_requests().await.expect("requests");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/elasticctl-live-index")
+    );
 }
 
 /// Open marker alerts and marker cases must both be zero; a closed marker
