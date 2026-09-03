@@ -2171,12 +2171,18 @@ fn agent_policy_exchange_fixture(
 
 /// Reduce a `GET /api/fleet/epm/packages/{name}` response to the fields the
 /// recorder is willing to publish. The full item is registry metadata for
-/// every package Fleet knows about; only the requested package's own
-/// installation facts belong in a public fixture.
-fn reduce_package_status_item(body: &mut Value) {
-    let Some(item) = body.get_mut("item").and_then(Value::as_object_mut) else {
-        return;
-    };
+/// every package Fleet knows about — it also carries `readme`, `assets`,
+/// `data_streams`, `owner`, `conditions`, and, once installed, an
+/// `installationInfo` with `installed_kibana`, `installed_es`,
+/// `installed_kibana_space_id`, `created_at`, `updated_at`, and
+/// `verification_key_id` — and the response envelope carries its own
+/// `metadata` (`has_policies`, and on some versions `keepPoliciesUpToDate`)
+/// alongside `item`. Nothing else in the pipeline scrubs any of this, so
+/// this returns only the reduced item, never the envelope, and returns
+/// `None` rather than silently publishing an unreduced body when `item` is
+/// missing or not an object. The caller must refuse to record on `None`.
+fn reduce_package_status_item(body: &Value) -> Option<Value> {
+    let item = body.get("item")?.as_object()?;
     let installed_version = item
         .get("installationInfo")
         .and_then(Value::as_object)
@@ -2191,7 +2197,7 @@ fn reduce_package_status_item(body: &mut Value) {
     if let Some(version) = installed_version {
         reduced.insert("installationInfo".to_string(), json!({"version": version}));
     }
-    *item = reduced;
+    Some(Value::Object(reduced))
 }
 
 /// Filter a `GET /api/fleet/agent_policies` list body down to the marker
@@ -4330,13 +4336,17 @@ async fn record_agent_policies(
     }
 
     record_trace("fleet-package-status");
-    let mut package = t.get("/api/fleet/epm/packages/elastic_agent").await?;
-    reduce_package_status_item(&mut package);
+    let package = t.get("/api/fleet/epm/packages/elastic_agent").await?;
+    let reduced_package = reduce_package_status_item(&package).ok_or_else(|| {
+        recording_error(
+            "refusing to record: package status for elastic_agent did not carry a reducible item",
+        )
+    })?;
     recording.fixtures.push(response_fixture(
         "package_elastic_agent",
         flavor,
         version,
-        package,
+        json!({"item": reduced_package}),
         None,
     ));
 
@@ -8105,6 +8115,73 @@ mod tests {
         assert_eq!(kept, 0);
         assert_eq!(value["total"], 0);
         assert_eq!(value["items"], json!([]));
+    }
+
+    #[test]
+    fn reduce_package_status_item_keeps_only_the_allowlisted_fields() {
+        let body = json!({
+            "item": {
+                "name": "elastic_agent",
+                "version": "9.5.1",
+                "status": "installed",
+                "latestVersion": "9.5.2",
+                "readme": "/package/elastic_agent/9.5.1/docs/README.md",
+                "assets": [{"id": "elastic_agent-9.5.1", "type": "epm-packages"}],
+                "data_streams": [{"type": "logs", "dataset": "elastic_agent"}],
+                "owner": {"github": "elastic/fleet"},
+                "conditions": {"kibana": {"version": "^9.5.1"}},
+                "installationInfo": {
+                    "version": "9.5.1",
+                    "installed_kibana": [{"id": "logs-elastic_agent", "type": "index-template"}],
+                    "installed_es": [{"id": "logs-elastic_agent", "type": "ingest_pipeline"}],
+                    "installed_kibana_space_id": "default",
+                    "created_at": "2026-09-01T00:00:00.000Z",
+                    "updated_at": "2026-09-01T00:01:00.000Z",
+                    "verification_key_id": "opaque-key-id"
+                }
+            },
+            "metadata": {"has_policies": true}
+        });
+
+        let reduced = reduce_package_status_item(&body).expect("item is present and reducible");
+
+        assert_eq!(
+            reduced,
+            json!({
+                "name": "elastic_agent",
+                "version": "9.5.1",
+                "status": "installed",
+                "latestVersion": "9.5.2",
+                "installationInfo": {"version": "9.5.1"}
+            })
+        );
+    }
+
+    #[test]
+    fn reduce_package_status_item_refuses_a_body_without_a_reducible_item() {
+        assert!(reduce_package_status_item(&json!({"metadata": {"has_policies": true}})).is_none());
+        assert!(reduce_package_status_item(&json!({"item": "not-an-object"})).is_none());
+        assert!(reduce_package_status_item(&json!({})).is_none());
+    }
+
+    #[test]
+    fn reduce_package_status_item_recorded_envelope_carries_only_item() {
+        let body = json!({
+            "item": {"name": "elastic_agent", "status": "not_installed"},
+            "metadata": {"has_policies": false, "keepPoliciesUpToDate": true}
+        });
+
+        let reduced = reduce_package_status_item(&body).expect("item is present and reducible");
+        let recorded = json!({"item": reduced});
+
+        assert_eq!(
+            recorded,
+            json!({"item": {"name": "elastic_agent", "status": "not_installed"}})
+        );
+        assert_eq!(
+            recorded.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["item"]
+        );
     }
 
     #[test]
