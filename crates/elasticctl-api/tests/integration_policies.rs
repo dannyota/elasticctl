@@ -147,6 +147,16 @@ fn live_item(id: &str) -> serde_json::Map<String, Value> {
     item
 }
 
+fn parent_item(id: &str, namespace: &str, agents: u64, attached: Value) -> Value {
+    json!({
+        "id": id,
+        "name": format!("Parent {id}"),
+        "namespace": namespace,
+        "agents": agents,
+        "package_policies": attached,
+    })
+}
+
 async fn mount_integration_pages(server: &MockServer, pages: Vec<(u64, Vec<Value>, u64)>) {
     for (page, items, total) in pages {
         Mock::given(method("GET"))
@@ -158,6 +168,106 @@ async fn mount_integration_pages(server: &MockServer, pages: Vec<(u64, Vec<Value
             .mount(server)
             .await;
     }
+}
+
+fn installed_package(version: &str) -> Value {
+    json!({
+        "name": "system",
+        "status": "installed",
+        "installationInfo": {"version": version},
+    })
+}
+
+fn package_metadata(vars: Value, policy_templates: Value) -> Value {
+    json!({
+        "name": "system",
+        "version": "2.0.0",
+        "vars": vars,
+        "policy_templates": policy_templates,
+    })
+}
+
+fn safe_package_metadata() -> Value {
+    package_metadata(json!([]), json!([]))
+}
+
+fn secret_matrix_metadata() -> Value {
+    package_metadata(
+        json!([
+            {"name": "package_secret", "secret": true},
+            {"name": "package_plain", "secret": false},
+        ]),
+        json!([
+            {
+                "name": "system",
+                "inputs": [
+                    {
+                        "type": "system",
+                        "vars": [
+                            {"name": "input_secret", "secret": true},
+                            {"name": "input_plain", "secret": false},
+                        ],
+                        "streams": [
+                            {
+                                "data_stream": {"dataset": "system.cpu"},
+                                "vars": [
+                                    {"name": "stream_secret", "secret": true},
+                                    {"name": "stream_plain", "secret": false},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]),
+    )
+}
+
+async fn mount_export_dependencies(
+    server: &MockServer,
+    id: &str,
+    policy: serde_json::Map<String, Value>,
+    parents: Vec<Value>,
+    package: Value,
+    metadata: Value,
+) {
+    Mock::given(method("GET"))
+        .and(path(format!("/api/fleet/package_policies/{id}")))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .mount(server)
+        .await;
+    for parent in parents {
+        let parent_id = parent["id"]
+            .as_str()
+            .expect("test parent has an id")
+            .to_owned();
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": package})))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": metadata})))
+        .mount(server)
+        .await;
+}
+
+async fn request_count(server: &MockServer, route: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .iter()
+        .filter(|request| request.url.path() == route)
+        .count()
 }
 
 #[tokio::test]
@@ -1313,5 +1423,1040 @@ async fn get_fails_before_parent_reads_for_duplicate_ids_and_rejects_parent_atta
                 .kind,
             kind
         );
+    }
+}
+
+#[tokio::test]
+async fn export_canonicalizes_unsorted_live_parents_and_reads_each_parent_once() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("policy_ids".into(), json!(["parent-z", "parent-a"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut first_parent = parent_item("parent-a", "default", 2, json!(["integration-1"]));
+    first_parent["data_output_id"] = json!("environment-only");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": first_parent})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut second_parent = parent_item("parent-z", "default", 3, json!(["integration-1"]));
+    second_parent["monitoring_output_id"] = json!("environment-only-too");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": second_parent})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "status": "installed", "installationInfo": {"version": "2.0.0"}
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "system", "version": "2.0.0", "policy_templates": []
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect("portable integration");
+    assert_eq!(result.exported, 1);
+    let expected = IntegrationPolicySpec::try_from(json!({
+        "id": "integration-1",
+        "name": "Integration integration-1",
+        "namespace": "default",
+        "policy_ids": ["parent-a", "parent-z"],
+        "package": {"name": "system", "version": "2.0.0"},
+        "inputs": {}
+    }))
+    .expect("canonical expected spec");
+    assert_eq!(
+        result.body,
+        content_codec::encode_sequence(&[expected], ContentFormat::Json).expect("canonical body")
+    );
+}
+
+#[tokio::test]
+async fn get_refuses_unknown_and_malformed_live_content_before_reporting_safe_detail() {
+    for (field, value, expected_kind) in [
+        (
+            "future_field",
+            json!("must-not-be-silent"),
+            ErrorKind::Unsupported,
+        ),
+        ("inputs", json!([]), ErrorKind::Http),
+    ] {
+        let server = verified_server().await;
+        let mut policy = live_item("integration-1");
+        policy.insert(field.into(), value);
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent_item(
+                    "parent-1", "default", 1, json!(["integration-1"])
+                )})),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let error = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+            .await
+            .expect_err(field);
+        assert_eq!(error.kind, expected_kind, "{field}: {}", error.message);
+    }
+}
+
+#[tokio::test]
+async fn get_reports_parent_namespace_disagreement_and_export_refuses_it() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("policy_ids".into(), json!(["parent-z", "parent-a"]));
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![
+            parent_item("parent-z", "operations", 3, json!(["integration-1"])),
+            parent_item("parent-a", "default", 2, json!(["integration-1"])),
+        ],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+    let transport = transport_for(&server);
+
+    let detail = integration_policy_ops::get_op(&transport, "integration-1")
+        .await
+        .expect("safe detail with a namespace blocker");
+    assert_eq!(detail.policy_ids, vec!["parent-a", "parent-z"]);
+    assert_eq!(detail.affected_agents, 5);
+    assert_eq!(detail.blocked_by, vec!["namespace"]);
+
+    let error = integration_policy_ops::export(
+        &transport,
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("different parent namespaces are not portable");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn get_sums_unsorted_safe_parents_once_without_exposing_environment_data() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("policy_ids".into(), json!(["parent-z", "parent-a"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut parent_a = parent_item("parent-a", "default", 2, json!(["integration-1"]));
+    parent_a["data_output_id"] = json!("parent-a-environment-id");
+    let mut parent_z = parent_item("parent-z", "default", 3, json!(["integration-1"]));
+    parent_z["fleet_server_host_id"] = json!("parent-z-environment-id");
+    for parent in [parent_a, parent_z] {
+        let parent_id = parent["id"].as_str().unwrap().to_owned();
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect("safe parent detail");
+    assert_eq!(detail.policy_ids, vec!["parent-a", "parent-z"]);
+    assert_eq!(detail.affected_agents, 5);
+    assert!(detail.blocked_by.is_empty());
+    let rendered = serde_json::to_string(&detail).expect("safe serialization");
+    assert!(!rendered.contains("parent-a-environment-id"));
+    assert!(!rendered.contains("parent-z-environment-id"));
+}
+
+#[tokio::test]
+async fn export_reports_a_missing_named_parent_without_package_preflight() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/missing-parent"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut policy = live_item("integration-1");
+    policy.insert("policy_ids".into(), json!(["missing-parent"]));
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        Vec::new(),
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("missing parent");
+    assert_eq!(error.kind, ErrorKind::NotFound);
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system").await,
+        0
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn export_deduplicates_resolved_selectors_and_orders_multiple_artifacts_by_id() {
+    let server = verified_server().await;
+    let mut integration_a = live_item("integration-a");
+    integration_a.insert("policy_ids".into(), json!(["parent-a"]));
+    mount_export_dependencies(
+        &server,
+        "integration-a",
+        integration_a,
+        vec![parent_item(
+            "parent-a",
+            "default",
+            1,
+            json!(["integration-a"]),
+        )],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+    let mut integration_b = live_item("integration-b");
+    integration_b.insert("policy_ids".into(), json!(["parent-b"]));
+    mount_export_dependencies(
+        &server,
+        "integration-b",
+        integration_b,
+        vec![parent_item(
+            "parent-b",
+            "default",
+            1,
+            json!(["integration-b"]),
+        )],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let result = integration_policy_ops::export(
+        &transport_for(&server),
+        &[
+            "integration-b".into(),
+            "integration-a".into(),
+            "integration-b".into(),
+        ],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect("deduplicated export");
+    assert_eq!(result.exported, 2);
+    let specs: Vec<IntegrationPolicySpec> =
+        content_codec::decode_sequence(&result.body, ContentFormat::Json, "integration policy")
+            .expect("canonical artifact");
+    assert_eq!(
+        specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>(),
+        ["integration-a", "integration-b"]
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/agent_policies/parent-a").await,
+        1
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/agent_policies/parent-b").await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn export_requires_an_unambiguous_package_installation_state_before_metadata() {
+    let cases = [
+        (
+            "installed-null-installation-info",
+            json!({"name": "system", "status": "installed", "installationInfo": null}),
+            ErrorKind::Http,
+        ),
+        (
+            "installed-missing-installation-info",
+            json!({"name": "system", "status": "installed"}),
+            ErrorKind::Http,
+        ),
+        (
+            "installed-missing-version",
+            json!({"name": "system", "status": "installed", "installationInfo": {}}),
+            ErrorKind::Http,
+        ),
+        (
+            "installed-null-version",
+            json!({"name": "system", "status": "installed", "installationInfo": {"version": null}}),
+            ErrorKind::Http,
+        ),
+        (
+            "installed-blank-version",
+            json!({"name": "system", "status": "installed", "installationInfo": {"version": " "}}),
+            ErrorKind::Http,
+        ),
+        (
+            "not-installed-null-installation-info",
+            json!({"name": "system", "status": "not_installed", "installationInfo": null}),
+            ErrorKind::Conflict,
+        ),
+        (
+            "not-installed-missing-installation-info",
+            json!({"name": "system", "status": "not_installed"}),
+            ErrorKind::Conflict,
+        ),
+    ];
+    for (case, package, expected_kind) in cases {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            live_item("integration-1"),
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            package,
+            safe_package_metadata(),
+        )
+        .await;
+
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(case);
+        assert_eq!(error.kind, expected_kind, "{case}: {}", error.message);
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system").await,
+            1,
+            "{case} must read the package state exactly once"
+        );
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+            0,
+            "{case} must stop before exact metadata"
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_refuses_configured_package_input_and_stream_secrets_without_leaks() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "vars".into(),
+        json!({"package_secret": {"id": "package-reference-id", "value": "package-secret-value"}}),
+    );
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "vars": {"input_secret": {"id": "input-reference-id", "value": "input-secret-value"}},
+                "streams": {
+                    "system.cpu": {
+                        "vars": {"stream_secret": {"id": "stream-reference-id", "value": "stream-secret-value"}}
+                    }
+                }
+            }
+        }),
+    );
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        secret_matrix_metadata(),
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("configured secrets");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy 'integration-1' is not portable: integration-1:inputs.system-system.streams.system.cpu.vars.stream_secret, integration-1:inputs.system-system.vars.input_secret, integration-1:vars.package_secret"
+    );
+    for leaked in [
+        "package-reference-id",
+        "package-secret-value",
+        "input-reference-id",
+        "input-secret-value",
+        "stream-reference-id",
+        "stream-secret-value",
+    ] {
+        assert!(!error.message.contains(leaked), "leaked {leaked}");
+    }
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn export_allows_nonsecret_values_and_unconfigured_secret_definitions() {
+    let mut nonsecret_values = live_item("integration-1");
+    nonsecret_values.insert(
+        "vars".into(),
+        json!({"package_plain": "visible-package-value"}),
+    );
+    nonsecret_values.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "vars": {"input_plain": "visible-input-value"},
+                "streams": {"system.cpu": {"vars": {"stream_plain": "visible-stream-value"}}}
+            }
+        }),
+    );
+    for (case, policy) in [
+        ("nonsecret values", nonsecret_values),
+        (
+            "unconfigured secret definitions",
+            live_item("integration-1"),
+        ),
+    ] {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            secret_matrix_metadata(),
+        )
+        .await;
+        let result = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect(case);
+        assert_eq!(result.exported, 1, "{case}");
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+            1,
+            "{case} must consult exact metadata"
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_refuses_every_configured_variable_without_an_exact_definition() {
+    let mut package_variable = live_item("integration-1");
+    package_variable.insert("vars".into(), json!({"missing": "must-not-leak"}));
+    let mut input_variable = live_item("integration-1");
+    input_variable.insert(
+        "inputs".into(),
+        json!({"system-system": {"vars": {"missing": "must-not-leak"}}}),
+    );
+    let mut stream_variable = live_item("integration-1");
+    stream_variable.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"missing": "must-not-leak"}}}
+            }
+        }),
+    );
+    for (case, policy, path) in [
+        ("package", package_variable, "vars.missing"),
+        ("input", input_variable, "inputs.system-system.vars.missing"),
+        (
+            "stream",
+            stream_variable,
+            "inputs.system-system.streams.system.cpu.vars.missing",
+        ),
+    ] {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            secret_matrix_metadata(),
+        )
+        .await;
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(case);
+        assert_eq!(
+            error.kind,
+            ErrorKind::Unsupported,
+            "{case}: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&format!("integration-1:{path}")),
+            "{case}: {}",
+            error.message
+        );
+        assert!(!error.message.contains("must-not-leak"), "{case}");
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+            1,
+            "{case} must inspect exact metadata"
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_rejects_malformed_exact_package_metadata_before_serializing() {
+    let mut cases = Vec::new();
+    let mut metadata = secret_matrix_metadata();
+    metadata["vars"] = json!({});
+    cases.push(("package vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["vars"] = Value::Null;
+    cases.push(("null package vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"] = json!({});
+    cases.push(("policy templates", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"] = Value::Null;
+    cases.push(("null policy templates", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"] = json!([false]);
+    cases.push(("template entry", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["name"] = json!("");
+    cases.push(("template name", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"] = json!({});
+    cases.push(("template inputs", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"] = Value::Null;
+    cases.push(("null template inputs", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"] = json!([false]);
+    cases.push(("input entry", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["type"] = json!("");
+    cases.push(("input type", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["vars"] = json!({});
+    cases.push(("input vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["vars"] = Value::Null;
+    cases.push(("null input vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"] = json!({});
+    cases.push(("input streams", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"] = Value::Null;
+    cases.push(("null input streams", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"] = json!([false]);
+    cases.push(("stream entry", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"][0]["data_stream"] = json!(false);
+    cases.push(("stream data stream", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"][0]["data_stream"]["dataset"] =
+        json!("");
+    cases.push(("stream dataset", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"][0]["vars"] = json!({});
+    cases.push(("stream vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"][0]["vars"] = Value::Null;
+    cases.push(("null stream vars", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["vars"] = json!([false]);
+    cases.push(("variable entry", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["vars"][0]["name"] = json!("");
+    cases.push(("variable name", metadata));
+    let mut metadata = secret_matrix_metadata();
+    metadata["vars"][0]["secret"] = json!("true");
+    cases.push(("variable secret flag", metadata));
+
+    for (case, metadata) in cases {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            live_item("integration-1"),
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(case);
+        assert_eq!(error.kind, ErrorKind::Http, "{case}: {}", error.message);
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+            1,
+            "{case} must reach exact metadata once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_rejects_duplicate_composite_stream_metadata_before_secret_classification() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"stream_secret": "must-not-leak"}}}
+            }
+        }),
+    );
+    let mut metadata = secret_matrix_metadata();
+    metadata["policy_templates"][0]["inputs"][0]["streams"] = json!([
+        {
+            "data_stream": {"dataset": "system.cpu"},
+            "vars": [{"name": "stream_secret", "secret": false}],
+        },
+        {
+            "data_stream": {"dataset": "system.cpu"},
+            "vars": [{"name": "stream_secret", "secret": true}],
+        },
+    ]);
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        metadata,
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("duplicate composite stream key");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        error
+            .message
+            .contains("duplicate stream key 'system-system:system.cpu'")
+    );
+    assert!(!error.message.contains("must-not-leak"));
+}
+
+#[tokio::test]
+async fn export_refuses_an_explicitly_selected_managed_integration() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("is_managed".into(), json!(true));
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("managed integration");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn all_custom_skips_only_managed_and_parent_owned_rows() {
+    let server = verified_server().await;
+    let mut listed_managed = item("a-listed-managed");
+    listed_managed["is_managed"] = json!(true);
+    mount_integration_pages(
+        &server,
+        vec![(
+            1,
+            vec![
+                listed_managed,
+                item("b-full-read-managed"),
+                item("c-platform-parent"),
+                item("d-protected-parent"),
+                item("e-safe"),
+            ],
+            5,
+        )],
+    )
+    .await;
+
+    let mut full_read_managed = live_item("b-full-read-managed");
+    full_read_managed.insert("is_managed".into(), json!(true));
+    mount_export_dependencies(
+        &server,
+        "b-full-read-managed",
+        full_read_managed,
+        vec![parent_item(
+            "parent-b",
+            "default",
+            0,
+            json!(["b-full-read-managed"]),
+        )],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let mut platform_child = live_item("c-platform-parent");
+    platform_child.insert("policy_ids".into(), json!(["parent-c"]));
+    let mut platform_parent = parent_item("parent-c", "default", 0, json!(["c-platform-parent"]));
+    platform_parent["is_default"] = json!(true);
+    mount_export_dependencies(
+        &server,
+        "c-platform-parent",
+        platform_child,
+        vec![platform_parent],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let mut protected_child = live_item("d-protected-parent");
+    protected_child.insert("policy_ids".into(), json!(["parent-d"]));
+    let mut protected_parent = parent_item("parent-d", "default", 0, json!(["d-protected-parent"]));
+    protected_parent["is_protected"] = json!(true);
+    mount_export_dependencies(
+        &server,
+        "d-protected-parent",
+        protected_child,
+        vec![protected_parent],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let mut safe_child = live_item("e-safe");
+    safe_child.insert("policy_ids".into(), json!(["parent-e"]));
+    mount_export_dependencies(
+        &server,
+        "e-safe",
+        safe_child,
+        vec![parent_item("parent-e", "default", 1, json!(["e-safe"]))],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let result =
+        integration_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+            .await
+            .expect("all-custom skips only owned rows");
+    assert_eq!(result.exported, 1);
+    let specs: Vec<IntegrationPolicySpec> =
+        content_codec::decode_sequence(&result.body, ContentFormat::Json, "integration policy")
+            .expect("safe artifact");
+    assert_eq!(
+        specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>(),
+        ["e-safe"]
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/package_policies/a-listed-managed").await,
+        0
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/agent_policies/parent-b").await,
+        0
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system").await,
+        1
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn all_custom_refuses_every_other_unsupported_custom_row() {
+    let mut unknown = live_item("integration-1");
+    unknown.insert("future_field".into(), json!(true));
+    let mut foreign_space = live_item("integration-1");
+    foreign_space.insert("spaceIds".into(), json!(["default", "foreign-space"]));
+    let mut environment_reference = live_item("integration-1");
+    environment_reference.insert("output_id".into(), json!("environment-output-id"));
+    let mut secret_reference = live_item("integration-1");
+    secret_reference.insert("secret_references".into(), json!([{"id": "reference-id"}]));
+    let mut declared_secret = live_item("integration-1");
+    declared_secret.insert("vars".into(), json!({"package_secret": "plaintext-secret"}));
+    for (case, policy, metadata, metadata_expected) in [
+        ("unknown field", unknown, safe_package_metadata(), false),
+        (
+            "foreign space",
+            foreign_space,
+            safe_package_metadata(),
+            false,
+        ),
+        (
+            "environment reference",
+            environment_reference,
+            safe_package_metadata(),
+            false,
+        ),
+        (
+            "secret reference",
+            secret_reference,
+            safe_package_metadata(),
+            false,
+        ),
+        (
+            "declared plaintext secret",
+            declared_secret,
+            secret_matrix_metadata(),
+            true,
+        ),
+    ] {
+        let server = verified_server().await;
+        mount_integration_pages(&server, vec![(1, vec![item("integration-1")], 1)]).await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        let error =
+            integration_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+                .await
+                .expect_err(case);
+        assert_eq!(
+            error.kind,
+            ErrorKind::Unsupported,
+            "{case}: {}",
+            error.message
+        );
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await > 0,
+            metadata_expected,
+            "{case} metadata reachability"
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_reports_every_direct_safe_blocker_without_serializing_sensitive_content() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.extend(
+        json!({
+            "enabled": false,
+            "is_managed": true,
+            "supports_agentless": true,
+            "supports_cloud_connector": true,
+            "output_id": "output-environment-id",
+            "cloud_connector_id": "connector-environment-id",
+            "cloud_connector_name": "connector-environment-name",
+            "secret_references": [{"id": "secret-reference-id"}],
+            "spaceIds": ["default", "foreign-space"],
+            "created_by": "audit-user",
+            "updated_by": "audit-user",
+            "inputs": {
+                "system-system": {
+                    "vars": {"password": "input-secret-value"},
+                    "compiled_input": {"compiled": "must-not-render"}
+                }
+            },
+            "policy_ids": ["parent-platform", "parent-protected"]
+        })
+        .as_object()
+        .expect("blocker object")
+        .clone(),
+    );
+    let mut platform_parent =
+        parent_item("parent-platform", "default", 2, json!(["integration-1"]));
+    platform_parent["is_preconfigured"] = json!(true);
+    let mut protected_parent = parent_item(
+        "parent-protected",
+        "foreign-parent-space",
+        3,
+        json!(["integration-1"]),
+    );
+    protected_parent["is_protected"] = json!(true);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for parent in [platform_parent, protected_parent] {
+        let parent_id = parent["id"].as_str().unwrap().to_owned();
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect("safe blocked detail");
+    assert_eq!(detail.affected_agents, 5);
+    assert_eq!(
+        detail.blocked_by,
+        vec![
+            "cloud_connector_id",
+            "cloud_connector_name",
+            "enabled",
+            "is_managed",
+            "namespace",
+            "output_id",
+            "parent:parent-platform.platform_owned",
+            "parent:parent-protected.is_protected",
+            "secret_references",
+            "spaceIds",
+            "supports_agentless",
+            "supports_cloud_connector",
+        ]
+    );
+    let rendered = serde_json::to_string(&detail).expect("serialized detail");
+    for private in [
+        "input-secret-value",
+        "secret-reference-id",
+        "audit-user",
+        "output-environment-id",
+        "connector-environment-id",
+        "connector-environment-name",
+        "must-not-render",
+    ] {
+        assert!(!rendered.contains(private), "detail leaked {private}");
     }
 }

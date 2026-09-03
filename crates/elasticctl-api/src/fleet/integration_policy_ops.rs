@@ -207,9 +207,10 @@ pub(crate) async fn resolve_item(
 /// race check and the sole source of affected-agent counts.
 pub async fn get_op(transport: &Transport, selector: &str) -> Result<IntegrationPolicyDetail> {
     let resolved = resolve_item(transport, selector).await?;
-    let parents = read_parents(transport, &resolved.summary.id, &resolved.item)?;
-    let parents = read_parent_snapshots(transport, &resolved.summary.id, &parents).await?;
     let mut blocked_by = live_blocked_by(&resolved.item, &resolved.summary.id, transport.space())?;
+    validate_safe_detail_shape(&resolved.item, transport.space())?;
+    let parents = read_parents(&resolved.summary.id, &resolved.item)?;
+    let parents = read_parent_snapshots(transport, &resolved.summary.id, &parents).await?;
     for parent in parents.values() {
         if parent.platform_owned {
             blocked_by.insert(format!("parent:{}.platform_owned", parent.id));
@@ -243,6 +244,28 @@ pub async fn get_op(transport: &Transport, selector: &str) -> Result<Integration
         affected_agents: parents.values().map(|parent| parent.agents).sum(),
         blocked_by: blocked_by.into_iter().collect(),
     })
+}
+
+/// Validate every live shape that a safe detail can reason about without
+/// erasing its direct portability blockers. The projection keeps package-owned
+/// configuration intact while replacing only values that a detail reports in
+/// `blocked_by`, so `normalize` remains the single structural validator.
+fn validate_safe_detail_shape(item: &Map<String, Value>, active_space: &str) -> Result<()> {
+    let mut projected = item.clone();
+    projected.insert("enabled".into(), Value::Bool(true));
+    for field in [
+        "is_managed",
+        "supports_agentless",
+        "supports_cloud_connector",
+    ] {
+        projected.insert(field.into(), Value::Bool(false));
+    }
+    for field in ["output_id", "cloud_connector_id", "cloud_connector_name"] {
+        projected.insert(field.into(), Value::Null);
+    }
+    projected.insert("secret_references".into(), Value::Array(Vec::new()));
+    projected.insert("spaceIds".into(), Value::Null);
+    normalize(&projected, active_space).map(|_| ())
 }
 
 /// Export selected integrations or every custom integration. A selector is
@@ -295,7 +318,7 @@ pub async fn export(
 
     let mut specs = Vec::new();
     for (id, resolved) in rows {
-        let parent_ids = read_parents(transport, &id, &resolved.item)?;
+        let parent_ids = read_parents(&id, &resolved.item)?;
         let parents = read_parent_snapshots(transport, &id, &parent_ids).await?;
         if all_custom
             && parents
@@ -314,11 +337,7 @@ pub async fn export(
     })
 }
 
-fn read_parents(
-    _transport: &Transport,
-    id: &str,
-    item: &Map<String, Value>,
-) -> Result<Vec<String>> {
+fn read_parents(id: &str, item: &Map<String, Value>) -> Result<Vec<String>> {
     let policy_ids = item
         .get("policy_ids")
         .and_then(Value::as_array)
@@ -610,7 +629,7 @@ fn secret_schema(metadata: &Map<String, Value>) -> Result<(SecretSchema, KnownSc
         "package metadata vars",
     )?;
     let templates = match metadata.get("policy_templates") {
-        None | Some(Value::Null) => return Ok((secrets, known)),
+        None => return Ok((secrets, known)),
         Some(Value::Array(value)) => value,
         Some(_) => {
             return Err(http(
@@ -624,7 +643,7 @@ fn secret_schema(metadata: &Map<String, Value>) -> Result<(SecretSchema, KnownSc
         })?;
         let template_name = metadata_name(template, "name", "policy_templates entry")?;
         let inputs = match template.get("inputs") {
-            None | Some(Value::Null) => continue,
+            None => continue,
             Some(Value::Array(value)) => value,
             Some(_) => {
                 return Err(http(
@@ -660,7 +679,7 @@ fn secret_schema(metadata: &Map<String, Value>) -> Result<(SecretSchema, KnownSc
                 secrets.input_vars.insert(input_key.clone(), secret_vars);
             }
             let streams = match input.get("streams") {
-                None | Some(Value::Null) => continue,
+                None => continue,
                 Some(Value::Array(value)) => value,
                 Some(_) => {
                     return Err(http(
@@ -715,7 +734,7 @@ fn parse_var_definitions(
     context: &str,
 ) -> Result<()> {
     let values = match value {
-        None | Some(Value::Null) => return Ok(()),
+        None => return Ok(()),
         Some(Value::Array(values)) => values,
         Some(_) => return Err(http(format!("decoding {context}: vars must be an array"))),
     };
@@ -873,11 +892,20 @@ pub fn normalize(item: &Map<String, Value>, active_space: &str) -> Result<Integr
     reject_unknown_top_level(item, &id)?;
 
     let mut portable = Map::new();
-    for field in ["id", "name", "policy_ids"] {
+    for field in ["id", "name"] {
         if let Some(value) = item.get(field) {
             portable.insert(field.to_owned(), value.clone());
         }
     }
+    portable.insert(
+        "policy_ids".to_owned(),
+        Value::Array(
+            read_parents(&id, item)?
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
     portable.insert("package".to_owned(), normalize_package(item, &id)?);
     portable.insert("inputs".to_owned(), normalize_inputs(item, &id)?);
     for field in PORTABLE_OPTIONAL {
