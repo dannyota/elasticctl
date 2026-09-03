@@ -1,6 +1,6 @@
 use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::fleet::integration_policies::{self, IntegrationPolicySpec};
-use elasticctl_core::{ErrorKind, Profile, Transport};
+use elasticctl_core::{ErrorKind, Feature, Profile, Transport};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -317,5 +317,28 @@ async fn package_metadata_requires_the_exact_encoded_coordinate() {
                 .await
                 .expect_err("invalid metadata");
         assert_eq!(error.kind, ErrorKind::Http);
+    }
+}
+
+#[tokio::test]
+async fn package_metadata_rejects_blank_requested_coordinates_before_the_route() {
+    for (name, version) in [
+        ("", "2.0.0"),
+        (" ", "2.0.0"),
+        ("system", ""),
+        ("system", " "),
+    ] {
+        let server = verified_server().await;
+        let transport = transport_for(&server);
+        transport
+            .require_feature(Feature::FleetPolicies)
+            .await
+            .expect("feature gate");
+
+        let error = integration_policies::package_metadata(&transport, name, version)
+            .await
+            .expect_err("blank requested coordinate");
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
 }

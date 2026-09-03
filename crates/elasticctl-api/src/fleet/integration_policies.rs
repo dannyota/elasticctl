@@ -284,6 +284,14 @@ pub async fn package_metadata(
     version: &str,
 ) -> Result<PackageMetadata> {
     transport.require_feature(Feature::FleetPolicies).await?;
+    for (field, value) in [("name", name), ("version", version)] {
+        if value.trim().is_empty() {
+            return Err(Error::new(
+                ErrorKind::Error,
+                format!("integration package metadata {field} must not be empty"),
+            ));
+        }
+    }
     let body = transport
         .get(&format!(
             "{PACKAGES}/{}/{}",
