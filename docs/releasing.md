@@ -3,7 +3,9 @@
 Maintainer procedure. Users do not need this; see the README to install.
 
 A release builds cross-platform binaries and publishes a GitHub Release. It
-does **not** publish to crates.io.
+does **not** publish to crates.io. Publishing is a separate workflow that runs
+only when the owner dispatches it for that version, and most releases never
+reach it.
 
 Publishing to crates.io is a separate, opt-in step that needs the owner's
 explicit approval for that specific version. Approval does not carry forward:
@@ -35,8 +37,15 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    `.github/workflows/release.yml`, which builds the binary matrix and publishes
    the GitHub Release.
 7. Confirm the release carries a complete asset list. **The release ends here.**
-8. Only with the owner's explicit approval for this version:
-   `cargo publish --workspace`, from the tagged commit.
+8. Only with the owner's explicit approval for this version: dispatch
+   `.github/workflows/publish-crates.yml` with the tag and approve the
+   `crates-io` environment when the run pauses for review. A `verify` job
+   checks out `refs/tags/<tag>`, refuses unless every workspace version field
+   equals the tag and the GitHub Release for it carries every expected asset,
+   and repeats the dry run. Only then does the `publish` job wait for the
+   environment approval and publish all three crates with a short-lived
+   crates.io Trusted Publishing token. `cargo publish --workspace` from the
+   tagged commit is the manual fallback.
 
 The complete local gate for step 3 is:
 
@@ -74,7 +83,39 @@ Publish last, because it is the only step that cannot be undone. A tag and a
 GitHub Release can be deleted; a crates.io version can only be yanked. Running
 the matrix first means a broken build costs a deleted tag rather than a
 permanent version, and it makes every release prove itself the way a release
-candidate would.
+candidate would. The publish workflow enforces that order by refusing a tag
+whose Release is missing any asset.
+
+To dispatch and follow the publish run:
+
+```bash
+gh workflow run publish-crates.yml --ref master -f tag=vX.Y.Z
+gh run list --workflow publish-crates.yml --limit 3
+```
+
+Capture the listed run's numeric database ID in `publish_run_id`, require it
+to be nonempty, then `gh run watch "$publish_run_id" --exit-status`.
+
+The `publish` job waits in the `crates-io` environment until the owner
+approves it in the Actions UI. That gate is repository configuration, not
+workflow text: the environment must exist under Settings, Environments, with
+the owner as a required reviewer. GitHub creates a missing environment on
+first use with no protection rules, which would let a dispatch publish
+without approval, so confirm the reviewer rule before the first dispatch:
+
+```bash
+gh api repos/dannyota/elasticctl/environments/crates-io \
+  --jq '.protection_rules[] | select(.type == "required_reviewers")'
+```
+
+Trusted Publishing is the second first-dispatch prerequisite. Configure it
+once per crate on crates.io (crate settings, Trusted Publishing): repository
+owner `dannyota`, repository name `elasticctl`, workflow filename
+`publish-crates.yml`, environment `crates-io`. All three crates need the same
+entry; a dispatch made before that fails at the token exchange, after the
+`verify` job, and publishes nothing. A crate that has never been published
+must go through the manual fallback once before Trusted Publishing can be
+configured for it.
 
 Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
