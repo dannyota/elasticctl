@@ -307,6 +307,9 @@ A portable artifact is a JSON array, or the same array as a YAML sequence, of
 `id`, `name`, `policy_ids`, `package.name`, `package.version`, and `inputs` are
 required. `policy_ids` is a non-empty, deduplicated, sorted list. Fleet also
 allows an empty list for an orphaned integration; 0.6 does not transfer those.
+When an artifact omits `namespace`, planning reads every named parent, requires
+one common parent namespace, and fills that value into the effective spec. An
+explicit namespace remains exact; export always writes the stored namespace.
 
 The portable configuration may also carry:
 
@@ -327,6 +330,9 @@ carrying it would break round-trip equality. Top-level `enabled` comes back
 from every read but the simplified create schema does not accept it; only
 per-input and per-stream `enabled` are portable. Normalization requires the
 top-level value to be true and drops it. A false value is `unsupported`.
+Create sends no top-level `enabled`. Replace adds wire-only `enabled: true` to
+the complete desired spec after removing its `id`; neither route sends `force`
+or `create_dataset_templates`.
 
 Normalization removes:
 
@@ -407,8 +413,11 @@ perform the installation, then verifies the installed version and stored
 policy.
 
 If create fails after an installation attempt, elasticctl reports the result
-and re-reads package state. It never uninstalls as rollback. Successful policy
-deletion also leaves the package installed.
+and re-reads package state. When the exact requested version became installed,
+it advances the shared package snapshot, reports that observed install once,
+and permits later rows using it. A different version or malformed read blocks
+only rows using that package. It never uninstalls as rollback. Successful
+policy deletion also leaves the package installed.
 
 ## 9. Selection and listing
 
@@ -440,12 +449,24 @@ with no `agents` field is `permission` and names the missing privilege; a read
 without `package_policies`, or with either field malformed, is `http`.
 Ordinary list output does not request compiled full policies.
 
+Integration parent snapshots keep only id, name, namespace, agents, sorted
+attached integration ids, platform ownership, and protection. They ignore
+agent-policy-only environment and portability fields, but require an existing
+integration to appear in every parent named by its `policy_ids`; disagreement
+is a malformed `http` response and the attachment list remains a race snapshot.
+
 Agent-policy get returns a sanitized `AgentPolicyDetail`, never the raw Fleet
 item. It contains `id`, `name`, `namespace`, `description`, `agents`, `status`,
 sorted `attached_integrations` ids, and sorted `blocked_by` field names. The
 last list explains why the live policy cannot be exported or mutated without
 exposing environment ids, the `agentless` configuration, usernames, or
 populated integration objects.
+
+Integration-policy get returns a sanitized `IntegrationPolicyDetail`, never
+the raw Fleet item. It contains `id`, `name`, `namespace`, `description`,
+sorted `policy_ids`, the exact package coordinate, `affected_agents`, and
+sorted `blocked_by`; it never exposes inputs, variable values, secret
+references, audit identities, environment ids, or compiled content.
 
 ## 10. Import planning and races
 
@@ -490,6 +511,9 @@ the object, normalizes it, and requires exact equality with the filled desired
 spec. A mismatch is failed with `applied: true`. Successful earlier writes are
 not rolled back. Multi-object imports continue across independent failures; a
 dependency failure blocks only dependent rows.
+Affected agents are the sum over the union of parent ids for every row whose
+mutation route returned decoded success, including a row that later fails
+post-write verification.
 
 After any agent-policy write that could trigger the internal monitoring
 package installation, apply re-reads package state. The installation is an
