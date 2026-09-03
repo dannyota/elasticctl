@@ -1440,3 +1440,96 @@ async fn apply_import_refuses_a_planned_create_whose_name_appeared_since_preview
         "no create request must be issued once the name conflict is detected"
     );
 }
+
+#[tokio::test]
+async fn plan_delete_refuses_agents_and_attached_integrations_in_one_conflict() {
+    let server = verified_server().await;
+    let mut busy = item("busy");
+    busy["agents"] = json!(3);
+    busy["package_policies"] = json!([{"id": "int-1"}, {"id": "int-0"}]);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/busy"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": busy})))
+        .mount(&server)
+        .await;
+    let error = agent_policy_ops::plan_delete(&transport_for(&server), &["busy".into()])
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(
+        error.message,
+        "agent policy 'busy' has 3 assigned agents; agent policy 'busy' has attached integrations: int-0, int-1"
+    );
+}
+
+#[tokio::test]
+async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/idle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})))
+        .mount(&server)
+        .await;
+    // gone: resolve and the plan read see it; the apply recheck does not.
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/gone"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("gone")})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("gone")})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies/delete"))
+        .and(body_json(json!({"agentPolicyId": "idle"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "idle", "name": "Policy idle"})),
+        )
+        .mount(&server)
+        .await;
+    let transport = transport_for(&server);
+    let plan =
+        agent_policy_ops::plan_delete(&transport, &["idle".into(), "gone".into(), "idle".into()])
+            .await
+            .unwrap();
+    assert_eq!(plan.preview.preview_action, "Delete 2 agent policy(ies)");
+    assert_eq!(
+        plan.preview.preview_details,
+        [
+            "gone  Policy gone  agents 0  integrations 0",
+            "idle  Policy idle  agents 0  integrations 0"
+        ]
+    );
+    let report = agent_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(report.deleted, vec![json!({"id": "idle"})]);
+    assert_eq!(
+        report.failed,
+        vec![json!({"id": "gone", "error": "agent policy disappeared since preview"})]
+    );
+    assert_eq!(report.total, 2);
+    assert_eq!(report.affected_agents, 0);
+}
+
+#[tokio::test]
+async fn apply_delete_rejects_tampered_plan_targets() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/idle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})))
+        .mount(&server)
+        .await;
+    let transport = transport_for(&server);
+    let mut plan = agent_policy_ops::plan_delete(&transport, &["idle".into()])
+        .await
+        .unwrap();
+    plan.targets.push(plan.targets[0].clone());
+    let error = agent_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(error.message, "invalid agent-policy delete plan");
+}
