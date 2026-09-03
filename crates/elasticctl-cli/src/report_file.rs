@@ -1065,7 +1065,7 @@ mod tests {
     use super::*;
     use elasticctl_api::ChangeReport;
     use std::cell::Cell;
-    use std::fs::{self, File, OpenOptions};
+    use std::fs::{self, OpenOptions};
     use std::io::{self, Write};
     use std::path::Path;
 
@@ -1086,7 +1086,7 @@ mod tests {
     fn sync_test_directory(path: &Path) -> io::Result<()> {
         #[cfg(not(windows))]
         {
-            File::open(path)?.sync_all()
+            fs::File::open(path)?.sync_all()
         }
         #[cfg(windows)]
         {
