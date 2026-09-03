@@ -230,6 +230,17 @@ async fn collect_rejects_paging_contradictions() {
         assert_eq!(error.kind, ErrorKind::Http);
         assert!(error.message.contains("unexpected page metadata"));
     }
+
+    let overfull = verified_server().await;
+    let overfull_items = (0..1001)
+        .map(|index| item(&format!("overfull-{index}")))
+        .collect();
+    mount_integration_pages(&overfull, vec![(1, overfull_items, 1001)]).await;
+    let error = integration_policy_ops::collect(&transport_for(&overfull))
+        .await
+        .expect_err("overfull page");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(error.message.contains("more items than requested"));
 }
 
 #[tokio::test]
@@ -289,6 +300,25 @@ async fn resolve_prefers_id_then_uses_exact_name_and_rejects_ambiguity() {
     assert!(error.message.contains("twin-a, twin-b"));
 }
 
+#[tokio::test]
+async fn resolve_prefers_an_id_over_a_name_collision() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/collision"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("collision")})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut same_name = item("other-id");
+    same_name["name"] = json!("collision");
+    mount_integration_pages(&server, vec![(1, vec![same_name], 1)]).await;
+
+    let resolved = integration_policy_ops::resolve(&transport_for(&server), "collision")
+        .await
+        .expect("id wins");
+    assert_eq!(resolved.id, "collision");
+}
+
 #[test]
 fn normalize_builds_a_portable_value_and_refuses_unsafe_live_state() {
     let mut raw = live_item("integration-1");
@@ -310,16 +340,23 @@ fn normalize_builds_a_portable_value_and_refuses_unsafe_live_state() {
             "supports_cloud_connector": false,
             "cloud_connector_id": null,
             "cloud_connector_name": null,
-            "output_id": null
+            "output_id": null,
+            "package_agent_version_condition": ""
         })
         .as_object()
         .expect("object")
         .clone(),
     );
-    raw.get_mut("package").unwrap().as_object_mut().unwrap().extend(
-        json!({"title": "System", "requires_root": false, "fips_compatible": false, "package_agent_version_condition": ""})
-            .as_object().unwrap().clone(),
-    );
+    raw.get_mut("package")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .extend(
+            json!({"title": "System", "requires_root": false, "fips_compatible": false})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
     let normalized = integration_policy_ops::normalize(&raw, "default").expect("normalize");
     assert_eq!(
         normalized,
@@ -345,6 +382,127 @@ fn normalize_builds_a_portable_value_and_refuses_unsafe_live_state() {
             "{field}: {}",
             error.message
         );
+    }
+}
+
+#[test]
+fn normalize_removes_each_named_server_field_and_equates_null_false_platform_state() {
+    let expected = IntegrationPolicySpec::try_from(spec_json("integration-1")).unwrap();
+    for (field, value) in [
+        ("enabled", json!(true)),
+        ("revision", json!(1)),
+        ("version", json!("saved-object-version")),
+        ("created_at", json!("now")),
+        ("created_by", json!("user")),
+        ("updated_at", json!("later")),
+        ("updated_by", json!("user")),
+        ("policy_id", json!("parent-1")),
+        ("spaceIds", json!(["default"])),
+        ("elasticsearch", json!({"privileges": {"cluster": []}})),
+        ("agents", json!(0)),
+        ("secret_references", json!([])),
+        ("is_managed", json!(false)),
+        ("supports_agentless", json!(false)),
+        ("supports_cloud_connector", json!(false)),
+        ("cloud_connector_id", Value::Null),
+        ("cloud_connector_name", Value::Null),
+        ("output_id", Value::Null),
+        ("cloud_connector_id", json!(false)),
+        ("cloud_connector_name", json!(false)),
+        ("output_id", json!(false)),
+        ("package_agent_version_condition", json!(">= 9.0.0")),
+    ] {
+        let mut raw = live_item("integration-1");
+        raw.insert(field.into(), value);
+        assert_eq!(
+            integration_policy_ops::normalize(&raw, "default").expect(field),
+            expected,
+            "{field} must normalize away"
+        );
+    }
+    for field in [
+        "is_managed",
+        "supports_agentless",
+        "supports_cloud_connector",
+    ] {
+        let mut raw = live_item("integration-1");
+        raw.insert(field.into(), Value::Null);
+        assert_eq!(
+            integration_policy_ops::normalize(&raw, "default").expect(field),
+            expected,
+            "{field}: null must equal false and absent"
+        );
+    }
+    let mut raw = live_item("integration-1");
+    raw.insert("policy_id".into(), Value::Null);
+    assert_eq!(
+        integration_policy_ops::normalize(&raw, "default").expect("null policy_id"),
+        expected
+    );
+}
+
+#[test]
+fn normalize_removes_valid_generated_nested_content_and_rejects_bad_outer_shapes() {
+    let mut raw = live_item("integration-1");
+    raw.insert(
+        "elasticsearch".into(),
+        json!({"privileges": {"cluster": ["monitor"]}}),
+    );
+    raw.insert(
+        "inputs".into(),
+        json!({
+            "input": {
+                "id": "generated-input-id",
+                "compiled_input": {"server": "content"},
+                "streams": {
+                    "stream": {
+                        "id": "generated-stream-id",
+                        "compiled_stream": {"server": "content"}
+                    }
+                }
+            }
+        }),
+    );
+    let normalized = integration_policy_ops::normalize(&raw, "default").expect("normalize");
+    let normalized = serde_json::to_value(normalized).unwrap();
+    assert!(normalized.get("elasticsearch").is_none());
+    assert!(normalized["inputs"]["input"].get("id").is_none());
+    assert!(
+        normalized["inputs"]["input"]
+            .get("compiled_input")
+            .is_none()
+    );
+    assert!(
+        normalized["inputs"]["input"]["streams"]["stream"]
+            .get("id")
+            .is_none()
+    );
+    assert!(
+        normalized["inputs"]["input"]["streams"]["stream"]
+            .get("compiled_stream")
+            .is_none()
+    );
+
+    for (path, value) in [
+        ("input.id", json!([])),
+        ("input.compiled_input", json!(false)),
+        ("stream.id", json!([])),
+        ("stream.compiled_stream", json!(1)),
+        ("elasticsearch", json!("bad")),
+    ] {
+        let mut malformed = raw.clone();
+        match path {
+            "input.id" => malformed["inputs"]["input"]["id"] = value,
+            "input.compiled_input" => malformed["inputs"]["input"]["compiled_input"] = value,
+            "stream.id" => malformed["inputs"]["input"]["streams"]["stream"]["id"] = value,
+            "stream.compiled_stream" => {
+                malformed["inputs"]["input"]["streams"]["stream"]["compiled_stream"] = value
+            }
+            "elasticsearch" => malformed["elasticsearch"] = value,
+            _ => unreachable!("fixed test paths"),
+        }
+        let error = integration_policy_ops::normalize(&malformed, "default").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Http, "{path}: {}", error.message);
     }
 }
 
@@ -384,6 +542,17 @@ fn normalize_rejects_malformed_server_shapes_and_unknown_top_level_fields() {
     let error = integration_policy_ops::normalize(&unknown, "default").unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);
     assert!(error.message.contains("future_field"));
+
+    let mut unknown_package = live_item("integration-1");
+    unknown_package["package"]["future"] = json!(true);
+    let error = integration_policy_ops::normalize(&unknown_package, "default").unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("unknown package field 'future'"));
+
+    let mut connector_name = live_item("integration-1");
+    connector_name.insert("cloud_connector_name".into(), json!("connector"));
+    let error = integration_policy_ops::normalize(&connector_name, "default").unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
 }
 
 #[test]

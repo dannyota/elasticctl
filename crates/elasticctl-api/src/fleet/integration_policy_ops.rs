@@ -45,6 +45,11 @@ pub async fn collect(transport: &Transport) -> Result<Vec<Map<String, Value>>> {
                 "decoding integration policies list: unexpected page metadata",
             ));
         }
+        if page.items.len() as u64 > PAGE_SIZE {
+            return Err(http(
+                "decoding integration policies list: page returned more items than requested",
+            ));
+        }
         match total {
             Some(expected) if expected != page.total => {
                 return Err(http(
@@ -172,15 +177,17 @@ const PORTABLE_OPTIONAL: [&str; 6] = [
     "additional_datastreams_permissions",
 ];
 
-const REMOVED_FIELDS: [&str; 17] = [
+const REMOVED_FIELDS: [&str; 19] = [
     "agents",
     "cloud_connector_id",
     "cloud_connector_name",
     "created_at",
     "created_by",
+    "elasticsearch",
     "enabled",
     "is_managed",
     "output_id",
+    "package_agent_version_condition",
     "policy_id",
     "revision",
     "secret_references",
@@ -230,10 +237,7 @@ fn normalize_package(item: &Map<String, Value>, id: &str) -> Result<Value> {
                 "decoding integration policy '{id}': package must be an object"
             ))
         })?;
-    for (field, expected) in [
-        ("title", "a string"),
-        ("package_agent_version_condition", "a string"),
-    ] {
+    for (field, expected) in [("title", "a string")] {
         if let Some(value) = package.get(field)
             && !value.is_null()
             && !value.is_string()
@@ -265,7 +269,6 @@ fn normalize_package(item: &Map<String, Value>, id: &str) -> Result<Value> {
         "title",
         "requires_root",
         "fips_compatible",
-        "package_agent_version_condition",
     ]
     .into_iter()
     .collect();
@@ -303,14 +306,27 @@ fn normalize_inputs(item: &Map<String, Value>, id: &str) -> Result<Value> {
 }
 
 /// Keep package-defined input and stream maps open while rebuilding them
-/// without Fleet-generated ids, compiled content, or ES privilege facts.
+/// without Fleet-generated ids or compiled content.
 fn normalize_package_map(value: &Value, compiled_field: &str) -> Result<Value> {
     let object = value
         .as_object()
         .ok_or_else(|| http("decoding integration policy: input must be an object"))?;
     let mut normalized = Map::new();
     for (field, value) in object {
-        if matches!(field.as_str(), "id" | "elasticsearch") || field == compiled_field {
+        if field == "id" {
+            if !value.is_string() {
+                return Err(http(
+                    "decoding integration policy: generated id must be a string",
+                ));
+            }
+            continue;
+        }
+        if field == compiled_field {
+            if !value.is_object() {
+                return Err(http(format!(
+                    "decoding integration policy: {compiled_field} must be an object"
+                )));
+            }
             continue;
         }
         if field == "streams" {
@@ -335,6 +351,21 @@ fn normalize_package_map(value: &Value, compiled_field: &str) -> Result<Value> {
 fn portability_check(item: &Map<String, Value>, id: &str, active_space: &str) -> Result<()> {
     let mut reasons = BTreeSet::new();
     required_true(item, "enabled", id)?;
+    if let Some(value) = item.get("elasticsearch")
+        && !value.is_object()
+    {
+        return Err(http(format!(
+            "decoding integration policy '{id}': elasticsearch must be an object"
+        )));
+    }
+    if let Some(value) = item.get("package_agent_version_condition")
+        && !value.is_null()
+        && !value.is_string()
+    {
+        return Err(http(format!(
+            "decoding integration policy '{id}': package_agent_version_condition must be a string or null"
+        )));
+    }
     for field in [
         "is_managed",
         "supports_agentless",
@@ -352,7 +383,7 @@ fn portability_check(item: &Map<String, Value>, id: &str, active_space: &str) ->
             }
             Some(_) => {
                 return Err(http(format!(
-                    "decoding integration policy '{id}': {field} must be a string, false, or null"
+                    "decoding integration policy '{id}': {field} must be a string or null"
                 )));
             }
         }
@@ -394,7 +425,7 @@ fn portability_check(item: &Map<String, Value>, id: &str, active_space: &str) ->
             )));
         }
     }
-    if let Some(policy_id) = item.get("policy_id") {
+    if let Some(policy_id) = item.get("policy_id").filter(|value| !value.is_null()) {
         let policy_id = policy_id
             .as_str()
             .filter(|value| !value.is_empty())
