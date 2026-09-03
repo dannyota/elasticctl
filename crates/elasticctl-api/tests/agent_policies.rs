@@ -439,6 +439,11 @@ async fn resolve_prefers_the_id_route_then_exact_names() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/ap-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("ap-2")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/Twin"))
         .respond_with(
             ResponseTemplate::new(404)
@@ -493,6 +498,7 @@ async fn get_returns_sanitized_detail_without_raw_audit_or_integration_data() {
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/hosted"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live})))
+        .expect(1)
         .mount(&server)
         .await;
     let detail = agent_policy_ops::get_op(&transport_for(&server), "hosted")
@@ -507,6 +513,22 @@ async fn get_returns_sanitized_detail_without_raw_audit_or_integration_data() {
     );
     assert!(value.get("updated_by").is_none());
     assert!(!value.to_string().contains("must-not-leak"));
+}
+
+#[tokio::test]
+async fn get_by_id_uses_the_item_already_fetched_by_resolution() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/policy-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("policy-1")})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let detail = agent_policy_ops::get_op(&transport_for(&server), "policy-1")
+        .await
+        .unwrap();
+    assert_eq!(detail.id, "policy-1");
 }
 
 #[tokio::test]
@@ -676,6 +698,7 @@ async fn export_requires_a_selection_and_refuses_platform_policies() {
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"item": platform_item("platform")})),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let explicit =
@@ -1524,6 +1547,7 @@ async fn plan_delete_refuses_agents_and_attached_integrations_in_one_conflict() 
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/busy"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": busy})))
+        .expect(1)
         .mount(&server)
         .await;
     let error = agent_policy_ops::plan_delete(&transport_for(&server), &["busy".into()])
@@ -1544,11 +1568,10 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})))
         .mount(&server)
         .await;
-    // gone: resolve and the plan read see it; the apply recheck does not.
+    // gone: planning sees it; the apply recheck does not.
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/gone"))
         .respond_with(SequenceResponder::new(vec![
-            ResponseTemplate::new(200).set_body_json(json!({"item": item("gone")})),
             ResponseTemplate::new(200).set_body_json(json!({"item": item("gone")})),
             ResponseTemplate::new(404)
                 .set_body_json(json!({"statusCode": 404, "message": "missing"})),
@@ -1594,13 +1617,12 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
 #[tokio::test]
 async fn apply_delete_fails_a_target_that_changed_since_preview() {
     let server = verified_server().await;
-    // idle: resolve and the plan read see it clean, the apply recheck sees agents acquired.
+    // idle: planning sees it clean, the apply recheck sees agents acquired.
     let mut acquired = item("idle");
     acquired["agents"] = json!(2);
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/idle"))
         .respond_with(SequenceResponder::new(vec![
-            ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})),
             ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})),
             ResponseTemplate::new(200).set_body_json(json!({"item": acquired})),
         ]))

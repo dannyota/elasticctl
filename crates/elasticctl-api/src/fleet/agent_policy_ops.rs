@@ -27,6 +27,12 @@ pub struct AgentPolicyList {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ResolvedAgentPolicy {
+    summary: AgentPolicySummary,
+    item: Map<String, Value>,
+}
+
 /// A single live read reduced to what planning needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveAgentPolicy {
@@ -119,8 +125,19 @@ pub async fn list_op(transport: &Transport, filter: &AgentPolicyFilter) -> Resul
 
 /// Stable id first through the single-object route; exact name second.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<AgentPolicySummary> {
+    Ok(resolve_item(transport, selector).await?.summary)
+}
+
+/// Resolve a selector and retain the single-object response needed by callers
+/// that require populated agent and integration facts.
+async fn resolve_item(transport: &Transport, selector: &str) -> Result<ResolvedAgentPolicy> {
     match agent_policies::get(transport, selector).await {
-        Ok(policy) => return AgentPolicySummary::from_item(&policy.item),
+        Ok(policy) => {
+            return Ok(ResolvedAgentPolicy {
+                summary: AgentPolicySummary::from_item(&policy.item)?,
+                item: policy.item,
+            });
+        }
         Err(error) if error.kind == ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
@@ -135,7 +152,13 @@ pub async fn resolve(transport: &Transport, selector: &str) -> Result<AgentPolic
             ErrorKind::NotFound,
             format!("no agent policy with id or name '{selector}'"),
         )),
-        [one] => Ok(one.clone()),
+        [one] => {
+            let policy = agent_policies::get(transport, &one.id).await?;
+            Ok(ResolvedAgentPolicy {
+                summary: one.clone(),
+                item: policy.item,
+            })
+        }
         many => Err(Error::new(
             ErrorKind::Conflict,
             format!(
@@ -150,11 +173,10 @@ pub async fn resolve(transport: &Transport, selector: &str) -> Result<AgentPolic
 }
 
 pub async fn get_op(transport: &Transport, selector: &str) -> Result<AgentPolicyDetail> {
-    let summary = resolve(transport, selector).await?;
-    let policy = agent_policies::get(transport, &summary.id).await?;
-    let agents = required_agents(&policy.item, &summary.id)?;
-    let attached_integrations = attached_integration_ids(&policy.item, &summary.id)?;
-    let status = match policy.item.get("status") {
+    let ResolvedAgentPolicy { summary, item } = resolve_item(transport, selector).await?;
+    let agents = required_agents(&item, &summary.id)?;
+    let attached_integrations = attached_integration_ids(&item, &summary.id)?;
+    let status = match item.get("status") {
         None | Some(Value::Null) => None,
         Some(Value::String(status)) => Some(status.clone()),
         Some(_) => {
@@ -164,7 +186,7 @@ pub async fn get_op(transport: &Transport, selector: &str) -> Result<AgentPolicy
             )));
         }
     };
-    let blocked_by = portability_reasons(&policy.item, transport.space())?
+    let blocked_by = portability_reasons(&item, transport.space())?
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -404,15 +426,23 @@ fn live_from_policy(
     id: &str,
     active_space: &str,
 ) -> Result<LiveAgentPolicy> {
-    let spec = normalize(&policy.item, active_space)?;
+    live_from_item(&policy.item, id, active_space)
+}
+
+fn live_from_item(
+    item: &Map<String, Value>,
+    id: &str,
+    active_space: &str,
+) -> Result<LiveAgentPolicy> {
+    let spec = normalize(item, active_space)?;
     if spec.id != id {
         return Err(http(format!(
             "decoding agent policy: expected id '{id}', got '{}'",
             spec.id
         )));
     }
-    let agents = required_agents(&policy.item, id)?;
-    let attached = attached_integration_ids(&policy.item, id)?;
+    let agents = required_agents(item, id)?;
+    let attached = attached_integration_ids(item, id)?;
     Ok(LiveAgentPolicy {
         spec,
         agents,
@@ -543,6 +573,7 @@ pub async fn export(
             "--all-custom cannot be combined with selectors",
         ));
     }
+    let mut resolved_items = BTreeMap::new();
     let ids: BTreeSet<String> = if all_custom {
         let mut ids = BTreeSet::new();
         for item in collect(transport).await? {
@@ -554,13 +585,19 @@ pub async fn export(
     } else {
         let mut ids = BTreeSet::new();
         for selector in selectors {
-            ids.insert(resolve(transport, selector).await?.id);
+            let resolved = resolve_item(transport, selector).await?;
+            ids.insert(resolved.summary.id.clone());
+            resolved_items.insert(resolved.summary.id, resolved.item);
         }
         ids
     };
     let mut specs = Vec::with_capacity(ids.len());
     for id in &ids {
-        specs.push(read_live(transport, id).await?.spec);
+        let live = match resolved_items.get(id) {
+            Some(item) => live_from_item(item, id, transport.space())?,
+            None => read_live(transport, id).await?,
+        };
+        specs.push(live.spec);
     }
     specs.sort_by(|left, right| left.id.cmp(&right.id));
     let body = content_codec::encode_sequence(&specs, format)?;
@@ -1237,14 +1274,15 @@ pub async fn plan_delete(
             "agent-policy delete needs at least one selector",
         ));
     }
-    let mut ids = BTreeSet::new();
+    let mut resolved_items = BTreeMap::new();
     for selector in selectors {
-        ids.insert(resolve(transport, selector).await?.id);
+        let resolved = resolve_item(transport, selector).await?;
+        resolved_items.insert(resolved.summary.id, resolved.item);
     }
     let mut targets = Vec::new();
     let mut conflicts = Vec::new();
-    for id in ids {
-        let live = read_live(transport, &id).await?;
+    for (id, item) in resolved_items {
+        let live = live_from_item(&item, &id, transport.space())?;
         if live.agents > 0 {
             conflicts.push(format!(
                 "agent policy '{id}' has {} assigned agents",
