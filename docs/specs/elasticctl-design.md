@@ -1449,6 +1449,9 @@ triage and cases capability area is specified in
 and data-view capability area is specified in
 [`elasticctl-content-design.md`](elasticctl-content-design.md).
 
+The 0.6 Fleet agent- and integration-policy capability area is specified in
+[`elasticctl-fleet-design.md`](elasticctl-fleet-design.md).
+
 The temporary trial-deployment window changes execution order, not capability
 boundaries. The near-term evidence ladder is:
 
@@ -1467,9 +1470,12 @@ boundaries. The near-term evidence ladder is:
 7. 0.5.0 delivers complete data-view administration and transfer; 0.5.1 adds
    typed dashboard administration plus opaque dependency bundles; 0.5.2
    publishes the content matrix and bounded review patch.
+8. 0.6.0 delivers complete Fleet agent-policy administration and transfer;
+   0.6.1 adds integration-policy administration and exact package dependency
+   checks; 0.6.2 publishes the Fleet matrix and bounded review patch.
 
 Later minor capability areas begin only after the current area is complete.
-The trial window still prioritizes live 0.5 measurements before 2026-09-08
+The trial window now prioritizes live 0.6 measurements before 2026-09-08
 08:56 UTC; it does not weaken a release gate.
 
 The privacy, cleanup, evidence, and release gates for this sequence are defined
