@@ -1,11 +1,16 @@
+use elasticctl_api::AgentPolicyImportPlan;
 use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::fleet::agent_policies::{
     self, AgentPolicySpec, DEFAULT_INACTIVITY_TIMEOUT, PackageStatus,
 };
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use wiremock::matchers::{body_json, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 async fn verified_server() -> MockServer {
     let server = MockServer::start().await;
@@ -697,4 +702,679 @@ async fn all_custom_export_skips_platform_policies_and_sorts_by_id() {
         ["alpha", "zeta"]
     );
     assert_eq!(specs[0].inactivity_timeout, 1209600);
+}
+
+#[test]
+fn replace_body_strips_id_nulls_clearable_fields_and_refuses_other_removals() {
+    let mut current = spec("ap-1");
+    current.overrides = Some(serde_json::Map::new());
+    current.keep_monitoring_alive = Some(true);
+    current.unenroll_timeout = Some(3600);
+    let mut desired = spec("ap-1");
+    desired.unenroll_timeout = Some(3600);
+    let body = agent_policy_ops::build_replace_body(&current, &desired).expect("body");
+    assert!(body.get("id").is_none());
+    assert_eq!(body["overrides"], Value::Null);
+    assert_eq!(body["keep_monitoring_alive"], Value::Null);
+    assert_eq!(body["name"], "Policy ap-1");
+
+    let mut dropped = spec("ap-1");
+    dropped.unenroll_timeout = None;
+    let error = agent_policy_ops::build_replace_body(&current, &dropped).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "removing unenroll_timeout is not supported by the agent-policy update API"
+    );
+
+    let mut nested_current = spec("ap-1");
+    nested_current.advanced_settings = Some(
+        json!({"agent_limits_go_max_procs": 2, "agent_logging_level": "info"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let mut nested_desired = spec("ap-1");
+    nested_desired.advanced_settings = Some(
+        json!({"agent_limits_go_max_procs": 4})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    // Kibana maps these objects `flattened` and replaces them whole, so a
+    // shrunken nested object is sent as-is rather than refused.
+    let body =
+        agent_policy_ops::build_replace_body(&nested_current, &nested_desired).expect("body");
+    assert_eq!(
+        body["advanced_settings"],
+        json!({"agent_limits_go_max_procs": 4})
+    );
+}
+
+fn write_artifact(
+    dir: &std::path::Path,
+    name: &str,
+    specs: &[AgentPolicySpec],
+) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_string(specs).unwrap()).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn plan_import_classifies_conflicts_skips_and_replacements() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/existing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("existing")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "version": "2.5.0", "status": "not_installed"
+        }})))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+    let transport = transport_for(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let mut changed = spec("existing");
+    changed.description = Some("changed".into());
+    let path = write_artifact(
+        dir.path(),
+        "policies.json",
+        &[changed.clone(), spec("fresh")],
+    );
+
+    let refused = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Conflict);
+    assert_eq!(refused.message, "agent policies already exist: existing");
+
+    let skipped = agent_policy_ops::plan_import(&transport, &path, false, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        skipped.skipped,
+        vec![json!({"id": "existing", "reason": "exists"})]
+    );
+    assert_eq!(skipped.preview.targets, ["fresh"]);
+    assert_eq!(skipped.total, 2);
+
+    let overwrite = agent_policy_ops::plan_import(&transport, &path, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        overwrite.preview.preview_details,
+        [
+            "existing  replace  Policy existing  agents 0",
+            "fresh  create  Policy fresh",
+            "package install  elastic_agent@server-selected",
+        ]
+    );
+    assert_eq!(
+        overwrite.package_installs,
+        ["elastic_agent@server-selected"]
+    );
+}
+
+#[tokio::test]
+async fn plan_import_refuses_a_name_owned_by_another_id() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/new-id"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    let mut taken = item("other-id");
+    taken["name"] = json!("Policy new-id");
+    mount_pages(&server, vec![(1, vec![taken], 1)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "policies.json", &[spec("new-id")]);
+    let error = agent_policy_ops::plan_import(&transport_for(&server), &path, true, false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(
+        error.message,
+        "agent policy names already exist: Policy new-id (other-id)"
+    );
+}
+
+#[tokio::test]
+async fn plan_import_does_not_preflight_a_package_for_nonempty_to_nonempty_monitoring() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/existing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("existing")})))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+    let mut desired = spec("existing");
+    desired.description = Some("changed".into());
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "policies.json", &[desired]);
+    let plan = agent_policy_ops::plan_import(&transport_for(&server), &path, true, false)
+        .await
+        .expect("plan without a package-status route");
+    assert!(plan.package_installs.is_empty());
+}
+
+#[derive(Clone)]
+struct SequenceResponder {
+    responses: Arc<Vec<ResponseTemplate>>,
+    next: Arc<AtomicUsize>,
+}
+
+impl SequenceResponder {
+    fn new(responses: Vec<ResponseTemplate>) -> Self {
+        Self {
+            responses: Arc::new(responses),
+            next: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Respond for SequenceResponder {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        let index = self.next.fetch_add(1, Ordering::SeqCst);
+        self.responses[index.min(self.responses.len() - 1)].clone()
+    }
+}
+
+#[tokio::test]
+async fn apply_import_creates_replaces_and_reports_unchanged_rows() {
+    let server = verified_server().await;
+    // fresh: 404 at plan and recheck, then the created object after POST
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies"))
+        .and(query_param("sys_monitoring", "false"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})))
+        .mount(&server)
+        .await;
+    // same: identical at plan and recheck -> unchanged, no write
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/same"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("same")})))
+        .mount(&server)
+        .await;
+    // changed: description differs; PUT then the stored object equals desired
+    let mut changed_live = item("changed");
+    changed_live["agents"] = json!(7);
+    let mut changed_after = changed_live.clone();
+    changed_after["description"] = json!("new");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/changed"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": changed_live})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": changed_live})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": changed_after})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/fleet/agent_policies/changed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": changed_after})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "version": "2.5.0", "status": "installed",
+            "installationInfo": {"version": "2.5.0"}
+        }})))
+        .mount(&server)
+        .await;
+    mount_pages(
+        &server,
+        vec![(1, vec![item("same"), changed_live.clone()], 2)],
+    )
+    .await;
+    let transport = transport_for(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let mut changed = spec("changed");
+    changed.description = Some("new".into());
+    let path = write_artifact(
+        dir.path(),
+        "p.json",
+        &[spec("fresh"), spec("same"), changed],
+    );
+
+    let plan = agent_policy_ops::plan_import(&transport, &path, true, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert!(report.applied);
+    assert_eq!(
+        report.succeeded,
+        vec![
+            json!({"id": "changed", "action": "replaced"}),
+            json!({"id": "fresh", "action": "created"}),
+        ]
+    );
+    assert_eq!(report.unchanged, vec![json!({"id": "same"})]);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.affected_agents, 7);
+    assert_eq!(report.total, 3);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.iter().filter(|r| r.method == "PUT").count(), 1);
+    assert_eq!(requests.iter().filter(|r| r.method == "POST").count(), 1);
+}
+
+#[tokio::test]
+async fn apply_import_refuses_races_and_reports_stored_mismatches_as_applied() {
+    let server = verified_server().await;
+    // appeared: planned create, exists at recheck -> no POST
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/appeared"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("appeared")})),
+        ]))
+        .mount(&server)
+        .await;
+    // drift: create succeeds but the stored object differs
+    let mut drift_stored = item("drift");
+    drift_stored["description"] = json!("server changed it");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/drift"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": drift_stored})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("drift")})))
+        .mount(&server)
+        .await;
+    // Both specs enable monitoring, so planning reads the package status.
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "version": "2.5.0", "status": "installed",
+            "installationInfo": {"version": "2.5.0"}
+        }})))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    let transport = transport_for(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("appeared"), spec("drift")]);
+
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.failed,
+        vec![
+            json!({"id": "appeared", "applied": false, "error": "agent policy appeared since preview"}),
+            json!({"id": "drift", "applied": true, "error": "server stored a different agent-policy spec"}),
+        ]
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn apply_import_rechecks_agent_counts_from_the_full_snapshot() {
+    let server = verified_server().await;
+    let first = item("agents-race");
+    let mut second = first.clone();
+    second["agents"] = json!(1);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/agents-race"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": first.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": second})),
+        ]))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![first], 1)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("agents-race")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, true, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "agents-race", "applied": false,
+            "error": "agent policy changed since preview"
+        })]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_rechecks_attachment_ids_from_the_full_snapshot() {
+    let server = verified_server().await;
+    let first = item("attachment-race");
+    let mut second = first.clone();
+    second["package_policies"] = json!([{"id": "integration-1"}]);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/attachment-race"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": first.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": second})),
+        ]))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![first], 1)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("attachment-race")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, true, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.failed[0]["error"],
+        "agent policy changed since preview"
+    );
+}
+
+#[tokio::test]
+async fn apply_import_rechecks_the_monitoring_package_before_a_write() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "not_installed"
+            }})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "installed",
+                "installationInfo": {"version": "2.5.0"}
+            }})),
+        ]))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("fresh")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.failed[0]["error"],
+        "elastic_agent package changed since preview"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|request| request.method == "POST")
+    );
+}
+
+#[tokio::test]
+async fn apply_import_succeeds_with_no_package_installs_when_the_post_write_read_still_reports_not_installed()
+ {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "status": "not_installed"
+        }})))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("fresh")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "fresh", "action": "created"})]
+    );
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(report.package_installs.is_empty());
+}
+
+#[tokio::test]
+async fn apply_import_reports_a_failed_row_when_the_post_write_package_read_errors() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "not_installed"
+            }})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "not_installed"
+            }})),
+            ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500, "message": "boom"})),
+        ]))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("fresh")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert!(report.succeeded.is_empty(), "{:?}", report.succeeded);
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0]["id"], "fresh");
+    assert_eq!(report.failed[0]["applied"], true);
+}
+
+#[tokio::test]
+async fn apply_import_reports_the_installed_version_when_the_post_write_read_reports_installed() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/agent_policies"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "not_installed"
+            }})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "not_installed"
+            }})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": {
+                "name": "elastic_agent", "status": "installed",
+                "installationInfo": {"version": "2.5.0"}
+            }})),
+        ]))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("fresh")]);
+    let transport = transport_for(&server);
+    let plan = agent_policy_ops::plan_import(&transport, &path, false, false)
+        .await
+        .unwrap();
+    let report = agent_policy_ops::apply_import(&transport, &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "fresh", "action": "created"})]
+    );
+    assert_eq!(
+        report.package_installs,
+        vec!["elastic_agent@2.5.0".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn apply_import_rejects_a_tampered_plan_before_any_request() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/fresh"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"statusCode": 404, "message": "missing"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/elastic_agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "name": "elastic_agent", "status": "not_installed"
+        }})))
+        .mount(&server)
+        .await;
+    mount_pages(&server, vec![(1, vec![], 0)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_artifact(dir.path(), "p.json", &[spec("fresh")]);
+    let transport = transport_for(&server);
+    let plan: AgentPolicyImportPlan =
+        agent_policy_ops::plan_import(&transport, &path, false, false)
+            .await
+            .unwrap();
+    let before_requests = server.received_requests().await.unwrap().len();
+
+    let mut tampered_preview = plan.clone();
+    tampered_preview.preview.preview_action = "tampered".into();
+    let error = agent_policy_ops::apply_import(&transport, &tampered_preview)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Error);
+
+    let mut tampered_skipped = plan.clone();
+    tampered_skipped.skipped = vec![json!({"id": "fresh", "reason": "exists"})];
+    let error = agent_policy_ops::apply_import(&transport, &tampered_skipped)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Error);
+
+    let mut tampered_installs = plan.clone();
+    tampered_installs.package_installs = Vec::new();
+    let error = agent_policy_ops::apply_import(&transport, &tampered_installs)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Error);
+
+    let mut tampered_total = plan.clone();
+    tampered_total.total = 99;
+    let error = agent_policy_ops::apply_import(&transport, &tampered_total)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Error);
+
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        before_requests
+    );
 }

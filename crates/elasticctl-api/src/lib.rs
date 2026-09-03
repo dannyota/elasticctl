@@ -48,6 +48,7 @@ pub use data_views_ops::{
 };
 pub use diff::{Change, Drift, FieldChange};
 pub use exceptions::{ListDetail, ListFilter, ListReport};
+pub use fleet::agent_policy_ops::{AgentPolicyImportPlan, AgentPolicyImportReport};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
