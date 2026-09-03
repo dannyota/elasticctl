@@ -89,6 +89,23 @@ const DASHBOARD_VOLATILE_FIELDS: &[&str] = &[
     "space",
 ];
 
+/// The agent-policy probe (Fleet spec section 14, added 0.6.0): a marker
+/// policy created, read singly and in a scoped list, proved to conflict on
+/// name with a disposable second policy, updated twice — once with every
+/// field explicit and once with `unenroll_timeout` omitted, to measure
+/// whether the update route merges or replaces — then deleted. The
+/// duplicate never survives a successful create; `cleanup` removes both
+/// policies by name if a step above returns early.
+const AGENT_POLICY_ID: &str = "elasticctl-sample-agent-policy";
+const AGENT_POLICY_DUP_ID: &str = "elasticctl-sample-agent-policy-dup";
+const AGENT_POLICY_NAME: &str = "elasticctl-sample-agent-policy";
+
+/// Fixed replacement for `created_at`/`updated_at` on a recorded agent
+/// policy (`scrub_agent_policy`). Kept probe-scoped rather than shared with
+/// `ALERT_FIXTURE_TIMESTAMP`, matching this recorder's existing convention
+/// of one placeholder constant per probe.
+const AGENT_POLICY_FIXTURE_TIMESTAMP: &str = "2026-01-01T00:00:00.000Z";
+
 /// Fixed replacement for every case/comment `version` value the recorder
 /// scrubs. Real values are Kibana's base64-encoded `[seq_no, primary_term]`
 /// optimistic-concurrency token and change on every mutation, so they must
@@ -1029,6 +1046,16 @@ struct CleanupOwnership {
     data_view_source: bool,
     data_view_replacement: bool,
     data_view_index: bool,
+    /// Set before `record_agent_policies` creates the marker agent policy,
+    /// cleared once `cleanup` has verified its own delete (or found it
+    /// already absent).
+    agent_policy: bool,
+    /// Set only around the duplicate-name conflict probe. A successful
+    /// duplicate create is never expected — `record_agent_policies` clears
+    /// this right after proving the duplicate does not exist — but a
+    /// duplicate that somehow survives is still cleaned up and fails the
+    /// recording.
+    agent_policy_dup: bool,
     /// Claimed before the dashboard data-view POST so cleanup can always
     /// remove the dependent dashboard before that data view.
     dashboard: bool,
@@ -1172,6 +1199,23 @@ const RECORD_TRACE_LABELS: &[&str] = &[
     "dashboards-final-data-view-delete-check",
     "dashboards-not-found",
     "dashboards-data-view-not-found",
+    "agent-policies",
+    "fleet-setup",
+    "fleet-agent-policy-preflight",
+    "fleet-package-status",
+    "fleet-agent-policy-create",
+    "fleet-agent-policy-create-check",
+    "fleet-agent-policy-get",
+    "fleet-agent-policy-list",
+    "fleet-agent-policy-list-check",
+    "fleet-agent-policy-name-conflict",
+    "fleet-agent-policy-name-conflict-check",
+    "fleet-agent-policy-update",
+    "fleet-agent-policy-update-check",
+    "fleet-agent-policy-update-omitted",
+    "fleet-agent-policy-get-after-omit",
+    "fleet-agent-policy-delete",
+    "fleet-agent-policy-delete-check",
 ];
 
 fn record_trace_label_is_safe(label: &str) -> bool {
@@ -2066,6 +2110,107 @@ fn scrub_dashboard_bundle_ndjson(text: &str, hosts: &[String]) -> String {
     out
 }
 
+/// Remove server-owned agent-policy details while preserving the portable
+/// configuration. `created_by`/`updated_by` become the same `"REDACTED"`
+/// placeholder the generic `scrub` already uses for every other identity
+/// field — repeated here so `scrub_agent_policy` is provably correct on its
+/// own, independent of the generic pass `exchange_fixture`/`response_fixture`
+/// apply after it. `created_at`/`updated_at` become a fixed timestamp so a
+/// re-record of the same object is byte-identical. `version` is an opaque
+/// per-write concurrency token and is removed outright. `space_ids` keeps
+/// only `"default"`, since a fixture must never name another live space.
+fn scrub_agent_policy(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("version");
+            if let Some(Value::Array(spaces)) = map.get_mut("space_ids") {
+                spaces.retain(|space| space.as_str() == Some("default"));
+            }
+            for key in ["created_by", "updated_by"] {
+                if let Some(identity) = map.get_mut(key) {
+                    redact(identity);
+                }
+            }
+            for key in ["created_at", "updated_at"] {
+                if let Some(timestamp) = map.get_mut(key)
+                    && timestamp.is_string()
+                {
+                    *timestamp = json!(AGENT_POLICY_FIXTURE_TIMESTAMP);
+                }
+            }
+            for v in map.values_mut() {
+                scrub_agent_policy(v);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(scrub_agent_policy),
+        _ => {}
+    }
+}
+
+fn agent_policy_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut body: Value,
+) -> RecordedFixture {
+    scrub_agent_policy(&mut body);
+    response_fixture(name, flavor, version, body, None)
+}
+
+fn agent_policy_exchange_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    mut request: Value,
+    mut body: Value,
+) -> RecordedFixture {
+    scrub_agent_policy(&mut request);
+    scrub_agent_policy(&mut body);
+    exchange_fixture(name, flavor, version, request, body)
+}
+
+/// Reduce a `GET /api/fleet/epm/packages/{name}` response to the fields the
+/// recorder is willing to publish. The full item is registry metadata for
+/// every package Fleet knows about; only the requested package's own
+/// installation facts belong in a public fixture.
+fn reduce_package_status_item(body: &mut Value) {
+    let Some(item) = body.get_mut("item").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let installed_version = item
+        .get("installationInfo")
+        .and_then(Value::as_object)
+        .and_then(|info| info.get("version"))
+        .cloned();
+    let mut reduced = serde_json::Map::new();
+    for key in ["name", "version", "status", "latestVersion"] {
+        if let Some(value) = item.get(key) {
+            reduced.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(version) = installed_version {
+        reduced.insert("installationInfo".to_string(), json!({"version": version}));
+    }
+    *item = reduced;
+}
+
+/// Filter a `GET /api/fleet/agent_policies` list body down to the marker
+/// item and rewrite `total` to match, so an unscoped list of every real
+/// policy on the deployment never enters a public fixture. Returns the kept
+/// count so the caller can refuse to record a response that never held the
+/// marker.
+fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize {
+    let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    items.retain(|item| item["id"].as_str() == Some(marker_id));
+    let kept = items.len();
+    if let Some(map) = body.as_object_mut() {
+        map.insert("total".to_string(), json!(kept));
+    }
+    kept
+}
+
 async fn create_marked_list(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Value> {
     require_absent_list(session.transport).await?;
     let body = json!({
@@ -2179,6 +2324,60 @@ impl RecordingSession<'_> {
                 "restoring original data-view default: {}",
                 error.message
             ));
+        }
+
+        for (id, owned) in [
+            (AGENT_POLICY_ID, &mut self.ownership.agent_policy),
+            (AGENT_POLICY_DUP_ID, &mut self.ownership.agent_policy_dup),
+        ] {
+            if !*owned {
+                continue;
+            }
+            match self
+                .transport
+                .get(&format!("/api/fleet/agent_policies/{}", urlencode(id)))
+                .await
+            {
+                Ok(policy) if policy["item"]["name"].as_str() == Some(AGENT_POLICY_NAME) => {
+                    match self
+                        .transport
+                        .post(
+                            "/api/fleet/agent_policies/delete",
+                            Some(&json!({"agentPolicyId": id})),
+                        )
+                        .await
+                    {
+                        Ok(_) => match self
+                            .transport
+                            .get(&format!("/api/fleet/agent_policies/{}", urlencode(id)))
+                            .await
+                        {
+                            Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+                                *owned = false
+                            }
+                            Ok(_) => {
+                                errors.push(format!("agent policy {id} still exists after delete"))
+                            }
+                            Err(error) => errors.push(format!(
+                                "verifying agent policy {id} deletion: {}",
+                                safe_recording_error_summary(&error)
+                            )),
+                        },
+                        Err(error) => errors.push(format!(
+                            "deleting agent policy {id}: {}",
+                            safe_recording_error_summary(&error)
+                        )),
+                    }
+                }
+                Ok(_) => errors.push(format!(
+                    "refusing to delete agent policy {id}: its name no longer matches the marker"
+                )),
+                Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => *owned = false,
+                Err(error) => errors.push(format!(
+                    "checking agent policy {id}: {}",
+                    safe_recording_error_summary(&error)
+                )),
+            }
         }
 
         for (id, owned) in [
@@ -4063,6 +4262,308 @@ async fn record_dashboards(
     Ok(())
 }
 
+/// Record the marker agent-policy lifecycle (Fleet spec section 14, added
+/// 0.6.0): initialize Fleet, prove the marker policy is absent, read the
+/// `elastic_agent` package's installation state, create the marker policy,
+/// read it back singly and in a scoped list, prove a duplicate name
+/// conflicts, update it twice — once with every field explicit and once
+/// with `unenroll_timeout` omitted, to measure whether the update route
+/// merges or replaces — then delete it. `cleanup` removes both policies by
+/// name if a step above returns early.
+async fn record_agent_policies(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+) -> elasticctl_core::Result<()> {
+    let t = session.transport;
+
+    record_trace("fleet-setup");
+    let mut setup = t.post("/api/fleet/setup", Some(&json!({}))).await?;
+    if setup["isInitialized"].as_bool() != Some(true) {
+        return Err(recording_error(
+            "fleet setup did not report isInitialized: true",
+        ));
+    }
+    if let Some(errors) = setup
+        .get_mut("nonFatalErrors")
+        .and_then(Value::as_array_mut)
+    {
+        for entry in errors.iter_mut() {
+            if let Some(message) = entry.get_mut("message") {
+                *message = json!("redacted");
+            }
+        }
+    }
+    recording.fixtures.push(response_fixture(
+        "fleet_setup",
+        flavor,
+        version,
+        setup,
+        None,
+    ));
+
+    // Recorded as a classified 404, proving the stable route before this run
+    // creates its marker policy.
+    record_trace("fleet-agent-policy-preflight");
+    match t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(AGENT_POLICY_ID)
+        ))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            recording.fixtures.push(error_fixture(
+                "agent_policy_not_found",
+                flavor,
+                version,
+                error,
+            ));
+        }
+        Ok(_) => {
+            return Err(recording_error(format!(
+                "refusing to record: agent policy {AGENT_POLICY_ID} already exists and is not cleanup-owned"
+            )));
+        }
+        Err(error) => return Err(error),
+    }
+
+    record_trace("fleet-package-status");
+    let mut package = t.get("/api/fleet/epm/packages/elastic_agent").await?;
+    reduce_package_status_item(&mut package);
+    recording.fixtures.push(response_fixture(
+        "package_elastic_agent",
+        flavor,
+        version,
+        package,
+        None,
+    ));
+
+    session.ownership.agent_policy = true;
+    let create_body = json!({
+        "id": AGENT_POLICY_ID,
+        "name": AGENT_POLICY_NAME,
+        "namespace": "default",
+        "description": "elasticctl sample agent policy",
+        "monitoring_enabled": [],
+        "inactivity_timeout": 1_209_600
+    });
+    record_trace("fleet-agent-policy-create");
+    let created = t
+        .post(
+            "/api/fleet/agent_policies?sys_monitoring=false",
+            Some(&create_body),
+        )
+        .await?;
+    record_trace("fleet-agent-policy-create-check");
+    if created["item"]["id"].as_str() != Some(AGENT_POLICY_ID) {
+        return Err(recording_error(
+            "agent policy create did not preserve the marker id",
+        ));
+    }
+    let mut dup_body = create_body.clone();
+    dup_body["id"] = json!(AGENT_POLICY_DUP_ID);
+    recording.fixtures.push(agent_policy_exchange_fixture(
+        "agent_policy_create",
+        flavor,
+        version,
+        create_body,
+        created,
+    ));
+
+    record_trace("fleet-agent-policy-get");
+    let got = t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(AGENT_POLICY_ID)
+        ))
+        .await?;
+    if got["item"]["agents"].as_u64().is_none() || !got["item"]["package_policies"].is_array() {
+        return Err(recording_error(
+            "agent policy get did not return an agents count and a package_policies array",
+        ));
+    }
+    recording.fixtures.push(agent_policy_fixture(
+        "agent_policy_get",
+        flavor,
+        version,
+        got,
+    ));
+
+    record_trace("fleet-agent-policy-list");
+    let mut listed = t
+        .get("/api/fleet/agent_policies?page=1&perPage=1000&sortField=created_at&sortOrder=asc")
+        .await?;
+    record_trace("fleet-agent-policy-list-check");
+    if scope_agent_policy_list_to_marker(&mut listed, AGENT_POLICY_ID) != 1 {
+        return Err(recording_error(
+            "agent policy list never contained the marker item",
+        ));
+    }
+    recording.fixtures.push(agent_policy_fixture(
+        "agent_policies_list",
+        flavor,
+        version,
+        listed,
+    ));
+
+    session.ownership.agent_policy_dup = true;
+    record_trace("fleet-agent-policy-name-conflict");
+    match t
+        .post(
+            "/api/fleet/agent_policies?sys_monitoring=false",
+            Some(&dup_body),
+        )
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::Conflict => {
+            recording.fixtures.push(error_fixture(
+                "agent_policy_name_conflict",
+                flavor,
+                version,
+                error,
+            ));
+        }
+        Ok(_) => {
+            return Err(recording_error(
+                "duplicate agent-policy name did not conflict",
+            ));
+        }
+        Err(error) => return Err(error),
+    }
+    record_trace("fleet-agent-policy-name-conflict-check");
+    match t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(AGENT_POLICY_DUP_ID)
+        ))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            session.ownership.agent_policy_dup = false;
+        }
+        Ok(_) => {
+            return Err(recording_error(format!(
+                "agent policy {AGENT_POLICY_DUP_ID} exists after a conflicting create; cleanup will remove it and recording fails"
+            )));
+        }
+        Err(error) => return Err(error),
+    }
+
+    let update_body = json!({
+        "name": AGENT_POLICY_NAME,
+        "namespace": "default",
+        "description": "elasticctl sample agent policy updated",
+        "monitoring_enabled": [],
+        "inactivity_timeout": 1_209_600,
+        "unenroll_timeout": 3600
+    });
+    record_trace("fleet-agent-policy-update");
+    let updated = t
+        .put(
+            &format!("/api/fleet/agent_policies/{}", urlencode(AGENT_POLICY_ID)),
+            &update_body,
+        )
+        .await?;
+    record_trace("fleet-agent-policy-update-check");
+    if updated["item"]["unenroll_timeout"].as_u64() != Some(3600) {
+        return Err(recording_error(
+            "agent policy update did not persist unenroll_timeout",
+        ));
+    }
+    recording.fixtures.push(agent_policy_exchange_fixture(
+        "agent_policy_update",
+        flavor,
+        version,
+        update_body,
+        updated,
+    ));
+
+    // Neither this write nor its follow-up read is asserted on
+    // `unenroll_timeout`: whether it survives an omitted field is the
+    // measurement, not a precondition.
+    let update_omitted_body = json!({
+        "name": AGENT_POLICY_NAME,
+        "namespace": "default",
+        "description": "elasticctl sample agent policy omitted",
+        "monitoring_enabled": [],
+        "inactivity_timeout": 1_209_600
+    });
+    record_trace("fleet-agent-policy-update-omitted");
+    let updated_omitted = t
+        .put(
+            &format!("/api/fleet/agent_policies/{}", urlencode(AGENT_POLICY_ID)),
+            &update_omitted_body,
+        )
+        .await?;
+    recording.fixtures.push(agent_policy_exchange_fixture(
+        "agent_policy_update_omitted",
+        flavor,
+        version,
+        update_omitted_body,
+        updated_omitted,
+    ));
+
+    record_trace("fleet-agent-policy-get-after-omit");
+    let got_after_omit = t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(AGENT_POLICY_ID)
+        ))
+        .await?;
+    recording.fixtures.push(agent_policy_fixture(
+        "agent_policy_get_after_omit",
+        flavor,
+        version,
+        got_after_omit,
+    ));
+
+    let delete_body = json!({"agentPolicyId": AGENT_POLICY_ID});
+    record_trace("fleet-agent-policy-delete");
+    let deleted = t
+        .post("/api/fleet/agent_policies/delete", Some(&delete_body))
+        .await?;
+    if deleted["id"].as_str() != Some(AGENT_POLICY_ID) {
+        return Err(recording_error(
+            "agent policy delete did not report the marker id",
+        ));
+    }
+    recording.fixtures.push(agent_policy_fixture(
+        "agent_policy_delete",
+        flavor,
+        version,
+        deleted,
+    ));
+
+    record_trace("fleet-agent-policy-delete-check");
+    match t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(AGENT_POLICY_ID)
+        ))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            recording.fixtures.push(error_fixture(
+                "agent_policy_delete_not_found",
+                flavor,
+                version,
+                error,
+            ));
+            session.ownership.agent_policy = false;
+        }
+        Ok(_) => {
+            return Err(recording_error(format!(
+                "agent policy {AGENT_POLICY_ID} still exists after delete"
+            )));
+        }
+        Err(error) => return Err(error),
+    }
+
+    Ok(())
+}
+
 /// Record the search probe: a marker-scoped scratch index seeded with three
 /// documents, the ES|QL and Query DSL exchanges over them, then the Kibana
 /// data-view and default-index lookups. The index is deleted by `cleanup`.
@@ -5496,6 +5997,8 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
     record_data_views(session, &mut recording, &flavor, &version).await?;
     record_trace("dashboards");
     record_dashboards(session, &mut recording, &flavor, &version).await?;
+    record_trace("agent-policies");
+    record_agent_policies(session, &mut recording, &flavor, &version).await?;
     record_trace("alerts");
     let probe = record_alerts_probe(session, &mut recording, &flavor, &version).await?;
     record_trace("cases");
@@ -7520,6 +8023,88 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn scrub_agent_policy_replaces_identity_and_timestamps_and_drops_opaque_fields() {
+        let mut value = json!({
+            "item": {
+                "id": AGENT_POLICY_ID,
+                "name": AGENT_POLICY_NAME,
+                "namespace": "default",
+                "description": "elasticctl sample agent policy",
+                "monitoring_enabled": [],
+                "inactivity_timeout": 1_209_600,
+                "version": "opaque-version-token",
+                "created_at": "2026-09-01T00:00:00.000Z",
+                "updated_at": "2026-09-01T00:01:00.000Z",
+                "created_by": "elastic",
+                "updated_by": "elastic",
+                "space_ids": ["default", "other-space"]
+            }
+        });
+
+        scrub_agent_policy(&mut value);
+
+        assert_eq!(
+            value,
+            json!({
+                "item": {
+                    "id": AGENT_POLICY_ID,
+                    "name": AGENT_POLICY_NAME,
+                    "namespace": "default",
+                    "description": "elasticctl sample agent policy",
+                    "monitoring_enabled": [],
+                    "inactivity_timeout": 1_209_600,
+                    "created_at": AGENT_POLICY_FIXTURE_TIMESTAMP,
+                    "updated_at": AGENT_POLICY_FIXTURE_TIMESTAMP,
+                    "created_by": "REDACTED",
+                    "updated_by": "REDACTED",
+                    "space_ids": ["default"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn scope_agent_policy_list_to_marker_keeps_only_the_marker_item_and_rewrites_total() {
+        let mut value = json!({
+            "items": [
+                {"id": "some-other-policy", "name": "prod"},
+                {"id": AGENT_POLICY_ID, "name": AGENT_POLICY_NAME},
+                {"id": "yet-another-policy", "name": "staging"}
+            ],
+            "total": 2066,
+            "page": 1,
+            "perPage": 1000
+        });
+
+        let kept = scope_agent_policy_list_to_marker(&mut value, AGENT_POLICY_ID);
+
+        assert_eq!(kept, 1);
+        assert_eq!(
+            value,
+            json!({
+                "items": [{"id": AGENT_POLICY_ID, "name": AGENT_POLICY_NAME}],
+                "total": 1,
+                "page": 1,
+                "perPage": 1000
+            })
+        );
+    }
+
+    #[test]
+    fn scope_agent_policy_list_to_marker_returns_zero_when_the_marker_was_never_present() {
+        let mut value = json!({
+            "items": [{"id": "some-other-policy", "name": "prod"}],
+            "total": 1
+        });
+
+        let kept = scope_agent_policy_list_to_marker(&mut value, AGENT_POLICY_ID);
+
+        assert_eq!(kept, 0);
+        assert_eq!(value["total"], 0);
+        assert_eq!(value["items"], json!([]));
     }
 
     #[test]
