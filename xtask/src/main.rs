@@ -8,7 +8,7 @@ mod conformance;
 mod conformance_matrix;
 
 use elasticctl_core::urlencode;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 #[cfg(not(test))]
@@ -1105,6 +1105,27 @@ struct PendingDefaultRestore {
     phase: PendingDefaultRestorePhase,
 }
 
+/// The bootstrap marker may carry any object-shaped input map only until the
+/// production export has classified and captured it. Later marker reads and
+/// cleanup must require the exact captured map.
+#[derive(Clone, Debug, Default)]
+enum IntegrationMarkerInputs {
+    #[default]
+    Empty,
+    BootstrapObject,
+    Exact(Map<String, Value>),
+}
+
+impl IntegrationMarkerInputs {
+    fn expectation(&self) -> MarkerIntegrationInputs<'_> {
+        match self {
+            Self::Empty => MarkerIntegrationInputs::Empty,
+            Self::BootstrapObject => MarkerIntegrationInputs::BootstrapObject,
+            Self::Exact(inputs) => MarkerIntegrationInputs::Exact(inputs),
+        }
+    }
+}
+
 #[derive(Default)]
 struct CleanupOwnership {
     rule: bool,
@@ -1170,6 +1191,9 @@ struct CleanupOwnership {
     /// prove the integration still points at the package version this session
     /// was authorized to use.
     integration_system_package_version: Option<String>,
+    /// Memory-only input proof for the currently owned integration marker.
+    /// It never supplies a public fixture by itself.
+    integration_policy_inputs: IntegrationMarkerInputs,
     /// The strict, normalized inventory captured before an integration create.
     /// It is memory-only evidence: the recorder requires the exact `system`
     /// package to pre-exist and every package-policy create attempt must leave
@@ -1341,6 +1365,11 @@ const RECORD_TRACE_LABELS: &[&str] = &[
     "fleet-integration-policy-preflight",
     "fleet-integration-policy-parent-create",
     "fleet-integration-policy-metadata",
+    "fleet-integration-policy-bootstrap-create",
+    "fleet-integration-policy-inventory-after-bootstrap-create",
+    "fleet-integration-policy-bootstrap-get",
+    "fleet-integration-policy-bootstrap-export",
+    "fleet-integration-policy-bootstrap-delete",
     "fleet-integration-policy-create",
     "fleet-integration-policy-inventory-after-create",
     "fleet-integration-policy-inventory-after-duplicate-create",
@@ -1588,16 +1617,55 @@ fn marker_integration_package_matches(
             })
 }
 
+/// The bootstrap marker exists only long enough to obtain the simplified map
+/// that Fleet materializes. Its map cannot be known before the write. Every
+/// recorded or cleanup-owned policy after that point must instead retain the
+/// exact captured map.
+#[derive(Clone, Copy)]
+enum MarkerIntegrationInputs<'a> {
+    Empty,
+    Exact(&'a Map<String, Value>),
+    BootstrapObject,
+}
+
+#[derive(Clone, Copy)]
+struct MarkerResponseExpectation<'a> {
+    description: Option<&'a str>,
+    inputs: MarkerIntegrationInputs<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct IntegrationFixtureContext<'a> {
+    active_space: &'a str,
+    nonce: &'a str,
+    expected_inputs: &'a Map<String, Value>,
+}
+
+fn marker_integration_inputs_match(
+    item: &Map<String, Value>,
+    expected: MarkerIntegrationInputs<'_>,
+) -> bool {
+    let Some(inputs) = item.get("inputs").and_then(Value::as_object) else {
+        return false;
+    };
+    match expected {
+        MarkerIntegrationInputs::Empty => inputs.is_empty(),
+        MarkerIntegrationInputs::Exact(expected) => inputs == expected,
+        MarkerIntegrationInputs::BootstrapObject => true,
+    }
+}
+
 /// Prove that one package-policy item is still the recorder's exact portable
 /// marker. List rows use this directly; single responses must pass the strict
 /// envelope validator below as well.
-fn validate_marker_integration_item_with_nonce(
-    item: &serde_json::Map<String, Value>,
+fn validate_marker_integration_item_with_nonce_and_inputs(
+    item: &Map<String, Value>,
     id: &str,
     expected_version: &str,
     active_space: &str,
     nonce: &str,
     expected_description: Option<&str>,
+    expected_inputs: MarkerIntegrationInputs<'_>,
 ) -> elasticctl_core::Result<()> {
     let created_description = marker_integration_description(nonce);
     let updated_description = marker_integration_updated_description(nonce);
@@ -1629,10 +1697,7 @@ fn validate_marker_integration_item_with_nonce(
             Some(_) => false,
         }
         && marker_integration_package_matches(item, expected_version)
-        && item
-            .get("inputs")
-            .and_then(Value::as_object)
-            .is_some_and(serde_json::Map::is_empty)
+        && marker_integration_inputs_match(item, expected_inputs)
         && item.get("enabled").and_then(Value::as_bool) == Some(true)
         && is_optional_false(
             item,
@@ -1666,22 +1731,24 @@ fn validate_marker_integration_item_with_nonce(
 /// Prove that one live package-policy response is still the recorder's exact
 /// portable marker. Every mutation and cleanup path calls this same validator
 /// with the package version observed in the strict preflight inventory.
-fn validate_marker_integration_with_nonce<'a>(
+fn validate_marker_integration_with_nonce_and_inputs<'a>(
     value: &'a Value,
     id: &str,
     expected_version: &str,
     active_space: &str,
     nonce: &str,
     expected_description: Option<&str>,
-) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
+    expected_inputs: MarkerIntegrationInputs<'_>,
+) -> elasticctl_core::Result<&'a Map<String, Value>> {
     let item = integration_response_item(value)?;
-    validate_marker_integration_item_with_nonce(
+    validate_marker_integration_item_with_nonce_and_inputs(
         item,
         id,
         expected_version,
         active_space,
         nonce,
         expected_description,
+        expected_inputs,
     )?;
     Ok(item)
 }
@@ -2678,6 +2745,7 @@ fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize
 /// Keep the marker integration only. Package-policy list responses otherwise
 /// expose every integration in a shared Fleet space, including user-owned
 /// configuration and possible secret references.
+#[cfg(test)]
 fn scope_integration_policy_list_to_marker_with_nonce(
     body: &mut Value,
     marker_id: &str,
@@ -2685,18 +2753,37 @@ fn scope_integration_policy_list_to_marker_with_nonce(
     active_space: &str,
     nonce: &str,
 ) -> usize {
+    scope_integration_policy_list_to_marker_with_nonce_and_inputs(
+        body,
+        marker_id,
+        expected_version,
+        active_space,
+        nonce,
+        MarkerIntegrationInputs::Empty,
+    )
+}
+
+fn scope_integration_policy_list_to_marker_with_nonce_and_inputs(
+    body: &mut Value,
+    marker_id: &str,
+    expected_version: &str,
+    active_space: &str,
+    nonce: &str,
+    expected_inputs: MarkerIntegrationInputs<'_>,
+) -> usize {
     let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
         return 0;
     };
     items.retain(|item| {
         item.as_object().is_some_and(|item| {
-            validate_marker_integration_item_with_nonce(
+            validate_marker_integration_item_with_nonce_and_inputs(
                 item,
                 marker_id,
                 expected_version,
                 active_space,
                 nonce,
                 None,
+                expected_inputs,
             )
             .is_ok()
         })
@@ -2749,16 +2836,50 @@ fn integration_policy_fixture_in_space(
     nonce: &str,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
+    integration_policy_fixture_in_space_with_inputs(
+        name,
+        flavor,
+        version,
+        active_space,
+        nonce,
+        &Map::new(),
+        body,
+    )
+}
+
+fn integration_policy_fixture_in_space_with_inputs(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    active_space: &str,
+    nonce: &str,
+    expected_inputs: &Map<String, Value>,
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
     let body = match name {
         "integration_policy_get" => {
             let description = marker_integration_description(nonce);
-            reduce_marker_integration_response(&body, active_space, nonce, &description)?
+            reduce_marker_integration_response_with_inputs(
+                &body,
+                active_space,
+                nonce,
+                &description,
+                expected_inputs,
+            )?
         }
         "integration_policy_round_trip" => {
             let description = marker_integration_updated_description(nonce);
-            reduce_marker_integration_response(&body, active_space, nonce, &description)?
+            reduce_marker_integration_response_with_inputs(
+                &body,
+                active_space,
+                nonce,
+                &description,
+                expected_inputs,
+            )?
         }
-        "integration_policies_list" => reduce_marker_integration_list(&body, active_space, nonce)?,
+        "integration_policies_list" => {
+            reduce_marker_integration_list_with_inputs(&body, active_space, nonce, expected_inputs)?
+        }
         "integration_policy_parent_get" => {
             reduce_marker_parent_get_response(&body, active_space, nonce)?
         }
@@ -2801,27 +2922,56 @@ fn integration_policy_exchange_fixture_in_space(
     request: Value,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
+    integration_policy_exchange_fixture_in_space_with_inputs(
+        name,
+        flavor,
+        version,
+        IntegrationFixtureContext {
+            active_space,
+            nonce,
+            expected_inputs: &Map::new(),
+        },
+        request,
+        body,
+    )
+}
+
+fn integration_policy_exchange_fixture_in_space_with_inputs(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    context: IntegrationFixtureContext<'_>,
+    request: Value,
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
+    let IntegrationFixtureContext {
+        active_space,
+        nonce,
+        expected_inputs,
+    } = context;
     let (request, body) = match name {
         "integration_policy_parent_create" => (
             reduce_marker_parent_create_request(&request, nonce)?,
             reduce_marker_parent_create_response(&body, active_space, nonce)?,
         ),
         "integration_policy_create" => (
-            reduce_marker_integration_create_request(&request, nonce)?,
-            reduce_marker_integration_response(
+            reduce_marker_integration_create_request_with_inputs(&request, nonce, expected_inputs)?,
+            reduce_marker_integration_response_with_inputs(
                 &body,
                 active_space,
                 nonce,
                 &marker_integration_description(nonce),
+                expected_inputs,
             )?,
         ),
         "integration_policy_update" => (
-            reduce_marker_integration_update_request(&request, nonce)?,
-            reduce_marker_integration_response(
+            reduce_marker_integration_update_request_with_inputs(&request, nonce, expected_inputs)?,
+            reduce_marker_integration_response_with_inputs(
                 &body,
                 active_space,
                 nonce,
                 &marker_integration_updated_description(nonce),
+                expected_inputs,
             )?,
         ),
         _ => {
@@ -2837,11 +2987,12 @@ fn integration_policy_exchange_fixture_in_space(
 /// identity. The allowlist is intentionally smaller than the public Fleet
 /// schema: response-only metadata, active-space references, secrets, and new
 /// unknown fields do not prove this recorder's route contract.
-fn reduce_marker_integration_response(
+fn reduce_marker_integration_response_with_inputs(
     body: &Value,
     active_space: &str,
     nonce: &str,
     expected_description: &str,
+    expected_inputs: &Map<String, Value>,
 ) -> elasticctl_core::Result<Value> {
     let item = body.get("item").and_then(Value::as_object).ok_or_else(|| {
         recording_error("integration policy response must contain an item object")
@@ -2866,13 +3017,14 @@ fn reduce_marker_integration_response(
             "integration policy response did not preserve the marker identity",
         ));
     };
-    validate_marker_integration_with_nonce(
+    validate_marker_integration_with_nonce_and_inputs(
         body,
         INTEGRATION_POLICY_ID,
         package_version,
         active_space,
         nonce,
         Some(expected_description),
+        MarkerIntegrationInputs::Exact(expected_inputs),
     )?;
     Ok(json!({
         "item": {
@@ -2885,7 +3037,7 @@ fn reduce_marker_integration_response(
                 "name": INTEGRATION_POLICY_PACKAGE,
                 "version": package_version,
             },
-            "inputs": {},
+            "inputs": expected_inputs,
             "enabled": true,
         }
     }))
@@ -2902,12 +3054,14 @@ fn marker_integration_request_version<'a>(
         .ok_or_else(|| recording_error(format!("{context} package version must be non-empty")))
 }
 
-fn reduce_marker_integration_create_request(
+fn reduce_marker_integration_create_request_with_inputs(
     request: &Value,
     nonce: &str,
+    expected_inputs: &Map<String, Value>,
 ) -> elasticctl_core::Result<Value> {
     let version = marker_integration_request_version(request, "integration policy create request")?;
-    let expected = marker_integration_create_body_with_nonce(version, nonce);
+    let expected =
+        marker_integration_create_body_with_nonce_and_inputs(version, nonce, expected_inputs);
     if request != &expected {
         return Err(recording_error(
             "integration policy create request did not preserve the exact marker body",
@@ -2918,12 +3072,14 @@ fn reduce_marker_integration_create_request(
     Ok(reduced)
 }
 
-fn reduce_marker_integration_update_request(
+fn reduce_marker_integration_update_request_with_inputs(
     request: &Value,
     nonce: &str,
+    expected_inputs: &Map<String, Value>,
 ) -> elasticctl_core::Result<Value> {
     let version = marker_integration_request_version(request, "integration policy update request")?;
-    let expected = marker_integration_update_body_with_nonce(version, nonce);
+    let expected =
+        marker_integration_update_body_with_nonce_and_inputs(version, nonce, expected_inputs);
     if request != &expected {
         return Err(recording_error(
             "integration policy update request did not preserve the exact marker body",
@@ -2997,10 +3153,11 @@ fn reduce_marker_parent_get_response(
     }))
 }
 
-fn reduce_marker_integration_list(
+fn reduce_marker_integration_list_with_inputs(
     body: &Value,
     active_space: &str,
     nonce: &str,
+    expected_inputs: &Map<String, Value>,
 ) -> elasticctl_core::Result<Value> {
     let items = body
         .get("items")
@@ -3018,11 +3175,12 @@ fn reduce_marker_integration_list(
         ));
     }
     let description = marker_integration_description(nonce);
-    let reduced = reduce_marker_integration_response(
+    let reduced = reduce_marker_integration_response_with_inputs(
         &json!({"item": items[0]}),
         active_space,
         nonce,
         &description,
+        expected_inputs,
     )?;
     Ok(json!({
         "items": [reduced["item"].clone()],
@@ -3715,6 +3873,14 @@ fn marker_integration_parent_create_body_with_nonce(nonce: &str) -> Value {
 }
 
 fn marker_integration_create_body_with_nonce(version: &str, nonce: &str) -> Value {
+    marker_integration_create_body_with_nonce_and_inputs(version, nonce, &Map::new())
+}
+
+fn marker_integration_create_body_with_nonce_and_inputs(
+    version: &str,
+    nonce: &str,
+    inputs: &Map<String, Value>,
+) -> Value {
     json!({
         "id": INTEGRATION_POLICY_ID,
         "name": INTEGRATION_POLICY_NAME,
@@ -3722,12 +3888,21 @@ fn marker_integration_create_body_with_nonce(version: &str, nonce: &str) -> Valu
         "namespace": INTEGRATION_POLICY_NAMESPACE,
         "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
         "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": version},
-        "inputs": {},
+        "inputs": inputs,
     })
 }
 
+#[cfg(test)]
 fn marker_integration_update_body_with_nonce(version: &str, nonce: &str) -> Value {
-    let mut body = marker_integration_create_body_with_nonce(version, nonce);
+    marker_integration_update_body_with_nonce_and_inputs(version, nonce, &Map::new())
+}
+
+fn marker_integration_update_body_with_nonce_and_inputs(
+    version: &str,
+    nonce: &str,
+    inputs: &Map<String, Value>,
+) -> Value {
+    let mut body = marker_integration_create_body_with_nonce_and_inputs(version, nonce, inputs);
     let object = body
         .as_object_mut()
         .expect("marker integration body is an object");
@@ -3738,6 +3913,126 @@ fn marker_integration_update_body_with_nonce(version: &str, nonce: &str) -> Valu
     );
     object.insert("enabled".to_string(), Value::Bool(true));
     body
+}
+
+fn sensitive_marker_input_field(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "secret",
+        "password",
+        "passphrase",
+        "token",
+        "credential",
+        "api_key",
+        "apikey",
+        "private_key",
+        "access_key",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+}
+
+/// Inspect only input-map field names and container structure. Values never
+/// participate in this recorder-side backstop; the production export path is
+/// the authority for secret classification.
+fn marker_inputs_have_sensitive_field_names(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => fields.iter().any(|(name, value)| {
+            sensitive_marker_input_field(name) || marker_inputs_have_sensitive_field_names(value)
+        }),
+        Value::Array(values) => values.iter().any(marker_inputs_have_sensitive_field_names),
+        _ => false,
+    }
+}
+
+fn exported_marker_optional_fields_are_empty(
+    spec: &elasticctl_api::fleet::integration_policies::IntegrationPolicySpec,
+) -> bool {
+    spec.vars.as_ref().is_none_or(Map::is_empty)
+        && spec.var_group_selections.as_ref().is_none_or(Map::is_empty)
+        && spec.condition.as_deref().is_none_or(str::is_empty)
+        && spec
+            .additional_datastreams_permissions
+            .as_ref()
+            .is_none_or(Vec::is_empty)
+}
+
+fn capture_exported_bootstrap_inputs(
+    spec: elasticctl_api::fleet::integration_policies::IntegrationPolicySpec,
+    expected_version: &str,
+    nonce: &str,
+    bootstrap_item: &Map<String, Value>,
+    active_space: &str,
+) -> elasticctl_core::Result<Map<String, Value>> {
+    let expected_description = marker_integration_description(nonce);
+    let identity_matches = spec.id == INTEGRATION_POLICY_ID
+        && spec.name == INTEGRATION_POLICY_NAME
+        && spec.namespace.as_deref() == Some(INTEGRATION_POLICY_NAMESPACE)
+        && spec.policy_ids == [INTEGRATION_POLICY_PARENT_ID]
+        && spec.package.name == INTEGRATION_POLICY_PACKAGE
+        && spec.package.version == expected_version
+        && spec.description.as_deref() == Some(expected_description.as_str())
+        && !spec.inputs.is_empty()
+        && exported_marker_optional_fields_are_empty(&spec);
+    if !identity_matches {
+        return Err(recording_error(
+            "exported bootstrap integration policy did not preserve the marker identity",
+        ));
+    }
+    if marker_inputs_have_sensitive_field_names(&Value::Object(spec.inputs.clone())) {
+        return Err(recording_error(
+            "exported bootstrap integration policy contained sensitive-looking input fields",
+        ));
+    }
+    let normalized =
+        elasticctl_api::fleet::integration_policy_ops::normalize(bootstrap_item, active_space)
+            .map_err(|_| recording_error("normalizing bootstrap integration policy failed"))?;
+    if normalized.inputs != spec.inputs {
+        return Err(recording_error(
+            "exported bootstrap integration policy inputs did not match the marker read",
+        ));
+    }
+    Ok(spec.inputs)
+}
+
+async fn export_bootstrap_marker_inputs(
+    t: &elasticctl_core::Transport,
+    expected_version: &str,
+    nonce: &str,
+    bootstrap_item: &Map<String, Value>,
+) -> elasticctl_core::Result<Map<String, Value>> {
+    let selectors = vec![INTEGRATION_POLICY_ID.to_owned()];
+    let exported = elasticctl_api::fleet::integration_policy_ops::export(
+        t,
+        &selectors,
+        false,
+        elasticctl_api::content_codec::ContentFormat::Json,
+    )
+    .await
+    .map_err(|_| recording_error("exporting bootstrap integration policy failed"))?;
+    let spec = decode_exported_bootstrap_marker(exported)?;
+    capture_exported_bootstrap_inputs(spec, expected_version, nonce, bootstrap_item, t.space())
+}
+
+fn decode_exported_bootstrap_marker(
+    exported: elasticctl_api::ops::ExportOutcome,
+) -> elasticctl_core::Result<elasticctl_api::fleet::integration_policies::IntegrationPolicySpec> {
+    let mut specs = elasticctl_api::content_codec::decode_sequence::<
+        elasticctl_api::fleet::integration_policies::IntegrationPolicySpec,
+    >(
+        &exported.body,
+        elasticctl_api::content_codec::ContentFormat::Json,
+        "integration policy",
+    )
+    .map_err(|_| recording_error("decoding exported bootstrap integration policy failed"))?;
+    if exported.exported != 1 || !exported.missing.is_empty() || specs.len() != 1 {
+        return Err(recording_error(
+            "exporting bootstrap integration policy did not return exactly one marker",
+        ));
+    }
+    Ok(specs
+        .pop()
+        .expect("one exported integration policy was checked"))
 }
 
 #[cfg(test)]
@@ -3755,6 +4050,7 @@ fn marker_integration_update_body(version: &str) -> Value {
     marker_integration_update_body_with_nonce(version, TEST_INTEGRATION_RECORDING_NONCE)
 }
 
+#[cfg(test)]
 fn require_marker_integration_response_with_nonce(
     body: &Value,
     expected_version: &str,
@@ -3763,33 +4059,61 @@ fn require_marker_integration_response_with_nonce(
     expected_description: Option<&str>,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    require_marker_integration_response_for_id_with_nonce(
+    require_marker_integration_response_with_nonce_and_inputs(
+        body,
+        expected_version,
+        active_space,
+        nonce,
+        expected_description,
+        MarkerIntegrationInputs::Empty,
+        context,
+    )
+}
+
+fn require_marker_integration_response_with_nonce_and_inputs(
+    body: &Value,
+    expected_version: &str,
+    active_space: &str,
+    nonce: &str,
+    expected_description: Option<&str>,
+    expected_inputs: MarkerIntegrationInputs<'_>,
+    context: &str,
+) -> elasticctl_core::Result<()> {
+    require_marker_integration_response_for_id_with_nonce_and_inputs(
         body,
         INTEGRATION_POLICY_ID,
         expected_version,
         active_space,
         nonce,
-        expected_description,
+        MarkerResponseExpectation {
+            description: expected_description,
+            inputs: expected_inputs,
+        },
         context,
     )
 }
 
-fn require_marker_integration_response_for_id_with_nonce(
+fn require_marker_integration_response_for_id_with_nonce_and_inputs(
     body: &Value,
     expected_id: &str,
     expected_version: &str,
     active_space: &str,
     nonce: &str,
-    expected_description: Option<&str>,
+    expectation: MarkerResponseExpectation<'_>,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    if validate_marker_integration_with_nonce(
+    let MarkerResponseExpectation {
+        description: expected_description,
+        inputs: expected_inputs,
+    } = expectation;
+    if validate_marker_integration_with_nonce_and_inputs(
         body,
         expected_id,
         expected_version,
         active_space,
         nonce,
         expected_description,
+        expected_inputs,
     )
     .is_err()
     {
@@ -3862,10 +4186,11 @@ fn require_parent_attachment_with_nonce(
     )
 }
 
-async fn reread_marker_integration_before_mutation_with_nonce(
+async fn reread_marker_integration_before_mutation_with_nonce_and_inputs(
     t: &elasticctl_core::Transport,
     expected_version: &str,
     nonce: &str,
+    expected_inputs: MarkerIntegrationInputs<'_>,
     context: &'static str,
 ) -> elasticctl_core::Result<()> {
     let body = t
@@ -3875,12 +4200,13 @@ async fn reread_marker_integration_before_mutation_with_nonce(
         ))
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
-    require_marker_integration_response_with_nonce(
+    require_marker_integration_response_with_nonce_and_inputs(
         &body,
         expected_version,
         t.space(),
         nonce,
         None,
+        expected_inputs,
         context,
     )
 }
@@ -4046,11 +4372,29 @@ enum AmbiguousMarkerCreateOwnership {
     Unclaimed,
 }
 
+#[cfg(test)]
 async fn claim_ambiguous_marker_integration_create(
     t: &elasticctl_core::Transport,
     id: &str,
     expected_version: &str,
     nonce: &str,
+) -> AmbiguousMarkerCreateOwnership {
+    claim_ambiguous_marker_integration_create_with_inputs(
+        t,
+        id,
+        expected_version,
+        nonce,
+        MarkerIntegrationInputs::Empty,
+    )
+    .await
+}
+
+async fn claim_ambiguous_marker_integration_create_with_inputs(
+    t: &elasticctl_core::Transport,
+    id: &str,
+    expected_version: &str,
+    nonce: &str,
+    expected_inputs: MarkerIntegrationInputs<'_>,
 ) -> AmbiguousMarkerCreateOwnership {
     let expected_description = marker_integration_description(nonce);
     match t
@@ -4061,13 +4405,14 @@ async fn claim_ambiguous_marker_integration_create(
         .await
     {
         Ok(current) => {
-            if validate_marker_integration_with_nonce(
+            if validate_marker_integration_with_nonce_and_inputs(
                 &current,
                 id,
                 expected_version,
                 t.space(),
                 nonce,
                 Some(&expected_description),
+                expected_inputs,
             )
             .is_ok()
             {
@@ -4113,11 +4458,29 @@ async fn claim_ambiguous_marker_integration_parent_create(
     }
 }
 
+#[cfg(test)]
 async fn cleanup_marker_integration(
     t: &elasticctl_core::Transport,
     id: &str,
     expected_version: &str,
     nonce: &str,
+) -> elasticctl_core::Result<()> {
+    cleanup_marker_integration_with_inputs(
+        t,
+        id,
+        expected_version,
+        nonce,
+        MarkerIntegrationInputs::Empty,
+    )
+    .await
+}
+
+async fn cleanup_marker_integration_with_inputs(
+    t: &elasticctl_core::Transport,
+    id: &str,
+    expected_version: &str,
+    nonce: &str,
+    expected_inputs: MarkerIntegrationInputs<'_>,
 ) -> elasticctl_core::Result<()> {
     let path = format!(
         "/api/fleet/package_policies/{}?format=simplified",
@@ -4133,13 +4496,14 @@ async fn cleanup_marker_integration(
             ));
         }
     };
-    if validate_marker_integration_with_nonce(
+    if validate_marker_integration_with_nonce_and_inputs(
         &current,
         id,
         expected_version,
         t.space(),
         nonce,
         None,
+        expected_inputs,
     )
     .is_err()
     {
@@ -4222,6 +4586,71 @@ async fn cleanup_marker_integration_parent(
     }
 }
 
+async fn require_marker_integration_absent(
+    t: &elasticctl_core::Transport,
+    id: &str,
+    context: &'static str,
+) -> elasticctl_core::Result<()> {
+    match t
+        .get(&format!(
+            "/api/fleet/package_policies/{}?format=simplified",
+            urlencode(id)
+        ))
+        .await
+    {
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(recording_error(format!(
+            "{context}: integration policy still exists after delete"
+        ))),
+        Err(error) => Err(safe_recording_transport_error(
+            "verifying bootstrap integration policy delete failed",
+            error,
+        )),
+    }
+}
+
+/// A bootstrap delete has no fixture body to preserve. Its one-shot response
+/// can be malformed or lost after Fleet committed, so only a fresh absence
+/// proof decides whether the recorder can continue. It never retries here.
+async fn delete_bootstrap_marker_integration_once(
+    t: &elasticctl_core::Transport,
+    expected_version: &str,
+    nonce: &str,
+    expected_inputs: &Map<String, Value>,
+) -> elasticctl_core::Result<()> {
+    reread_marker_integration_before_mutation_with_nonce_and_inputs(
+        t,
+        expected_version,
+        nonce,
+        MarkerIntegrationInputs::Exact(expected_inputs),
+        "rechecking bootstrap integration policy before delete",
+    )
+    .await?;
+    let result = t
+        .delete_once(&format!(
+            "/api/fleet/package_policies/{}",
+            urlencode(INTEGRATION_POLICY_ID)
+        ))
+        .await;
+    let response_is_exact = matches!(
+        result.as_ref(),
+        Ok(body) if require_exact_delete_id(body, INTEGRATION_POLICY_ID, "bootstrap integration policy delete").is_ok()
+    );
+    match require_marker_integration_absent(
+        t,
+        INTEGRATION_POLICY_ID,
+        "bootstrap integration policy delete",
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(absence_error) if response_is_exact => Err(absence_error),
+        Err(_) => Err(recording_error(
+            "bootstrap integration policy delete did not prove marker absence",
+        )),
+    }
+}
+
 impl RecordingSession<'_> {
     /// Clean the integration marker in dependency order. This is shared by
     /// the normal lifecycle's final audit and the outer failure cleanup, so a
@@ -4232,14 +4661,16 @@ impl RecordingSession<'_> {
         let mut errors = Vec::new();
         let expected_system_version = self.ownership.integration_system_package_version.clone();
         let session_nonce = self.ownership.integration_recording_nonce.clone();
+        let expected_inputs = self.ownership.integration_policy_inputs.clone();
 
         if self.ownership.integration_policy {
             match (expected_system_version.as_deref(), session_nonce.as_deref()) {
-                (Some(version), Some(nonce)) => match cleanup_marker_integration(
+                (Some(version), Some(nonce)) => match cleanup_marker_integration_with_inputs(
                     self.transport,
                     INTEGRATION_POLICY_ID,
                     version,
                     nonce,
+                    expected_inputs.expectation(),
                 )
                 .await
                 {
@@ -4256,11 +4687,12 @@ impl RecordingSession<'_> {
         }
         if self.ownership.integration_policy_dup {
             match (expected_system_version.as_deref(), session_nonce.as_deref()) {
-                (Some(version), Some(nonce)) => match cleanup_marker_integration(
+                (Some(version), Some(nonce)) => match cleanup_marker_integration_with_inputs(
                     self.transport,
                     INTEGRATION_POLICY_DUP_ID,
                     version,
                     nonce,
+                    expected_inputs.expectation(),
                 )
                 .await
                 {
@@ -4306,6 +4738,8 @@ impl RecordingSession<'_> {
                             self.ownership.integration_package_inventory = None;
                             self.ownership.integration_system_package_version = None;
                             self.ownership.integration_recording_nonce = None;
+                            self.ownership.integration_policy_inputs =
+                                IntegrationMarkerInputs::Empty;
                         }
                         Err(error) => errors.push(format!(
                             "verifying integration marker cleanup: {}",
@@ -6606,10 +7040,10 @@ async fn record_agent_policies(
 }
 
 /// Record the 0.6.1 package-policy lifecycle against a dedicated marker
-/// parent. The marker has no variables and empty simplified inputs, so the
-/// public fixtures prove Fleet's route shapes without retaining user policy
-/// content or secrets. The parent disappears only after the integration has
-/// gone, so the recorder never sends an attached-parent delete.
+/// parent. A short-lived empty bootstrap map lets Fleet materialize package
+/// defaults, and production export classifies that exact map before it enters
+/// public fixtures. The parent disappears only after the integration has gone,
+/// so the recorder never sends an attached-parent delete.
 async fn record_integration_policies(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -6827,7 +7261,137 @@ async fn record_integration_policies_with_nonce(
         None,
     ));
 
-    let create_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
+    // Fleet expands an empty simplified map to package defaults. Record no
+    // bootstrap body or response: production export classifies the exact
+    // marker and supplies the only map allowed into public fixtures.
+    let bootstrap_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
+    record_trace("fleet-integration-policy-bootstrap-create");
+    let bootstrap_result = t
+        .post_once(
+            "/api/fleet/package_policies?format=simplified",
+            Some(&bootstrap_body),
+        )
+        .await;
+    record_trace("fleet-integration-policy-inventory-after-bootstrap-create");
+    let bootstrap_inventory_observation = require_unchanged_installed_package_inventory(
+        t,
+        &baseline_inventory,
+        "reading installed package inventory after bootstrap integration policy create failed",
+    )
+    .await;
+    let created_description = marker_integration_description(nonce);
+    match bootstrap_result {
+        Ok(created) => {
+            if let Err(error) = require_marker_integration_response_with_nonce_and_inputs(
+                &created,
+                &package_status.version,
+                t.space(),
+                nonce,
+                Some(&created_description),
+                MarkerIntegrationInputs::BootstrapObject,
+                "bootstrap integration policy create",
+            ) {
+                if claim_ambiguous_marker_integration_create_with_inputs(
+                    t,
+                    INTEGRATION_POLICY_ID,
+                    &package_status.version,
+                    nonce,
+                    MarkerIntegrationInputs::BootstrapObject,
+                )
+                .await
+                    == AmbiguousMarkerCreateOwnership::Claimed
+                {
+                    session.ownership.integration_policy = true;
+                    session.ownership.integration_policy_inputs =
+                        IntegrationMarkerInputs::BootstrapObject;
+                }
+                return Err(error);
+            }
+            session.ownership.integration_policy = true;
+            session.ownership.integration_policy_inputs = IntegrationMarkerInputs::BootstrapObject;
+            if let Err(observation) = bootstrap_inventory_observation {
+                return Err(observation);
+            }
+        }
+        Err(error) => {
+            if claim_ambiguous_marker_integration_create_with_inputs(
+                t,
+                INTEGRATION_POLICY_ID,
+                &package_status.version,
+                nonce,
+                MarkerIntegrationInputs::BootstrapObject,
+            )
+            .await
+                == AmbiguousMarkerCreateOwnership::Claimed
+            {
+                session.ownership.integration_policy = true;
+                session.ownership.integration_policy_inputs =
+                    IntegrationMarkerInputs::BootstrapObject;
+            }
+            return match bootstrap_inventory_observation {
+                Ok(()) => Err(safe_recording_transport_error(
+                    "creating bootstrap integration policy marker failed",
+                    error,
+                )),
+                Err(observation) => Err(combine_package_policy_attempt_and_inventory_errors(
+                    "creating bootstrap integration policy marker failed",
+                    &error,
+                    &observation,
+                )),
+            };
+        }
+    }
+
+    record_trace("fleet-integration-policy-bootstrap-get");
+    let bootstrap_read = t
+        .get(&format!(
+            "/api/fleet/package_policies/{}?format=simplified",
+            urlencode(INTEGRATION_POLICY_ID)
+        ))
+        .await
+        .map_err(|error| {
+            safe_recording_transport_error(
+                "reading bootstrap integration policy marker failed",
+                error,
+            )
+        })?;
+    let bootstrap_item = validate_marker_integration_with_nonce_and_inputs(
+        &bootstrap_read,
+        INTEGRATION_POLICY_ID,
+        &package_status.version,
+        t.space(),
+        nonce,
+        Some(&created_description),
+        MarkerIntegrationInputs::BootstrapObject,
+    )?
+    .clone();
+
+    record_trace("fleet-integration-policy-bootstrap-export");
+    let stable_inputs =
+        export_bootstrap_marker_inputs(t, &package_status.version, nonce, &bootstrap_item).await?;
+    session.ownership.integration_policy_inputs =
+        IntegrationMarkerInputs::Exact(stable_inputs.clone());
+
+    record_trace("fleet-integration-policy-bootstrap-delete");
+    delete_bootstrap_marker_integration_once(t, &package_status.version, nonce, &stable_inputs)
+        .await?;
+    // The delete helper has proved exact-id absence. Leave the captured map in
+    // memory for the recorded second create, but no longer claim a live
+    // integration before proving the parent detached.
+    session.ownership.integration_policy = false;
+    reread_marker_parent_before_mutation_with_nonce(
+        t,
+        &[],
+        nonce,
+        "rechecking integration policy parent after bootstrap delete",
+    )
+    .await?;
+
+    let create_body = marker_integration_create_body_with_nonce_and_inputs(
+        &package_status.version,
+        nonce,
+        &stable_inputs,
+    );
     record_trace("fleet-integration-policy-create");
     let created_result = t
         .post_once(
@@ -6845,22 +7409,23 @@ async fn record_integration_policies_with_nonce(
         "reading installed package inventory after integration policy create failed",
     )
     .await;
-    let created_description = marker_integration_description(nonce);
     let created = match created_result {
         Ok(created) => {
-            if let Err(error) = require_marker_integration_response_with_nonce(
+            if let Err(error) = require_marker_integration_response_with_nonce_and_inputs(
                 &created,
                 &package_status.version,
                 t.space(),
                 nonce,
                 Some(&created_description),
+                MarkerIntegrationInputs::Exact(&stable_inputs),
                 "integration policy create",
             ) {
-                if claim_ambiguous_marker_integration_create(
+                if claim_ambiguous_marker_integration_create_with_inputs(
                     t,
                     INTEGRATION_POLICY_ID,
                     &package_status.version,
                     nonce,
+                    MarkerIntegrationInputs::Exact(&stable_inputs),
                 )
                 .await
                     == AmbiguousMarkerCreateOwnership::Claimed
@@ -6876,11 +7441,12 @@ async fn record_integration_policies_with_nonce(
             created
         }
         Err(error) => {
-            if claim_ambiguous_marker_integration_create(
+            if claim_ambiguous_marker_integration_create_with_inputs(
                 t,
                 INTEGRATION_POLICY_ID,
                 &package_status.version,
                 nonce,
+                MarkerIntegrationInputs::Exact(&stable_inputs),
             )
             .await
                 == AmbiguousMarkerCreateOwnership::Claimed
@@ -6902,12 +7468,15 @@ async fn record_integration_policies_with_nonce(
     };
     recording
         .fixtures
-        .push(integration_policy_exchange_fixture_in_space(
+        .push(integration_policy_exchange_fixture_in_space_with_inputs(
             "integration_policy_create",
             flavor,
             version,
-            t.space(),
-            nonce,
+            IntegrationFixtureContext {
+                active_space: t.space(),
+                nonce,
+                expected_inputs: &stable_inputs,
+            },
             create_body,
             created,
         )?);
@@ -6922,22 +7491,26 @@ async fn record_integration_policies_with_nonce(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy marker failed", error)
         })?;
-    require_marker_integration_response_with_nonce(
+    require_marker_integration_response_with_nonce_and_inputs(
         &got,
         &package_status.version,
         t.space(),
         nonce,
         Some(&marker_integration_description(nonce)),
+        MarkerIntegrationInputs::Exact(&stable_inputs),
         "integration policy get",
     )?;
-    recording.fixtures.push(integration_policy_fixture_in_space(
-        "integration_policy_get",
-        flavor,
-        version,
-        t.space(),
-        nonce,
-        got,
-    )?);
+    recording
+        .fixtures
+        .push(integration_policy_fixture_in_space_with_inputs(
+            "integration_policy_get",
+            flavor,
+            version,
+            t.space(),
+            nonce,
+            &stable_inputs,
+            got,
+        )?);
 
     record_trace("fleet-integration-policy-list");
     let mut listed = t
@@ -6948,29 +7521,36 @@ async fn record_integration_policies_with_nonce(
         .map_err(|error| {
             safe_recording_transport_error("listing integration policy marker failed", error)
         })?;
-    if scope_integration_policy_list_to_marker_with_nonce(
+    if scope_integration_policy_list_to_marker_with_nonce_and_inputs(
         &mut listed,
         INTEGRATION_POLICY_ID,
         &package_status.version,
         t.space(),
         nonce,
+        MarkerIntegrationInputs::Exact(&stable_inputs),
     ) != 1
     {
         return Err(recording_error(
             "integration policy list never contained the marker item",
         ));
     }
-    recording.fixtures.push(integration_policy_fixture_in_space(
-        "integration_policies_list",
-        flavor,
-        version,
-        t.space(),
-        nonce,
-        listed,
-    )?);
+    recording
+        .fixtures
+        .push(integration_policy_fixture_in_space_with_inputs(
+            "integration_policies_list",
+            flavor,
+            version,
+            t.space(),
+            nonce,
+            &stable_inputs,
+            listed,
+        )?);
 
-    let mut duplicate_body =
-        marker_integration_create_body_with_nonce(&package_status.version, nonce);
+    let mut duplicate_body = marker_integration_create_body_with_nonce_and_inputs(
+        &package_status.version,
+        nonce,
+        &stable_inputs,
+    );
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
@@ -6989,20 +7569,24 @@ async fn record_integration_policies_with_nonce(
     let duplicate_description = marker_integration_description(nonce);
     match duplicate_result {
         Ok(created) => {
-            if let Err(error) = require_marker_integration_response_for_id_with_nonce(
+            if let Err(error) = require_marker_integration_response_for_id_with_nonce_and_inputs(
                 &created,
                 INTEGRATION_POLICY_DUP_ID,
                 &package_status.version,
                 t.space(),
                 nonce,
-                Some(&duplicate_description),
+                MarkerResponseExpectation {
+                    description: Some(&duplicate_description),
+                    inputs: MarkerIntegrationInputs::Exact(&stable_inputs),
+                },
                 "duplicate integration policy create",
             ) {
-                if claim_ambiguous_marker_integration_create(
+                if claim_ambiguous_marker_integration_create_with_inputs(
                     t,
                     INTEGRATION_POLICY_DUP_ID,
                     &package_status.version,
                     nonce,
+                    MarkerIntegrationInputs::Exact(&stable_inputs),
                 )
                 .await
                     == AmbiguousMarkerCreateOwnership::Claimed
@@ -7024,11 +7608,12 @@ async fn record_integration_policies_with_nonce(
         }
         Err(error) => {
             record_trace("fleet-integration-policy-name-conflict-check");
-            let ownership = claim_ambiguous_marker_integration_create(
+            let ownership = claim_ambiguous_marker_integration_create_with_inputs(
                 t,
                 INTEGRATION_POLICY_DUP_ID,
                 &package_status.version,
                 nonce,
+                MarkerIntegrationInputs::Exact(&stable_inputs),
             )
             .await;
             if ownership == AmbiguousMarkerCreateOwnership::Claimed {
@@ -7093,11 +7678,16 @@ async fn record_integration_policies_with_nonce(
         parent_attached,
     )?);
 
-    let update_body = marker_integration_update_body_with_nonce(&package_status.version, nonce);
-    reread_marker_integration_before_mutation_with_nonce(
+    let update_body = marker_integration_update_body_with_nonce_and_inputs(
+        &package_status.version,
+        nonce,
+        &stable_inputs,
+    );
+    reread_marker_integration_before_mutation_with_nonce_and_inputs(
         t,
         &package_status.version,
         nonce,
+        MarkerIntegrationInputs::Exact(&stable_inputs),
         "rechecking integration policy marker before update",
     )
     .await?;
@@ -7114,22 +7704,26 @@ async fn record_integration_policies_with_nonce(
         .map_err(|error| {
             safe_recording_transport_error("updating integration policy marker failed", error)
         })?;
-    require_marker_integration_response_with_nonce(
+    require_marker_integration_response_with_nonce_and_inputs(
         &updated,
         &package_status.version,
         t.space(),
         nonce,
         Some(&marker_integration_updated_description(nonce)),
+        MarkerIntegrationInputs::Exact(&stable_inputs),
         "integration policy update",
     )?;
     recording
         .fixtures
-        .push(integration_policy_exchange_fixture_in_space(
+        .push(integration_policy_exchange_fixture_in_space_with_inputs(
             "integration_policy_update",
             flavor,
             version,
-            t.space(),
-            nonce,
+            IntegrationFixtureContext {
+                active_space: t.space(),
+                nonce,
+                expected_inputs: &stable_inputs,
+            },
             update_body,
             updated,
         )?);
@@ -7144,12 +7738,13 @@ async fn record_integration_policies_with_nonce(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy round trip failed", error)
         })?;
-    require_marker_integration_response_with_nonce(
+    require_marker_integration_response_with_nonce_and_inputs(
         &round_trip,
         &package_status.version,
         t.space(),
         nonce,
         Some(&marker_integration_updated_description(nonce)),
+        MarkerIntegrationInputs::Exact(&stable_inputs),
         "integration policy round trip",
     )?;
     if round_trip
@@ -7161,19 +7756,23 @@ async fn record_integration_policies_with_nonce(
             "integration policy round trip did not retain the update description",
         ));
     }
-    recording.fixtures.push(integration_policy_fixture_in_space(
-        "integration_policy_round_trip",
-        flavor,
-        version,
-        t.space(),
-        nonce,
-        round_trip,
-    )?);
+    recording
+        .fixtures
+        .push(integration_policy_fixture_in_space_with_inputs(
+            "integration_policy_round_trip",
+            flavor,
+            version,
+            t.space(),
+            nonce,
+            &stable_inputs,
+            round_trip,
+        )?);
 
-    reread_marker_integration_before_mutation_with_nonce(
+    reread_marker_integration_before_mutation_with_nonce_and_inputs(
         t,
         &package_status.version,
         nonce,
+        MarkerIntegrationInputs::Exact(&stable_inputs),
         "rechecking integration policy marker before delete",
     )
     .await?;
@@ -9298,6 +9897,62 @@ mod tests {
         marker_integration_response_with_nonce(description, TEST_INTEGRATION_RECORDING_NONCE)
     }
 
+    fn materialized_marker_inputs() -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([("system-log".to_string(), json!({"enabled": true}))])
+    }
+
+    fn marker_integration_response_with_inputs(
+        description: &str,
+        nonce: &str,
+        inputs: &serde_json::Map<String, Value>,
+    ) -> Value {
+        let mut response = marker_integration_response_with_nonce(description, nonce);
+        response["item"]["inputs"] = Value::Object(inputs.clone());
+        response
+    }
+
+    fn materialized_system_package_metadata() -> Value {
+        json!({
+            "item": {
+                "name": INTEGRATION_POLICY_PACKAGE,
+                "version": "2.0.0",
+                "status": "installed",
+                "vars": [],
+                "policy_templates": [{
+                    "name": "system",
+                    "inputs": [{"type": "log", "vars": []}]
+                }],
+                "data_streams": []
+            }
+        })
+    }
+
+    fn materialized_bootstrap_item(inputs: &Map<String, Value>) -> Map<String, Value> {
+        marker_integration_response_with_inputs(
+            INTEGRATION_POLICY_DESCRIPTION,
+            TEST_INTEGRATION_RECORDING_NONCE,
+            inputs,
+        )["item"]
+            .as_object()
+            .expect("marker response item")
+            .clone()
+    }
+
+    fn exported_marker_spec(
+        inputs: Map<String, Value>,
+    ) -> elasticctl_api::fleet::integration_policies::IntegrationPolicySpec {
+        elasticctl_api::fleet::integration_policies::IntegrationPolicySpec::try_from(json!({
+            "id": INTEGRATION_POLICY_ID,
+            "name": INTEGRATION_POLICY_NAME,
+            "description": marker_integration_description(TEST_INTEGRATION_RECORDING_NONCE),
+            "namespace": INTEGRATION_POLICY_NAMESPACE,
+            "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+            "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
+            "inputs": inputs,
+        }))
+        .expect("test exported integration policy")
+    }
+
     fn marker_integration_parent_response_with_nonce(nonce: &str) -> Value {
         json!({
             "item": {
@@ -9511,10 +10166,125 @@ mod tests {
         DuplicateCreate,
     }
 
-    async fn mount_integration_lifecycle(
+    #[derive(Clone, Copy, Debug)]
+    enum BootstrapExportFailure {
+        Transport,
+        Secret,
+        SensitiveName,
+        ChangedNormalizedInputs,
+    }
+
+    async fn mount_bootstrap_export_failure_lifecycle(
         server: &MockServer,
-        failure: IntegrationLifecycleFailure,
+        failure: BootstrapExportFailure,
     ) {
+        let mut bootstrap_inputs = materialized_marker_inputs();
+        if matches!(failure, BootstrapExportFailure::Secret) {
+            bootstrap_inputs.insert(
+                "system-log".to_string(),
+                json!({"enabled": true, "vars": {"cert": "private-bootstrap-secret"}}),
+            );
+        }
+        if matches!(failure, BootstrapExportFailure::SensitiveName) {
+            bootstrap_inputs.insert(
+                "system-log".to_string(),
+                json!({"enabled": true, "access_token": "private-bootstrap-value"}),
+            );
+        }
+        let mut export_inputs = bootstrap_inputs.clone();
+        if matches!(failure, BootstrapExportFailure::ChangedNormalizedInputs) {
+            export_inputs.insert("system-log".to_string(), json!({"enabled": false}));
+        }
+        let metadata = if matches!(failure, BootstrapExportFailure::Secret) {
+            json!({
+                "item": {
+                    "name": INTEGRATION_POLICY_PACKAGE,
+                    "version": "2.0.0",
+                    "status": "installed",
+                    "vars": [],
+                    "policy_templates": [{
+                        "name": "system",
+                        "inputs": [{
+                            "type": "log",
+                            "vars": [{"name": "cert", "secret": true}]
+                        }]
+                    }],
+                    "data_streams": []
+                }
+            })
+        } else {
+            materialized_system_package_metadata()
+        };
+        let primary_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let primary_exists_for_reads = primary_exists.clone();
+        let live_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let live_reads_for_response = live_reads.clone();
+        let bootstrap_inputs_for_reads = bootstrap_inputs.clone();
+        let export_inputs_for_reads = export_inputs.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                if !primary_exists_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                }
+                let read =
+                    live_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let inputs = if matches!(failure, BootstrapExportFailure::ChangedNormalizedInputs)
+                    && read == 1
+                {
+                    &export_inputs_for_reads
+                } else {
+                    &bootstrap_inputs_for_reads
+                };
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    inputs,
+                ))
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(server)
+            .await;
+
+        let parent_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_exists_for_reads = parent_exists.clone();
+        let primary_exists_for_parent_reads = primary_exists.clone();
+        let detached_parent_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let detached_parent_seen_for_reads = detached_parent_seen.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if !parent_exists_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                }
+                let attached =
+                    primary_exists_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst);
+                if !attached {
+                    detached_parent_seen_for_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                let mut parent = marker_integration_parent_response();
+                parent["item"]["package_policies"] = if attached {
+                    json!([INTEGRATION_POLICY_ID])
+                } else {
+                    json!([])
+                };
+                ResponseTemplate::new(200).set_body_json(parent)
+            })
+            .mount(server)
+            .await;
+
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
             .and(query_param("perPage", "1000"))
@@ -9529,131 +10299,343 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/system/2.0.0"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(system_package_metadata()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(if matches!(failure, BootstrapExportFailure::Transport) {
+                ResponseTemplate::new(500).set_body_json(json!({
+                    "message": "private bootstrap export transport body"
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "version": {"number": "9.6.0", "build_flavor": "serverless"}
+                }))
+            })
+            .expect(if matches!(failure, BootstrapExportFailure::Transport) {
+                3
+            } else {
+                1
+            })
             .mount(server)
             .await;
 
-        let integration_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let integration_deleted_for_reads = integration_deleted.clone();
-        let integration_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let integration_reads_for_response = integration_reads.clone();
-        let integration = marker_integration_response("elasticctl sample integration policy");
-        let updated_integration =
-            marker_integration_response("elasticctl sample integration policy updated");
-        let foreign_integration = marker_integration_response_with_nonce(
-            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
-            OTHER_INTEGRATION_RECORDING_NONCE,
-        );
+        let parent_exists_for_create = parent_exists.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(move |_: &wiremock::Request| {
+                parent_exists_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response())
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        let primary_exists_for_create = primary_exists.clone();
+        let bootstrap_inputs_for_create = bootstrap_inputs.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(move |_: &wiremock::Request| {
+                primary_exists_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &bootstrap_inputs_for_create,
+                ))
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        let primary_exists_for_delete = primary_exists.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                primary_exists_for_delete.store(false, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        let parent_exists_for_delete = parent_exists.clone();
+        let primary_exists_for_parent_delete = primary_exists.clone();
+        let detached_parent_seen_for_delete = detached_parent_seen.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                if primary_exists_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst)
+                    || !detached_parent_seen_for_delete.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}));
+                }
+                parent_exists_for_delete.store(false, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": INTEGRATION_POLICY_PARENT_ID,
+                    "name": INTEGRATION_POLICY_PARENT_NAME,
+                }))
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_integration_lifecycle(
+        server: &MockServer,
+        failure: IntegrationLifecycleFailure,
+    ) {
+        let _ = mount_integration_lifecycle_with_recorded_create(server, failure, None, None).await;
+    }
+
+    async fn mount_integration_lifecycle_with_recorded_create(
+        server: &MockServer,
+        failure: IntegrationLifecycleFailure,
+        ambiguous_recorded_create: Option<(AmbiguousCreateOutcome, String)>,
+        concurrent_duplicate_nonce: Option<String>,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let inputs = materialized_marker_inputs();
+        let policy_state = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_foreign = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let duplicate_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": {"number": "9.6.0", "build_flavor": "serverless"}
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(materialized_system_package_metadata()),
+            )
+            .mount(server)
+            .await;
+
+        let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let primary_reads_for_response = primary_reads.clone();
+        let policy_state_for_reads = policy_state.clone();
+        let inputs_for_reads = inputs.clone();
+        let foreign_inputs = inputs.clone();
+        let ambiguous_for_reads = ambiguous_recorded_create.clone();
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
             .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
-                let read = integration_reads_for_response
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if (failure == IntegrationLifecycleFailure::Update && read >= 3)
-                    || (failure == IntegrationLifecycleFailure::Delete && read >= 5)
-                {
-                    return ResponseTemplate::new(200).set_body_json(foreign_integration.clone());
-                }
-                match read {
-                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
-                    1 | 2 => ResponseTemplate::new(200).set_body_json(integration.clone()),
-                    3 | 4 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
-                    5 if integration_deleted_for_reads
-                        .load(std::sync::atomic::Ordering::SeqCst) =>
-                    {
-                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match policy_state_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    0 | 4 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 | 2 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    3 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    5 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                            OTHER_INTEGRATION_RECORDING_NONCE,
+                            &foreign_inputs,
+                        ),
+                    ),
+                    6 => {
+                        let (_, winner_nonce) = ambiguous_for_reads
+                            .as_ref()
+                            .expect("state 6 is only used by an ambiguous recorded create");
+                        ResponseTemplate::new(200).set_body_json(
+                            marker_integration_response_with_inputs(
+                                INTEGRATION_POLICY_DESCRIPTION,
+                                winner_nonce,
+                                &inputs_for_reads,
+                            ),
+                        )
                     }
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
             .mount(server)
             .await;
+        let duplicate_exists_for_reads = duplicate_exists.clone();
+        let duplicate_nonce_for_reads = concurrent_duplicate_nonce.clone();
+        let inputs_for_duplicate_reads = inputs.clone();
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
             )))
             .and(query_param("format", "simplified"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .respond_with(move |_: &wiremock::Request| {
+                let Some(nonce) = duplicate_nonce_for_reads.as_deref() else {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                };
+                if !duplicate_exists_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                }
+                let mut duplicate = marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    nonce,
+                    &inputs_for_duplicate_reads,
+                );
+                duplicate["item"]["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+                ResponseTemplate::new(200).set_body_json(duplicate)
+            })
             .mount(server)
             .await;
 
-        let parent_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let parent_deleted_for_reads = parent_deleted.clone();
-        let integration_deleted_for_parent_reads = integration_deleted.clone();
-        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let parent_reads_for_response = parent_reads.clone();
-        let mut parent = marker_integration_parent_response();
-        parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
-        let mut detached_parent = marker_integration_parent_response();
-        detached_parent["item"]["package_policies"] = json!([]);
-        let mut foreign_parent =
-            marker_integration_parent_response_with_nonce(OTHER_INTEGRATION_RECORDING_NONCE);
-        foreign_parent["item"]["package_policies"] = json!([]);
+        let parent_exists_for_reads = parent_exists.clone();
+        let parent_foreign_for_reads = parent_foreign.clone();
+        let policy_state_for_parent_reads = policy_state.clone();
+        let duplicate_exists_for_parent_reads = duplicate_exists.clone();
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
-                let read =
-                    parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if failure == IntegrationLifecycleFailure::ParentDelete && read >= 3 {
-                    return ResponseTemplate::new(200).set_body_json(foreign_parent.clone());
+                if !parent_exists_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
                 }
-                match read {
-                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
-                    1 => ResponseTemplate::new(200).set_body_json(parent.clone()),
-                    2 if integration_deleted_for_parent_reads
-                        .load(std::sync::atomic::Ordering::SeqCst) =>
-                    {
-                        ResponseTemplate::new(200).set_body_json(detached_parent.clone())
-                    }
-                    3 if parent_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst) => {
-                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
-                    }
-                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                let mut parent = if parent_foreign_for_reads
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    marker_integration_parent_response_with_nonce(OTHER_INTEGRATION_RECORDING_NONCE)
+                } else {
+                    marker_integration_parent_response()
+                };
+                let mut attachments =
+                    match policy_state_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                        0 | 4 => Vec::new(),
+                        _ => vec![Value::String(INTEGRATION_POLICY_ID.to_string())],
+                    };
+                if duplicate_exists_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    attachments.push(Value::String(INTEGRATION_POLICY_DUP_ID.to_string()));
                 }
+                parent["item"]["package_policies"] = Value::Array(attachments);
+                ResponseTemplate::new(200).set_body_json(parent)
             })
             .mount(server)
             .await;
+        let parent_exists_for_create = parent_exists.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies"))
             .and(query_param("sys_monitoring", "false"))
             .and(body_json(marker_integration_parent_create_body()))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
-            )
+            .respond_with(move |_: &wiremock::Request| {
+                parent_exists_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response())
+            })
             .mount(server)
             .await;
 
+        let bootstrap_state = policy_state.clone();
+        let inputs_for_bootstrap = inputs.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
             .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_create_body("2.0.0")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(marker_integration_response(
-                    "elasticctl sample integration policy",
-                )),
-            )
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    bootstrap_state.swap(1, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "bootstrap must be the first primary create"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_bootstrap,
+                ))
+            })
             .mount(server)
             .await;
-        let mut duplicate_body = marker_integration_create_body("2.0.0");
+        let recorded_body = marker_integration_create_body_with_nonce_and_inputs(
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &inputs,
+        );
+        let recorded_state = policy_state.clone();
+        let inputs_for_recorded = inputs.clone();
+        let ambiguous_for_recorded = ambiguous_recorded_create.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(recorded_body.clone()))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    recorded_state.swap(2, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "recorded create must follow bootstrap absence"
+                );
+                if let Some((outcome, winner_nonce)) = &ambiguous_for_recorded {
+                    recorded_state.store(6, std::sync::atomic::Ordering::SeqCst);
+                    return ambiguous_create_response(
+                        *outcome,
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            winner_nonce,
+                            &inputs_for_recorded,
+                        )["item"]
+                            .clone(),
+                    );
+                }
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_recorded,
+                ))
+            })
+            .mount(server)
+            .await;
+        let mut duplicate_body = recorded_body;
         duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        let duplicate_exists_for_create = duplicate_exists.clone();
+        let concurrent_duplicate_for_create = concurrent_duplicate_nonce.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
             .and(query_param("format", "simplified"))
             .and(body_json(duplicate_body))
-            .respond_with(if failure == IntegrationLifecycleFailure::DuplicateCreate {
-                ResponseTemplate::new(500).set_body_json(json!({
-                    "message": "private POST duplicate integration identity"
-                }))
-            } else {
-                ResponseTemplate::new(409).set_body_json(json!({
-                    "statusCode": 409,
-                    "message": "marker integration name already exists"
-                }))
+            .respond_with(move |_: &wiremock::Request| {
+                if concurrent_duplicate_for_create.is_some() {
+                    duplicate_exists_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if failure == IntegrationLifecycleFailure::DuplicateCreate {
+                    ResponseTemplate::new(500).set_body_json(json!({
+                        "message": "private POST duplicate integration identity"
+                    }))
+                } else {
+                    ResponseTemplate::new(409).set_body_json(json!({
+                        "statusCode": 409,
+                        "message": "marker integration name already exists"
+                    }))
+                }
             })
             .mount(server)
             .await;
@@ -9664,36 +10646,72 @@ mod tests {
             .and(query_param("sortField", "created_at"))
             .and(query_param("sortOrder", "asc"))
             .and(query_param("format", "simplified"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "items": [marker_integration_response("elasticctl sample integration policy")["item"].clone()],
-                "total": 1,
-                "page": 1,
-                "perPage": 1000
-            })))
+            .respond_with({
+                let policy_state_for_list = policy_state.clone();
+                let inputs_for_list = inputs.clone();
+                move |_: &wiremock::Request| {
+                    assert_eq!(
+                        policy_state_for_list.load(std::sync::atomic::Ordering::SeqCst),
+                        2,
+                        "the list must read the recorded marker"
+                    );
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "items": [marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_list,
+                        )["item"].clone()],
+                        "total": 1,
+                        "page": 1,
+                        "perPage": 1000,
+                    }))
+                }
+            })
             .mount(server)
             .await;
 
-        let update_response = if failure == IntegrationLifecycleFailure::Update {
-            ResponseTemplate::new(500).set_body_json(json!({
-                "message": "private PUT integration policy identity"
-            }))
-        } else {
-            ResponseTemplate::new(200).set_body_json(marker_integration_response(
-                "elasticctl sample integration policy updated",
-            ))
-        };
+        let update_state = policy_state.clone();
+        let inputs_for_update = inputs.clone();
         Mock::given(method("PUT"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
             .and(query_param("format", "simplified"))
-            .and(body_json(marker_integration_update_body("2.0.0")))
-            .respond_with(update_response)
+            .and(body_json(
+                marker_integration_update_body_with_nonce_and_inputs(
+                    "2.0.0",
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs,
+                ),
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    update_state.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "update must preserve the recorded marker state"
+                );
+                if failure == IntegrationLifecycleFailure::Update {
+                    update_state.store(5, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(500).set_body_json(json!({
+                        "message": "private PUT integration policy identity"
+                    }))
+                } else {
+                    update_state.store(3, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_update,
+                        ),
+                    )
+                }
+            })
             .mount(server)
             .await;
 
-        let integration_deleted_for_parent_delete = integration_deleted.clone();
-        let parent_deleted_for_response = parent_deleted.clone();
+        let policy_state_for_parent_delete = policy_state.clone();
+        let parent_exists_for_delete = parent_exists.clone();
+        let parent_foreign_for_delete = parent_foreign.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies/delete"))
             .and(body_json(
@@ -9701,13 +10719,14 @@ mod tests {
             ))
             .respond_with(move |_: &wiremock::Request| {
                 if failure == IntegrationLifecycleFailure::ParentDelete {
+                    parent_foreign_for_delete.store(true, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(500).set_body_json(json!({
                         "message": "private POST parent delete identity"
                     }))
-                } else if integration_deleted_for_parent_delete
-                    .load(std::sync::atomic::Ordering::SeqCst)
+                } else if policy_state_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst)
+                    == 4
                 {
-                    parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                    parent_exists_for_delete.store(false, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "id": INTEGRATION_POLICY_PARENT_ID,
                         "name": INTEGRATION_POLICY_PARENT_NAME,
@@ -9719,24 +10738,36 @@ mod tests {
             .mount(server)
             .await;
 
-        let integration_deleted_for_response = integration_deleted.clone();
+        let delete_state = policy_state.clone();
         Mock::given(method("DELETE"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
-                if failure == IntegrationLifecycleFailure::Delete {
-                    ResponseTemplate::new(500).set_body_json(json!({
-                        "message": "private DELETE integration policy identity"
-                    }))
-                } else {
-                    integration_deleted_for_response
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                match delete_state.load(std::sync::atomic::Ordering::SeqCst) {
+                    1 => {
+                        delete_state.store(0, std::sync::atomic::Ordering::SeqCst);
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                    }
+                    3 if failure == IntegrationLifecycleFailure::Delete => {
+                        delete_state.store(5, std::sync::atomic::Ordering::SeqCst);
+                        ResponseTemplate::new(500).set_body_json(json!({
+                            "message": "private DELETE integration policy identity"
+                        }))
+                    }
+                    2 | 3 | 6 => {
+                        delete_state.store(4, std::sync::atomic::Ordering::SeqCst);
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                    }
+                    _ => ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})),
                 }
             })
             .mount(server)
             .await;
+
+        primary_reads
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -10066,7 +11097,8 @@ mod tests {
             .await;
     }
 
-    async fn mount_primary_create_ambiguous_winner(
+    #[cfg(any())]
+    async fn mount_primary_create_ambiguous_winner_legacy(
         server: &MockServer,
         outcome: AmbiguousCreateOutcome,
         winner_nonce: &str,
@@ -10197,6 +11229,20 @@ mod tests {
             .await;
 
         primary_reads
+    }
+
+    async fn mount_primary_create_ambiguous_winner(
+        server: &MockServer,
+        outcome: AmbiguousCreateOutcome,
+        winner_nonce: &str,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        mount_integration_lifecycle_with_recorded_create(
+            server,
+            IntegrationLifecycleFailure::None,
+            Some((outcome, winner_nonce.to_owned())),
+            None,
+        )
+        .await
     }
 
     async fn mount_primary_create_with_failed_inventory_observation(server: &MockServer) {
@@ -13810,6 +14856,912 @@ mod tests {
         assert!(update.get("create_dataset_templates").is_none());
     }
 
+    #[test]
+    fn bootstrap_export_capture_rejects_identity_sensitive_and_changed_input_maps_without_values() {
+        let inputs = materialized_marker_inputs();
+        let bootstrap_item = materialized_bootstrap_item(&inputs);
+
+        let mut wrong_identity = exported_marker_spec(inputs.clone());
+        wrong_identity.name = "other marker".to_string();
+        let identity_error = capture_exported_bootstrap_inputs(
+            wrong_identity,
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &bootstrap_item,
+            "default",
+        )
+        .expect_err("an exported policy must retain the exact marker identity");
+        assert_eq!(
+            identity_error.message,
+            "exported bootstrap integration policy did not preserve the marker identity"
+        );
+
+        let mut unexpected_optional = exported_marker_spec(inputs.clone());
+        unexpected_optional.condition = Some("host.name == 'private-default'".to_string());
+        let optional_error = capture_exported_bootstrap_inputs(
+            unexpected_optional,
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &bootstrap_item,
+            "default",
+        )
+        .expect_err("the exported bootstrap must not carry configuration outside its map");
+        assert_eq!(
+            optional_error.message,
+            "exported bootstrap integration policy did not preserve the marker identity"
+        );
+        assert!(!optional_error.message.contains("private-default"));
+
+        let sensitive_inputs = Map::from_iter([(
+            "system-log".to_string(),
+            json!({"password": "private-bootstrap-value"}),
+        )]);
+        let sensitive_error = capture_exported_bootstrap_inputs(
+            exported_marker_spec(sensitive_inputs.clone()),
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &materialized_bootstrap_item(&sensitive_inputs),
+            "default",
+        )
+        .expect_err("sensitive-looking input field names must never reach a fixture");
+        assert_eq!(
+            sensitive_error.message,
+            "exported bootstrap integration policy contained sensitive-looking input fields"
+        );
+        assert!(!sensitive_error.message.contains("password"));
+        assert!(!sensitive_error.message.contains("private-bootstrap-value"));
+
+        let changed_inputs =
+            Map::from_iter([("system-log".to_string(), json!({"enabled": false}))]);
+        let mismatch_error = capture_exported_bootstrap_inputs(
+            exported_marker_spec(changed_inputs),
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &bootstrap_item,
+            "default",
+        )
+        .expect_err("the export and fresh bootstrap read must carry the same input map");
+        assert_eq!(
+            mismatch_error.message,
+            "exported bootstrap integration policy inputs did not match the marker read"
+        );
+    }
+
+    #[test]
+    fn bootstrap_export_decoder_rejects_malformed_or_non_single_output_without_echoing_it() {
+        let malformed = elasticctl_api::ops::ExportOutcome {
+            body: "private-bootstrap-export-body".to_string(),
+            exported: 1,
+            missing: Vec::new(),
+        };
+        let malformed_error = decode_exported_bootstrap_marker(malformed)
+            .expect_err("exported output must be a decodable portable sequence");
+        assert_eq!(
+            malformed_error.message,
+            "decoding exported bootstrap integration policy failed"
+        );
+        assert!(
+            !malformed_error
+                .message
+                .contains("private-bootstrap-export-body")
+        );
+
+        let empty = elasticctl_api::ops::ExportOutcome {
+            body: "[]".to_string(),
+            exported: 0,
+            missing: Vec::new(),
+        };
+        assert_eq!(
+            decode_exported_bootstrap_marker(empty)
+                .expect_err("one exported marker is required")
+                .message,
+            "exporting bootstrap integration policy did not return exactly one marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_recorder_bootstraps_materialized_inputs_before_public_recording() {
+        let server = MockServer::start().await;
+        let inputs = materialized_marker_inputs();
+        let policy_state = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": {"number": "9.6.0", "build_flavor": "serverless"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(materialized_system_package_metadata()),
+            )
+            .mount(&server)
+            .await;
+
+        let policy_state_for_reads = policy_state.clone();
+        let inputs_for_reads = inputs.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                match policy_state_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    1 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    2 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    3 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(&server)
+            .await;
+
+        let policy_state_for_parent_reads = policy_state.clone();
+        let parent_created_for_reads = parent_created.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if !parent_created_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                }
+                let mut parent = marker_integration_parent_response();
+                parent["item"]["package_policies"] =
+                    match policy_state_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                        1..=3 => json!([INTEGRATION_POLICY_ID]),
+                        _ => json!([]),
+                    };
+                ResponseTemplate::new(200).set_body_json(parent)
+            })
+            .mount(&server)
+            .await;
+        let parent_created_for_create = parent_created.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(move |_: &wiremock::Request| {
+                parent_created_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bootstrap_body = marker_integration_create_body("2.0.0");
+        let policy_state_for_bootstrap = policy_state.clone();
+        let inputs_for_bootstrap = inputs.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(bootstrap_body))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    policy_state_for_bootstrap.swap(1, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "bootstrap must be the first primary create"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_bootstrap,
+                ))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let recorded_body = marker_integration_create_body_with_nonce_and_inputs(
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &inputs,
+        );
+        let policy_state_for_recorded = policy_state.clone();
+        let inputs_for_recorded = inputs.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(recorded_body.clone()))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    policy_state_for_recorded.swap(2, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "recorded create must follow bootstrap deletion"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_recorded,
+                ))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut duplicate_body = recorded_body;
+        duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(duplicate_body))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let policy_state_for_list = policy_state.clone();
+        let inputs_for_list = inputs.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("page", "1"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortField", "created_at"))
+            .and(query_param("sortOrder", "asc"))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    policy_state_for_list.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "the recorded list must follow the second create"
+                );
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "items": [marker_integration_response_with_inputs(
+                        INTEGRATION_POLICY_DESCRIPTION,
+                        TEST_INTEGRATION_RECORDING_NONCE,
+                        &inputs_for_list,
+                    )["item"].clone()],
+                    "total": 1,
+                    "page": 1,
+                    "perPage": 1000,
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let update_body = marker_integration_update_body_with_nonce_and_inputs(
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &inputs,
+        );
+        let policy_state_for_update = policy_state.clone();
+        let inputs_for_update = inputs.clone();
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .and(body_json(update_body))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    policy_state_for_update.swap(3, std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "the update must preserve the recorded input map"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_update,
+                ))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let policy_state_for_delete = policy_state.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                let prior = policy_state_for_delete.load(std::sync::atomic::Ordering::SeqCst);
+                match prior {
+                    1 => {
+                        policy_state_for_delete.store(0, std::sync::atomic::Ordering::SeqCst);
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                    }
+                    3 => {
+                        policy_state_for_delete.store(4, std::sync::atomic::Ordering::SeqCst);
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                    }
+                    _ => ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})),
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let parent_created_for_delete = parent_created.clone();
+        let policy_state_for_parent_delete = policy_state.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                if policy_state_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst) == 4 {
+                    parent_created_for_delete.store(false, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_PARENT_ID,
+                        "name": INTEGRATION_POLICY_PARENT_NAME,
+                    }))
+                } else {
+                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
+                }
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+
+        record_integration_policies_with_nonce(
+            &mut session,
+            &mut recording,
+            "test",
+            "9.6.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+        )
+        .await
+        .expect("the materialized bootstrap inputs must be exported before recording");
+
+        let expected_inputs = Value::Object(inputs.clone());
+        let fixture = |name| {
+            recording
+                .fixtures
+                .iter()
+                .find(|fixture| fixture.name == name)
+                .expect("recorded fixture")
+        };
+        assert_eq!(
+            fixture("integration_policy_create").document["request"]["inputs"],
+            expected_inputs
+        );
+        assert_eq!(
+            fixture("integration_policy_create").document["response"]["item"]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert_eq!(
+            fixture("integration_policy_get").document["response"]["item"]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert_eq!(
+            fixture("integration_policies_list").document["response"]["items"][0]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert_eq!(
+            fixture("integration_policy_update").document["request"]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert_eq!(
+            fixture("integration_policy_update").document["response"]["item"]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert_eq!(
+            fixture("integration_policy_round_trip").document["response"]["item"]["inputs"],
+            Value::Object(inputs.clone())
+        );
+        assert!(
+            recording
+                .fixtures
+                .iter()
+                .all(|fixture| !fixture.name.contains("bootstrap")),
+            "the bootstrap exchange must never become a public fixture"
+        );
+        let requests = server.received_requests().await.expect("requests");
+        let primary_posts: Vec<_> = requests
+            .iter()
+            .filter_map(|request| {
+                (request.method.as_str() == "POST"
+                    && request.url.path() == "/api/fleet/package_policies")
+                    .then(|| request.body_json::<Value>().ok())
+                    .flatten()
+                    .filter(|body| body["id"] == INTEGRATION_POLICY_ID)
+            })
+            .collect();
+        assert_eq!(
+            primary_posts.len(),
+            2,
+            "bootstrap and recorded creates are distinct"
+        );
+        assert_eq!(primary_posts[0]["inputs"], json!({}));
+        assert_eq!(primary_posts[1]["inputs"], Value::Object(inputs));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_export_failures_cleanup_only_the_same_nonce_marker_without_fixture_leaks() {
+        for (failure, expected_error, private_fragment) in [
+            (
+                BootstrapExportFailure::Transport,
+                "exporting bootstrap integration policy failed",
+                "private bootstrap export transport body",
+            ),
+            (
+                BootstrapExportFailure::Secret,
+                "exporting bootstrap integration policy failed",
+                "private-bootstrap-secret",
+            ),
+            (
+                BootstrapExportFailure::SensitiveName,
+                "exported bootstrap integration policy contained sensitive-looking input fields",
+                "private-bootstrap-value",
+            ),
+            (
+                BootstrapExportFailure::ChangedNormalizedInputs,
+                "exported bootstrap integration policy inputs did not match the marker read",
+                "private-bootstrap-value",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            mount_bootstrap_export_failure_lifecycle(&server, failure).await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let error = record_integration_policies_with_nonce(
+                &mut session,
+                &mut recording,
+                "test",
+                "9.6.0",
+                TEST_INTEGRATION_RECORDING_NONCE,
+            )
+            .await
+            .expect_err("a bootstrap export failure must stop before public recording");
+            assert_eq!(error.message, expected_error, "{failure:?}");
+            assert!(
+                !error.message.contains(private_fragment),
+                "{failure:?} error must not echo private transport or input content"
+            );
+            assert!(
+                !error.message.contains(TEST_INTEGRATION_RECORDING_NONCE),
+                "{failure:?} error must not echo the nonce"
+            );
+            assert!(session.ownership.integration_policy, "{failure:?}");
+            assert!(matches!(
+                session.ownership.integration_policy_inputs,
+                IntegrationMarkerInputs::BootstrapObject
+            ));
+            assert!(
+                recording
+                    .fixtures
+                    .iter()
+                    .all(|fixture| !fixture.name.contains("bootstrap")),
+                "{failure:?} bootstrap traffic must never become a fixture"
+            );
+            assert!(
+                recording.fixtures.iter().all(|fixture| {
+                    !fixture.document.to_string().contains(private_fragment)
+                        && !fixture
+                            .document
+                            .to_string()
+                            .contains(TEST_INTEGRATION_RECORDING_NONCE)
+                }),
+                "{failure:?} public fixture reducers must not retain private values or nonce"
+            );
+
+            session
+                .cleanup_integration_resources()
+                .await
+                .expect("a same-nonce bootstrap marker is cleanup-owned after export failure");
+            assert!(!session.ownership.integration_policy, "{failure:?}");
+            assert!(!session.ownership.integration_policy_parent, "{failure:?}");
+
+            let requests = server.received_requests().await.expect("requests");
+            let primary_posts = requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/package_policies"
+                        && request
+                            .body_json::<Value>()
+                            .ok()
+                            .is_some_and(|body| body["id"] == INTEGRATION_POLICY_ID)
+                })
+                .count();
+            assert_eq!(
+                primary_posts, 1,
+                "{failure:?} must not retry or record a second create"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == "DELETE"
+                            && request.url.path()
+                                == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                    })
+                    .count(),
+                1,
+                "{failure:?} cleanup deletes exactly the owned bootstrap marker once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_committed_bootstrap_create_claims_only_the_same_nonce_object_for_cleanup() {
+        let server = MockServer::start().await;
+        let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let committed_for_reads = committed.clone();
+        let deleted_for_reads = deleted.clone();
+        let inputs = materialized_marker_inputs();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                if committed_for_reads.load(std::sync::atomic::Ordering::SeqCst)
+                    && !deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs,
+                        ),
+                    )
+                } else {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                }
+            })
+            .mount(&server)
+            .await;
+        let committed_for_create = committed.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(move |_: &wiremock::Request| {
+                committed_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let deleted_for_delete = deleted.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                deleted_for_delete.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        transport
+            .post_once(
+                "/api/fleet/package_policies?format=simplified",
+                Some(&marker_integration_create_body("2.0.0")),
+            )
+            .await
+            .expect_err("an ambiguous committed bootstrap response must remain an error");
+        assert_eq!(
+            claim_ambiguous_marker_integration_create_with_inputs(
+                &transport,
+                INTEGRATION_POLICY_ID,
+                "2.0.0",
+                TEST_INTEGRATION_RECORDING_NONCE,
+                MarkerIntegrationInputs::BootstrapObject,
+            )
+            .await,
+            AmbiguousMarkerCreateOwnership::Claimed
+        );
+        cleanup_marker_integration_with_inputs(
+            &transport,
+            INTEGRATION_POLICY_ID,
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            MarkerIntegrationInputs::BootstrapObject,
+        )
+        .await
+        .expect("the same-nonce object-shaped bootstrap marker is cleanup-owned");
+
+        let requests = server.received_requests().await.expect("requests");
+        let create = requests
+            .iter()
+            .position(|request| request.method.as_str() == "POST")
+            .expect("bootstrap create");
+        let claim_get = requests
+            .iter()
+            .enumerate()
+            .find_map(|(index, request)| {
+                (index > create
+                    && request.method.as_str() == "GET"
+                    && request.url.path()
+                        == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+                .then_some(index)
+            })
+            .expect("fresh ownership GET");
+        let delete = requests
+            .iter()
+            .position(|request| request.method.as_str() == "DELETE")
+            .expect("owned bootstrap delete");
+        assert!(create < claim_get && claim_get < delete);
+    }
+
+    #[tokio::test]
+    async fn recorded_create_refuses_a_changed_second_response_and_leaves_it_unowned() {
+        let server = MockServer::start().await;
+        let inputs = materialized_marker_inputs();
+        let changed_inputs =
+            Map::from_iter([("system-log".to_string(), json!({"enabled": false}))]);
+        let policy_state = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": {"number": "9.6.0", "build_flavor": "serverless"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(materialized_system_package_metadata()),
+            )
+            .mount(&server)
+            .await;
+
+        let policy_state_for_reads = policy_state.clone();
+        let inputs_for_reads = inputs.clone();
+        let changed_inputs_for_reads = changed_inputs.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                match policy_state_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    1 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &inputs_for_reads,
+                        ),
+                    ),
+                    2 => ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_inputs(
+                            INTEGRATION_POLICY_DESCRIPTION,
+                            TEST_INTEGRATION_RECORDING_NONCE,
+                            &changed_inputs_for_reads,
+                        ),
+                    ),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(&server)
+            .await;
+
+        let policy_state_for_parent_reads = policy_state.clone();
+        let parent_created_for_reads = parent_created.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if !parent_created_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    return ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}));
+                }
+                let mut parent = marker_integration_parent_response();
+                parent["item"]["package_policies"] =
+                    match policy_state_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                        0 => json!([]),
+                        _ => json!([INTEGRATION_POLICY_ID]),
+                    };
+                ResponseTemplate::new(200).set_body_json(parent)
+            })
+            .mount(&server)
+            .await;
+        let parent_created_for_create = parent_created.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(move |_: &wiremock::Request| {
+                parent_created_for_create.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let bootstrap_state = policy_state.clone();
+        let inputs_for_bootstrap = inputs.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    bootstrap_state.swap(1, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "bootstrap must create the first primary marker"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &inputs_for_bootstrap,
+                ))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let recorded_body = marker_integration_create_body_with_nonce_and_inputs(
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+            &inputs,
+        );
+        let recorded_state = policy_state.clone();
+        let changed_inputs_for_recorded = changed_inputs.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(recorded_body))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    recorded_state.swap(2, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "the recorded create must wait for bootstrap absence"
+                );
+                ResponseTemplate::new(200).set_body_json(marker_integration_response_with_inputs(
+                    INTEGRATION_POLICY_DESCRIPTION,
+                    TEST_INTEGRATION_RECORDING_NONCE,
+                    &changed_inputs_for_recorded,
+                ))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let bootstrap_delete_state = policy_state.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                assert_eq!(
+                    bootstrap_delete_state.swap(0, std::sync::atomic::Ordering::SeqCst),
+                    1,
+                    "only the bootstrap marker is deletion-proven before the second create"
+                );
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+        let error = record_integration_policies_with_nonce(
+            &mut session,
+            &mut recording,
+            "test",
+            "9.6.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+        )
+        .await
+        .expect_err("a changed second create response cannot be recorded");
+        assert_eq!(
+            error.message,
+            "integration policy create: integration response did not preserve the marker identity"
+        );
+        assert!(!session.ownership.integration_policy);
+        assert!(session.ownership.integration_policy_parent);
+        assert!(
+            recording
+                .fixtures
+                .iter()
+                .all(|fixture| fixture.name != "integration_policy_create"),
+            "the changed second create response must never enter a fixture"
+        );
+
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("an unproven changed second marker must block parent cleanup");
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                })
+                .count(),
+            1,
+            "cleanup must not delete the changed second marker"
+        );
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "POST"
+                && request.url.path() == "/api/fleet/agent_policies/delete")
+        }));
+    }
+
     #[tokio::test]
     async fn integration_recorder_refuses_an_absent_system_package_before_marker_writes() {
         let server = MockServer::start().await;
@@ -13938,8 +15890,8 @@ mod tests {
             .collect();
         assert_eq!(
             inventory_positions.len(),
-            3,
-            "baseline, successful create, and duplicate conflict each read the strict inventory"
+            4,
+            "baseline, bootstrap, recorded create, and duplicate conflict each read the strict inventory"
         );
         let duplicate_position = requests
             .iter()
@@ -13961,12 +15913,14 @@ mod tests {
                         == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}")
             })
             .expect("duplicate exact-id check");
-        assert!(duplicate_position < inventory_positions[2]);
-        assert!(inventory_positions[2] < duplicate_check_position);
+        assert!(duplicate_position < inventory_positions[3]);
+        assert!(inventory_positions[3] < duplicate_check_position);
     }
 
+    #[cfg(any())]
     #[tokio::test]
-    async fn integration_duplicate_conflict_does_not_claim_a_concurrent_marker_for_cleanup() {
+    async fn integration_duplicate_conflict_does_not_claim_a_concurrent_marker_for_cleanup_legacy()
+    {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
@@ -14129,6 +16083,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_duplicate_conflict_does_not_claim_a_concurrent_marker_for_cleanup() {
+        let server = MockServer::start().await;
+        let _ = mount_integration_lifecycle_with_recorded_create(
+            &server,
+            IntegrationLifecycleFailure::None,
+            None,
+            Some(OTHER_INTEGRATION_RECORDING_NONCE.to_string()),
+        )
+        .await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+
+        let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+            .await
+            .expect_err("a duplicate marker from another nonce must stop recording");
+        assert_eq!(
+            error.message,
+            "duplicate integration-policy id exists after a conflicting create"
+        );
+        assert!(!session.ownership.integration_policy_dup);
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the concurrent duplicate remains for investigation");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && request.url.path()
+                    == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"))
+        }));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                })
+                .count(),
+            2,
+            "bootstrap and proved recorded markers are distinct cleanup deletes"
+        );
+    }
+
+    #[tokio::test]
     async fn ambiguous_parent_create_never_claims_another_runs_marker_for_cleanup() {
         for outcome in [
             AmbiguousCreateOutcome::Conflict,
@@ -14228,8 +16235,8 @@ mod tests {
 
             assert_eq!(
                 primary_reads.load(std::sync::atomic::Ordering::SeqCst),
-                2,
-                "{outcome:?} must exact-GET the ambiguous winner before refusing ownership"
+                6,
+                "{outcome:?} must exact-GET the bootstrap, export target, bootstrap delete, absence, and ambiguous winner before refusing ownership"
             );
             let requests = server.received_requests().await.expect("requests");
             assert_eq!(
@@ -14240,16 +16247,20 @@ mod tests {
                             && request.url.path() == "/api/fleet/package_policies"
                     })
                     .count(),
-                1,
-                "{outcome:?} must not replay an ambiguous primary create"
+                2,
+                "{outcome:?} must create bootstrap and recorded markers once each without replay"
             );
-            assert!(
-                requests.iter().all(|request| {
-                    !(request.method.as_str() == "DELETE"
-                        && request.url.path()
-                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
-                }),
-                "{outcome:?} must not let outer cleanup delete the winner integration"
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == "DELETE"
+                            && request.url.path()
+                                == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                    })
+                    .count(),
+                1,
+                "{outcome:?} may delete only the bootstrap, never the unowned winner"
             );
         }
     }
@@ -14377,7 +16388,7 @@ mod tests {
             let before_cleanup = server.received_requests().await.expect("requests");
             let primary_create = before_cleanup
                 .iter()
-                .position(|request| {
+                .rposition(|request| {
                     request.method.as_str() == "POST"
                         && request.url.path() == "/api/fleet/package_policies"
                 })
@@ -14404,7 +16415,7 @@ mod tests {
             let requests = server.received_requests().await.expect("requests");
             let integration_delete = requests
                 .iter()
-                .position(|request| {
+                .rposition(|request| {
                     request.method.as_str() == "DELETE"
                         && request.url.path()
                             == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
@@ -14424,8 +16435,8 @@ mod tests {
                 "the exact recovery GET must prove ownership before ordered cleanup deletes"
             );
             assert!(
-                primary_reads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-                "preflight and exact ambiguity recovery must both read the primary id"
+                primary_reads.load(std::sync::atomic::Ordering::SeqCst) >= 8,
+                "bootstrap and recorded ambiguity recovery must each exact-GET the primary id"
             );
         }
     }
@@ -14697,22 +16708,25 @@ mod tests {
                 "PUT",
                 integration_path.as_str(),
                 integration_path.as_str(),
+                1,
             ),
             (
                 IntegrationLifecycleFailure::Delete,
                 "DELETE",
                 integration_path.as_str(),
                 integration_path.as_str(),
+                2,
             ),
             (
                 IntegrationLifecycleFailure::ParentDelete,
                 "POST",
                 "/api/fleet/agent_policies/delete",
                 parent_path.as_str(),
+                1,
             ),
         ];
 
-        for (failure, mutation_method, mutation_path, recovery_path) in cases {
+        for (failure, mutation_method, mutation_path, recovery_path, expected_calls) in cases {
             let server = MockServer::start().await;
             mount_integration_lifecycle(&server, failure).await;
             let transport = mock_transport(&server);
@@ -14733,6 +16747,7 @@ mod tests {
             let mutation = before_cleanup
                 .iter()
                 .enumerate()
+                .rev()
                 .find_map(|(index, request)| {
                     (request.method.as_str() == mutation_method
                         && request.url.path() == mutation_path)
@@ -14747,8 +16762,8 @@ mod tests {
                             && request.url.path() == mutation_path
                     })
                     .count(),
-                1,
-                "{failure:?} must not replay a mutation after its transient response"
+                expected_calls,
+                "{failure:?} must not replay its transient mutation; bootstrap and recorded deletes are distinct"
             );
 
             let cleanup_error = session
@@ -14772,8 +16787,8 @@ mod tests {
                             && request.url.path() == mutation_path
                     })
                     .count(),
-                1,
-                "{failure:?} cleanup must not mutate an object that reused the fixed id"
+                expected_calls,
+                "{failure:?} cleanup must not replay its transient mutation"
             );
             assert!(
                 requests.iter().enumerate().any(|(index, request)| {
@@ -15689,6 +17704,11 @@ mod tests {
             mutation_routes,
             vec![
                 ("POST", "/api/fleet/agent_policies".to_string()),
+                ("POST", "/api/fleet/package_policies".to_string()),
+                (
+                    "DELETE",
+                    format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                ),
                 ("POST", "/api/fleet/package_policies".to_string()),
                 ("POST", "/api/fleet/package_policies".to_string()),
                 (
