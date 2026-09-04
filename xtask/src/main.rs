@@ -3238,9 +3238,9 @@ fn reduce_metadata_variables(value: &Value, context: &str) -> elasticctl_core::R
     Ok(Value::Array(reduced))
 }
 
-/// Decode an installed-package inventory into memory-only coordinates. Fleet's
-/// response can contain a cursor, but this fixed one-page request must not
-/// continue: accepting a partial inventory would make cleanup unsafe.
+/// Decode an installed-package inventory into memory-only coordinates. Fleet
+/// returns the last-item sort cursor even when the fixed one-page request is
+/// complete, so completeness comes from the total and item count instead.
 fn decode_installed_package_inventory(
     body: &Value,
 ) -> elasticctl_core::Result<BTreeSet<(String, String)>> {
@@ -3275,12 +3275,17 @@ fn decode_installed_package_inventory(
             "installed package inventory item count does not match total",
         ));
     }
-    if let Some(cursor) = envelope.get("searchAfter")
-        && !matches!(cursor, Value::Array(values) if values.is_empty())
-    {
-        return Err(recording_error(
-            "installed package inventory has a continuation cursor",
-        ));
+    if let Some(cursor) = envelope.get("searchAfter") {
+        let valid = matches!(cursor, Value::Array(values)
+        if values.len() <= 2
+            && values.iter().all(|value| {
+                value.is_string() || value.is_number() || value.is_boolean()
+            }));
+        if !valid {
+            return Err(recording_error(
+                "installed package inventory searchAfter must contain at most two scalar sort values",
+            ));
+        }
     }
     if let Some(search_excluded) = envelope.get("searchExcluded")
         && search_excluded.as_u64() != Some(0)
@@ -12207,8 +12212,16 @@ mod tests {
                 {"name": "endpoint", "status": "installed", "version": "8.4.0"}
             ],
             "total": 2,
-            "searchAfter": [],
+            "searchAfter": ["system"],
             "searchExcluded": 0
+        });
+        let empty_cursor = json!({
+            "items": [
+                {"name": "system", "status": "installed", "version": "2.0.0"},
+                {"name": "endpoint", "status": "installed", "version": "8.4.0"}
+            ],
+            "total": 2,
+            "searchAfter": []
         });
         let reordered = json!({
             "items": [
@@ -12230,11 +12243,30 @@ mod tests {
             decode_installed_package_inventory(&reordered).expect("reordered inventory"),
             expected
         );
+        assert_eq!(
+            decode_installed_package_inventory(&empty_cursor).expect("empty cursor inventory"),
+            expected
+        );
+
+        for cursor in [json!(["system", true]), json!([42, false])] {
+            assert_eq!(
+                decode_installed_package_inventory(&json!({
+                    "items": [],
+                    "total": 0,
+                    "searchAfter": cursor,
+                }))
+                .expect("valid cursor inventory"),
+                std::collections::BTreeSet::new(),
+            );
+        }
 
         for malformed in [
             json!({"items": [], "total": 1001}),
             json!({"items": [], "total": 1}),
-            json!({"items": [], "total": 0, "searchAfter": ["next"]}),
+            json!({"items": [], "total": 0, "searchAfter": ["first", "second", "third"]}),
+            json!({"items": [], "total": 0, "searchAfter": [null]}),
+            json!({"items": [], "total": 0, "searchAfter": [[]]}),
+            json!({"items": [], "total": 0, "searchAfter": [{}]}),
             json!({"items": [], "total": 0, "searchAfter": null}),
             json!({"items": [], "total": 0, "searchAfter": ""}),
             json!({"items": [], "total": 0, "searchAfter": {}}),
