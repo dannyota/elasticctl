@@ -175,6 +175,21 @@ elkctl fleet agent-policies import --path agent-policies.yaml --yes
 elkctl fleet agent-policies delete retired-linux --yes
 ```
 
+## Manage Fleet integration policies
+
+```bash
+elkctl fleet integration-policies list --search system
+elkctl fleet integration-policies get production-system
+elkctl fleet integration-policies validate --path integration-policies.yaml
+elkctl fleet integration-policies export --all-custom --format-file yaml > integration-policies.yaml
+
+elkctl fleet integration-policies import --path integration-policies.yaml --yes
+elkctl fleet integration-policies delete retired-system --yes
+```
+
+`import` and `delete` are guarded mutations. They preview by default and apply
+only with `--yes`.
+
 ## Triage alerts and cases
 
 ```bash
@@ -219,6 +234,12 @@ elkctl dashboards export [<id-or-exact-title>...] [--format-file json|yaml]
 elkctl fleet agent-policies list [--search TEXT] [--limit N] | get <id-or-exact-name>
   | validate --path FILE
 elkctl fleet agent-policies export [<id-or-exact-name>...|--all-custom] [--format-file json|yaml]
+  | import --path FILE [--overwrite|--skip-existing] --yes
+  | delete <id-or-exact-name>... --yes
+
+elkctl fleet integration-policies list [--search TEXT] [--limit N] | get <id-or-exact-name>
+  | validate --path FILE
+elkctl fleet integration-policies export [<id-or-exact-name>...|--all-custom] [--format-file json|yaml]
   | import --path FILE [--overwrite|--skip-existing] --yes
   | delete <id-or-exact-name>... --yes
 

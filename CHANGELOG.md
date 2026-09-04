@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1 — Unreleased
+
+### Added
+
+- Fleet integration-policy administration: list, get, validate, portable
+  JSON/YAML export and import, and guarded delete by stable policy id.
+- Exact package-version checks and fail-closed handling for managed,
+  environment-bound, cross-space, and secret-backed integration policies.
+
+### Verified
+
+- Offline tests cover integration-policy normalization, parent and package
+  dependency preflight, import conflict handling, overwrite and skip behavior,
+  and delete guards.
+
 ## 0.6.0 — 2026-09-04
 
 ### Added
