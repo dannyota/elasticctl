@@ -6,7 +6,9 @@ use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::content_codec::ContentFormat;
 use elasticctl_api::fleet::agent_policy_ops::{self, AgentPolicyFilter};
-use elasticctl_api::fleet::integration_policy_ops::{self, IntegrationPolicyFilter};
+use elasticctl_api::fleet::integration_policy_ops::{
+    self, IntegrationPolicyFilter, IntegrationPolicyImportArtifact,
+};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -144,15 +146,11 @@ pub fn integration_validate(path: &Path) -> Result<Value> {
     Ok(json!({"valid": true, "total": specs.len()}))
 }
 
-/// Validate the entire import artifact before configuration is consulted.
-pub fn validate_integration_import_artifact(path: &Path) -> Result<()> {
-    if integration_policy_ops::validate(path)?.is_empty() {
-        return Err(Error::new(
-            ErrorKind::Error,
-            "integration-policy import needs at least one integration policy",
-        ));
-    }
-    Ok(())
+/// Read and retain the entire import artifact before configuration is consulted.
+pub fn validate_integration_import_artifact(
+    path: &Path,
+) -> Result<IntegrationPolicyImportArtifact> {
+    integration_policy_ops::prepare_import(path)
 }
 
 pub async fn integration_export(
@@ -185,14 +183,15 @@ pub async fn integration_export(
 
 pub async fn integration_import(
     ctx: &Context,
-    path: &Path,
+    artifact: IntegrationPolicyImportArtifact,
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
     let plan =
-        integration_policy_ops::plan_import(transport, path, overwrite, skip_existing).await?;
+        integration_policy_ops::plan_prepared_import(transport, artifact, overwrite, skip_existing)
+            .await?;
     let preview = Preview {
         action: plan.preview.preview_action.clone(),
         details: plan.preview.preview_details.clone(),

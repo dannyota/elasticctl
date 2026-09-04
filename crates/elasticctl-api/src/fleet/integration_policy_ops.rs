@@ -72,6 +72,23 @@ struct KnownSchema {
     stream_vars: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
+/// A locally decoded import artifact. Its canonical specifications are kept
+/// private so callers can retain a validated source across context setup
+/// without being able to alter what remote planning will use.
+pub struct IntegrationPolicyImportArtifact {
+    source: PathBuf,
+    canonical: Vec<IntegrationPolicySpec>,
+}
+
+impl fmt::Debug for IntegrationPolicyImportArtifact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IntegrationPolicyImportArtifact")
+            .field("policy_count", &self.canonical.len())
+            .finish()
+    }
+}
+
 /// What `plan_import` preflights and `apply_import` rechecks. Only guard
 /// presentation is public: the canonical artifact, effective specifications,
 /// and Fleet snapshots never cross the API boundary.
@@ -1420,14 +1437,9 @@ fn required_string(item: &Map<String, Value>, field: &str, context: &str) -> Res
         })
 }
 
-/// Plan a canonical integration-policy import without sending a write. The
-/// artifact is decoded exactly once here; apply uses only the retained plan.
-pub async fn plan_import(
-    transport: &Transport,
-    path: &Path,
-    overwrite: bool,
-    skip_existing: bool,
-) -> Result<IntegrationPolicyImportPlan> {
+/// Read, validate, and retain an integration-policy artifact before context
+/// or credential construction. The returned value has no public raw fields.
+pub fn prepare_import(path: &Path) -> Result<IntegrationPolicyImportArtifact> {
     let canonical = validate(path)?;
     if canonical.is_empty() {
         return Err(Error::new(
@@ -1435,13 +1447,28 @@ pub async fn plan_import(
             "integration-policy import needs at least one integration policy",
         ));
     }
+    validate_requested_package_versions(&canonical)?;
+    Ok(IntegrationPolicyImportArtifact {
+        source: path.to_path_buf(),
+        canonical,
+    })
+}
+
+/// Plan a retained integration-policy import without reopening its source or
+/// sending a write. Apply uses only the returned plan.
+pub async fn plan_prepared_import(
+    transport: &Transport,
+    artifact: IntegrationPolicyImportArtifact,
+    overwrite: bool,
+    skip_existing: bool,
+) -> Result<IntegrationPolicyImportPlan> {
+    let IntegrationPolicyImportArtifact { source, canonical } = artifact;
     if overwrite && skip_existing {
         return Err(Error::new(
             ErrorKind::Error,
             "--overwrite and --skip-existing cannot be used together",
         ));
     }
-    validate_requested_package_versions(&canonical)?;
 
     // Read only the requested ids. A conflicting or skipped existing policy is
     // deliberately kept raw: normalize can refuse an unsupported object, but
@@ -1687,14 +1714,14 @@ pub async fn plan_import(
         }
     }
     let package_installs = planned_package_installs(&package_groups);
-    let preview = import_preview(path, &targets, &package_installs);
+    let preview = import_preview(&source, &targets, &package_installs);
     let plan = IntegrationPolicyImportPlan {
         preview,
         skipped_snapshot: skipped.clone(),
         skipped,
         package_installs,
         total: canonical.len(),
-        source: path.to_path_buf(),
+        source,
         host: transport.kibana_url().to_owned(),
         space: transport.space().to_owned(),
         canonical,
@@ -1709,6 +1736,19 @@ pub async fn plan_import(
     };
     validate_import_plan(&plan)?;
     Ok(plan)
+}
+
+/// Plan a canonical integration-policy import without sending a write. This
+/// convenience wrapper reads the source once, then delegates to the retained
+/// artifact planner.
+pub async fn plan_import(
+    transport: &Transport,
+    path: &Path,
+    overwrite: bool,
+    skip_existing: bool,
+) -> Result<IntegrationPolicyImportPlan> {
+    let artifact = prepare_import(path)?;
+    plan_prepared_import(transport, artifact, overwrite, skip_existing).await
 }
 
 fn validate_requested_package_versions(specs: &[IntegrationPolicySpec]) -> Result<()> {

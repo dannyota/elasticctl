@@ -775,6 +775,96 @@ fn validate_decodes_json_and_yaml_rejects_duplicates_and_sorts() {
     );
 }
 
+#[test]
+fn prepared_import_artifact_rejects_empty_files_and_redacts_configured_values() {
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let empty = directory.path().join("empty.json");
+    std::fs::write(&empty, "[]").expect("write empty artifact");
+
+    let error = integration_policy_ops::prepare_import(&empty)
+        .expect_err("empty import artifacts must fail before transport setup");
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert!(
+        error
+            .message
+            .contains("integration-policy import needs at least one integration policy")
+    );
+
+    let secret = "prepared-artifact-secret-value";
+    let mut configured = spec_json("prepared");
+    configured["vars"] = json!({"api_token": secret});
+    let artifact = write_import_artifact(directory.path(), "configured.json", &[configured]);
+    let prepared =
+        integration_policy_ops::prepare_import(&artifact).expect("prepare configured artifact");
+    let debug = format!("{prepared:?}");
+
+    assert!(debug.contains("policy_count"), "{debug}");
+    assert!(!debug.contains(secret), "{debug}");
+    assert!(!debug.contains("configured.json"), "{debug}");
+}
+
+#[tokio::test]
+async fn prepared_import_plans_retained_bytes_after_the_source_is_removed() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let artifact =
+        write_import_artifact(directory.path(), "retained.json", &[spec_json("retained")]);
+    let prepared = integration_policy_ops::prepare_import(&artifact).expect("prepare artifact");
+    std::fs::remove_file(&artifact).expect("remove source after preparation");
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/retained"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404,
+            "error": "Not Found",
+            "message": "missing"
+        })))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!([]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+
+    let plan = integration_policy_ops::plan_prepared_import(
+        &transport_for(&server),
+        prepared,
+        false,
+        false,
+    )
+    .await
+    .expect("planning must use the retained artifact, not reopen its source");
+
+    assert_eq!(plan.preview.targets, vec!["retained"]);
+    assert_eq!(
+        plan.preview.preview_action,
+        format!(
+            "Import 1 integration policy(ies) from {}",
+            artifact.display()
+        )
+    );
+    assert!(no_import_mutation_requests(&server).await);
+}
+
 #[tokio::test]
 async fn absent_exact_package_is_previewed_without_an_install_request() {
     let server = verified_server().await;

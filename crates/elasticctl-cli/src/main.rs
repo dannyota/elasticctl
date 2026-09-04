@@ -486,10 +486,15 @@ async fn main() {
                     overwrite,
                     skip_existing,
                 } => match cmd::fleet::validate_integration_import_artifact(path) {
-                    Ok(()) => match Context::build(&args.global) {
+                    Ok(artifact) => match Context::build(&args.global) {
                         Ok(ctx) => {
-                            cmd::fleet::integration_import(&ctx, path, *overwrite, *skip_existing)
-                                .await
+                            cmd::fleet::integration_import(
+                                &ctx,
+                                artifact,
+                                *overwrite,
+                                *skip_existing,
+                            )
+                            .await
                         }
                         Err(e) => Err(e),
                     },
