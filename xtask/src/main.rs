@@ -3873,7 +3873,7 @@ async fn cleanup_marker_integration(
         ));
     }
     let delete_path = format!("/api/fleet/package_policies/{}", urlencode(id));
-    let deleted = t.delete(&delete_path).await.map_err(|error| {
+    let deleted = t.delete_once(&delete_path).await.map_err(|error| {
         safe_recording_transport_error("deleting owned integration policy failed", error)
     })?;
     require_exact_delete_id(&deleted, id, "integration cleanup")?;
@@ -3922,7 +3922,7 @@ async fn cleanup_marker_integration_parent(
         "integration parent cleanup",
     )?;
     let deleted = t
-        .post(
+        .post_once(
             "/api/fleet/agent_policies/delete",
             Some(&json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID})),
         )
@@ -6481,7 +6481,7 @@ async fn record_integration_policies_with_nonce(
     let parent_create_body = marker_integration_parent_create_body_with_nonce(nonce);
     record_trace("fleet-integration-policy-parent-create");
     let parent_created_result = t
-        .post(
+        .post_once(
             "/api/fleet/agent_policies?sys_monitoring=false",
             Some(&parent_create_body),
         )
@@ -6555,7 +6555,7 @@ async fn record_integration_policies_with_nonce(
     let create_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
     record_trace("fleet-integration-policy-create");
     let created_result = t
-        .post(
+        .post_once(
             "/api/fleet/package_policies?format=simplified",
             Some(&create_body),
         )
@@ -6699,7 +6699,7 @@ async fn record_integration_policies_with_nonce(
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
-        .post(
+        .post_once(
             "/api/fleet/package_policies?format=simplified",
             Some(&duplicate_body),
         )
@@ -6828,7 +6828,7 @@ async fn record_integration_policies_with_nonce(
     .await?;
     record_trace("fleet-integration-policy-update");
     let updated = t
-        .put(
+        .put_once(
             &format!(
                 "/api/fleet/package_policies/{}?format=simplified",
                 urlencode(INTEGRATION_POLICY_ID)
@@ -6904,7 +6904,7 @@ async fn record_integration_policies_with_nonce(
     .await?;
     record_trace("fleet-integration-policy-delete");
     let deleted = t
-        .delete(&format!(
+        .delete_once(&format!(
             "/api/fleet/package_policies/{}",
             urlencode(INTEGRATION_POLICY_ID)
         ))
@@ -6960,7 +6960,7 @@ async fn record_integration_policies_with_nonce(
     .await?;
     record_trace("fleet-integration-policy-parent-delete");
     let parent_deleted = t
-        .post(
+        .post_once(
             "/api/fleet/agent_policies/delete",
             Some(&json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID})),
         )
@@ -9215,6 +9215,8 @@ mod tests {
         None,
         Update,
         Delete,
+        ParentDelete,
+        DuplicateCreate,
     }
 
     async fn mount_integration_lifecycle(
@@ -9246,15 +9248,24 @@ mod tests {
         let integration = marker_integration_response("elasticctl sample integration policy");
         let updated_integration =
             marker_integration_response("elasticctl sample integration policy updated");
+        let foreign_integration = marker_integration_response_with_nonce(
+            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+            OTHER_INTEGRATION_RECORDING_NONCE,
+        );
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
             .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
-                match integration_reads_for_response
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                let read = integration_reads_for_response
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if (failure == IntegrationLifecycleFailure::Update && read >= 3)
+                    || (failure == IntegrationLifecycleFailure::Delete && read >= 5)
                 {
+                    return ResponseTemplate::new(200).set_body_json(foreign_integration.clone());
+                }
+                match read {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                     1 | 2 => ResponseTemplate::new(200).set_body_json(integration.clone()),
                     3 | 4 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
@@ -9286,12 +9297,20 @@ mod tests {
         parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
         let mut detached_parent = marker_integration_parent_response();
         detached_parent["item"]["package_policies"] = json!([]);
+        let mut foreign_parent =
+            marker_integration_parent_response_with_nonce(OTHER_INTEGRATION_RECORDING_NONCE);
+        foreign_parent["item"]["package_policies"] = json!([]);
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
-                match parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                let read =
+                    parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if failure == IntegrationLifecycleFailure::ParentDelete && read >= 3 {
+                    return ResponseTemplate::new(200).set_body_json(foreign_parent.clone());
+                }
+                match read {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                     1 => ResponseTemplate::new(200).set_body_json(parent.clone()),
                     2 if integration_deleted_for_parent_reads
@@ -9334,10 +9353,16 @@ mod tests {
             .and(path("/api/fleet/package_policies"))
             .and(query_param("format", "simplified"))
             .and(body_json(duplicate_body))
-            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
-                "statusCode": 409,
-                "message": "marker integration name already exists"
-            })))
+            .respond_with(if failure == IntegrationLifecycleFailure::DuplicateCreate {
+                ResponseTemplate::new(500).set_body_json(json!({
+                    "message": "private POST duplicate integration identity"
+                }))
+            } else {
+                ResponseTemplate::new(409).set_body_json(json!({
+                    "statusCode": 409,
+                    "message": "marker integration name already exists"
+                }))
+            })
             .mount(server)
             .await;
         Mock::given(method("GET"))
@@ -9383,7 +9408,13 @@ mod tests {
                 json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
             ))
             .respond_with(move |_: &wiremock::Request| {
-                if integration_deleted_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                if failure == IntegrationLifecycleFailure::ParentDelete {
+                    ResponseTemplate::new(500).set_body_json(json!({
+                        "message": "private POST parent delete identity"
+                    }))
+                } else if integration_deleted_for_parent_delete
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
                     parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "id": INTEGRATION_POLICY_PARENT_ID,
@@ -13360,6 +13391,17 @@ mod tests {
             );
 
             let requests = server.received_requests().await.expect("requests");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == "POST"
+                            && request.url.path() == "/api/fleet/agent_policies"
+                    })
+                    .count(),
+                1,
+                "{outcome:?} must not replay an ambiguous parent create"
+            );
             assert!(
                 requests.iter().all(|request| {
                     !(request.method.as_str() == "POST"
@@ -13416,6 +13458,17 @@ mod tests {
                 "{outcome:?} must exact-GET the ambiguous winner before refusing ownership"
             );
             let requests = server.received_requests().await.expect("requests");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == "POST"
+                            && request.url.path() == "/api/fleet/package_policies"
+                    })
+                    .count(),
+                1,
+                "{outcome:?} must not replay an ambiguous primary create"
+            );
             assert!(
                 requests.iter().all(|request| {
                     !(request.method.as_str() == "DELETE"
@@ -13797,6 +13850,409 @@ mod tests {
         assert_eq!(error.message, "deleting integration policy marker failed");
         assert!(!error.message.contains("private"));
         assert!(!error.message.contains("identity"));
+    }
+
+    #[tokio::test]
+    async fn transient_duplicate_create_is_one_shot_and_recovers_with_an_exact_get() {
+        let server = MockServer::start().await;
+        mount_integration_lifecycle(&server, IntegrationLifecycleFailure::DuplicateCreate).await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+
+        record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+            .await
+            .expect_err("a transient duplicate create must stop the lifecycle");
+
+        let requests = server.received_requests().await.expect("requests");
+        let duplicate_create = requests
+            .iter()
+            .enumerate()
+            .find_map(|(index, request)| {
+                (request.method.as_str() == "POST"
+                    && request.url.path() == "/api/fleet/package_policies"
+                    && request
+                        .body_json::<Value>()
+                        .ok()
+                        .and_then(|body| body.get("id").cloned())
+                        == Some(json!(INTEGRATION_POLICY_DUP_ID)))
+                .then_some(index)
+            })
+            .expect("duplicate create request");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/package_policies"
+                        && request
+                            .body_json::<Value>()
+                            .ok()
+                            .and_then(|body| body.get("id").cloned())
+                            == Some(json!(INTEGRATION_POLICY_DUP_ID))
+                })
+                .count(),
+            1,
+            "a transient duplicate create must not replay against its fixed id"
+        );
+        assert!(
+            requests.iter().enumerate().any(|(index, request)| {
+                index > duplicate_create
+                    && request.method.as_str() == "GET"
+                    && request.url.path()
+                        == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}")
+            }),
+            "an ambiguous duplicate create must exact-GET its fixed id before refusing ownership"
+        );
+        assert!(!session.ownership.integration_policy_dup);
+    }
+
+    #[tokio::test]
+    async fn transient_lifecycle_mutations_are_one_shot_and_cleanup_refuses_replacement_nonces() {
+        let integration_path = format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}");
+        let parent_path = format!("/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}");
+        let cases = [
+            (
+                IntegrationLifecycleFailure::Update,
+                "PUT",
+                integration_path.as_str(),
+                integration_path.as_str(),
+            ),
+            (
+                IntegrationLifecycleFailure::Delete,
+                "DELETE",
+                integration_path.as_str(),
+                integration_path.as_str(),
+            ),
+            (
+                IntegrationLifecycleFailure::ParentDelete,
+                "POST",
+                "/api/fleet/agent_policies/delete",
+                parent_path.as_str(),
+            ),
+        ];
+
+        for (failure, mutation_method, mutation_path, recovery_path) in cases {
+            let server = MockServer::start().await;
+            mount_integration_lifecycle(&server, failure).await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("a transient marker mutation must stop the lifecycle");
+
+            let before_cleanup = server.received_requests().await.expect("requests");
+            let mutation = before_cleanup
+                .iter()
+                .enumerate()
+                .find_map(|(index, request)| {
+                    (request.method.as_str() == mutation_method
+                        && request.url.path() == mutation_path)
+                        .then_some(index)
+                })
+                .expect("transient mutation request");
+            assert_eq!(
+                before_cleanup
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == mutation_method
+                            && request.url.path() == mutation_path
+                    })
+                    .count(),
+                1,
+                "{failure:?} must not replay a mutation after its transient response"
+            );
+
+            let cleanup_error = session
+                .cleanup_integration_resources()
+                .await
+                .expect_err("cleanup must fresh-GET and reject the replacement nonce");
+            assert!(
+                cleanup_error
+                    .message
+                    .contains("marker identity no longer matches"),
+                "{failure:?}: {}",
+                cleanup_error.message
+            );
+
+            let requests = server.received_requests().await.expect("requests");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| {
+                        request.method.as_str() == mutation_method
+                            && request.url.path() == mutation_path
+                    })
+                    .count(),
+                1,
+                "{failure:?} cleanup must not mutate an object that reused the fixed id"
+            );
+            assert!(
+                requests.iter().enumerate().any(|(index, request)| {
+                    index > mutation
+                        && request.method.as_str() == "GET"
+                        && request.url.path() == recovery_path
+                }),
+                "{failure:?} cleanup must fresh-GET the exact id after the transient mutation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_after_an_ambiguous_mutation_leaves_an_absent_marker_untouched() {
+        let integration_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .expect(1)
+            .mount(&integration_server)
+            .await;
+        let integration_transport = mock_transport(&integration_server);
+        cleanup_marker_integration(
+            &integration_transport,
+            INTEGRATION_POLICY_ID,
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+        )
+        .await
+        .expect("an absent integration is already clean after an ambiguous mutation");
+        assert!(
+            integration_server
+                .received_requests()
+                .await
+                .expect("integration requests")
+                .iter()
+                .all(|request| request.method.as_str() != "DELETE")
+        );
+
+        let parent_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .expect(1)
+            .mount(&parent_server)
+            .await;
+        let parent_transport = mock_transport(&parent_server);
+        cleanup_marker_integration_parent(&parent_transport, TEST_INTEGRATION_RECORDING_NONCE, &[])
+            .await
+            .expect("an absent parent is already clean after an ambiguous mutation");
+        assert!(
+            parent_server
+                .received_requests()
+                .await
+                .expect("parent requests")
+                .iter()
+                .all(|request| request.method.as_str() != "POST")
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_integration_cleanup_delete_is_one_shot_before_a_replacement_is_refused() {
+        let server = MockServer::start().await;
+        let integration_path = format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}");
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads_for_response = reads.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                if reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(200).set_body_json(marker_integration_response(
+                        INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                    ))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(
+                        marker_integration_response_with_nonce(
+                            INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                            OTHER_INTEGRATION_RECORDING_NONCE,
+                        ),
+                    )
+                }
+            })
+            .mount(&server)
+            .await;
+        let deletes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deletes_for_response = deletes.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if deletes_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_ID,
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                integration_policy: true,
+                ..integration_cleanup_ownership()
+            },
+        };
+
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the transient cleanup delete is ambiguous");
+        let cleanup_error = session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the next cleanup must refuse the replacement nonce");
+        assert!(
+            cleanup_error
+                .message
+                .contains("marker identity no longer matches")
+        );
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "DELETE" && request.url.path() == integration_path
+                })
+                .count(),
+            1,
+            "cleanup must not replay DELETE against a replacement integration"
+        );
+        let delete = requests
+            .iter()
+            .position(|request| request.method.as_str() == "DELETE")
+            .expect("cleanup delete");
+        assert!(
+            requests.iter().enumerate().any(|(index, request)| {
+                index > delete
+                    && request.method.as_str() == "GET"
+                    && request.url.path() == integration_path
+            }),
+            "the next cleanup must fresh-GET before deciding whether it owns the replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_parent_cleanup_delete_is_one_shot_before_a_replacement_is_refused() {
+        let server = MockServer::start().await;
+        let parent_path = format!("/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}");
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads_for_response = reads.clone();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    let mut parent = marker_integration_parent_response();
+                    parent["item"]["package_policies"] = json!([]);
+                    ResponseTemplate::new(200).set_body_json(parent)
+                } else {
+                    let mut parent = marker_integration_parent_response_with_nonce(
+                        OTHER_INTEGRATION_RECORDING_NONCE,
+                    );
+                    parent["item"]["package_policies"] = json!([]);
+                    ResponseTemplate::new(200).set_body_json(parent)
+                }
+            })
+            .mount(&server)
+            .await;
+        let deletes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deletes_for_response = deletes.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                if deletes_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_PARENT_ID,
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                integration_policy_parent: true,
+                integration_recording_nonce: Some(TEST_INTEGRATION_RECORDING_NONCE.to_string()),
+                ..Default::default()
+            },
+        };
+
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the transient parent cleanup delete is ambiguous");
+        let cleanup_error = session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the next cleanup must refuse the replacement nonce");
+        assert!(
+            cleanup_error
+                .message
+                .contains("marker identity no longer matches")
+        );
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete"
+                })
+                .count(),
+            1,
+            "cleanup must not replay the parent delete against a replacement"
+        );
+        let delete = requests
+            .iter()
+            .position(|request| {
+                request.method.as_str() == "POST"
+                    && request.url.path() == "/api/fleet/agent_policies/delete"
+            })
+            .expect("cleanup parent delete");
+        assert!(
+            requests.iter().enumerate().any(|(index, request)| {
+                index > delete
+                    && request.method.as_str() == "GET"
+                    && request.url.path() == parent_path
+            }),
+            "the next cleanup must fresh-GET before deciding whether it owns the replacement"
+        );
     }
 
     #[tokio::test]

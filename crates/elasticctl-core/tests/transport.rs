@@ -230,6 +230,106 @@ async fn put_once_preserves_transient_http_errors_without_replaying_the_mutation
 }
 
 #[tokio::test]
+async fn post_once_uses_the_normal_post_request_shape_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/s/soc/api/thing"))
+        .and(header("authorization", "ApiKey essu_test"))
+        .and(header("elastic-api-version", "2023-10-31"))
+        .and(header("kbn-xsrf", "true"))
+        .and(body_json(json!({"value": 1})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    profile.space = "soc".into();
+    let t = Transport::new(&profile).unwrap();
+    assert_eq!(
+        t.post_once("/api/thing", Some(&json!({"value": 1})))
+            .await
+            .unwrap()["ok"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn post_once_preserves_transient_http_errors_without_replaying_the_mutation() {
+    for (status, message) in [(429, "rate limited"), (503, "temporarily unavailable")] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({"message": message})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let t = Transport::new(&profile_for(&server)).unwrap();
+        let error = t
+            .post_once("/api/once", Some(&json!({})))
+            .await
+            .expect_err("one-shot POST must not replay a transient response");
+        assert_eq!(error.kind, ErrorKind::Http);
+        assert_eq!(error.http_status, Some(status));
+        assert_eq!(error.message, message);
+    }
+}
+
+#[tokio::test]
+async fn delete_once_uses_the_normal_delete_request_shape_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/s/soc/api/thing"))
+        .and(header("authorization", "ApiKey essu_test"))
+        .and(header("elastic-api-version", "2023-10-31"))
+        .and(header("kbn-xsrf", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut profile = profile_for(&server);
+    profile.space = "soc".into();
+    let t = Transport::new(&profile).unwrap();
+    assert_eq!(t.delete_once("/api/thing").await.unwrap()["ok"], true);
+}
+
+#[tokio::test]
+async fn delete_once_preserves_transient_http_errors_without_replaying_the_mutation() {
+    for (status, message) in [(429, "rate limited"), (503, "temporarily unavailable")] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({"message": message})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/once"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let t = Transport::new(&profile_for(&server)).unwrap();
+        let error = t
+            .delete_once("/api/once")
+            .await
+            .expect_err("one-shot DELETE must not replay a transient response");
+        assert_eq!(error.kind, ErrorKind::Http);
+        assert_eq!(error.http_status, Some(status));
+        assert_eq!(error.message, message);
+    }
+}
+
+#[tokio::test]
 async fn ordinary_put_still_retries_a_transient_response() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))
@@ -248,6 +348,39 @@ async fn ordinary_put_still_retries_a_transient_response() {
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert_eq!(t.put("/api/retry", &json!({})).await.unwrap()["ok"], true);
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn ordinary_json_mutations_still_retry_transient_responses() {
+    for operation in ["POST", "PUT", "DELETE"] {
+        let server = MockServer::start().await;
+        Mock::given(method(operation))
+            .and(path("/api/retry"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method(operation))
+            .and(path("/api/retry"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let t = Transport::new(&profile_for(&server)).unwrap();
+        let body = match operation {
+            "POST" => t.post("/api/retry", Some(&json!({}))).await.unwrap(),
+            "PUT" => t.put("/api/retry", &json!({})).await.unwrap(),
+            "DELETE" => t.delete("/api/retry").await.unwrap(),
+            _ => unreachable!("test case is a supported mutation method"),
+        };
+        assert_eq!(body["ok"], true, "{operation}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "{operation}"
+        );
+    }
 }
 
 #[tokio::test]

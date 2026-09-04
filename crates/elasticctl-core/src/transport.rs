@@ -552,6 +552,16 @@ impl Transport {
         self.send_json(Method::POST, path, body).await
     }
 
+    /// Send a JSON POST exactly once.
+    ///
+    /// This is for mutations whose endpoint does not provide an idempotency
+    /// key. It otherwise uses the same request construction, response parsing,
+    /// timeout handling, and error classification as [`Self::post`].
+    pub async fn post_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
+        self.send_json_with_attempt_limit(Method::POST, path, body, 1)
+            .await
+    }
+
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_json(Method::PUT, path, Some(body)).await
     }
@@ -572,6 +582,16 @@ impl Transport {
 
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.send_json(Method::DELETE, path, None).await
+    }
+
+    /// Send a JSON DELETE exactly once.
+    ///
+    /// This is for mutations whose endpoint does not provide an idempotency
+    /// key. It otherwise uses the same request construction, response parsing,
+    /// timeout handling, and error classification as [`Self::delete`].
+    pub async fn delete_once(&self, path: &str) -> Result<Value> {
+        self.send_json_with_attempt_limit(Method::DELETE, path, None, 1)
+            .await
     }
 
     /// GET Elasticsearch without a Kibana space prefix.
