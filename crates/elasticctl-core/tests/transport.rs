@@ -330,6 +330,107 @@ async fn delete_once_preserves_transient_http_errors_without_replaying_the_mutat
 }
 
 #[tokio::test]
+async fn one_shot_json_mutations_do_not_follow_307_or_308_redirects() {
+    for operation in ["POST", "PUT", "DELETE"] {
+        for status in [307, 308] {
+            let server = MockServer::start().await;
+            let replacement = format!("{}/api/replacement", server.uri());
+            Mock::given(method(operation))
+                .and(path("/api/once"))
+                .respond_with(ResponseTemplate::new(status).insert_header("location", replacement))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method(operation))
+                .and(path("/api/replacement"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let transport = Transport::new(&profile_for(&server)).unwrap();
+            let error = match operation {
+                "POST" => transport.post_once("/api/once", Some(&json!({}))).await,
+                "PUT" => transport.put_once("/api/once", &json!({})).await,
+                "DELETE" => transport.delete_once("/api/once").await,
+                _ => unreachable!("test case is a supported mutation method"),
+            }
+            .expect_err("one-shot mutation must return the redirect response");
+
+            assert_eq!(error.kind, ErrorKind::Http, "{operation} {status}");
+            assert_eq!(error.http_status, Some(status), "{operation} {status}");
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == "/api/once")
+                    .count(),
+                1,
+                "{operation} {status} source count"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == "/api/replacement")
+                    .count(),
+                0,
+                "{operation} {status} target count"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_json_mutations_still_follow_307_or_308_redirects() {
+    for operation in ["POST", "PUT", "DELETE"] {
+        for status in [307, 308] {
+            let server = MockServer::start().await;
+            let replacement = format!("{}/api/replacement", server.uri());
+            Mock::given(method(operation))
+                .and(path("/api/redirect"))
+                .respond_with(ResponseTemplate::new(status).insert_header("location", replacement))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method(operation))
+                .and(path("/api/replacement"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let transport = Transport::new(&profile_for(&server)).unwrap();
+            let body = match operation {
+                "POST" => transport.post("/api/redirect", Some(&json!({}))).await,
+                "PUT" => transport.put("/api/redirect", &json!({})).await,
+                "DELETE" => transport.delete("/api/redirect").await,
+                _ => unreachable!("test case is a supported mutation method"),
+            }
+            .expect("ordinary mutation follows the redirect");
+
+            assert_eq!(body["ok"], true, "{operation} {status}");
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == "/api/redirect")
+                    .count(),
+                1,
+                "{operation} {status} source count"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.url.path() == "/api/replacement")
+                    .count(),
+                1,
+                "{operation} {status} target count"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn ordinary_put_still_retries_a_transient_response() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))

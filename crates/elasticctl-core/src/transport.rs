@@ -163,6 +163,7 @@ pub fn urlencode(s: &str) -> String {
 
 pub struct Transport {
     client: Client,
+    one_shot_client: Client,
     base: String,
     /// The Kibana URL exactly as configured, before trailing-slash
     /// normalization. `doctor` reports it as the connectivity target and the
@@ -183,6 +184,12 @@ pub struct Transport {
 }
 
 impl Transport {
+    fn client_builder(profile: &Profile) -> reqwest::ClientBuilder {
+        Client::builder()
+            .timeout(Duration::from_secs(profile.timeout_secs))
+            .danger_accept_invalid_certs(!profile.verify)
+    }
+
     pub fn new(profile: &Profile) -> Result<Transport> {
         Self::with_debug(profile, false)
     }
@@ -196,11 +203,19 @@ impl Transport {
         let mut profile = profile.clone();
         profile.strip_userinfo();
         let credential = Credential::from_profile(&profile)?;
-        let client = Client::builder()
-            .timeout(Duration::from_secs(profile.timeout_secs))
-            .danger_accept_invalid_certs(!profile.verify)
+        let client = Self::client_builder(&profile)
             .build()
             .map_err(|e| Error::new(ErrorKind::Connection, format!("building HTTP client: {e}")))?;
+        let one_shot_client = Self::client_builder(&profile)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Connection,
+                    format!("building one-shot HTTP client: {e}"),
+                )
+            })?;
 
         let base = profile.kibana_url.trim_end_matches('/').to_string();
         let kibana_url = profile.kibana_url.clone();
@@ -214,6 +229,7 @@ impl Transport {
 
         Ok(Transport {
             client,
+            one_shot_client,
             base,
             kibana_url,
             es_base,
@@ -411,11 +427,22 @@ impl Transport {
         body: Option<&Value>,
         attempt_limit: u32,
     ) -> Result<Response> {
+        self.send_with_client_attempt_limit(&self.client, method, path, body, attempt_limit)
+            .await
+    }
+
+    async fn send_with_client_attempt_limit(
+        &self,
+        client: &Client,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+    ) -> Result<Response> {
         let url = self.url(path);
         let request_method = method.clone();
         self.send_retrying(method, &url, attempt_limit, || {
-            let mut req = self
-                .client
+            let mut req = client
                 .request(request_method.clone(), &url)
                 .header("Authorization", &self.auth_header)
                 .header("elastic-api-version", API_VERSION);
@@ -448,6 +475,23 @@ impl Transport {
         let url = self.url(path);
         let response = self
             .send_with_attempt_limit(method.clone(), path, body, attempt_limit)
+            .await?;
+        let text = self.response_text(&method, &url, response).await?;
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        parse_response_json(&text)
+    }
+
+    async fn send_json_once(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let url = self.url(path);
+        let response = self
+            .send_with_client_attempt_limit(&self.one_shot_client, method.clone(), path, body, 1)
             .await?;
         let text = self.response_text(&method, &url, response).await?;
         if text.trim().is_empty() {
@@ -555,11 +599,11 @@ impl Transport {
     /// Send a JSON POST exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It otherwise uses the same request construction, response parsing,
-    /// timeout handling, and error classification as [`Self::post`].
+    /// key. It disables redirects and protocol-level retries. It otherwise
+    /// uses the same request construction, response parsing, timeout handling,
+    /// and error classification as [`Self::post`].
     pub async fn post_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
-        self.send_json_with_attempt_limit(Method::POST, path, body, 1)
-            .await
+        self.send_json_once(Method::POST, path, body).await
     }
 
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
@@ -569,11 +613,11 @@ impl Transport {
     /// Send a JSON PUT exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It otherwise uses the same request construction, response parsing,
-    /// timeout handling, and error classification as [`Self::put`].
+    /// key. It disables redirects and protocol-level retries. It otherwise
+    /// uses the same request construction, response parsing, timeout handling,
+    /// and error classification as [`Self::put`].
     pub async fn put_once(&self, path: &str, body: &Value) -> Result<Value> {
-        self.send_json_with_attempt_limit(Method::PUT, path, Some(body), 1)
-            .await
+        self.send_json_once(Method::PUT, path, Some(body)).await
     }
 
     pub async fn patch(&self, path: &str, body: &Value) -> Result<Value> {
@@ -587,11 +631,11 @@ impl Transport {
     /// Send a JSON DELETE exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It otherwise uses the same request construction, response parsing,
-    /// timeout handling, and error classification as [`Self::delete`].
+    /// key. It disables redirects and protocol-level retries. It otherwise
+    /// uses the same request construction, response parsing, timeout handling,
+    /// and error classification as [`Self::delete`].
     pub async fn delete_once(&self, path: &str) -> Result<Value> {
-        self.send_json_with_attempt_limit(Method::DELETE, path, None, 1)
-            .await
+        self.send_json_once(Method::DELETE, path, None).await
     }
 
     /// GET Elasticsearch without a Kibana space prefix.
