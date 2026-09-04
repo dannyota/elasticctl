@@ -239,6 +239,15 @@ fn package_metadata(vars: Value, policy_templates: Value) -> Value {
     })
 }
 
+fn modern_package_metadata(policy_templates: Value, data_streams: Value) -> Value {
+    json!({
+        "name": "system",
+        "version": "2.0.0",
+        "policy_templates": policy_templates,
+        "data_streams": data_streams,
+    })
+}
+
 fn safe_package_metadata() -> Value {
     package_metadata(json!([]), json!([]))
 }
@@ -275,11 +284,61 @@ fn secret_matrix_metadata() -> Value {
     )
 }
 
+fn measured_system_metadata() -> Value {
+    modern_package_metadata(
+        json!([
+            {
+                "name": "system",
+                "inputs": [
+                    {"type": "system", "streams": []}
+                ]
+            }
+        ]),
+        json!([
+            {
+                "dataset": "system.cpu",
+                "streams": [
+                    {"input": "system", "vars": [{"name": "period"}]}
+                ]
+            }
+        ]),
+    )
+}
+
 async fn mount_export_dependencies(
     server: &MockServer,
     id: &str,
     policy: serde_json::Map<String, Value>,
     parents: Vec<Value>,
+    package: Value,
+    metadata: Value,
+) {
+    mount_export_dependencies_for_package(
+        server,
+        id,
+        policy,
+        parents,
+        PackageCoordinate {
+            name: "system",
+            version: "2.0.0",
+        },
+        package,
+        metadata,
+    )
+    .await;
+}
+
+struct PackageCoordinate<'a> {
+    name: &'a str,
+    version: &'a str,
+}
+
+async fn mount_export_dependencies_for_package(
+    server: &MockServer,
+    id: &str,
+    policy: serde_json::Map<String, Value>,
+    parents: Vec<Value>,
+    package_coordinate: PackageCoordinate<'_>,
     package: Value,
     metadata: Value,
 ) {
@@ -301,12 +360,18 @@ async fn mount_export_dependencies(
             .await;
     }
     Mock::given(method("GET"))
-        .and(path("/api/fleet/epm/packages/system"))
+        .and(path(format!(
+            "/api/fleet/epm/packages/{}",
+            package_coordinate.name
+        )))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": package})))
         .mount(server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .and(path(format!(
+            "/api/fleet/epm/packages/{}/{}",
+            package_coordinate.name, package_coordinate.version
+        )))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": metadata})))
         .mount(server)
         .await;
@@ -3515,8 +3580,8 @@ async fn export_rejects_duplicate_metadata_input_keys_before_secret_classificati
         .and(path("/api/fleet/epm/packages/system/2.0.0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
             "name": "system", "version": "2.0.0", "policy_templates": [
-                {"name": "system", "inputs": [{"type": "system", "vars": [{"name": "password", "secret": false}]}]},
-                {"name": "system", "inputs": [{"type": "system", "vars": [{"name": "password", "secret": true}]}]}
+                {"name": "system", "inputs": [{"type": "system-password", "vars": [{"name": "password", "secret": false}]}]},
+                {"name": "system-system", "inputs": [{"type": "password", "vars": [{"name": "password", "secret": true}]}]}
             ]
         }})))
         .mount(&server)
@@ -3533,7 +3598,7 @@ async fn export_rejects_duplicate_metadata_input_keys_before_secret_classificati
     assert!(
         error
             .message
-            .contains("duplicate input key 'system-system'")
+            .contains("duplicate input key 'system-system-password'")
     );
     assert!(!error.message.contains("must-not-leak"));
 }
@@ -4298,6 +4363,642 @@ async fn export_allows_nonsecret_values_and_unconfigured_secret_definitions() {
             1,
             "{case} must consult exact metadata"
         );
+    }
+}
+
+#[tokio::test]
+async fn export_accepts_measured_system_top_level_streams() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"period": "10s"}}}
+            }
+        }),
+    );
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        measured_system_metadata(),
+    )
+    .await;
+
+    let result = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect("modern system stream definition is known and nonsecret");
+    assert_eq!(result.exported, 1);
+}
+
+#[tokio::test]
+async fn export_rejects_modern_stream_secrets_without_leaking_values() {
+    let server = verified_server().await;
+    let secret = "modern-stream-secret-value";
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"period": secret}}}
+            }
+        }),
+    );
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"][0]["secret"] = json!(true);
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        metadata,
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("modern secret definitions are not portable");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(
+        error
+            .message
+            .contains("integration-1:inputs.system-system.streams.system.cpu.vars.period")
+    );
+    assert!(!error.message.contains(secret));
+}
+
+#[tokio::test]
+async fn export_joins_short_selectors_with_the_package_name() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "package".into(),
+        json!({"name": "azure", "version": "1.40.0"}),
+    );
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "logs-a": {"streams": {"azure.activitylogs": {"vars": {"period": "10s"}}}},
+            "metrics-a": {"streams": {"azure.metrics": {"vars": {"period": "10s"}}}},
+        }),
+    );
+    let metadata = json!({
+        "name": "azure",
+        "version": "1.40.0",
+        "policy_templates": [
+            {
+                "name": "logs",
+                "data_streams": ["activitylogs"],
+                "inputs": [{"type": "a"}]
+            },
+            {
+                "name": "metrics",
+                "data_streams": ["metrics"],
+                "inputs": [{"type": "a"}]
+            }
+        ],
+        "data_streams": [
+            {
+                "dataset": "azure.activitylogs",
+                "streams": [{"input": "a", "vars": [{"name": "period"}]}]
+            },
+            {
+                "dataset": "azure.metrics",
+                "streams": [{"input": "a", "vars": [{"name": "period"}]}]
+            }
+        ]
+    });
+    mount_export_dependencies_for_package(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        PackageCoordinate {
+            name: "azure",
+            version: "1.40.0",
+        },
+        json!({
+            "name": "azure",
+            "status": "installed",
+            "installationInfo": {"version": "1.40.0"}
+        }),
+        metadata,
+    )
+    .await;
+
+    let result = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect("short selectors disambiguate repeated input types");
+    assert_eq!(result.exported, 1);
+}
+
+#[tokio::test]
+async fn modern_template_selector_absence_selects_all_and_empty_selects_none() {
+    for (label, selectors, expected) in [
+        ("absent", None, None),
+        ("empty", Some(json!([])), Some(ErrorKind::Http)),
+    ] {
+        let server = verified_server().await;
+        let mut policy = live_item("integration-1");
+        policy.insert(
+            "inputs".into(),
+            json!({
+                "system-system": {
+                    "streams": {"system.cpu": {"vars": {"period": "10s"}}}
+                }
+            }),
+        );
+        let mut metadata = measured_system_metadata();
+        if let Some(selectors) = selectors {
+            metadata["policy_templates"][0]["data_streams"] = selectors;
+        }
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+
+        let result = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await;
+        match expected {
+            None => assert_eq!(result.expect(label).exported, 1),
+            Some(kind) => assert_eq!(result.expect_err(label).kind, kind),
+        }
+    }
+}
+
+#[tokio::test]
+async fn export_accepts_legacy_only_and_identical_dual_stream_definitions() {
+    let templates = json!([
+        {
+            "name": "system",
+            "inputs": [
+                {
+                    "type": "system",
+                    "streams": [
+                        {
+                            "data_stream": {"dataset": "system.cpu"},
+                            "vars": [{"name": "period"}]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]);
+    let dual = modern_package_metadata(
+        templates.clone(),
+        json!([
+            {
+                "dataset": "system.cpu",
+                "streams": [{"input": "system", "vars": [{"name": "period"}]}]
+            }
+        ]),
+    );
+    for (label, metadata) in [
+        ("legacy", package_metadata(json!([]), templates)),
+        ("identical dual", dual),
+    ] {
+        let server = verified_server().await;
+        let mut policy = live_item("integration-1");
+        policy.insert(
+            "inputs".into(),
+            json!({
+                "system-system": {
+                    "streams": {"system.cpu": {"vars": {"period": "10s"}}}
+                }
+            }),
+        );
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        assert_eq!(
+            integration_policy_ops::export(
+                &transport_for(&server),
+                &["integration-1".into()],
+                false,
+                ContentFormat::Json,
+            )
+            .await
+            .expect(label)
+            .exported,
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_refuses_conflicting_modern_and_legacy_stream_definitions() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"period": "10s"}}}
+            }
+        }),
+    );
+    let metadata = modern_package_metadata(
+        json!([
+            {
+                "name": "system",
+                "inputs": [{
+                    "type": "system",
+                    "streams": [{
+                        "data_stream": {"dataset": "system.cpu"},
+                        "vars": [{"name": "period", "secret": true}]
+                    }]
+                }]
+            }
+        ]),
+        json!([
+            {
+                "dataset": "system.cpu",
+                "streams": [{"input": "system", "vars": [{"name": "period"}]}]
+            }
+        ]),
+    );
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        metadata,
+    )
+    .await;
+
+    let error = integration_policy_ops::export(
+        &transport_for(&server),
+        &["integration-1".into()],
+        false,
+        ContentFormat::Json,
+    )
+    .await
+    .expect_err("dual definitions must agree");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert!(
+        error
+            .message
+            .contains("conflicting modern and legacy stream definition")
+    );
+}
+
+#[tokio::test]
+async fn export_rejects_ambiguous_modern_dataset_and_template_joins() {
+    let mut cases = Vec::new();
+
+    let mut duplicate_selector = measured_system_metadata();
+    duplicate_selector["policy_templates"][0]["data_streams"] = json!(["cpu", "cpu"]);
+    cases.push((
+        "duplicate selector",
+        duplicate_selector,
+        "duplicate data_streams selector",
+    ));
+
+    let mut duplicate_resolved_selector = measured_system_metadata();
+    duplicate_resolved_selector["policy_templates"][0]["data_streams"] =
+        json!(["cpu", "system.cpu"]);
+    cases.push((
+        "duplicate resolved selector",
+        duplicate_resolved_selector,
+        "duplicate data_streams dataset",
+    ));
+
+    let mut unresolved_selector = measured_system_metadata();
+    unresolved_selector["policy_templates"][0]["data_streams"] = json!(["missing"]);
+    cases.push((
+        "unresolved selector",
+        unresolved_selector,
+        "does not match a dataset",
+    ));
+
+    let mut ambiguous_selector = measured_system_metadata();
+    ambiguous_selector["policy_templates"][0]["data_streams"] = json!(["cpu"]);
+    ambiguous_selector["data_streams"] = json!([
+        {"dataset": "cpu", "streams": [{"input": "system", "vars": []}]},
+        {"dataset": "system.cpu", "streams": [{"input": "system", "vars": []}]},
+    ]);
+    cases.push((
+        "ambiguous selector",
+        ambiguous_selector,
+        "matches multiple datasets",
+    ));
+
+    let mut duplicate_dataset = measured_system_metadata();
+    duplicate_dataset["data_streams"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "dataset": "system.cpu", "streams": []
+        }));
+    cases.push((
+        "duplicate dataset",
+        duplicate_dataset,
+        "duplicate data stream dataset",
+    ));
+
+    let mut duplicate_stream_input = measured_system_metadata();
+    duplicate_stream_input["data_streams"][0]["streams"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"input": "system", "vars": []}));
+    cases.push((
+        "duplicate stream input",
+        duplicate_stream_input,
+        "duplicate stream input",
+    ));
+
+    let mut zero_candidate = measured_system_metadata();
+    zero_candidate["data_streams"][0]["streams"][0]["input"] = json!("missing");
+    cases.push((
+        "zero candidate",
+        zero_candidate,
+        "no matching template input",
+    ));
+
+    let multiple_candidate = modern_package_metadata(
+        json!([
+            {"name": "one", "data_streams": ["cpu"], "inputs": [{"type": "system"}]},
+            {"name": "two", "data_streams": ["cpu"], "inputs": [{"type": "system"}]},
+        ]),
+        json!([
+            {
+                "dataset": "system.cpu",
+                "streams": [{"input": "system", "vars": []}]
+            }
+        ]),
+    );
+    cases.push((
+        "multiple candidates",
+        multiple_candidate,
+        "multiple matching template inputs",
+    ));
+
+    let duplicate_composite_input = modern_package_metadata(
+        json!([
+            {"name": "one-two", "data_streams": ["cpu"], "inputs": [{"type": "three"}]},
+            {"name": "one", "data_streams": ["cpu"], "inputs": [{"type": "two-three"}]},
+        ]),
+        json!([{"dataset": "system.cpu", "streams": []}]),
+    );
+    cases.push((
+        "duplicate composite input",
+        duplicate_composite_input,
+        "duplicate input key",
+    ));
+
+    let duplicate_template_name = modern_package_metadata(
+        json!([
+            {"name": "system", "data_streams": ["cpu"], "inputs": [{"type": "one"}]},
+            {"name": "system", "data_streams": ["cpu"], "inputs": [{"type": "two"}]},
+        ]),
+        json!([{"dataset": "system.cpu", "streams": []}]),
+    );
+    cases.push((
+        "duplicate template name",
+        duplicate_template_name,
+        "duplicate template name",
+    ));
+
+    for (label, metadata, expected) in cases {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            live_item("integration-1"),
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(label);
+        assert_eq!(error.kind, ErrorKind::Http, "{label}: {}", error.message);
+        assert!(
+            error.message.contains(expected),
+            "{label}: {}",
+            error.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn export_rejects_malformed_modern_package_metadata() {
+    let mut cases = Vec::new();
+
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"] = json!({});
+    cases.push(("data streams", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"] = json!([false]);
+    cases.push(("data stream entry", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["dataset"] = json!("");
+    cases.push(("dataset", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"] = json!({});
+    cases.push(("streams", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"] = json!([false]);
+    cases.push(("stream entry", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["input"] = json!("");
+    cases.push(("stream input", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"] = json!({});
+    cases.push(("stream vars", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"] = json!([false]);
+    cases.push(("variable entry", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"][0]["name"] = json!("");
+    cases.push(("variable name", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"] =
+        json!([{"name": "period"}, {"name": "period"}]);
+    cases.push(("duplicate variable", metadata));
+    let mut metadata = measured_system_metadata();
+    metadata["data_streams"][0]["streams"][0]["vars"][0]["secret"] = json!("true");
+    cases.push(("secret flag", metadata));
+
+    for (label, metadata) in cases {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            live_item("integration-1"),
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(label);
+        assert_eq!(error.kind, ErrorKind::Http, "{label}: {}", error.message);
+    }
+}
+
+#[tokio::test]
+async fn export_fails_closed_for_unknown_modern_configuration_without_leaking_values() {
+    let value = "unknown-modern-value";
+    let mut package = live_item("integration-1");
+    package.insert("vars".into(), json!({"unknown": value}));
+    let mut input = live_item("integration-1");
+    input.insert(
+        "inputs".into(),
+        json!({"unknown-input": {"vars": {"period": value}}}),
+    );
+    let mut dataset = live_item("integration-1");
+    dataset.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.unknown": {"vars": {"period": value}}}
+            }
+        }),
+    );
+    let mut variable = live_item("integration-1");
+    variable.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "streams": {"system.cpu": {"vars": {"unknown": value}}}
+            }
+        }),
+    );
+
+    for (label, policy, path) in [
+        ("package", package, "vars.unknown"),
+        ("input", input, "inputs.unknown-input"),
+        (
+            "dataset",
+            dataset,
+            "inputs.system-system.streams.system.unknown",
+        ),
+        (
+            "variable",
+            variable,
+            "inputs.system-system.streams.system.cpu.vars.unknown",
+        ),
+    ] {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            measured_system_metadata(),
+        )
+        .await;
+        let error = integration_policy_ops::export(
+            &transport_for(&server),
+            &["integration-1".into()],
+            false,
+            ContentFormat::Json,
+        )
+        .await
+        .expect_err(label);
+        assert_eq!(
+            error.kind,
+            ErrorKind::Unsupported,
+            "{label}: {}",
+            error.message
+        );
+        assert!(error.message.contains(path), "{label}: {}", error.message);
+        assert!(!error.message.contains(value), "{label}: {}", error.message);
     }
 }
 
