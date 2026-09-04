@@ -638,13 +638,15 @@ descriptions with fixed public descriptions, so public fixtures stay
 deterministic. The recorder deletes integrations before agent policies.
 Every integration-policy marker POST, PUT, and DELETE is one-shot, including
 its cleanup, and uses an HTTP client with redirects and protocol-level retries
-disabled. A redirect, 429, 5xx, timeout, connection failure, malformed success
-response, or HTTP/2 retry signal never replays the mutation. Create ambiguity
-uses the exact nonce-bound GET above. Update and delete ambiguity retains
-ownership for cleanup, whose fresh exact GET either proves the same
-nonce-bearing object, observes it absent, or refuses mutation. This prevents a
-retry or redirect from overwriting or deleting a different object that reused
-the fixed id after the first request committed.
+disabled. Connection pooling is also disabled so a canceled request cannot be
+retried on a fresh connection after an idle pooled connection fails. A
+redirect, 429, 5xx, timeout, connection failure, malformed success response,
+or HTTP/2 retry signal never replays the mutation. Create ambiguity uses the
+exact nonce-bound GET above. Update and delete ambiguity retains ownership for
+cleanup, whose fresh exact GET either proves the same nonce-bearing object,
+observes it absent, or refuses mutation. This prevents a retry or redirect
+from overwriting or deleting a different object that reused the fixed id after
+the first request committed.
 
 Fleet setup is idempotent and required before the first Fleet read on a fresh
 stack. The recorder and the conformance runner call `POST /api/fleet/setup`
