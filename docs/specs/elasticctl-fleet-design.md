@@ -324,6 +324,17 @@ array, generated input ids, compiled inputs, and compiled streams are not
 portable. Unknown top-level fields are rejected. Package-owned input, stream,
 and variable maps remain open.
 
+An empty `inputs` object remains structurally valid for offline `validate`,
+which has no package metadata. Remote import planning reads the exact package
+metadata before the guard. If that metadata declares one or more composite
+input keys, an empty effective `inputs` object is `unsupported` before any
+mutation. Fleet materializes registry defaults for every declared input and
+stream when create receives an empty object, so accepting that shorthand would
+make a successful write fail exact post-write equality and drift again on the
+next import. A package whose exact metadata declares no inputs may keep an
+empty object. Export writes the complete simplified input map returned by
+Fleet; that map is stable when imported again.
+
 Two response fields are deliberately not portable. `create_dataset_templates`
 exists only in the create request schemas and never comes back from a read, so
 carrying it would break round-trip equality. Top-level `enabled` comes back
@@ -705,6 +716,21 @@ writes marker objects. It never installs, uninstalls, upgrades, or downgrades
 packages; it retains the baseline inventory only to prove the exact status
 version is already present and to audit that inventory is unchanged.
 
+The integration recorder materializes `system` defaults without weakening the
+round-trip fixture. After reducing exact package metadata and creating the
+marker parent, it creates a nonce-owned bootstrap integration with
+`inputs: {}`. A fresh exact GET must preserve the complete marker identity.
+The production export path must then accept that exact marker, its parent, and
+its exact package metadata, which proves that the materialized simplified
+input map is portable and contains no configured secret. The recorder deletes
+the bootstrap integration once, proves it absent and the parent detached, then
+uses the exported complete input map for the recorded create. The recorded
+create response and later reads must equal that map exactly. Bootstrap create
+and delete use the same replay-free one-shot transport and nonce ownership as
+the recorded lifecycle. Public fixtures retain only this recorder-owned,
+production-classified nonsecret configuration; they never retain another
+policy's values.
+
 0.6.0 fixtures cover Fleet setup, agent-policy not found, the read-only
 `elastic_agent` package status that drives the monitoring preflight,
 explicit-id create, get with its agent count, the marker-scoped paginated
@@ -796,6 +822,14 @@ stream lists. Variable definitions omitted `secret`, which therefore means
 false. A read-only `azure` 1.40.0 probe confirmed the multi-template join: 10
 templates reuse one input type, each template lists short data-stream
 selectors, and each selector resolves to a unique `azure.<selector>` dataset.
+
+On Serverless 9.6.0, creating a `system` 2.23.4 marker with `inputs: {}`
+materialized all four simplified inputs and 20 streams. Supplying those four
+inputs as disabled with empty stream maps still materialized registry vars and
+streams. Supplying the first complete simplified response on a second create
+was stable: the create response and following GET returned the same input map.
+Each bounded probe deleted the integration before its parent and ended with
+both exact marker ids absent.
 
 The marker agent-policy lifecycle recorded again on 2026-09-04, against
 Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed 9.5.1 lab.
