@@ -5906,7 +5906,10 @@ async fn record_integration_policies(
     let create_body = marker_integration_create_body(&package_status.version);
     record_trace("fleet-integration-policy-create");
     let created_result = t
-        .post("/api/fleet/package_policies", Some(&create_body))
+        .post(
+            "/api/fleet/package_policies?format=simplified",
+            Some(&create_body),
+        )
         .await;
     // The recorder permits only an already-installed exact package. Observe
     // after every create attempt anyway, including a failed one, so a server
@@ -5992,7 +5995,10 @@ async fn record_integration_policies(
     session.ownership.integration_policy_dup = true;
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
-        .post("/api/fleet/package_policies", Some(&duplicate_body))
+        .post(
+            "/api/fleet/package_policies?format=simplified",
+            Some(&duplicate_body),
+        )
         .await;
     record_trace("fleet-integration-policy-inventory-after-duplicate-create");
     let duplicate_inventory_observation = require_unchanged_installed_package_inventory(
@@ -6095,7 +6101,7 @@ async fn record_integration_policies(
     let updated = t
         .put(
             &format!(
-                "/api/fleet/package_policies/{}",
+                "/api/fleet/package_policies/{}?format=simplified",
                 urlencode(INTEGRATION_POLICY_ID)
             ),
             &update_body,
@@ -8222,7 +8228,7 @@ fn scrub_hosts_handles_authority_boundaries() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_json, method, path};
+    use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn mock_transport(server: &MockServer) -> elasticctl_core::Transport {
@@ -8389,6 +8395,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_create_body("2.0.0")))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(marker_integration_response(
@@ -8401,6 +8408,7 @@ mod tests {
         duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
             .and(body_json(duplicate_body))
             .respond_with(ResponseTemplate::new(409).set_body_json(json!({
                 "statusCode": 409,
@@ -8432,6 +8440,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_update_body("2.0.0")))
             .respond_with(update_response)
             .mount(server)
@@ -8604,6 +8613,7 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_create_body("2.0.0")))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -8615,6 +8625,7 @@ mod tests {
         duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
         Mock::given(method("POST"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
             .and(body_json(duplicate_body))
             .respond_with(ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})))
             .mount(server)
@@ -8634,6 +8645,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_update_body("2.0.0")))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(marker_integration_response(
