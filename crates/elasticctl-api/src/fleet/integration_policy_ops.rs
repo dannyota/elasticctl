@@ -6,12 +6,12 @@ use crate::fleet::integration_policies::{
     IntegrationPolicySummary,
 };
 use crate::fleet::{agent_policies, agent_policy_ops};
-use crate::ops::ExportOutcome;
+use crate::ops::{ExportOutcome, MutationPlan};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const PAGE_SIZE: u64 = 1000;
 
@@ -65,6 +65,76 @@ struct KnownSchema {
     package_vars: BTreeSet<String>,
     input_vars: BTreeMap<String, BTreeSet<String>>,
     stream_vars: BTreeMap<(String, String), BTreeSet<String>>,
+}
+
+/// What `plan_import` preflights and `apply_import` rechecks. Only guard
+/// presentation is public: the canonical artifact, effective specifications,
+/// and Fleet snapshots never cross the API boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntegrationPolicyImportPlan {
+    pub preview: MutationPlan,
+    pub skipped: Vec<Value>,
+    pub package_installs: Vec<String>,
+    pub total: usize,
+    source: PathBuf,
+    host: String,
+    space: String,
+    canonical: Vec<IntegrationPolicySpec>,
+    name_owners: BTreeMap<String, BTreeSet<String>>,
+    name_owners_snapshot: BTreeMap<String, BTreeSet<String>>,
+    parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    skipped_snapshot: Vec<Value>,
+    targets: Vec<IntegrationPolicyImportTarget>,
+    package_groups: BTreeMap<String, IntegrationPackageGroup>,
+    overwrite: bool,
+    skip_existing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IntegrationPolicyImportReport {
+    pub applied: bool,
+    pub succeeded: Vec<Value>,
+    pub unchanged: Vec<Value>,
+    pub skipped: Vec<Value>,
+    pub failed: Vec<Value>,
+    pub total: usize,
+    pub affected_agents: u64,
+    pub package_installs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IntegrationPolicyImportTarget {
+    effective: IntegrationPolicySpec,
+    current: Option<IntegrationPolicyCurrentSnapshot>,
+    parents: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    replacement_body: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IntegrationPolicyCurrentSnapshot {
+    item: Map<String, Value>,
+    spec: IntegrationPolicySpec,
+    parent_ids: Vec<String>,
+}
+
+/// One package coordinate is shared by every pending policy that uses it.
+/// `*_snapshot` copies are deliberate: plan validation compares the retained
+/// exact Fleet response with the mutable execution expectation before it ever
+/// starts remote work.
+#[derive(Debug, Clone, PartialEq)]
+struct IntegrationPackageGroup {
+    package: IntegrationPackageSpec,
+    state: PackageDependencySnapshot,
+    state_snapshot: PackageDependencySnapshot,
+    metadata: Map<String, Value>,
+    metadata_snapshot: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportAction {
+    Create,
+    Replace,
+    Unchanged,
 }
 
 /// Collect all measured pages then sort by stable id locally.
@@ -1273,6 +1343,529 @@ fn required_string(item: &Map<String, Value>, field: &str, context: &str) -> Res
         })
 }
 
+/// Plan a canonical integration-policy import without sending a write. The
+/// artifact is decoded exactly once here; apply uses only the retained plan.
+pub async fn plan_import(
+    transport: &Transport,
+    path: &Path,
+    overwrite: bool,
+    skip_existing: bool,
+) -> Result<IntegrationPolicyImportPlan> {
+    let canonical = validate(path)?;
+    if canonical.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "integration-policy import needs at least one integration policy",
+        ));
+    }
+    if overwrite && skip_existing {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "--overwrite and --skip-existing cannot be used together",
+        ));
+    }
+    validate_requested_package_versions(&canonical)?;
+
+    // Read only the requested ids. A conflicting or skipped existing policy is
+    // deliberately kept raw: normalize can refuse an unsupported object, but
+    // that object will not be written on those paths.
+    let mut existing = BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for spec in &canonical {
+        match integration_policies::get(transport, &spec.id).await {
+            Ok(policy) => {
+                let returned_id = required_string(&policy.item, "id", "integration policy get")?;
+                if returned_id != spec.id {
+                    return Err(http(format!(
+                        "decoding integration policy get: expected id '{}', got '{returned_id}'",
+                        spec.id
+                    )));
+                }
+                if !overwrite && !skip_existing {
+                    conflicts.push(spec.id.clone());
+                }
+                existing.insert(spec.id.clone(), Some(policy.item));
+            }
+            Err(error) if error.kind == ErrorKind::NotFound => {
+                existing.insert(spec.id.clone(), None);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "integration policies already exist: {}",
+                conflicts.join(", ")
+            ),
+        ));
+    }
+
+    // This phase comes before every parent, package-status, and metadata read.
+    // A package-coordinate replacement is a different Fleet operation, never
+    // a package-policy import update.
+    for spec in &canonical {
+        if skip_existing && matches!(existing.get(&spec.id), Some(Some(_))) {
+            continue;
+        }
+        let Some(Some(item)) = existing.get(&spec.id) else {
+            continue;
+        };
+        let current = package_coordinate(item, "integration policy")?;
+        if current != spec.package {
+            return unsupported(format!(
+                "integration policy '{}' cannot change package {}@{} to {}@{}",
+                spec.id, current.name, current.version, spec.package.name, spec.package.version
+            ));
+        }
+    }
+
+    // Every artifact name stays relevant even if its id is skipped. A foreign
+    // claimant is always a conflict, and this read deliberately happens before
+    // any skipped object's raw response would be normalized.
+    let names: BTreeSet<String> = canonical.iter().map(|spec| spec.name.clone()).collect();
+    let name_owners = relevant_name_owners(transport, &names).await?;
+    let mut name_conflicts = Vec::new();
+    for spec in &canonical {
+        let owners = name_owners
+            .get(&spec.name)
+            .expect("requested name has an ownership entry");
+        for owner in owners.iter().filter(|owner| owner.as_str() != spec.id) {
+            name_conflicts.push(format!("{} ({owner})", spec.name));
+        }
+    }
+    if !name_conflicts.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "integration policy names already exist: {}",
+                name_conflicts.join(", ")
+            ),
+        ));
+    }
+
+    let mut skipped = Vec::new();
+    let pending: Vec<IntegrationPolicySpec> = canonical
+        .iter()
+        .filter_map(|spec| match existing.get(&spec.id) {
+            Some(Some(_)) if skip_existing => {
+                skipped.push(json!({"id": spec.id, "reason": "exists"}));
+                None
+            }
+            _ => Some(spec.clone()),
+        })
+        .collect();
+
+    let mut targets = Vec::with_capacity(pending.len());
+    let mut shared_parents = BTreeMap::new();
+    for spec in pending {
+        let raw = existing
+            .get(&spec.id)
+            .expect("every canonical id was fetched")
+            .clone();
+        let current_parent_ids = raw
+            .as_ref()
+            .map(|item| read_parents(&spec.id, item))
+            .transpose()?;
+        let parents = read_import_parent_snapshots(
+            transport,
+            &spec.id,
+            current_parent_ids.as_deref().unwrap_or_default(),
+            &spec.policy_ids,
+        )
+        .await?;
+        for (parent_id, parent) in &parents {
+            match shared_parents.entry(parent_id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(parent.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if entry.get() != parent => {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        format!(
+                            "agent policy '{parent_id}' changed while planning integration import"
+                        ),
+                    ));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+        let effective = effective_import_spec(&spec, &parents)?;
+        let current = raw
+            .map(|item| {
+                let normalized = normalize(&item, transport.space())?;
+                if normalized.id != spec.id {
+                    return Err(http(format!(
+                        "decoding integration policy '{}': response id '{}' does not match request",
+                        spec.id, normalized.id
+                    )));
+                }
+                Ok(IntegrationPolicyCurrentSnapshot {
+                    item,
+                    spec: normalized,
+                    parent_ids: current_parent_ids.expect("raw policy has parents"),
+                })
+            })
+            .transpose()?;
+        targets.push(IntegrationPolicyImportTarget {
+            effective,
+            current,
+            parents,
+            replacement_body: None,
+        });
+    }
+    if targets
+        .iter()
+        .any(|target| !target_name_owners_match(target, &name_owners))
+    {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "integration policy name ownership changed while planning",
+        ));
+    }
+
+    let mut package_coordinates = BTreeMap::new();
+    for target in &targets {
+        package_coordinates
+            .entry(target.effective.package.name.clone())
+            .or_insert_with(|| target.effective.package.clone());
+    }
+    let mut package_groups = BTreeMap::new();
+    for (name, package) in package_coordinates {
+        let state = read_dependencies(transport, &package).await?;
+        match &state.state {
+            PackageDependencyState::Installed { version } if version == &package.version => {}
+            PackageDependencyState::Installed { .. } => {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    format!("integration package {name} has a different installed version"),
+                ));
+            }
+            PackageDependencyState::NotInstalled => {
+                if targets
+                    .iter()
+                    .any(|target| target.effective.package.name == name && target.current.is_some())
+                {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        format!("integration package {name} is not installed"),
+                    ));
+                }
+            }
+        }
+        let metadata =
+            integration_policies::package_metadata(transport, &package.name, &package.version)
+                .await?
+                .item;
+        validate_package_metadata_snapshot(&metadata, &package)?;
+        package_groups.insert(
+            name,
+            IntegrationPackageGroup {
+                package,
+                state: state.clone(),
+                state_snapshot: state,
+                metadata_snapshot: metadata.clone(),
+                metadata,
+            },
+        );
+    }
+
+    let mut secret_paths = BTreeSet::new();
+    for target in &targets {
+        let package = package_groups
+            .get(&target.effective.package.name)
+            .expect("every effective package has a group");
+        for path in configured_secret_paths(&target.effective, &package.metadata)? {
+            secret_paths.insert(format!("{}:{path}", target.effective.id));
+        }
+    }
+    if !secret_paths.is_empty() {
+        return unsupported(format!(
+            "integration policy import contains configured secrets: {}",
+            secret_paths.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    for target in &mut targets {
+        if let Some(current) = &target.current
+            && current.spec != target.effective
+        {
+            target.replacement_body = Some(replace_wire_body(&target.effective)?);
+        }
+    }
+    let package_installs = planned_package_installs(&package_groups);
+    let preview = import_preview(path, &targets, &package_installs);
+    let plan = IntegrationPolicyImportPlan {
+        preview,
+        skipped_snapshot: skipped.clone(),
+        skipped,
+        package_installs,
+        total: canonical.len(),
+        source: path.to_path_buf(),
+        host: transport.kibana_url().to_owned(),
+        space: transport.space().to_owned(),
+        canonical,
+        name_owners_snapshot: name_owners.clone(),
+        name_owners,
+        parent_snapshots: shared_parents,
+        targets,
+        package_groups,
+        overwrite,
+        skip_existing,
+    };
+    validate_import_plan(&plan)?;
+    Ok(plan)
+}
+
+fn validate_requested_package_versions(specs: &[IntegrationPolicySpec]) -> Result<()> {
+    let mut versions = BTreeMap::new();
+    for spec in specs {
+        match versions.entry(spec.package.name.as_str()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(spec.package.version.as_str());
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if entry.get() != &spec.package.version.as_str() =>
+            {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    format!(
+                        "integration package '{}' is requested at more than one version",
+                        spec.package.name
+                    ),
+                ));
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    Ok(())
+}
+
+async fn relevant_name_owners(
+    transport: &Transport,
+    names: &BTreeSet<String>,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut owners = names
+        .iter()
+        .map(|name| (name.clone(), BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    if names.is_empty() {
+        return Ok(owners);
+    }
+    for item in collect(transport).await? {
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(owners) = owners.get_mut(name) else {
+            continue;
+        };
+        owners.insert(required_string(&item, "id", "integration policies list")?);
+    }
+    Ok(owners)
+}
+
+fn target_name_owners_match(
+    target: &IntegrationPolicyImportTarget,
+    owners: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    let Some(actual) = owners.get(&target.effective.name) else {
+        return false;
+    };
+    let expected = match &target.current {
+        None => BTreeSet::new(),
+        Some(current) if current.spec.name == target.effective.name => {
+            BTreeSet::from([target.effective.id.clone()])
+        }
+        Some(_) => BTreeSet::new(),
+    };
+    actual == &expected
+}
+
+async fn read_import_parent_snapshots(
+    transport: &Transport,
+    integration_id: &str,
+    current_parent_ids: &[String],
+    desired_parent_ids: &[String],
+) -> Result<BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>> {
+    let parent_ids = current_parent_ids
+        .iter()
+        .chain(desired_parent_ids)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut parents = BTreeMap::new();
+    for parent_id in parent_ids {
+        let parent = agent_policy_ops::read_parent_snapshot(transport, &parent_id).await?;
+        if current_parent_ids.binary_search(&parent_id).is_ok()
+            && parent
+                .attached_integrations
+                .binary_search_by(|attached| attached.as_str().cmp(integration_id))
+                .is_err()
+        {
+            return Err(http(format!(
+                "decoding integration policy '{integration_id}': parent '{parent_id}' is missing its attachment"
+            )));
+        }
+        parents.insert(parent_id, parent);
+    }
+    Ok(parents)
+}
+
+fn effective_import_spec(
+    canonical: &IntegrationPolicySpec,
+    parents: &BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+) -> Result<IntegrationPolicySpec> {
+    canonical.validate()?;
+    for parent in parents.values() {
+        if parent.platform_owned {
+            return unsupported(format!(
+                "integration policy '{}' is not portable: parent {} is platform-owned",
+                canonical.id, parent.id
+            ));
+        }
+        if parent.protected {
+            return unsupported(format!(
+                "integration policy '{}' is not portable: parent {} is_protected",
+                canonical.id, parent.id
+            ));
+        }
+    }
+    let selected = canonical
+        .policy_ids
+        .iter()
+        .map(|id| {
+            parents.get(id).ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Error,
+                    format!(
+                        "integration policy '{}' has no parent snapshot for '{id}'",
+                        canonical.id
+                    ),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut effective = canonical.clone();
+    if let Some(namespace) = &effective.namespace {
+        if selected.iter().any(|parent| &parent.namespace != namespace) {
+            return unsupported(format!(
+                "integration policy '{}' is not portable: namespace does not match every parent",
+                canonical.id
+            ));
+        }
+    } else {
+        let namespaces = selected
+            .iter()
+            .map(|parent| parent.namespace.as_str())
+            .collect::<BTreeSet<_>>();
+        if namespaces.len() != 1 {
+            return unsupported(format!(
+                "integration policy '{}' is not portable: parents have different namespaces",
+                canonical.id
+            ));
+        }
+        effective.namespace = namespaces.into_iter().next().map(str::to_owned);
+    }
+    Ok(effective)
+}
+
+fn validate_package_metadata_snapshot(
+    metadata: &Map<String, Value>,
+    package: &IntegrationPackageSpec,
+) -> Result<()> {
+    let name = metadata_name(metadata, "name", "package metadata")?;
+    let version = metadata_name(metadata, "version", "package metadata")?;
+    if name != package.name || version != package.version {
+        return Err(http(format!(
+            "decoding package metadata: expected {}@{}, got {name}@{version}",
+            package.name, package.version
+        )));
+    }
+    secret_schema(metadata).map(|_| ())
+}
+
+fn replace_wire_body(spec: &IntegrationPolicySpec) -> Result<Value> {
+    spec.validate()?;
+    let mut body = serde_json::to_value(spec)
+        .map_err(|error| {
+            Error::new(
+                ErrorKind::Error,
+                format!("encoding integration policy: {error}"),
+            )
+        })?
+        .as_object()
+        .cloned()
+        .expect("integration policy specs serialize to objects");
+    body.remove("id");
+    body.insert("enabled".into(), Value::Bool(true));
+    Ok(Value::Object(body))
+}
+
+fn planned_package_installs(groups: &BTreeMap<String, IntegrationPackageGroup>) -> Vec<String> {
+    groups
+        .values()
+        .filter_map(|group| match group.state.state {
+            PackageDependencyState::NotInstalled => {
+                Some(format!("{}@{}", group.package.name, group.package.version))
+            }
+            PackageDependencyState::Installed { .. } => None,
+        })
+        .collect()
+}
+
+fn import_preview(
+    path: &Path,
+    targets: &[IntegrationPolicyImportTarget],
+    package_installs: &[String],
+) -> MutationPlan {
+    let mut details = targets
+        .iter()
+        .map(|target| {
+            let parents = target
+                .parents
+                .values()
+                .map(|parent| format!("{} ({})", parent.id, parent.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let agents = target
+                .parents
+                .values()
+                .map(|parent| parent.agents)
+                .sum::<u64>();
+            let action = match &target.current {
+                None => "create".to_owned(),
+                Some(current) if current.spec == target.effective => "unchanged".to_owned(),
+                Some(current) if current.spec.name == target.effective.name => "replace".to_owned(),
+                Some(current) => format!(
+                    "replace  {} -> {}",
+                    current.spec.name, target.effective.name
+                ),
+            };
+            format!(
+                "{}  {action}  {}  parents {parents}  agents {agents}",
+                target.effective.id, target.effective.name
+            )
+        })
+        .collect::<Vec<_>>();
+    details.extend(
+        package_installs
+            .iter()
+            .map(|package| format!("package install  {package}")),
+    );
+    MutationPlan {
+        preview_action: format!(
+            "Import {} integration policy(ies) from {}",
+            targets.len(),
+            path.display()
+        ),
+        preview_details: details,
+        targets: targets
+            .iter()
+            .map(|target| target.effective.id.clone())
+            .collect(),
+    }
+}
+
 /// Decode one JSON or YAML artifact without constructing transport or config.
 pub fn validate(path: &Path) -> Result<Vec<IntegrationPolicySpec>> {
     let body = std::fs::read_to_string(path).map_err(|error| {
@@ -1317,10 +1910,979 @@ where
     }
 }
 
+/// Apply a previously validated import plan. Rows are independent except for
+/// their exact package group and shared parent-attachment snapshots.
+pub async fn apply_import(
+    transport: &Transport,
+    plan: &IntegrationPolicyImportPlan,
+) -> Result<IntegrationPolicyImportReport> {
+    validate_import_plan(plan)?;
+    if plan.host != transport.kibana_url() || plan.space != transport.space() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "integration import target changed since preview",
+        ));
+    }
+    let mut succeeded = Vec::new();
+    let mut unchanged = Vec::new();
+    let mut failed = Vec::new();
+    let mut expected_groups = plan.package_groups.clone();
+    let mut expected_parents = plan.parent_snapshots.clone();
+    let mut blocked_packages = BTreeMap::<String, String>::new();
+    let mut affected_parents = BTreeMap::<String, u64>::new();
+    let mut observed_installs = BTreeSet::new();
+
+    for target in &plan.targets {
+        let package_name = &target.effective.package.name;
+        if let Some(error) = blocked_packages.get(package_name) {
+            failed.push(import_failed_row(
+                &target.effective.id,
+                false,
+                format!("package dependency is unavailable: {error}"),
+            ));
+            continue;
+        }
+
+        let action = match recheck_import_object(transport, target).await {
+            Ok(action) => action,
+            Err(error) => {
+                failed.push(import_failed_row(
+                    &target.effective.id,
+                    false,
+                    redact_error_message(&error.message, &target.effective),
+                ));
+                continue;
+            }
+        };
+        if let Err(error) = recheck_import_name_owner(transport, target, &plan.name_owners).await {
+            failed.push(import_failed_row(
+                &target.effective.id,
+                false,
+                redact_error_message(&error.message, &target.effective),
+            ));
+            continue;
+        }
+        if let Err(error) = recheck_import_parents(transport, target, &expected_parents).await {
+            failed.push(import_failed_row(
+                &target.effective.id,
+                false,
+                redact_error_message(&error.message, &target.effective),
+            ));
+            continue;
+        }
+
+        let group = expected_groups
+            .get_mut(package_name)
+            .expect("validated target package group");
+        let actual_state = match read_dependencies(transport, &target.effective.package).await {
+            Ok(state) if state == group.state => state,
+            Ok(_) => {
+                let message = "package changed since preview".to_owned();
+                blocked_packages.insert(package_name.clone(), message.clone());
+                failed.push(import_failed_row(&target.effective.id, false, message));
+                continue;
+            }
+            Err(error) => {
+                let message = redact_error_message(&error.message, &target.effective);
+                blocked_packages.insert(package_name.clone(), message.clone());
+                failed.push(import_failed_row(&target.effective.id, false, message));
+                continue;
+            }
+        };
+        debug_assert_eq!(actual_state, group.state);
+
+        if action == ImportAction::Unchanged {
+            unchanged.push(json!({"id": target.effective.id}));
+            continue;
+        }
+
+        let (label, applied, route_error) = match action {
+            ImportAction::Create => {
+                match integration_policies::create(transport, &target.effective).await {
+                    Ok(_) => ("created", true, None),
+                    Err(error) => (
+                        "created",
+                        false,
+                        Some(redact_error_message(&error.message, &target.effective)),
+                    ),
+                }
+            }
+            ImportAction::Replace => {
+                let _body = target
+                    .replacement_body
+                    .as_ref()
+                    .expect("validated replacement body");
+                match integration_policies::update(
+                    transport,
+                    &target.effective.id,
+                    &target.effective,
+                )
+                .await
+                {
+                    Ok(_) => ("replaced", true, None),
+                    Err(error) => (
+                        "replaced",
+                        false,
+                        Some(redact_error_message(&error.message, &target.effective)),
+                    ),
+                }
+            }
+            ImportAction::Unchanged => unreachable!("unchanged rows continue above"),
+        };
+
+        if applied {
+            record_affected_parents(&mut affected_parents, target);
+            advance_parent_snapshots(&mut expected_parents, target);
+        }
+
+        // A missing package is a shared dependency. Fleet's create path can
+        // install it even when the policy write fails, so observation is
+        // mandatory after every create attempt, not only decoded success.
+        let mut observed_after_create = None;
+        let mut package_observation_error = None;
+        if action == ImportAction::Create
+            && matches!(group.state.state, PackageDependencyState::NotInstalled)
+        {
+            match read_dependencies(transport, &target.effective.package).await {
+                Ok(after) => {
+                    if is_exact_installed(&after, &target.effective.package) {
+                        group.state = after.clone();
+                        observed_installs.insert(format!(
+                            "{}@{}",
+                            target.effective.package.name, target.effective.package.version
+                        ));
+                    } else if !matches!(after.state, PackageDependencyState::NotInstalled) {
+                        let message =
+                            "package installed a different version after create".to_owned();
+                        blocked_packages.insert(package_name.clone(), message.clone());
+                        package_observation_error = Some(message);
+                    }
+                    observed_after_create = Some(after);
+                }
+                Err(error) => {
+                    let message = redact_error_message(&error.message, &target.effective);
+                    blocked_packages.insert(package_name.clone(), message.clone());
+                    package_observation_error = Some(message);
+                }
+            }
+        }
+
+        let mut errors = route_error.into_iter().collect::<Vec<_>>();
+        if applied {
+            if let Err(error) = verify_import_stored(transport, &target.effective).await {
+                errors.push(redact_error_message(&error.message, &target.effective));
+            }
+            let package_result = match observed_after_create.as_ref() {
+                Some(after) => verify_exact_installed(after, &target.effective.package),
+                None => match read_dependencies(transport, &target.effective.package).await {
+                    Ok(after) => verify_exact_installed(&after, &target.effective.package),
+                    Err(error) => Err(redact_error_message(&error.message, &target.effective)),
+                },
+            };
+            if let Err(message) = package_result {
+                blocked_packages
+                    .entry(package_name.clone())
+                    .or_insert_with(|| message.clone());
+                errors.push(message);
+            }
+        }
+        if let Some(error) = package_observation_error
+            && !errors.contains(&error)
+        {
+            errors.push(error);
+        }
+
+        if errors.is_empty() {
+            succeeded.push(json!({"id": target.effective.id, "action": label}));
+        } else {
+            failed.push(import_failed_row(
+                &target.effective.id,
+                applied,
+                errors.join("; "),
+            ));
+        }
+    }
+
+    Ok(IntegrationPolicyImportReport {
+        applied: true,
+        succeeded,
+        unchanged,
+        skipped: plan.skipped.clone(),
+        failed,
+        total: plan.total,
+        affected_agents: affected_parents.values().sum(),
+        package_installs: observed_installs.into_iter().collect(),
+    })
+}
+
+async fn recheck_import_object(
+    transport: &Transport,
+    target: &IntegrationPolicyImportTarget,
+) -> Result<ImportAction> {
+    match &target.current {
+        None => match integration_policies::get(transport, &target.effective.id).await {
+            Err(error) if error.kind == ErrorKind::NotFound => Ok(ImportAction::Create),
+            Ok(_) => Err(Error::new(
+                ErrorKind::Conflict,
+                "integration policy appeared since preview",
+            )),
+            Err(error) => Err(error),
+        },
+        Some(expected) => match integration_policies::get(transport, &target.effective.id).await {
+            Ok(actual) if actual.item == expected.item => {
+                if expected.spec == target.effective {
+                    Ok(ImportAction::Unchanged)
+                } else {
+                    Ok(ImportAction::Replace)
+                }
+            }
+            Ok(_) => Err(Error::new(
+                ErrorKind::Conflict,
+                "integration policy changed since preview",
+            )),
+            Err(error) if error.kind == ErrorKind::NotFound => Err(Error::new(
+                ErrorKind::Conflict,
+                "integration policy disappeared since preview",
+            )),
+            Err(error) => Err(error),
+        },
+    }
+}
+
+async fn recheck_import_name_owner(
+    transport: &Transport,
+    target: &IntegrationPolicyImportTarget,
+    expected_owners: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<()> {
+    let names = BTreeSet::from([target.effective.name.clone()]);
+    let owners = relevant_name_owners(transport, &names).await?;
+    if owners.get(&target.effective.name) == expected_owners.get(&target.effective.name) {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::Conflict,
+            "integration policy name ownership changed since preview",
+        ))
+    }
+}
+
+async fn recheck_import_parents(
+    transport: &Transport,
+    target: &IntegrationPolicyImportTarget,
+    expected_parents: &BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+) -> Result<()> {
+    for parent_id in target.parents.keys() {
+        let expected = expected_parents.get(parent_id).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Error,
+                "integration import lost a shared parent snapshot",
+            )
+        })?;
+        let actual = agent_policy_ops::read_parent_snapshot(transport, parent_id).await?;
+        if actual != *expected {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "integration policy parent changed since preview",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn record_affected_parents(
+    affected: &mut BTreeMap<String, u64>,
+    target: &IntegrationPolicyImportTarget,
+) {
+    for parent in target.parents.values() {
+        affected.entry(parent.id.clone()).or_insert(parent.agents);
+    }
+}
+
+fn advance_parent_snapshots(
+    parents: &mut BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    target: &IntegrationPolicyImportTarget,
+) {
+    let desired = target
+        .effective
+        .policy_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for parent_id in target.parents.keys() {
+        let parent = parents
+            .get_mut(parent_id)
+            .expect("validated shared parent snapshot");
+        if desired.contains(parent_id.as_str()) {
+            if parent
+                .attached_integrations
+                .binary_search_by(|attached| attached.as_str().cmp(&target.effective.id))
+                .is_err()
+            {
+                parent
+                    .attached_integrations
+                    .push(target.effective.id.clone());
+                parent.attached_integrations.sort();
+            }
+        } else {
+            parent
+                .attached_integrations
+                .retain(|attached| attached != &target.effective.id);
+        }
+    }
+}
+
+async fn verify_import_stored(
+    transport: &Transport,
+    desired: &IntegrationPolicySpec,
+) -> Result<()> {
+    let stored = integration_policies::get(transport, &desired.id).await?;
+    let stored = normalize(&stored.item, transport.space())?;
+    if stored == *desired {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::Http,
+            "server stored a different integration-policy spec",
+        ))
+    }
+}
+
+fn is_exact_installed(
+    snapshot: &PackageDependencySnapshot,
+    package: &IntegrationPackageSpec,
+) -> bool {
+    snapshot.name == package.name
+        && matches!(
+            &snapshot.state,
+            PackageDependencyState::Installed { version } if version == &package.version
+        )
+}
+
+fn verify_exact_installed(
+    snapshot: &PackageDependencySnapshot,
+    package: &IntegrationPackageSpec,
+) -> std::result::Result<(), String> {
+    if is_exact_installed(snapshot, package) {
+        return Ok(());
+    }
+    match &snapshot.state {
+        PackageDependencyState::Installed { .. } => Err(format!(
+            "package {} installed a different version",
+            package.name
+        )),
+        PackageDependencyState::NotInstalled => {
+            Err(format!("package {} is not installed", package.name))
+        }
+    }
+}
+
+fn import_failed_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
+    json!({"id": id, "applied": applied, "error": error.into()})
+}
+
+fn redact_error_message(message: &str, spec: &IntegrationPolicySpec) -> String {
+    let mut values = BTreeSet::new();
+    for value in [
+        spec.vars.as_ref().map(|value| Value::Object(value.clone())),
+        spec.var_group_selections
+            .as_ref()
+            .map(|value| Value::Object(value.clone())),
+        Some(Value::Object(spec.inputs.clone())),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        collect_config_strings(&value, &mut values);
+    }
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values
+        .into_iter()
+        .fold(message.to_owned(), |message, value| {
+            if value.is_empty() {
+                message
+            } else {
+                message.replace(&value, "[redacted]")
+            }
+        })
+}
+
+fn collect_config_strings(value: &Value, strings: &mut BTreeSet<String>) {
+    match value {
+        Value::String(value) => {
+            strings.insert(value.clone());
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_config_strings(value, strings);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                collect_config_strings(value, strings);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
+    let invalid = |message: &str| {
+        Err(Error::new(
+            ErrorKind::Error,
+            format!("invalid integration-policy import plan: {message}"),
+        ))
+    };
+    if plan.overwrite && plan.skip_existing {
+        return invalid("overwrite and skip-existing cannot both be set");
+    }
+    if plan.host.trim().is_empty() {
+        return invalid("planned Kibana host is empty");
+    }
+    if plan.canonical.is_empty() || plan.total != plan.canonical.len() {
+        return invalid("total does not equal canonical integration policies");
+    }
+    let mut canonical_ids = BTreeMap::new();
+    let mut canonical_names = BTreeSet::new();
+    let mut previous: Option<&str> = None;
+    for spec in &plan.canonical {
+        if spec.validate().is_err() {
+            return invalid("canonical integration policy is invalid");
+        }
+        if previous.is_some_and(|previous| previous >= spec.id.as_str()) {
+            return invalid("canonical integration policies must be unique and sorted by id");
+        }
+        if !canonical_names.insert(spec.name.as_str()) {
+            return invalid("canonical integration-policy names must be unique");
+        }
+        previous = Some(&spec.id);
+        canonical_ids.insert(spec.id.as_str(), spec);
+    }
+    if validate_requested_package_versions(&plan.canonical).is_err() {
+        return invalid("canonical package requests are inconsistent");
+    }
+    if plan.name_owners != plan.name_owners_snapshot {
+        return invalid("name ownership snapshots do not match");
+    }
+    if plan
+        .name_owners
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != canonical_names
+    {
+        return invalid("name ownership snapshots do not match canonical names");
+    }
+    for spec in &plan.canonical {
+        let Some(owners) = plan.name_owners.get(&spec.name) else {
+            return invalid("canonical name has no ownership snapshot");
+        };
+        if owners
+            .iter()
+            .any(|owner| owner.trim().is_empty() || owner != &spec.id)
+        {
+            return invalid("name ownership snapshot has a foreign or malformed owner");
+        }
+    }
+
+    let mut target_ids = BTreeSet::new();
+    let mut expected_bodies = BTreeMap::new();
+    let mut expected_group_names = BTreeSet::new();
+    let mut shared_parents = BTreeMap::new();
+    let mut previous_target: Option<&str> = None;
+    for target in &plan.targets {
+        if target.effective.validate().is_err() {
+            return invalid("effective integration policy is invalid");
+        }
+        if previous_target.is_some_and(|previous| previous >= target.effective.id.as_str()) {
+            return invalid("pending integration policies must be unique and sorted by id");
+        }
+        previous_target = Some(&target.effective.id);
+        let Some(canonical) = canonical_ids.get(target.effective.id.as_str()) else {
+            return invalid("pending policy is not in the canonical artifact");
+        };
+        if !target_ids.insert(target.effective.id.as_str()) {
+            return invalid("pending integration policies must be unique and sorted by id");
+        }
+        let current_parent_ids = match &target.current {
+            None => Vec::new(),
+            Some(current) => {
+                if current.spec.validate().is_err()
+                    || current.spec.id != target.effective.id
+                    || normalize(&current.item, &plan.space).ok().as_ref() != Some(&current.spec)
+                {
+                    return invalid("current integration snapshot does not normalize canonically");
+                }
+                let parent_ids = match read_parents(&target.effective.id, &current.item) {
+                    Ok(parent_ids) if parent_ids == current.parent_ids => parent_ids,
+                    _ => {
+                        return invalid(
+                            "current integration parent snapshot does not match its item",
+                        );
+                    }
+                };
+                if package_coordinate(&current.item, "integration policy").ok()
+                    != Some(target.effective.package.clone())
+                {
+                    return invalid("current and desired package coordinates differ");
+                }
+                parent_ids
+            }
+        };
+        if target.current.is_some() && !plan.overwrite {
+            return invalid("existing integration target requires overwrite");
+        }
+        if !target_name_owners_match(target, &plan.name_owners) {
+            return invalid("name ownership snapshot does not match target state");
+        }
+        let expected_parent_ids = current_parent_ids
+            .iter()
+            .chain(&target.effective.policy_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if target.parents.keys().cloned().collect::<BTreeSet<_>>() != expected_parent_ids {
+            return invalid("parent snapshots do not match current and desired parents");
+        }
+        for (parent_id, parent) in &target.parents {
+            if !valid_parent_snapshot(parent_id, parent)
+                || parent.platform_owned
+                || parent.protected
+            {
+                return invalid("parent snapshot is unsafe or malformed");
+            }
+            if current_parent_ids.binary_search(parent_id).is_ok()
+                && parent
+                    .attached_integrations
+                    .binary_search_by(|attached| attached.as_str().cmp(&target.effective.id))
+                    .is_err()
+            {
+                return invalid("current parent snapshot is missing its integration attachment");
+            }
+            match shared_parents.entry(parent_id.as_str()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(parent);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() != parent => {
+                    return invalid("shared parent snapshots disagree");
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+        if effective_import_spec(canonical, &target.parents)
+            .ok()
+            .as_ref()
+            != Some(&target.effective)
+        {
+            return invalid("effective integration policy does not match canonical parents");
+        }
+        if let Some(current) = &target.current {
+            if current.spec != target.effective {
+                if !plan.overwrite {
+                    return invalid("replacement plan requires overwrite");
+                }
+                let body = match replace_wire_body(&target.effective) {
+                    Ok(body) => body,
+                    Err(_) => return invalid("replacement body cannot be encoded"),
+                };
+                if target.replacement_body.as_ref() != Some(&body) {
+                    return invalid("replacement body does not match its effective policy");
+                }
+                expected_bodies.insert(target.effective.id.as_str(), body);
+            } else if target.replacement_body.is_some() {
+                return invalid("unchanged integration policy carries a replacement body");
+            }
+        } else if target.replacement_body.is_some() {
+            return invalid("planned create carries a replacement body");
+        }
+        expected_group_names.insert(target.effective.package.name.as_str());
+    }
+
+    if plan
+        .package_groups
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != expected_group_names
+    {
+        return invalid("package groups do not match pending integration policies");
+    }
+    let expected_parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot> =
+        shared_parents
+            .iter()
+            .map(|(id, parent)| ((*id).to_owned(), (*parent).clone()))
+            .collect();
+    if plan.parent_snapshots != expected_parent_snapshots {
+        return invalid("shared parent snapshots do not match pending integrations");
+    }
+    for (name, group) in &plan.package_groups {
+        if group.package.name != *name
+            || group.package.name.trim().is_empty()
+            || group.package.version.trim().is_empty()
+            || group.state != group.state_snapshot
+            || group.metadata != group.metadata_snapshot
+            || group.state.name != group.package.name
+            || !valid_package_state(&group.state)
+            || validate_package_metadata_snapshot(&group.metadata, &group.package).is_err()
+        {
+            return invalid("package group snapshot is malformed or tampered");
+        }
+        if !is_exact_installed(&group.state, &group.package)
+            && !matches!(group.state.state, PackageDependencyState::NotInstalled)
+        {
+            return invalid("package group does not hold an exact dependency state");
+        }
+        if matches!(group.state.state, PackageDependencyState::NotInstalled)
+            && plan
+                .targets
+                .iter()
+                .any(|target| target.effective.package.name == *name && target.current.is_some())
+        {
+            return invalid("existing integration cannot depend on an absent package");
+        }
+    }
+    for target in &plan.targets {
+        let Some(group) = plan.package_groups.get(&target.effective.package.name) else {
+            return invalid("target has no package group");
+        };
+        if group.package != target.effective.package {
+            return invalid("package group coordinate does not match its target");
+        }
+        match configured_secret_paths(&target.effective, &group.metadata) {
+            Ok(paths) if paths.is_empty() => {}
+            _ => return invalid("effective integration policy has unsafe configured variables"),
+        }
+    }
+    if expected_bodies.len()
+        != plan
+            .targets
+            .iter()
+            .filter(|target| target.replacement_body.is_some())
+            .count()
+    {
+        return invalid("replacement body set does not match changed integration policies");
+    }
+
+    let expected_skipped = plan
+        .canonical
+        .iter()
+        .filter(|spec| !target_ids.contains(spec.id.as_str()))
+        .map(|spec| json!({"id": spec.id, "reason": "exists"}))
+        .collect::<Vec<_>>();
+    if plan.skipped != plan.skipped_snapshot {
+        return invalid("skipped rows do not match their snapshot");
+    }
+    if (!plan.skip_existing && !plan.skipped.is_empty()) || plan.skipped != expected_skipped {
+        return invalid("skipped rows do not match the canonical artifact");
+    }
+    let expected_installs = planned_package_installs(&plan.package_groups);
+    if plan.package_installs != expected_installs {
+        return invalid("package install preview does not match package groups");
+    }
+    let expected_preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+    if plan.preview != expected_preview {
+        return invalid("preview does not match the canonical plan");
+    }
+    Ok(())
+}
+
+fn valid_parent_snapshot(id: &str, parent: &agent_policy_ops::AgentPolicyParentSnapshot) -> bool {
+    parent.id == id
+        && !parent.id.trim().is_empty()
+        && !parent.name.trim().is_empty()
+        && !parent.namespace.trim().is_empty()
+        && parent
+            .attached_integrations
+            .windows(2)
+            .all(|ids| ids[0] < ids[1])
+}
+
+fn valid_package_state(snapshot: &PackageDependencySnapshot) -> bool {
+    if snapshot.name.trim().is_empty() {
+        return false;
+    }
+    match &snapshot.state {
+        PackageDependencyState::Installed { version } => !version.trim().is_empty(),
+        PackageDependencyState::NotInstalled => true,
+    }
+}
+
 fn http(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Http, message)
 }
 
 fn unsupported<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::new(ErrorKind::Unsupported, message))
+}
+
+#[cfg(test)]
+mod import_plan_tests {
+    use super::*;
+
+    fn valid_plan() -> IntegrationPolicyImportPlan {
+        let effective = IntegrationPolicySpec::try_from(json!({
+            "id": "fresh",
+            "name": "Fresh integration",
+            "namespace": "default",
+            "policy_ids": ["parent-1"],
+            "package": {"name": "system", "version": "2.0.0"},
+            "inputs": {}
+        }))
+        .expect("valid test policy");
+        let parent = agent_policy_ops::AgentPolicyParentSnapshot {
+            id: "parent-1".into(),
+            name: "Parent 1".into(),
+            namespace: "default".into(),
+            agents: 0,
+            attached_integrations: Vec::new(),
+            platform_owned: false,
+            protected: false,
+        };
+        let targets = vec![IntegrationPolicyImportTarget {
+            effective: effective.clone(),
+            current: None,
+            parents: BTreeMap::from([(parent.id.clone(), parent)]),
+            replacement_body: None,
+        }];
+        let parent_snapshots = targets[0].parents.clone();
+        let state = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::NotInstalled,
+        };
+        let metadata = json!({
+            "name": "system",
+            "version": "2.0.0",
+            "vars": [],
+            "policy_templates": []
+        })
+        .as_object()
+        .expect("metadata object")
+        .clone();
+        let package_groups = BTreeMap::from([(
+            "system".into(),
+            IntegrationPackageGroup {
+                package: effective.package.clone(),
+                state: state.clone(),
+                state_snapshot: state,
+                metadata_snapshot: metadata.clone(),
+                metadata,
+            },
+        )]);
+        let package_installs = vec!["system@2.0.0".into()];
+        let source = PathBuf::from("fresh.json");
+        let preview = import_preview(&source, &targets, &package_installs);
+        IntegrationPolicyImportPlan {
+            preview,
+            skipped: Vec::new(),
+            package_installs,
+            total: 1,
+            source,
+            host: "https://fleet.example.invalid".into(),
+            space: "default".into(),
+            canonical: vec![effective.clone()],
+            name_owners: BTreeMap::from([(effective.name.clone(), BTreeSet::new())]),
+            name_owners_snapshot: BTreeMap::from([(effective.name.clone(), BTreeSet::new())]),
+            parent_snapshots,
+            skipped_snapshot: Vec::new(),
+            targets,
+            package_groups,
+            overwrite: false,
+            skip_existing: false,
+        }
+    }
+
+    fn existing_plan_without_overwrite() -> IntegrationPolicyImportPlan {
+        let mut plan = valid_plan();
+        let target = plan.targets.first_mut().expect("fresh target");
+        let mut item = serde_json::to_value(&target.effective)
+            .expect("serialize current item")
+            .as_object()
+            .expect("current item object")
+            .clone();
+        item.insert("enabled".into(), Value::Bool(true));
+        target.current = Some(IntegrationPolicyCurrentSnapshot {
+            item,
+            spec: target.effective.clone(),
+            parent_ids: target.effective.policy_ids.clone(),
+        });
+        target
+            .parents
+            .get_mut("parent-1")
+            .expect("parent")
+            .attached_integrations
+            .push(target.effective.id.clone());
+
+        let state = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "2.0.0".into(),
+            },
+        };
+        let group = plan
+            .package_groups
+            .get_mut("system")
+            .expect("package group");
+        group.state = state.clone();
+        group.state_snapshot = state;
+        plan.package_installs.clear();
+        plan.name_owners
+            .get_mut("Fresh integration")
+            .expect("name owner snapshot")
+            .insert("fresh".into());
+        plan.name_owners_snapshot = plan.name_owners.clone();
+        plan.parent_snapshots = plan.targets[0].parents.clone();
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+        plan
+    }
+
+    fn valid_replace_plan() -> IntegrationPolicyImportPlan {
+        let mut plan = existing_plan_without_overwrite();
+        plan.overwrite = true;
+        let desired = {
+            let target = plan.targets.first_mut().expect("existing target");
+            let mut desired = target.effective.clone();
+            desired.description = Some("changed".into());
+            target.effective = desired.clone();
+            target.replacement_body = Some(replace_wire_body(&desired).expect("replace body"));
+            desired
+        };
+        plan.canonical = vec![desired];
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+        plan
+    }
+
+    #[test]
+    fn import_plan_rejects_a_private_create_name_owner_tamper() {
+        let mut plan = valid_plan();
+        plan.name_owners
+            .get_mut("Fresh integration")
+            .expect("name owner snapshot")
+            .insert("fresh".into());
+
+        assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_an_existing_target_without_overwrite() {
+        let plan = existing_plan_without_overwrite();
+
+        assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_private_snapshot_body_group_and_order_tampering() {
+        let replace = valid_replace_plan();
+        assert!(validate_import_plan(&replace).is_ok());
+
+        let mut tampered_body = replace.clone();
+        tampered_body.targets[0].replacement_body = Some(json!({"tampered": true}));
+        assert!(validate_import_plan(&tampered_body).is_err());
+
+        let mut tampered_current = replace.clone();
+        tampered_current.targets[0]
+            .current
+            .as_mut()
+            .expect("current snapshot")
+            .item
+            .insert("enabled".into(), Value::Bool(false));
+        assert!(validate_import_plan(&tampered_current).is_err());
+
+        let mut tampered_group = valid_plan();
+        tampered_group
+            .package_groups
+            .get_mut("system")
+            .expect("package group")
+            .metadata
+            .insert("version".into(), Value::String("9.9.9".into()));
+        assert!(validate_import_plan(&tampered_group).is_err());
+
+        let mut tampered_order = valid_plan();
+        tampered_order
+            .targets
+            .push(tampered_order.targets[0].clone());
+        assert!(validate_import_plan(&tampered_order).is_err());
+
+        let mut tampered_group_key = valid_plan();
+        let group = tampered_group_key
+            .package_groups
+            .remove("system")
+            .expect("package group");
+        tampered_group_key
+            .package_groups
+            .insert("other".into(), group);
+        assert!(validate_import_plan(&tampered_group_key).is_err());
+
+        let mut tampered_state = valid_plan();
+        tampered_state
+            .package_groups
+            .get_mut("system")
+            .expect("package group")
+            .state = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "2.0.0".into(),
+            },
+        };
+        assert!(validate_import_plan(&tampered_state).is_err());
+
+        let mut tampered_coordinate = valid_replace_plan();
+        tampered_coordinate.canonical[0].package.version = "3.0.0".into();
+        tampered_coordinate.targets[0].effective.package.version = "3.0.0".into();
+        tampered_coordinate.targets[0].replacement_body = Some(
+            replace_wire_body(&tampered_coordinate.targets[0].effective).expect("replace body"),
+        );
+        let group = tampered_coordinate
+            .package_groups
+            .get_mut("system")
+            .expect("package group");
+        group.package.version = "3.0.0".into();
+        group.state = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "3.0.0".into(),
+            },
+        };
+        group.state_snapshot = group.state.clone();
+        group.metadata.insert("version".into(), json!("3.0.0"));
+        group.metadata_snapshot = group.metadata.clone();
+        tampered_coordinate.preview = import_preview(
+            &tampered_coordinate.source,
+            &tampered_coordinate.targets,
+            &tampered_coordinate.package_installs,
+        );
+        assert!(validate_import_plan(&tampered_coordinate).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_a_private_parent_snapshot_tamper_even_with_preview_rebuilt() {
+        let mut plan = valid_plan();
+        plan.targets[0]
+            .parents
+            .get_mut("parent-1")
+            .expect("parent snapshot")
+            .agents = 42;
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+
+        assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_public_field_tampering_against_private_snapshots() {
+        let plan = valid_plan();
+
+        let mut total = plan.clone();
+        total.total = 2;
+        assert!(validate_import_plan(&total).is_err());
+
+        let mut preview = plan.clone();
+        preview.preview.preview_action = "tampered".into();
+        assert!(validate_import_plan(&preview).is_err());
+
+        let mut skipped = plan.clone();
+        skipped.skipped = vec![json!({"id": "fresh", "reason": "exists"})];
+        assert!(validate_import_plan(&skipped).is_err());
+
+        let mut installs = plan;
+        installs.package_installs.clear();
+        assert!(validate_import_plan(&installs).is_err());
+    }
 }

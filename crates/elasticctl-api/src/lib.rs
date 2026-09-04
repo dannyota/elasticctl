@@ -51,6 +51,9 @@ pub use exceptions::{ListDetail, ListFilter, ListReport};
 pub use fleet::agent_policy_ops::{
     AgentPolicyDeletePlan, AgentPolicyDeleteReport, AgentPolicyImportPlan, AgentPolicyImportReport,
 };
+pub use fleet::integration_policy_ops::{
+    IntegrationPolicyImportPlan, IntegrationPolicyImportReport,
+};
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
