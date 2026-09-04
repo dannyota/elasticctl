@@ -3085,7 +3085,21 @@ fn require_marker_integration_response(
     expected_version: &str,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    if !owns_integration_policy(body)
+    require_marker_integration_response_for_id(
+        body,
+        INTEGRATION_POLICY_ID,
+        expected_version,
+        context,
+    )
+}
+
+fn require_marker_integration_response_for_id(
+    body: &Value,
+    expected_id: &str,
+    expected_version: &str,
+    context: &str,
+) -> elasticctl_core::Result<()> {
+    if !owns_marker_integration(body, expected_id)
         || body
             .pointer("/item/package/version")
             .and_then(Value::as_str)
@@ -5992,7 +6006,6 @@ async fn record_integration_policies(
 
     let mut duplicate_body = marker_integration_create_body(&package_status.version);
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
-    session.ownership.integration_policy_dup = true;
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
         .post(
@@ -6023,12 +6036,26 @@ async fn record_integration_policies(
                 &observation,
             ));
         }
-        (Ok(_), Ok(())) => {
+        (Ok(created), Ok(())) => {
+            require_marker_integration_response_for_id(
+                &created,
+                INTEGRATION_POLICY_DUP_ID,
+                &package_status.version,
+                "duplicate integration policy create",
+            )?;
+            session.ownership.integration_policy_dup = true;
             return Err(recording_error(
                 "duplicate integration-policy name did not conflict",
             ));
         }
-        (Ok(_), Err(observation)) => {
+        (Ok(created), Err(observation)) => {
+            require_marker_integration_response_for_id(
+                &created,
+                INTEGRATION_POLICY_DUP_ID,
+                &package_status.version,
+                "duplicate integration policy create",
+            )?;
+            session.ownership.integration_policy_dup = true;
             return Err(recording_error(format!(
                 "duplicate integration-policy name did not conflict; installed package inventory observation also failed: {}",
                 safe_recording_error_summary(&observation),
@@ -6056,9 +6083,7 @@ async fn record_integration_policies(
         ))
         .await
     {
-        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
-            session.ownership.integration_policy_dup = false;
-        }
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {}
         Ok(_) => {
             return Err(recording_error(
                 "duplicate integration-policy id exists after a conflicting create",
@@ -11527,6 +11552,156 @@ mod tests {
             .expect("duplicate exact-id check");
         assert!(duplicate_position < inventory_positions[2]);
         assert!(inventory_positions[2] < duplicate_check_position);
+    }
+
+    #[tokio::test]
+    async fn integration_duplicate_conflict_does_not_claim_a_concurrent_marker_for_cleanup() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(system_package_metadata()))
+            .mount(&server)
+            .await;
+
+        let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let primary_reads_for_response = primary_reads.clone();
+        let primary = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                match primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 | 2 => ResponseTemplate::new(200).set_body_json(primary.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let duplicate_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let duplicate_reads_for_response = duplicate_reads.clone();
+        let mut duplicate = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        duplicate["item"]["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if duplicate_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+                {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(duplicate.clone())
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_reads_for_response = parent_reads.clone();
+        let parent = marker_integration_parent_response();
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(parent.clone())
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)),
+            )
+            .mount(&server)
+            .await;
+        let mut duplicate_body = marker_integration_create_body("2.0.0");
+        duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(duplicate_body))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone()],
+                "total": 1,
+                "page": 1,
+                "perPage": 1000,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID})),
+            )
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+
+        let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+            .await
+            .expect_err("a duplicate marker appearing after preflight must stop recording");
+        assert_eq!(
+            error.message,
+            "duplicate integration-policy id exists after a conflicting create"
+        );
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("the concurrent duplicate remains for investigation");
+
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && request.url.path()
+                    == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"))
+        }));
     }
 
     #[tokio::test]
