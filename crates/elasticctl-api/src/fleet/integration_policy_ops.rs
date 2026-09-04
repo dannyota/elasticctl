@@ -2140,7 +2140,6 @@ fn replace_wire_body(spec: &IntegrationPolicySpec) -> Result<Value> {
         .cloned()
         .expect("integration policy specs serialize to objects");
     body.remove("id");
-    body.insert("enabled".into(), Value::Bool(true));
     Ok(Value::Object(body))
 }
 
@@ -3795,6 +3794,26 @@ mod import_plan_tests {
         plan.canonical = vec![desired];
         plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
         plan
+    }
+
+    #[test]
+    fn replacement_body_omits_response_only_enabled_without_changing_input_enabled() {
+        let spec = IntegrationPolicySpec::try_from(json!({
+            "id": "replacement",
+            "name": "Replacement integration",
+            "namespace": "default",
+            "policy_ids": ["parent-1"],
+            "package": {"name": "system", "version": "2.0.0"},
+            "inputs": {"system-log": {"enabled": true}}
+        }))
+        .expect("valid replacement spec");
+
+        let body = replace_wire_body(&spec).expect("replacement wire body");
+        let object = body.as_object().expect("replacement wire object");
+
+        assert!(object.get("id").is_none());
+        assert!(object.get("enabled").is_none());
+        assert_eq!(object["inputs"]["system-log"]["enabled"], true);
     }
 
     fn valid_expanded_inputs_plan() -> IntegrationPolicyImportPlan {

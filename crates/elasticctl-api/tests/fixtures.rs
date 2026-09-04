@@ -1997,7 +1997,11 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             "{}: integration update must omit id from its wire body",
             set.display()
         );
-        assert_eq!(update_object.get("enabled"), Some(&serde_json::json!(true)));
+        assert!(
+            update_object.get("enabled").is_none(),
+            "{}: integration update must omit response-only enabled from its wire body",
+            set.display()
+        );
         assert!(
             update_object.get("force").is_none(),
             "{}: integration update must not send force",
@@ -2008,7 +2012,6 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             "{}: integration update must not send create_dataset_templates",
             set.display()
         );
-        update_object.remove("enabled");
         update_object.insert("id".into(), serde_json::json!(marker_id));
         let updated_spec =
             IntegrationPolicySpec::try_from(update_spec_value).unwrap_or_else(|error| {

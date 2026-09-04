@@ -252,7 +252,6 @@ pub async fn update(
         .as_object_mut()
         .expect("integration policy serialization is an object");
     object.remove("id");
-    object.insert("enabled".into(), Value::Bool(true));
     decode_item(
         &transport.put(&policy_path(id), &body).await?,
         "integration policy update",

@@ -3911,7 +3911,6 @@ fn marker_integration_update_body_with_nonce_and_inputs(
         "description".to_string(),
         json!(marker_integration_updated_description(nonce)),
     );
-    object.insert("enabled".to_string(), Value::Bool(true));
     body
 }
 
@@ -14827,7 +14826,7 @@ mod tests {
     }
 
     #[test]
-    fn marker_integration_bodies_preserve_one_session_nonce_and_force_omission() {
+    fn marker_integration_bodies_preserve_one_session_nonce_and_response_only_omission() {
         let nonce = "one-session-nonce";
         let create = marker_integration_create_body_with_nonce("2.0.0", nonce);
         assert_eq!(create["id"], INTEGRATION_POLICY_ID);
@@ -14846,7 +14845,7 @@ mod tests {
 
         let update = marker_integration_update_body_with_nonce("2.0.0", nonce);
         assert!(update.get("id").is_none());
-        assert_eq!(update["enabled"], true);
+        assert!(update.get("enabled").is_none());
         assert_eq!(
             update["description"],
             marker_integration_updated_description(nonce),

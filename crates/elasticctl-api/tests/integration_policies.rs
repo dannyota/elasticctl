@@ -2514,8 +2514,7 @@ async fn apply_import_creates_replaces_and_leaves_unchanged_in_stable_id_order()
         "namespace": "default",
         "policy_ids": ["parent-1"],
         "package": {"name": "system", "version": "2.0.0"},
-        "inputs": {},
-        "enabled": true
+        "inputs": {}
     });
     Mock::given(method("PUT"))
         .and(path("/api/fleet/package_policies/changed"))
@@ -3594,8 +3593,7 @@ async fn create_and_update_use_exact_safe_wire_shapes() {
         "namespace": "default",
         "policy_ids": ["parent-1"],
         "package": {"name": "system", "version": "2.0.0"},
-        "inputs": {},
-        "enabled": true
+        "inputs": {}
     });
     Mock::given(method("PUT"))
         .and(path("/api/fleet/package_policies/integration%2F1"))
