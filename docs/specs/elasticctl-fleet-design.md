@@ -636,6 +636,13 @@ strict marker state matches; another session's nonce is never deleted. Normal
 update preserves the session nonce. Fixture reducers replace nonce-bearing
 descriptions with fixed public descriptions, so public fixtures stay
 deterministic. The recorder deletes integrations before agent policies.
+Every marker POST, PUT, and DELETE is one-shot, including cleanup. A 429, 5xx,
+timeout, connection failure, or malformed success response never replays the
+mutation. Create ambiguity uses the exact nonce-bound GET above. Update and
+delete ambiguity retains ownership for cleanup, whose fresh exact GET either
+proves the same nonce-bearing object, observes it absent, or refuses mutation.
+This prevents a retry from overwriting or deleting a different object that
+reused the fixed id after the first request committed.
 
 Fleet setup is idempotent and required before the first Fleet read on a fresh
 stack. The recorder and the conformance runner call `POST /api/fleet/setup`

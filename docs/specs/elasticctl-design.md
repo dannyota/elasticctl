@@ -146,7 +146,10 @@ Does not know about detection rules.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
   on every non-GET request, `elastic-api-version` where required, and prefixes
   space-scoped paths as `/s/<space>/api/...`. Retries with backoff on 429 and
-  5xx only, never on 4xx.
+  5xx only, never on 4xx. JSON POST, PUT, and DELETE also expose one-shot
+  variants for ownership-guarded mutations that cannot be replayed safely.
+  One-shot sends the request once; its caller resolves an ambiguous outcome
+  with an exact read instead of repeating the mutation.
   JSON, raw-export, multipart-import, and Elasticsearch responses share that
   retry loop and timeout/connection classification. A body-read failure is
   therefore classified the same way as a failure before the response headers.
