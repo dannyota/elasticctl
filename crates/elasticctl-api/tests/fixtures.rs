@@ -1948,6 +1948,12 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             IntegrationPolicySpec::try_from(create_request.clone()).unwrap_or_else(|error| {
                 panic!("{}: integration create request: {error}", set.display())
             });
+        let expected_inputs = requested.inputs.clone();
+        assert!(
+            !expected_inputs.is_empty(),
+            "{}: integration create must carry stable materialized inputs",
+            set.display()
+        );
         let marker_id = requested.id.clone();
         assert!(
             marker_id.starts_with("elasticctl-sample-"),
@@ -2008,6 +2014,11 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             IntegrationPolicySpec::try_from(update_spec_value).unwrap_or_else(|error| {
                 panic!("{}: integration update request: {error}", set.display())
             });
+        assert!(
+            updated_spec.inputs == expected_inputs,
+            "{}: integration update request stable inputs mismatch",
+            set.display()
+        );
 
         assert_package_metadata_shape(
             &package_metadata_fixture["response"],
@@ -2135,6 +2146,45 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             .await;
 
         let transport = fixture_transport(&server);
+        let normalize_fixture_item = |value: &Value, label: &str| {
+            let item = value
+                .as_object()
+                .unwrap_or_else(|| panic!("{}: {label} item", set.display()));
+            let normalized = integration_policy_ops::normalize(item, transport.space())
+                .unwrap_or_else(|error| panic!("{}: normalize {label}: {error}", set.display()));
+            assert!(
+                normalized.inputs == expected_inputs,
+                "{}: {label} stable inputs mismatch",
+                set.display()
+            );
+            normalized
+        };
+        let _ = normalize_fixture_item(
+            &create["response"]["item"],
+            "integration create fixture response",
+        );
+        let _ = normalize_fixture_item(
+            &got_fixture["response"]["item"],
+            "integration get fixture response",
+        );
+        let listed_raw = list_fixture["response"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: integration list items", set.display()));
+        assert_eq!(
+            listed_raw.len(),
+            1,
+            "{}: marker-only integration list",
+            set.display()
+        );
+        let _ = normalize_fixture_item(&listed_raw[0], "integration list fixture item");
+        let _ = normalize_fixture_item(
+            &update["response"]["item"],
+            "integration update fixture response",
+        );
+        let _ = normalize_fixture_item(
+            &round_trip["response"]["item"],
+            "integration round-trip fixture response",
+        );
         let parent = agent_policies::create(&transport, &parent_spec)
             .await
             .unwrap_or_else(|error| panic!("{}: decode parent create: {error}", set.display()));
@@ -2198,6 +2248,11 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             "{}: create/normalize round trip",
             set.display()
         );
+        assert!(
+            normalized.inputs == expected_inputs,
+            "{}: decoded integration create stable inputs mismatch",
+            set.display()
+        );
 
         let got = integration_policies::get(&transport, &marker_id)
             .await
@@ -2205,6 +2260,18 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
         assert_eq!(
             got.item.get("id").and_then(Value::as_str),
             Some(marker_id.as_str())
+        );
+        let normalized_get = integration_policy_ops::normalize(&got.item, transport.space())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: normalize decoded integration get: {error}",
+                    set.display()
+                )
+            });
+        assert!(
+            normalized_get.inputs == expected_inputs,
+            "{}: decoded integration get stable inputs mismatch",
+            set.display()
         );
 
         let parent_item = parent_get["response"]["item"]
@@ -2302,6 +2369,25 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
                     .unwrap_or_else(|error| {
                         panic!("{}: decode exported integration: {error}", set.display())
                     });
+                assert_eq!(
+                    specs.len(),
+                    1,
+                    "{}: exported integration count",
+                    set.display()
+                );
+                let exported_spec = specs
+                    .first()
+                    .expect("exported integration count checked above");
+                assert!(
+                    !exported_spec.inputs.is_empty(),
+                    "{}: exported integration must carry stable materialized inputs",
+                    set.display()
+                );
+                assert!(
+                    exported_spec.inputs == expected_inputs,
+                    "{}: exported integration stable inputs mismatch",
+                    set.display()
+                );
                 assert_eq!(specs, vec![requested.clone()], "{}", set.display());
             }
             "not_installed" => {
@@ -2325,6 +2411,20 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
         assert_eq!(
             updated.item.get("id").and_then(Value::as_str),
             Some(marker_id.as_str())
+        );
+        let normalized_updated =
+            integration_policy_ops::normalize(&updated.item, transport.space()).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "{}: normalize decoded integration update: {error}",
+                        set.display()
+                    )
+                },
+            );
+        assert!(
+            normalized_updated.inputs == expected_inputs,
+            "{}: decoded integration update stable inputs mismatch",
+            set.display()
         );
         let normalized_round_trip = integration_policy_ops::normalize(
             round_trip["response"]["item"]
