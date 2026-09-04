@@ -208,6 +208,10 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Connection, format!("building HTTP client: {e}")))?;
         let one_shot_client = Self::client_builder(&profile)
             .redirect(reqwest::redirect::Policy::none())
+            // hyper-util retries a canceled checkout only through its connection
+            // pool. Zero idle connections disables that pool, so this client
+            // cannot replay an unstarted mutation after a reused socket fails.
+            .pool_max_idle_per_host(0)
             .retry(reqwest::retry::never())
             .build()
             .map_err(|e| {
@@ -599,9 +603,9 @@ impl Transport {
     /// Send a JSON POST exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects and protocol-level retries. It otherwise
-    /// uses the same request construction, response parsing, timeout handling,
-    /// and error classification as [`Self::post`].
+    /// key. It disables redirects, connection pooling, and protocol-level
+    /// retries. It otherwise uses the same request construction, response
+    /// parsing, timeout handling, and error classification as [`Self::post`].
     pub async fn post_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
         self.send_json_once(Method::POST, path, body).await
     }
@@ -613,9 +617,9 @@ impl Transport {
     /// Send a JSON PUT exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects and protocol-level retries. It otherwise
-    /// uses the same request construction, response parsing, timeout handling,
-    /// and error classification as [`Self::put`].
+    /// key. It disables redirects, connection pooling, and protocol-level
+    /// retries. It otherwise uses the same request construction, response
+    /// parsing, timeout handling, and error classification as [`Self::put`].
     pub async fn put_once(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_json_once(Method::PUT, path, Some(body)).await
     }
@@ -631,9 +635,9 @@ impl Transport {
     /// Send a JSON DELETE exactly once.
     ///
     /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects and protocol-level retries. It otherwise
-    /// uses the same request construction, response parsing, timeout handling,
-    /// and error classification as [`Self::delete`].
+    /// key. It disables redirects, connection pooling, and protocol-level
+    /// retries. It otherwise uses the same request construction, response
+    /// parsing, timeout handling, and error classification as [`Self::delete`].
     pub async fn delete_once(&self, path: &str) -> Result<Value> {
         self.send_json_once(Method::DELETE, path, None).await
     }

@@ -154,6 +154,85 @@ async fn headers_then_delayed_body_server()
     (url, requests, server)
 }
 
+async fn keep_alive_connection_server() -> (
+    String,
+    Arc<tokio::sync::Mutex<Vec<usize>>>,
+    Arc<tokio::sync::Notify>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let request_connections = Arc::clone(&requests);
+    let request_notify = Arc::clone(&notify);
+
+    let server = tokio::spawn(async move {
+        let mut next_connection = 0;
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(_) => return,
+            };
+            let connection = next_connection;
+            next_connection += 1;
+            let requests = Arc::clone(&request_connections);
+            let notify = Arc::clone(&request_notify);
+
+            tokio::spawn(async move {
+                let mut buffer = [0; 1_024];
+                loop {
+                    let mut request = Vec::new();
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read =
+                            match tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => read,
+                            };
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+
+                    requests.lock().await.push(connection);
+                    notify.notify_waiters();
+                    if tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: keep-alive\r\n\r\n{\"ok\":true}",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                    if tokio::io::AsyncWriteExt::flush(&mut stream).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    (url, requests, notify, server)
+}
+
+async fn wait_for_requests(
+    requests: &Arc<tokio::sync::Mutex<Vec<usize>>>,
+    notify: &Arc<tokio::sync::Notify>,
+    expected: usize,
+) -> Vec<usize> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let notified = notify.notified();
+            let observed = requests.lock().await.clone();
+            if observed.len() >= expected {
+                return observed;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("server must receive the requests")
+}
+
 #[test]
 fn space_path_prefixes_only_non_default_spaces() {
     // Kibana serves the default space at the bare path.
@@ -299,6 +378,30 @@ async fn delete_once_uses_the_normal_delete_request_shape_once() {
     profile.space = "soc".into();
     let t = Transport::new(&profile).unwrap();
     assert_eq!(t.delete_once("/api/thing").await.unwrap()["ok"], true);
+}
+
+#[tokio::test]
+async fn one_shot_mutations_do_not_reuse_idle_connections() {
+    let (url, requests, notify, server) = keep_alive_connection_server().await;
+    let transport = Transport::new(&profile_for_url(url)).unwrap();
+
+    assert_eq!(
+        transport.delete_once("/api/once").await.unwrap()["ok"],
+        true
+    );
+    assert_eq!(
+        transport.delete_once("/api/once").await.unwrap()["ok"],
+        true
+    );
+
+    let observed = wait_for_requests(&requests, &notify, 2).await;
+    server.abort();
+    let _ = server.await;
+
+    assert_ne!(
+        observed[0], observed[1],
+        "one-shot mutations must use a fresh connection instead of an idle pooled connection"
+    );
 }
 
 #[tokio::test]
