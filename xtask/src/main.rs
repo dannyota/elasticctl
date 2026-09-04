@@ -115,7 +115,6 @@ const INTEGRATION_POLICY_DESCRIPTION: &str = "elasticctl sample integration poli
 const INTEGRATION_POLICY_UPDATED_DESCRIPTION: &str = "elasticctl sample integration policy updated";
 const INTEGRATION_POLICY_PARENT_DESCRIPTION: &str = "elasticctl sample integration policy parent";
 const INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT: u64 = 1_209_600;
-const INTEGRATION_POLICY_FIXTURE_TIMESTAMP: &str = "2026-01-01T00:00:00.000Z";
 const INSTALLED_PACKAGE_INVENTORY_PATH: &str =
     "/api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc";
 
@@ -888,6 +887,34 @@ fn error_fixture(
     let mut envelope = error.to_envelope()["error"].clone();
     scrub(&mut envelope);
     scrub_hosts(&mut envelope, &hosts);
+    RecordedFixture {
+        name,
+        document: json!({
+            "flavor": flavor,
+            "version": version,
+            "operation": name,
+            "error": envelope,
+        }),
+    }
+}
+
+/// Task 8 records classified Fleet lifecycle failures without copying a
+/// server-provided message into a public fixture. Fleet errors can name a
+/// user, deployment, policy, or secret reference, while the classification
+/// and HTTP status are sufficient route-contract evidence.
+fn integration_policy_error_fixture(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    error: elasticctl_core::Error,
+) -> RecordedFixture {
+    let mut envelope = json!({
+        "kind": error.kind.as_str(),
+        "message": "Fleet integration-policy recording endpoint returned an error",
+    });
+    if let Some(status) = error.http_status {
+        envelope["http_status"] = json!(status);
+    }
     RecordedFixture {
         name,
         document: json!({
@@ -2405,72 +2432,271 @@ fn scope_integration_policy_list_to_marker(body: &mut Value, marker_id: &str) ->
     kept
 }
 
-/// Package-policy responses include a server concurrency token, audit fields,
-/// active-space details, and potentially secret-bearing variable maps. The
-/// marker always has empty inputs and no variables, so retaining an unexpected
-/// value buys no fixture evidence and risks publishing a secret.
-fn scrub_integration_policy(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for key in [
-                "version",
-                "revision",
-                "created_by",
-                "updated_by",
-                "secret_references",
-                "spaceIds",
-                "space_ids",
-                "vars",
-                "var_group_selections",
-                "compiled_input",
-                "compiled_stream",
-                "elasticsearch",
-            ] {
-                map.remove(key);
-            }
-            for key in ["created_at", "updated_at"] {
-                if let Some(timestamp) = map.get_mut(key)
-                    && timestamp.is_string()
-                {
-                    *timestamp = json!(INTEGRATION_POLICY_FIXTURE_TIMESTAMP);
-                }
-            }
-            if let Some(Value::Object(package)) = map.get_mut("package") {
-                package.retain(|key, _| matches!(key.as_str(), "name" | "version"));
-            }
-            for (key, child) in map.iter_mut() {
-                // Package.version is the exact integration dependency, not a
-                // saved-object concurrency token. It must survive scrubbing.
-                if key != "package" {
-                    scrub_integration_policy(child);
-                }
-            }
-        }
-        Value::Array(values) => values.iter_mut().for_each(scrub_integration_policy),
-        _ => {}
-    }
-}
-
 fn integration_policy_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
-    mut body: Value,
-) -> RecordedFixture {
-    scrub_integration_policy(&mut body);
-    response_fixture(name, flavor, version, body, None)
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
+    let body = match name {
+        "integration_policy_get" | "integration_policy_round_trip" => {
+            reduce_marker_integration_response(&body)?
+        }
+        "integration_policies_list" => reduce_marker_integration_list(&body)?,
+        "integration_policy_parent_get" => reduce_marker_parent_get_response(&body)?,
+        "integration_policy_delete" => reduce_integration_delete_response(&body)?,
+        "integration_policy_parent_delete" => reduce_parent_delete_response(&body)?,
+        _ => {
+            return Err(recording_error(
+                "integration policy fixture has no safe response reducer",
+            ));
+        }
+    };
+    Ok(response_fixture(name, flavor, version, body, None))
 }
 
 fn integration_policy_exchange_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
-    mut request: Value,
-    mut body: Value,
-) -> RecordedFixture {
-    scrub_integration_policy(&mut request);
-    scrub_integration_policy(&mut body);
-    exchange_fixture(name, flavor, version, request, body)
+    request: Value,
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
+    let (request, body) = match name {
+        "integration_policy_parent_create" => (
+            reduce_marker_parent_create_request(&request)?,
+            reduce_marker_parent_create_response(&body)?,
+        ),
+        "integration_policy_create" => (
+            reduce_marker_integration_create_request(&request)?,
+            reduce_marker_integration_response(&body)?,
+        ),
+        "integration_policy_update" => (
+            reduce_marker_integration_update_request(&request)?,
+            reduce_marker_integration_response(&body)?,
+        ),
+        _ => {
+            return Err(recording_error(
+                "integration policy fixture has no safe exchange reducer",
+            ));
+        }
+    };
+    Ok(exchange_fixture(name, flavor, version, request, body))
+}
+
+/// Reduce a marker integration response after proving its stable marker
+/// identity. The allowlist is intentionally smaller than the public Fleet
+/// schema: response-only metadata, active-space references, secrets, and new
+/// unknown fields do not prove this recorder's route contract.
+fn reduce_marker_integration_response(body: &Value) -> elasticctl_core::Result<Value> {
+    let item = body.get("item").and_then(Value::as_object).ok_or_else(|| {
+        recording_error("integration policy response must contain an item object")
+    })?;
+    if !owns_integration_policy(body) {
+        return Err(recording_error(
+            "integration policy response did not preserve the marker identity",
+        ));
+    }
+    if item.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return Err(recording_error(
+            "integration policy response must retain enabled true",
+        ));
+    }
+    require_safe_marker_integration_references(item)?;
+    let package_version = item
+        .get("package")
+        .and_then(Value::as_object)
+        .and_then(|package| package.get("version"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            recording_error("integration policy response package version must be non-empty")
+        })?;
+    let description = item
+        .get("description")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            recording_error("integration policy response description must be a string")
+        })?;
+    Ok(json!({
+        "item": {
+            "id": INTEGRATION_POLICY_ID,
+            "name": INTEGRATION_POLICY_NAME,
+            "namespace": INTEGRATION_POLICY_NAMESPACE,
+            "description": description,
+            "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+            "package": {
+                "name": INTEGRATION_POLICY_PACKAGE,
+                "version": package_version,
+            },
+            "inputs": {},
+            "enabled": true,
+        }
+    }))
+}
+
+fn require_safe_marker_integration_references(
+    item: &serde_json::Map<String, Value>,
+) -> elasticctl_core::Result<()> {
+    for field in ["output_id", "cloud_connector_id", "cloud_connector_name"] {
+        if item
+            .get(field)
+            .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false))
+        {
+            return Err(recording_error(
+                "integration policy response carries a nonportable environment reference",
+            ));
+        }
+    }
+    match item.get("secret_references") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(references)) if references.is_empty() => Ok(()),
+        Some(_) => Err(recording_error(
+            "integration policy response carries secret references",
+        )),
+    }
+}
+
+fn marker_integration_request_version<'a>(
+    request: &'a Value,
+    context: &'static str,
+) -> elasticctl_core::Result<&'a str> {
+    request
+        .pointer("/package/version")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| recording_error(format!("{context} package version must be non-empty")))
+}
+
+fn reduce_marker_integration_create_request(request: &Value) -> elasticctl_core::Result<Value> {
+    let version = marker_integration_request_version(request, "integration policy create request")?;
+    let expected = marker_integration_create_body(version);
+    if request != &expected {
+        return Err(recording_error(
+            "integration policy create request did not preserve the exact marker body",
+        ));
+    }
+    Ok(expected)
+}
+
+fn reduce_marker_integration_update_request(request: &Value) -> elasticctl_core::Result<Value> {
+    let version = marker_integration_request_version(request, "integration policy update request")?;
+    let expected = marker_integration_update_body(version);
+    if request != &expected {
+        return Err(recording_error(
+            "integration policy update request did not preserve the exact marker body",
+        ));
+    }
+    Ok(expected)
+}
+
+fn reduce_marker_parent_create_request(request: &Value) -> elasticctl_core::Result<Value> {
+    let expected = marker_integration_parent_create_body();
+    if request != &expected {
+        return Err(recording_error(
+            "integration policy parent create request did not preserve the exact marker body",
+        ));
+    }
+    Ok(expected)
+}
+
+fn reduce_marker_parent_create_response(body: &Value) -> elasticctl_core::Result<Value> {
+    if !owns_integration_policy_parent(body) {
+        return Err(recording_error(
+            "integration policy parent create did not preserve the marker identity",
+        ));
+    }
+    Ok(json!({
+        "item": {
+            "id": INTEGRATION_POLICY_PARENT_ID,
+            "name": INTEGRATION_POLICY_PARENT_NAME,
+            "namespace": INTEGRATION_POLICY_NAMESPACE,
+            "description": INTEGRATION_POLICY_PARENT_DESCRIPTION,
+            "monitoring_enabled": [],
+            "inactivity_timeout": INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT,
+        }
+    }))
+}
+
+fn reduce_marker_parent_get_response(body: &Value) -> elasticctl_core::Result<Value> {
+    require_parent_attachment(body)?;
+    let agents = body
+        .pointer("/item/agents")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            recording_error("integration policy parent get agents must be an unsigned integer")
+        })?;
+    Ok(json!({
+        "item": {
+            "id": INTEGRATION_POLICY_PARENT_ID,
+            "name": INTEGRATION_POLICY_PARENT_NAME,
+            "namespace": INTEGRATION_POLICY_NAMESPACE,
+            "description": INTEGRATION_POLICY_PARENT_DESCRIPTION,
+            "monitoring_enabled": [],
+            "inactivity_timeout": INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT,
+            "agents": agents,
+            "package_policies": [INTEGRATION_POLICY_ID],
+        }
+    }))
+}
+
+fn reduce_marker_integration_list(body: &Value) -> elasticctl_core::Result<Value> {
+    let items = body
+        .get("items")
+        .and_then(Value::as_array)
+        .filter(|items| items.len() == 1)
+        .ok_or_else(|| {
+            recording_error("integration policy list must contain exactly one marker item")
+        })?;
+    let total = body.get("total").and_then(Value::as_u64);
+    let page = body.get("page").and_then(Value::as_u64);
+    let per_page = body.get("perPage").and_then(Value::as_u64);
+    if total != Some(1) || page != Some(1) || per_page != Some(1000) {
+        return Err(recording_error(
+            "integration policy list did not preserve the exact marker page metadata",
+        ));
+    }
+    let reduced = reduce_marker_integration_response(&json!({"item": items[0]}))?;
+    Ok(json!({
+        "items": [reduced["item"].clone()],
+        "total": 1,
+        "page": 1,
+        "perPage": 1000,
+    }))
+}
+
+fn reduce_integration_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
+    let item = body
+        .as_object()
+        .filter(|item| item.len() == 1)
+        .filter(|item| item.get("id").and_then(Value::as_str) == Some(INTEGRATION_POLICY_ID))
+        .ok_or_else(|| {
+            recording_error(
+                "integration policy delete response did not contain the exact marker id",
+            )
+        })?;
+    let _ = item;
+    Ok(json!({"id": INTEGRATION_POLICY_ID}))
+}
+
+fn reduce_parent_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
+    let item = body
+        .as_object()
+        .filter(|item| item.len() == 2)
+        .filter(|item| item.get("id").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PARENT_ID))
+        .filter(|item| {
+            item.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PARENT_NAME)
+        })
+        .ok_or_else(|| {
+            recording_error(
+                "integration policy parent delete response did not contain the exact marker body",
+            )
+        })?;
+    let _ = item;
+    Ok(json!({
+        "id": INTEGRATION_POLICY_PARENT_ID,
+        "name": INTEGRATION_POLICY_PARENT_NAME,
+    }))
 }
 
 /// The package registry exposes a broad, deployment-specific document. The
@@ -2872,32 +3098,80 @@ fn require_marker_integration_response(
     Ok(())
 }
 
-fn require_parent_attachment(body: &Value) -> elasticctl_core::Result<()> {
+fn require_parent_attachments(
+    body: &Value,
+    expected: &[&str],
+    context: &'static str,
+) -> elasticctl_core::Result<()> {
     if !owns_integration_policy_parent(body) {
-        return Err(recording_error(
-            "integration parent get did not preserve the marker identity",
-        ));
+        return Err(recording_error(format!(
+            "{context}: integration parent did not preserve the marker identity"
+        )));
     }
     let attachments = body
         .pointer("/item/package_policies")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            recording_error("integration parent get did not contain package_policies")
+            recording_error(format!(
+                "{context}: integration parent did not contain package_policies"
+            ))
         })?;
-    let ids: Vec<&str> = attachments
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .as_str()
-                .or_else(|| entry.get("id").and_then(Value::as_str))
-        })
-        .collect();
-    if ids.len() != 1 || ids[0] != INTEGRATION_POLICY_ID {
-        return Err(recording_error(
-            "integration parent get did not contain exactly the marker attachment",
-        ));
+    let mut ids = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let id = attachment
+            .as_str()
+            .or_else(|| attachment.get("id").and_then(Value::as_str))
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| {
+                recording_error(format!(
+                    "{context}: integration parent contained a malformed package policy attachment"
+                ))
+            })?;
+        ids.push(id);
+    }
+    let mut expected = expected.to_vec();
+    ids.sort_unstable();
+    expected.sort_unstable();
+    if ids != expected {
+        return Err(recording_error(format!(
+            "{context}: integration parent did not contain the expected marker attachments"
+        )));
     }
     Ok(())
+}
+
+fn require_parent_attachment(body: &Value) -> elasticctl_core::Result<()> {
+    require_parent_attachments(body, &[INTEGRATION_POLICY_ID], "integration parent get")
+}
+
+async fn reread_marker_integration_before_mutation(
+    t: &elasticctl_core::Transport,
+    expected_version: &str,
+    context: &'static str,
+) -> elasticctl_core::Result<()> {
+    let body = t
+        .get(&format!(
+            "/api/fleet/package_policies/{}?format=simplified",
+            urlencode(INTEGRATION_POLICY_ID)
+        ))
+        .await
+        .map_err(|error| safe_recording_transport_error(context, error))?;
+    require_marker_integration_response(&body, expected_version, context)
+}
+
+async fn reread_marker_parent_before_mutation(
+    t: &elasticctl_core::Transport,
+    expected_attachments: &[&str],
+    context: &'static str,
+) -> elasticctl_core::Result<()> {
+    let body = t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(INTEGRATION_POLICY_PARENT_ID)
+        ))
+        .await
+        .map_err(|error| safe_recording_transport_error(context, error))?;
+    require_parent_attachments(&body, expected_attachments, context)
 }
 
 fn require_exact_delete_id(body: &Value, id: &str, context: &str) -> elasticctl_core::Result<()> {
@@ -3064,6 +3338,7 @@ async fn cleanup_marker_integration_parent(
             "refusing to delete integration policy parent: its marker identity no longer matches",
         ));
     }
+    require_parent_attachments(&current, &[], "integration parent cleanup")?;
     let deleted = t
         .post(
             "/api/fleet/agent_policies/delete",
@@ -5504,7 +5779,7 @@ async fn record_integration_policies(
         .await
     {
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_not_found",
                 flavor,
                 version,
@@ -5551,7 +5826,7 @@ async fn record_integration_policies(
         .await
     {
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_parent_not_found",
                 flavor,
                 version,
@@ -5601,7 +5876,7 @@ async fn record_integration_policies(
         version,
         parent_create_body,
         parent_created,
-    ));
+    )?);
 
     record_trace("fleet-integration-policy-metadata");
     let package_metadata = t
@@ -5671,7 +5946,7 @@ async fn record_integration_policies(
         version,
         create_body,
         created,
-    ));
+    )?);
 
     record_trace("fleet-integration-policy-get");
     let got = t
@@ -5689,7 +5964,7 @@ async fn record_integration_policies(
         flavor,
         version,
         got,
-    ));
+    )?);
 
     record_trace("fleet-integration-policy-list");
     let mut listed = t
@@ -5710,7 +5985,7 @@ async fn record_integration_policies(
         flavor,
         version,
         listed,
-    ));
+    )?);
 
     let mut duplicate_body = marker_integration_create_body(&package_status.version);
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
@@ -5728,7 +6003,7 @@ async fn record_integration_policies(
     .await;
     match (duplicate_result, duplicate_inventory_observation) {
         (Err(error), Ok(())) if error.kind == elasticctl_core::ErrorKind::Conflict => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_name_conflict",
                 flavor,
                 version,
@@ -5807,9 +6082,15 @@ async fn record_integration_policies(
         flavor,
         version,
         parent_attached,
-    ));
+    )?);
 
     let update_body = marker_integration_update_body(&package_status.version);
+    reread_marker_integration_before_mutation(
+        t,
+        &package_status.version,
+        "rechecking integration policy marker before update",
+    )
+    .await?;
     record_trace("fleet-integration-policy-update");
     let updated = t
         .put(
@@ -5834,7 +6115,7 @@ async fn record_integration_policies(
         version,
         update_body,
         updated,
-    ));
+    )?);
 
     record_trace("fleet-integration-policy-round-trip");
     let round_trip = t
@@ -5865,8 +6146,20 @@ async fn record_integration_policies(
         flavor,
         version,
         round_trip,
-    ));
+    )?);
 
+    reread_marker_integration_before_mutation(
+        t,
+        &package_status.version,
+        "rechecking integration policy marker before attached parent delete",
+    )
+    .await?;
+    reread_marker_parent_before_mutation(
+        t,
+        &[INTEGRATION_POLICY_ID],
+        "rechecking integration policy parent before attached parent delete",
+    )
+    .await?;
     record_trace("fleet-integration-policy-parent-delete-refused");
     match t
         .post(
@@ -5876,7 +6169,7 @@ async fn record_integration_policies(
         .await
     {
         Err(error) if error.kind == elasticctl_core::ErrorKind::Conflict => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_parent_delete_refused",
                 flavor,
                 version,
@@ -5896,6 +6189,12 @@ async fn record_integration_policies(
         }
     }
 
+    reread_marker_integration_before_mutation(
+        t,
+        &package_status.version,
+        "rechecking integration policy marker before delete",
+    )
+    .await?;
     record_trace("fleet-integration-policy-delete");
     let deleted = t
         .delete(&format!(
@@ -5912,7 +6211,7 @@ async fn record_integration_policies(
         flavor,
         version,
         deleted,
-    ));
+    )?);
     record_trace("fleet-integration-policy-delete-check");
     match t
         .get(&format!(
@@ -5922,7 +6221,7 @@ async fn record_integration_policies(
         .await
     {
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_delete_not_found",
                 flavor,
                 version,
@@ -5943,6 +6242,12 @@ async fn record_integration_policies(
         }
     }
 
+    reread_marker_parent_before_mutation(
+        t,
+        &[],
+        "rechecking integration policy parent before final delete",
+    )
+    .await?;
     record_trace("fleet-integration-policy-parent-delete");
     let parent_deleted = t
         .post(
@@ -5963,7 +6268,7 @@ async fn record_integration_policies(
         flavor,
         version,
         parent_deleted,
-    ));
+    )?);
     record_trace("fleet-integration-policy-parent-delete-check");
     match t
         .get(&format!(
@@ -5973,7 +6278,7 @@ async fn record_integration_policies(
         .await
     {
         Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
-            recording.fixtures.push(error_fixture(
+            recording.fixtures.push(integration_policy_error_fixture(
                 "integration_policy_parent_delete_not_found",
                 flavor,
                 version,
@@ -7977,7 +8282,8 @@ mod tests {
                 "description": description,
                 "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
                 "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
-                "inputs": {}
+                "inputs": {},
+                "enabled": true
             }
         })
     }
@@ -7990,7 +8296,8 @@ mod tests {
                 "namespace": "default",
                 "description": "elasticctl sample integration policy parent",
                 "monitoring_enabled": [],
-                "inactivity_timeout": 1_209_600
+                "inactivity_timeout": 1_209_600,
+                "agents": 0
             }
         })
     }
@@ -8035,8 +8342,9 @@ mod tests {
                 match integration_reads_for_response
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 {
-                    1 => ResponseTemplate::new(200).set_body_json(integration.clone()),
-                    2 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 | 2 => ResponseTemplate::new(200).set_body_json(integration.clone()),
+                    3..=5 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
@@ -8054,16 +8362,18 @@ mod tests {
         let parent_reads_for_response = parent_reads.clone();
         let mut parent = marker_integration_parent_response();
         parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        let mut detached_parent = marker_integration_parent_response();
+        detached_parent["item"]["package_policies"] = json!([]);
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
-                if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
-                {
-                    ResponseTemplate::new(200).set_body_json(parent.clone())
-                } else {
-                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                match parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 | 2 => ResponseTemplate::new(200).set_body_json(parent.clone()),
+                    3 => ResponseTemplate::new(200).set_body_json(detached_parent.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
             .mount(server)
@@ -8141,8 +8451,10 @@ mod tests {
                 {
                     ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
                 } else {
-                    ResponseTemplate::new(200)
-                        .set_body_json(json!({"id": INTEGRATION_POLICY_PARENT_ID}))
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_PARENT_ID,
+                        "name": INTEGRATION_POLICY_PARENT_NAME,
+                    }))
                 }
             })
             .mount(server)
@@ -8160,6 +8472,207 @@ mod tests {
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
             .respond_with(delete_response)
+            .mount(server)
+            .await;
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum IntegrationLifecycleSwap {
+        Update,
+        AttachedParentDelete,
+        IntegrationDelete,
+        FinalParentDelete,
+    }
+
+    /// This mock schedule contains the revalidation reads the normal lifecycle
+    /// must make before each destructive mutation. With the old lifecycle, the
+    /// swapped response arrives only after the unsafe write; with the fixed
+    /// lifecycle, it arrives immediately before the write and stops it.
+    async fn mount_integration_lifecycle_with_revalidation_race(
+        server: &MockServer,
+        swap: IntegrationLifecycleSwap,
+    ) {
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(system_package_metadata()))
+            .mount(server)
+            .await;
+
+        let integration_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let integration_deleted_for_reads = integration_deleted.clone();
+        let integration_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let integration_reads_for_response = integration_reads.clone();
+        let integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        let updated = marker_integration_response(INTEGRATION_POLICY_UPDATED_DESCRIPTION);
+        let mut swapped_integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        swapped_integration["item"]["inputs"] = json!({"untrusted": {"token": "private"}});
+        let integration_swap_at = match swap {
+            IntegrationLifecycleSwap::Update => Some(2),
+            IntegrationLifecycleSwap::IntegrationDelete => Some(5),
+            IntegrationLifecycleSwap::AttachedParentDelete
+            | IntegrationLifecycleSwap::FinalParentDelete => None,
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                let read = integration_reads_for_response
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if integration_swap_at == Some(read) {
+                    return ResponseTemplate::new(200).set_body_json(swapped_integration.clone());
+                }
+                match read {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 => ResponseTemplate::new(200).set_body_json(integration.clone()),
+                    2 => ResponseTemplate::new(200).set_body_json(updated.clone()),
+                    3 if integration_deleted_for_reads
+                        .load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                    }
+                    3..=5 => ResponseTemplate::new(200).set_body_json(updated.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(server)
+            .await;
+
+        let parent_delete_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_delete_calls_for_reads = parent_delete_calls.clone();
+        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_reads_for_response = parent_reads.clone();
+        let mut attached_parent = marker_integration_parent_response();
+        attached_parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        let mut swapped_parent = attached_parent.clone();
+        swapped_parent["item"]["monitoring_enabled"] = json!(["logs"]);
+        let parent_swap_at = match swap {
+            IntegrationLifecycleSwap::AttachedParentDelete => Some(2),
+            IntegrationLifecycleSwap::FinalParentDelete => Some(3),
+            IntegrationLifecycleSwap::Update | IntegrationLifecycleSwap::IntegrationDelete => None,
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                let read =
+                    parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if parent_swap_at == Some(read) {
+                    return ResponseTemplate::new(200).set_body_json(swapped_parent.clone());
+                }
+                match read {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 => ResponseTemplate::new(200).set_body_json(attached_parent.clone()),
+                    2 if parent_delete_calls_for_reads
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0 =>
+                    {
+                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                    }
+                    2 => ResponseTemplate::new(200).set_body_json(attached_parent.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
+            )
+            .mount(server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)),
+            )
+            .mount(server)
+            .await;
+        let mut duplicate_body = marker_integration_create_body("2.0.0");
+        duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(body_json(duplicate_body))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409})))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone()],
+                "total": 1,
+                "page": 1,
+                "perPage": 1000,
+            })))
+            .mount(server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(body_json(marker_integration_update_body("2.0.0")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(marker_integration_response(
+                    INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                )),
+            )
+            .mount(server)
+            .await;
+
+        let parent_delete_calls_for_response = parent_delete_calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
+            ))
+            .respond_with(move |_: &wiremock::Request| {
+                if parent_delete_calls_for_response
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+                {
+                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_PARENT_ID,
+                        "name": INTEGRATION_POLICY_PARENT_NAME,
+                    }))
+                }
+            })
+            .mount(server)
+            .await;
+        let integration_deleted_for_response = integration_deleted.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                integration_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+            })
             .mount(server)
             .await;
     }
@@ -10486,9 +10999,9 @@ mod tests {
                     "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
                     "package": {"name": "system", "version": "2.0.0"},
                     "inputs": {},
+                    "enabled": true,
                     "created_by": "private-user",
                     "created_at": "2026-09-04T00:00:00.000Z",
-                    "secret_references": [{"id": "private-secret-reference"}],
                     "spaceIds": ["private-space"],
                     "version": "private-concurrency-token"
                 }
@@ -10502,22 +11015,307 @@ mod tests {
             scope_integration_policy_list_to_marker(&mut list, INTEGRATION_POLICY_ID),
             1
         );
-        scrub_integration_policy(&mut list);
+        let fixture =
+            integration_policy_fixture("integration_policies_list", "test", "9.6.0", list)
+                .expect("marker list is reducible");
 
-        assert_eq!(list["total"], 1);
-        assert_eq!(list["items"][0]["id"], INTEGRATION_POLICY_ID);
-        let encoded = list.to_string();
+        assert_eq!(fixture.document["response"]["total"], 1);
+        assert_eq!(
+            fixture.document["response"]["items"][0]["id"],
+            INTEGRATION_POLICY_ID
+        );
+        let encoded = fixture.document.to_string();
         for private in [
             "unrelated",
             "private policy reusing the marker id",
             "private-package",
             "private-user",
-            "private-secret-reference",
             "private-space",
             "private-concurrency-token",
         ] {
             assert!(!encoded.contains(private), "fixture leaked {private}");
         }
+    }
+
+    #[test]
+    fn integration_policy_error_fixtures_keep_only_classification_and_a_local_message() {
+        let fixture = integration_policy_error_fixture(
+            "integration_policy_not_found",
+            "test",
+            "9.6.0",
+            elasticctl_core::Error::with_status(
+                elasticctl_core::ErrorKind::NotFound,
+                404,
+                "owner@example.com at https://private.example/opaque-id uses ${secret.ref}",
+            ),
+        );
+
+        assert_eq!(fixture.document["error"]["kind"], "not_found");
+        assert_eq!(fixture.document["error"]["http_status"], 404);
+        assert_eq!(
+            fixture.document["error"]["message"],
+            "Fleet integration-policy recording endpoint returned an error"
+        );
+        let encoded = fixture.document.to_string();
+        for private in [
+            "owner@example.com",
+            "private.example",
+            "opaque-id",
+            "secret.ref",
+        ] {
+            assert!(!encoded.contains(private), "fixture leaked {private}");
+        }
+    }
+
+    #[test]
+    fn integration_policy_response_fixture_rejects_environment_and_secret_references() {
+        for (field, value, private) in [
+            ("output_id", json!("private-output-id"), "private-output-id"),
+            (
+                "cloud_connector_id",
+                json!("private-connector-id"),
+                "private-connector-id",
+            ),
+            (
+                "secret_references",
+                json!([{"id": "private-secret-reference"}]),
+                "private-secret-reference",
+            ),
+        ] {
+            let mut response = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+            response["item"]["enabled"] = json!(true);
+            response["item"][field] = value;
+            let error = match integration_policy_fixture(
+                "integration_policy_get",
+                "test",
+                "9.6.0",
+                response,
+            ) {
+                Ok(_) => panic!("a nonportable marker response must not become a public fixture"),
+                Err(error) => error,
+            };
+            assert!(!error.message.contains(private), "reducer leaked {private}");
+        }
+    }
+
+    #[test]
+    fn integration_policy_response_fixture_omits_unknown_fields() {
+        let mut response = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        response["item"]["enabled"] = json!(true);
+        response["item"]["unknown_top_level"] = json!({
+            "host": "private.example",
+            "nested": {"token": "private-token"}
+        });
+        response["item"]["package"]["unknown_package_field"] = json!("private-package");
+
+        let fixture =
+            integration_policy_fixture("integration_policy_get", "test", "9.6.0", response)
+                .expect("marker response is reducible");
+
+        assert_eq!(
+            fixture.document["response"],
+            json!({
+                "item": {
+                    "id": INTEGRATION_POLICY_ID,
+                    "name": INTEGRATION_POLICY_NAME,
+                    "namespace": INTEGRATION_POLICY_NAMESPACE,
+                    "description": INTEGRATION_POLICY_DESCRIPTION,
+                    "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+                    "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
+                    "inputs": {},
+                    "enabled": true,
+                }
+            })
+        );
+        let encoded = fixture.document.to_string();
+        for private in ["private.example", "private-token", "private-package"] {
+            assert!(!encoded.contains(private), "fixture leaked {private}");
+        }
+    }
+
+    #[test]
+    fn integration_policy_fixture_reducers_cover_each_public_response_shape() {
+        for (name, description, request) in [
+            (
+                "integration_policy_create",
+                INTEGRATION_POLICY_DESCRIPTION,
+                Some(marker_integration_create_body("2.0.0")),
+            ),
+            (
+                "integration_policy_get",
+                INTEGRATION_POLICY_DESCRIPTION,
+                None,
+            ),
+            (
+                "integration_policy_update",
+                INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                Some(marker_integration_update_body("2.0.0")),
+            ),
+            (
+                "integration_policy_round_trip",
+                INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                None,
+            ),
+        ] {
+            let mut response = marker_integration_response(description);
+            response["item"]["enabled"] = json!(true);
+            response["item"]["unknown"] = json!({"secret": "private-value"});
+            let fixture = match request {
+                Some(request) => {
+                    integration_policy_exchange_fixture(name, "test", "9.6.0", request, response)
+                }
+                None => integration_policy_fixture(name, "test", "9.6.0", response),
+            }
+            .expect("known marker response is reducible");
+            assert_eq!(
+                fixture.document["response"],
+                json!({
+                    "item": {
+                        "id": INTEGRATION_POLICY_ID,
+                        "name": INTEGRATION_POLICY_NAME,
+                        "namespace": INTEGRATION_POLICY_NAMESPACE,
+                        "description": description,
+                        "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+                        "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
+                        "inputs": {},
+                        "enabled": true,
+                    }
+                }),
+                "{name}"
+            );
+        }
+
+        let mut parent_get = marker_integration_parent_response();
+        parent_get["item"]["agents"] = json!(0);
+        parent_get["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        parent_get["item"]["output_id"] = json!("private-parent-output");
+        parent_get["item"]["unknown"] = json!({"host": "private.example"});
+        let parent_fixture = integration_policy_fixture(
+            "integration_policy_parent_get",
+            "test",
+            "9.6.0",
+            parent_get,
+        )
+        .expect("marker parent get is reducible");
+        assert_eq!(
+            parent_fixture.document["response"],
+            json!({
+                "item": {
+                    "id": INTEGRATION_POLICY_PARENT_ID,
+                    "name": INTEGRATION_POLICY_PARENT_NAME,
+                    "namespace": INTEGRATION_POLICY_NAMESPACE,
+                    "description": INTEGRATION_POLICY_PARENT_DESCRIPTION,
+                    "monitoring_enabled": [],
+                    "inactivity_timeout": INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT,
+                    "agents": 0,
+                    "package_policies": [INTEGRATION_POLICY_ID],
+                }
+            })
+        );
+
+        let mut list = json!({
+            "items": [{
+                "id": INTEGRATION_POLICY_ID,
+                "name": INTEGRATION_POLICY_NAME,
+                "namespace": INTEGRATION_POLICY_NAMESPACE,
+                "description": INTEGRATION_POLICY_DESCRIPTION,
+                "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+                "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
+                "inputs": {},
+                "enabled": true,
+                "unknown": {"token": "private-token"},
+            }],
+            "total": 1,
+            "page": 1,
+            "perPage": 1000,
+            "unknown_envelope": {"host": "private.example"},
+        });
+        assert_eq!(
+            scope_integration_policy_list_to_marker(&mut list, INTEGRATION_POLICY_ID),
+            1
+        );
+        let list_fixture =
+            integration_policy_fixture("integration_policies_list", "test", "9.6.0", list)
+                .expect("marker list is reducible");
+        assert_eq!(
+            list_fixture.document["response"],
+            json!({
+                "items": [{
+                    "id": INTEGRATION_POLICY_ID,
+                    "name": INTEGRATION_POLICY_NAME,
+                    "namespace": INTEGRATION_POLICY_NAMESPACE,
+                    "description": INTEGRATION_POLICY_DESCRIPTION,
+                    "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
+                    "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
+                    "inputs": {},
+                    "enabled": true,
+                }],
+                "total": 1,
+                "page": 1,
+                "perPage": 1000,
+            })
+        );
+
+        let integration_delete_error = match integration_policy_fixture(
+            "integration_policy_delete",
+            "test",
+            "9.6.0",
+            json!({"id": INTEGRATION_POLICY_ID, "private": "private-delete-value"}),
+        ) {
+            Ok(_) => panic!("an integration delete response must be exact"),
+            Err(error) => error,
+        };
+        assert!(
+            !integration_delete_error
+                .message
+                .contains("private-delete-value")
+        );
+        let integration_delete = integration_policy_fixture(
+            "integration_policy_delete",
+            "test",
+            "9.6.0",
+            json!({"id": INTEGRATION_POLICY_ID}),
+        )
+        .expect("an exact integration delete response is reducible");
+        assert_eq!(
+            integration_delete.document["response"],
+            json!({"id": INTEGRATION_POLICY_ID})
+        );
+        let parent_delete_error = match integration_policy_fixture(
+            "integration_policy_parent_delete",
+            "test",
+            "9.6.0",
+            json!({
+                "id": INTEGRATION_POLICY_PARENT_ID,
+                "name": INTEGRATION_POLICY_PARENT_NAME,
+                "private": "private-parent-delete-value",
+            }),
+        ) {
+            Ok(_) => panic!("a parent delete response must be exact"),
+            Err(error) => error,
+        };
+        assert!(
+            !parent_delete_error
+                .message
+                .contains("private-parent-delete-value")
+        );
+        let parent_delete = integration_policy_fixture(
+            "integration_policy_parent_delete",
+            "test",
+            "9.6.0",
+            json!({
+                "id": INTEGRATION_POLICY_PARENT_ID,
+                "name": INTEGRATION_POLICY_PARENT_NAME,
+            }),
+        )
+        .expect("an exact parent delete response is reducible");
+        assert_eq!(
+            parent_delete.document["response"],
+            json!({
+                "id": INTEGRATION_POLICY_PARENT_ID,
+                "name": INTEGRATION_POLICY_PARENT_NAME,
+            })
+        );
     }
 
     #[tokio::test]
@@ -10836,7 +11634,8 @@ mod tests {
                         "namespace": "default",
                         "description": "elasticctl sample integration policy parent",
                         "monitoring_enabled": [],
-                        "inactivity_timeout": 1_209_600
+                        "inactivity_timeout": 1_209_600,
+                        "package_policies": []
                     }}))
                 } else {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
@@ -11001,6 +11800,78 @@ mod tests {
             !(request.method.as_str() == "POST"
                 && request.url.path() == "/api/fleet/agent_policies/delete")
         }));
+    }
+
+    #[tokio::test]
+    async fn integration_lifecycle_rechecks_swapped_resources_before_each_normal_mutation() {
+        for swap in [
+            IntegrationLifecycleSwap::Update,
+            IntegrationLifecycleSwap::AttachedParentDelete,
+            IntegrationLifecycleSwap::IntegrationDelete,
+            IntegrationLifecycleSwap::FinalParentDelete,
+        ] {
+            let server = MockServer::start().await;
+            mount_integration_lifecycle_with_revalidation_race(&server, swap).await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let result =
+                record_integration_policies(&mut session, &mut recording, "test", "9.6.0").await;
+            assert!(result.is_err(), "{swap:?} must stop the lifecycle");
+
+            let requests = server.received_requests().await.expect("requests");
+            let integration_put = |request: &wiremock::Request| {
+                request.method.as_str() == "PUT"
+                    && request.url.path()
+                        == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+            };
+            let integration_delete = |request: &wiremock::Request| {
+                request.method.as_str() == "DELETE"
+                    && request.url.path()
+                        == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+            };
+            let parent_delete = |request: &wiremock::Request| {
+                request.method.as_str() == "POST"
+                    && request.url.path() == "/api/fleet/agent_policies/delete"
+            };
+            match swap {
+                IntegrationLifecycleSwap::Update => {
+                    assert!(
+                        requests.iter().all(|request| !integration_put(request)),
+                        "a swapped integration must stop the update before PUT"
+                    );
+                }
+                IntegrationLifecycleSwap::AttachedParentDelete => {
+                    assert!(
+                        requests.iter().all(|request| !parent_delete(request)),
+                        "a swapped attached parent must stop its delete attempt"
+                    );
+                }
+                IntegrationLifecycleSwap::IntegrationDelete => {
+                    assert!(
+                        requests.iter().all(|request| !integration_delete(request)),
+                        "a swapped integration must stop DELETE"
+                    );
+                }
+                IntegrationLifecycleSwap::FinalParentDelete => {
+                    assert_eq!(
+                        requests
+                            .iter()
+                            .filter(|request| parent_delete(request))
+                            .count(),
+                        1,
+                        "only the expected attached-parent refusal may precede a swapped final parent"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
