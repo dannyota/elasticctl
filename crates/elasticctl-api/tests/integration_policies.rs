@@ -1078,6 +1078,7 @@ async fn plan_import_matrix_classifies_conflicts_skips_and_overwrite_rows() {
             "changed  replace  Integration changed  parents parent-1 (Parent parent-1)  agents 3",
             "fresh  create  Integration fresh  parents parent-1 (Parent parent-1)  agents 3",
             "same  unchanged  Integration same  parents parent-1 (Parent parent-1)  agents 3",
+            "warning  Fleet can change after the final recheck and before the write",
         ]
     );
     assert!(overwrite.package_installs.is_empty());
@@ -1318,7 +1319,7 @@ async fn plan_import_package_state_matrix_is_strict_and_stops_before_metadata() 
 async fn plan_import_parent_matrix_refuses_missing_incompatible_and_unsafe_parents() {
     for (label, expected_kind) in [
         ("missing", ErrorKind::NotFound),
-        ("namespace", ErrorKind::Unsupported),
+        ("namespace", ErrorKind::Conflict),
         ("unsafe", ErrorKind::Unsupported),
     ] {
         let server = verified_server().await;
@@ -1441,6 +1442,466 @@ async fn plan_import_refuses_configured_secrets_without_leaking_values() {
     assert_eq!(error.kind, ErrorKind::Unsupported);
     assert!(!error.message.contains(secret));
     assert!(error.message.contains("vars.package_secret"));
+}
+
+#[tokio::test]
+async fn plan_import_refuses_current_plaintext_secrets_omitted_from_overwrite() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let mut desired = spec_json("existing");
+    desired["description"] = json!("new description");
+    let artifact = write_import_artifact(directory.path(), "current-secrets.json", &[desired]);
+
+    let mut current = live_item("existing");
+    current.insert("description".into(), json!("old description"));
+    current.insert(
+        "vars".into(),
+        json!({"package_secret": "current-package-secret"}),
+    );
+    current.insert(
+        "inputs".into(),
+        json!({
+            "system-system": {
+                "vars": {"input_secret": "current-input-secret"},
+                "streams": {
+                    "system.cpu": {
+                        "vars": {"stream_secret": "current-stream-secret"}
+                    }
+                }
+            }
+        }),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/existing"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": current})))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["existing"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": secret_matrix_metadata()
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+            .await
+            .expect_err("current secret values cannot be removed through overwrite");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy import contains configured secrets: existing:inputs.system-system.streams.system.cpu.vars.stream_secret, existing:inputs.system-system.vars.input_secret, existing:vars.package_secret"
+    );
+    for value in [
+        "current-package-secret",
+        "current-input-secret",
+        "current-stream-secret",
+    ] {
+        assert!(!error.message.contains(value));
+    }
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn plan_import_refuses_current_variables_without_exact_metadata_definitions() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let artifact = write_import_artifact(
+        directory.path(),
+        "current-unknown.json",
+        &[spec_json("existing")],
+    );
+
+    let mut current = live_item("existing");
+    current.insert(
+        "vars".into(),
+        json!({"unknown_live_var": "current-unknown-value"}),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/existing"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": current})))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["existing"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+            .await
+            .expect_err("current values without an exact definition are unsafe");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("existing:vars.unknown_live_var"));
+    assert!(!error.message.contains("current-unknown-value"));
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn integration_import_plan_debug_exposes_only_public_summary_data() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let mut desired = spec_json("existing");
+    desired["description"] = json!("canonical-value-must-not-leak");
+    let artifact = write_import_artifact(directory.path(), "debug.json", &[desired]);
+
+    let mut current = live_item("existing");
+    current.insert(
+        "description".into(),
+        json!("raw-current-value-must-not-leak"),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/existing"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": current})))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["existing"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    let mut metadata = secret_matrix_metadata();
+    metadata["raw_metadata_value"] = json!("metadata-value-must-not-leak");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": metadata})))
+        .mount(&server)
+        .await;
+
+    let mut plan =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+            .await
+            .expect("safe plan");
+    plan.preview.preview_action = "public-preview-value-must-not-leak".into();
+    plan.skipped = vec![json!({"value": "public-skipped-value-must-not-leak"})];
+    plan.package_installs = vec!["public-package-value-must-not-leak".into()];
+    let debug = format!("{plan:?}");
+    assert!(debug.contains("IntegrationPolicyImportPlan"));
+    assert!(debug.contains("total: 1"));
+    for value in [
+        "canonical-value-must-not-leak",
+        "raw-current-value-must-not-leak",
+        "metadata-value-must-not-leak",
+        "public-preview-value-must-not-leak",
+        "public-skipped-value-must-not-leak",
+        "public-package-value-must-not-leak",
+    ] {
+        assert!(!debug.contains(value), "Debug leaked {value}");
+    }
+}
+
+#[tokio::test]
+async fn plan_import_sanitizes_remote_route_error_bodies() {
+    for (label, body, forbidden) in [
+        (
+            "string",
+            json!("route-string-token"),
+            vec!["route-string-token"],
+        ),
+        ("number", json!(918273), vec!["918273"]),
+        ("boolean", json!(true), vec!["true"]),
+        (
+            "object",
+            json!({"credential": "route-object-token", "environment": "route-environment-token"}),
+            vec!["route-object-token", "route-environment-token"],
+        ),
+    ] {
+        let server = verified_server().await;
+        let directory = tempfile::tempdir().expect("artifact directory");
+        let artifact = write_import_artifact(
+            directory.path(),
+            &format!("{label}.json"),
+            &[spec_json("fresh")],
+        );
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/fresh"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let error =
+            integration_policy_ops::plan_import(&transport_for(&server), &artifact, false, false)
+                .await
+                .expect_err("server error must not escape its body");
+        assert_eq!(error.kind, ErrorKind::Http, "{label}");
+        assert_eq!(error.http_status, Some(500), "{label}");
+        assert_eq!(
+            error.message, "integration-policy import planning read failed",
+            "{label}"
+        );
+        for value in forbidden {
+            assert!(!error.message.contains(value), "{label} leaked {value}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn plan_import_skips_or_conflicts_before_normalizing_an_unsupported_existing_policy() {
+    for (label, skip_existing) in [("default-conflict", false), ("skip", true)] {
+        let server = verified_server().await;
+        let directory = tempfile::tempdir().expect("artifact directory");
+        let artifact = write_import_artifact(
+            directory.path(),
+            &format!("{label}.json"),
+            &[spec_json("existing")],
+        );
+        let mut existing = live_item("existing");
+        existing.insert("is_managed".into(), json!(true));
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/existing"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": existing})))
+            .mount(&server)
+            .await;
+        if skip_existing {
+            mount_integration_pages(&server, vec![(1, vec![item("existing")], 1)]).await;
+        }
+
+        let result = integration_policy_ops::plan_import(
+            &transport_for(&server),
+            &artifact,
+            false,
+            skip_existing,
+        )
+        .await;
+        if skip_existing {
+            let plan = result.expect("skip path must retain the unsupported row raw");
+            assert_eq!(
+                plan.skipped,
+                vec![json!({"id": "existing", "reason": "exists"})]
+            );
+        } else {
+            assert_eq!(
+                result
+                    .expect_err("default conflict is decided before normalization")
+                    .kind,
+                ErrorKind::Conflict
+            );
+        }
+        assert_eq!(
+            request_count(&server, "/api/fleet/agent_policies/parent-1").await,
+            0,
+            "{label} must not inspect parents"
+        );
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system").await,
+            0,
+            "{label} must not inspect packages"
+        );
+        assert!(no_import_mutation_requests(&server).await, "{label}");
+    }
+}
+
+#[tokio::test]
+async fn apply_import_uses_the_artifact_retained_by_planning_after_the_file_changes() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let original = spec_json("fresh");
+    let artifact = write_import_artifact(
+        directory.path(),
+        "retained.json",
+        std::slice::from_ref(&original),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/fresh"))
+        .and(query_param("format", "simplified"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404,
+                "error": "Not Found",
+                "message": "missing"
+            })),
+            ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404,
+                "error": "Not Found",
+                "message": "missing"
+            })),
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("fresh")})),
+        ]))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!([]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/package_policies"))
+        .and(body_json(original))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live_item("fresh")})))
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_import(&transport, &artifact, false, false)
+        .await
+        .expect("plan import");
+    std::fs::write(&artifact, "not an integration-policy artifact").expect("replace artifact");
+    let report = integration_policy_ops::apply_import(&transport, &plan)
+        .await
+        .expect("apply must use the retained artifact");
+
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "fresh", "action": "created"})]
+    );
+    assert!(report.failed.is_empty());
+}
+
+#[tokio::test]
+async fn apply_import_sanitizes_create_route_error_bodies_in_reports() {
+    for (label, body, forbidden) in [
+        (
+            "string",
+            json!("apply-string-token"),
+            vec!["apply-string-token"],
+        ),
+        ("number", json!(817263), vec!["817263"]),
+        ("boolean", json!(true), vec!["true"]),
+        (
+            "object",
+            json!({"credential": "apply-object-token", "environment": "apply-environment-token"}),
+            vec!["apply-object-token", "apply-environment-token"],
+        ),
+    ] {
+        let server = verified_server().await;
+        let directory = tempfile::tempdir().expect("artifact directory");
+        let artifact = write_import_artifact(
+            directory.path(),
+            &format!("{label}.json"),
+            &[spec_json("fresh")],
+        );
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/fresh"))
+            .and(query_param("format", "simplified"))
+            .respond_with(SequenceResponder::new(vec![
+                ResponseTemplate::new(404).set_body_json(json!({
+                    "statusCode": 404,
+                    "error": "Not Found",
+                    "message": "missing"
+                })),
+                ResponseTemplate::new(404).set_body_json(json!({
+                    "statusCode": 404,
+                    "error": "Not Found",
+                    "message": "missing"
+                })),
+            ]))
+            .mount(&server)
+            .await;
+        mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item("parent-1", "default", 0, json!([]))
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": {"name": "system", "status": "not_installed"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": safe_package_metadata()
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let transport = transport_for(&server);
+        let plan = integration_policy_ops::plan_import(&transport, &artifact, false, false)
+            .await
+            .expect("plan failed-create import");
+        let report = integration_policy_ops::apply_import(&transport, &plan)
+            .await
+            .expect("route failures become safe report rows");
+        assert_eq!(
+            report.failed,
+            vec![json!({
+                "id": "fresh",
+                "applied": false,
+                "error": "integration-policy import create request failed"
+            })],
+            "{label}"
+        );
+        let message = report.failed[0]["error"].as_str().expect("safe error");
+        for value in forbidden {
+            assert!(!message.contains(value), "{label} leaked {value}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -1899,11 +2360,9 @@ async fn apply_import_observes_a_failed_create_install_and_continues_dependents(
     assert_eq!(report.failed.len(), 1);
     assert_eq!(report.failed[0]["id"], "a-fails");
     assert_eq!(report.failed[0]["applied"], false);
-    assert!(
-        report.failed[0]["error"]
-            .as_str()
-            .expect("error")
-            .contains("Fleet rejected")
+    assert_eq!(
+        report.failed[0]["error"],
+        "integration-policy import create request failed"
     );
     assert_eq!(report.package_installs, vec!["system@2.0.0"]);
     assert_eq!(report.affected_agents, 4);

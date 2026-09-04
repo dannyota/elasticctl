@@ -11,9 +11,12 @@ use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 const PAGE_SIZE: u64 = 1000;
+const IMPORT_RACE_WARNING: &str =
+    "warning  Fleet can change after the final recheck and before the write";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IntegrationPolicyFilter {
@@ -70,7 +73,7 @@ struct KnownSchema {
 /// What `plan_import` preflights and `apply_import` rechecks. Only guard
 /// presentation is public: the canonical artifact, effective specifications,
 /// and Fleet snapshots never cross the API boundary.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct IntegrationPolicyImportPlan {
     pub preview: MutationPlan,
     pub skipped: Vec<Value>,
@@ -84,10 +87,23 @@ pub struct IntegrationPolicyImportPlan {
     name_owners_snapshot: BTreeMap<String, BTreeSet<String>>,
     parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
     skipped_snapshot: Vec<Value>,
+    skipped_existing_snapshot: BTreeMap<String, Map<String, Value>>,
     targets: Vec<IntegrationPolicyImportTarget>,
     package_groups: BTreeMap<String, IntegrationPackageGroup>,
     overwrite: bool,
     skip_existing: bool,
+}
+
+impl fmt::Debug for IntegrationPolicyImportPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IntegrationPolicyImportPlan")
+            .field("target_count", &self.preview.targets.len())
+            .field("skipped_count", &self.skipped.len())
+            .field("package_install_count", &self.package_installs.len())
+            .field("total", &self.total)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1376,10 +1392,9 @@ pub async fn plan_import(
             Ok(policy) => {
                 let returned_id = required_string(&policy.item, "id", "integration policy get")?;
                 if returned_id != spec.id {
-                    return Err(http(format!(
-                        "decoding integration policy get: expected id '{}', got '{returned_id}'",
-                        spec.id
-                    )));
+                    return Err(http(
+                        "decoding integration policy get: response id did not match the request",
+                    ));
                 }
                 if !overwrite && !skip_existing {
                     conflicts.push(spec.id.clone());
@@ -1389,7 +1404,7 @@ pub async fn plan_import(
             Err(error) if error.kind == ErrorKind::NotFound => {
                 existing.insert(spec.id.clone(), None);
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(import_remote_error(error, "planning read")),
         }
     }
     if !conflicts.is_empty() {
@@ -1412,7 +1427,8 @@ pub async fn plan_import(
         let Some(Some(item)) = existing.get(&spec.id) else {
             continue;
         };
-        let current = package_coordinate(item, "integration policy")?;
+        let current = package_coordinate(item, "integration policy")
+            .map_err(|error| import_remote_error(error, "planning read"))?;
         if current != spec.package {
             return unsupported(format!(
                 "integration policy '{}' cannot change package {}@{} to {}@{}",
@@ -1425,7 +1441,9 @@ pub async fn plan_import(
     // claimant is always a conflict, and this read deliberately happens before
     // any skipped object's raw response would be normalized.
     let names: BTreeSet<String> = canonical.iter().map(|spec| spec.name.clone()).collect();
-    let name_owners = relevant_name_owners(transport, &names).await?;
+    let name_owners = relevant_name_owners(transport, &names)
+        .await
+        .map_err(|error| import_remote_error(error, "planning names read"))?;
     let mut name_conflicts = Vec::new();
     for spec in &canonical {
         let owners = name_owners
@@ -1446,11 +1464,13 @@ pub async fn plan_import(
     }
 
     let mut skipped = Vec::new();
+    let mut skipped_existing_snapshot = BTreeMap::new();
     let pending: Vec<IntegrationPolicySpec> = canonical
         .iter()
         .filter_map(|spec| match existing.get(&spec.id) {
-            Some(Some(_)) if skip_existing => {
+            Some(Some(item)) if skip_existing => {
                 skipped.push(json!({"id": spec.id, "reason": "exists"}));
+                skipped_existing_snapshot.insert(spec.id.clone(), item.clone());
                 None
             }
             _ => Some(spec.clone()),
@@ -1466,7 +1486,10 @@ pub async fn plan_import(
             .clone();
         let current_parent_ids = raw
             .as_ref()
-            .map(|item| read_parents(&spec.id, item))
+            .map(|item| {
+                read_parents(&spec.id, item)
+                    .map_err(|error| import_remote_error(error, "planning read"))
+            })
             .transpose()?;
         let parents = read_import_parent_snapshots(
             transport,
@@ -1474,7 +1497,8 @@ pub async fn plan_import(
             current_parent_ids.as_deref().unwrap_or_default(),
             &spec.policy_ids,
         )
-        .await?;
+        .await
+        .map_err(|error| import_remote_error(error, "planning parent read"))?;
         for (parent_id, parent) in &parents {
             match shared_parents.entry(parent_id.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
@@ -1494,12 +1518,12 @@ pub async fn plan_import(
         let effective = effective_import_spec(&spec, &parents)?;
         let current = raw
             .map(|item| {
-                let normalized = normalize(&item, transport.space())?;
+                let normalized = normalize(&item, transport.space())
+                    .map_err(|error| import_remote_error(error, "planning read"))?;
                 if normalized.id != spec.id {
-                    return Err(http(format!(
-                        "decoding integration policy '{}': response id '{}' does not match request",
-                        spec.id, normalized.id
-                    )));
+                    return Err(http(
+                        "decoding integration policy: response id did not match the request",
+                    ));
                 }
                 Ok(IntegrationPolicyCurrentSnapshot {
                     item,
@@ -1533,7 +1557,9 @@ pub async fn plan_import(
     }
     let mut package_groups = BTreeMap::new();
     for (name, package) in package_coordinates {
-        let state = read_dependencies(transport, &package).await?;
+        let state = read_dependencies(transport, &package)
+            .await
+            .map_err(|error| import_remote_error(error, "planning package read"))?;
         match &state.state {
             PackageDependencyState::Installed { version } if version == &package.version => {}
             PackageDependencyState::Installed { .. } => {
@@ -1556,9 +1582,11 @@ pub async fn plan_import(
         }
         let metadata =
             integration_policies::package_metadata(transport, &package.name, &package.version)
-                .await?
+                .await
+                .map_err(|error| import_remote_error(error, "planning package metadata read"))?
                 .item;
-        validate_package_metadata_snapshot(&metadata, &package)?;
+        validate_package_metadata_snapshot(&metadata, &package)
+            .map_err(|error| import_remote_error(error, "planning package metadata read"))?;
         package_groups.insert(
             name,
             IntegrationPackageGroup {
@@ -1576,6 +1604,11 @@ pub async fn plan_import(
         let package = package_groups
             .get(&target.effective.package.name)
             .expect("every effective package has a group");
+        if let Some(current) = &target.current {
+            for path in configured_secret_paths(&current.spec, &package.metadata)? {
+                secret_paths.insert(format!("{}:{path}", current.spec.id));
+            }
+        }
         for path in configured_secret_paths(&target.effective, &package.metadata)? {
             secret_paths.insert(format!("{}:{path}", target.effective.id));
         }
@@ -1609,6 +1642,7 @@ pub async fn plan_import(
         name_owners_snapshot: name_owners.clone(),
         name_owners,
         parent_snapshots: shared_parents,
+        skipped_existing_snapshot,
         targets,
         package_groups,
         overwrite,
@@ -1759,9 +1793,12 @@ fn effective_import_spec(
             .map(|parent| parent.namespace.as_str())
             .collect::<BTreeSet<_>>();
         if namespaces.len() != 1 {
-            return unsupported(format!(
-                "integration policy '{}' is not portable: parents have different namespaces",
-                canonical.id
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "integration policy '{}' is not portable: parents have different namespaces",
+                    canonical.id
+                ),
             ));
         }
         effective.namespace = namespaces.into_iter().next().map(str::to_owned);
@@ -1852,6 +1889,7 @@ fn import_preview(
             .iter()
             .map(|package| format!("package install  {package}")),
     );
+    details.push(IMPORT_RACE_WARNING.to_owned());
     MutationPlan {
         preview_action: format!(
             "Import {} integration policy(ies) from {}",
@@ -1949,7 +1987,7 @@ pub async fn apply_import(
                 failed.push(import_failed_row(
                     &target.effective.id,
                     false,
-                    redact_error_message(&error.message, &target.effective),
+                    error.message,
                 ));
                 continue;
             }
@@ -1958,7 +1996,7 @@ pub async fn apply_import(
             failed.push(import_failed_row(
                 &target.effective.id,
                 false,
-                redact_error_message(&error.message, &target.effective),
+                error.message,
             ));
             continue;
         }
@@ -1966,7 +2004,7 @@ pub async fn apply_import(
             failed.push(import_failed_row(
                 &target.effective.id,
                 false,
-                redact_error_message(&error.message, &target.effective),
+                error.message,
             ));
             continue;
         }
@@ -1983,7 +2021,7 @@ pub async fn apply_import(
                 continue;
             }
             Err(error) => {
-                let message = redact_error_message(&error.message, &target.effective);
+                let message = import_remote_error(error, "apply package read").message;
                 blocked_packages.insert(package_name.clone(), message.clone());
                 failed.push(import_failed_row(&target.effective.id, false, message));
                 continue;
@@ -2003,7 +2041,7 @@ pub async fn apply_import(
                     Err(error) => (
                         "created",
                         false,
-                        Some(redact_error_message(&error.message, &target.effective)),
+                        Some(import_remote_error(error, "create request").message),
                     ),
                 }
             }
@@ -2023,7 +2061,7 @@ pub async fn apply_import(
                     Err(error) => (
                         "replaced",
                         false,
-                        Some(redact_error_message(&error.message, &target.effective)),
+                        Some(import_remote_error(error, "update request").message),
                     ),
                 }
             }
@@ -2060,7 +2098,7 @@ pub async fn apply_import(
                     observed_after_create = Some(after);
                 }
                 Err(error) => {
-                    let message = redact_error_message(&error.message, &target.effective);
+                    let message = import_remote_error(error, "post-create package read").message;
                     blocked_packages.insert(package_name.clone(), message.clone());
                     package_observation_error = Some(message);
                 }
@@ -2070,13 +2108,13 @@ pub async fn apply_import(
         let mut errors = route_error.into_iter().collect::<Vec<_>>();
         if applied {
             if let Err(error) = verify_import_stored(transport, &target.effective).await {
-                errors.push(redact_error_message(&error.message, &target.effective));
+                errors.push(error.message);
             }
             let package_result = match observed_after_create.as_ref() {
                 Some(after) => verify_exact_installed(after, &target.effective.package),
                 None => match read_dependencies(transport, &target.effective.package).await {
                     Ok(after) => verify_exact_installed(&after, &target.effective.package),
-                    Err(error) => Err(redact_error_message(&error.message, &target.effective)),
+                    Err(error) => Err(import_remote_error(error, "package verification").message),
                 },
             };
             if let Err(message) = package_result {
@@ -2126,7 +2164,7 @@ async fn recheck_import_object(
                 ErrorKind::Conflict,
                 "integration policy appeared since preview",
             )),
-            Err(error) => Err(error),
+            Err(error) => Err(import_remote_error(error, "apply integration-policy read")),
         },
         Some(expected) => match integration_policies::get(transport, &target.effective.id).await {
             Ok(actual) if actual.item == expected.item => {
@@ -2144,7 +2182,7 @@ async fn recheck_import_object(
                 ErrorKind::Conflict,
                 "integration policy disappeared since preview",
             )),
-            Err(error) => Err(error),
+            Err(error) => Err(import_remote_error(error, "apply integration-policy read")),
         },
     }
 }
@@ -2155,7 +2193,9 @@ async fn recheck_import_name_owner(
     expected_owners: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<()> {
     let names = BTreeSet::from([target.effective.name.clone()]);
-    let owners = relevant_name_owners(transport, &names).await?;
+    let owners = relevant_name_owners(transport, &names)
+        .await
+        .map_err(|error| import_remote_error(error, "apply name read"))?;
     if owners.get(&target.effective.name) == expected_owners.get(&target.effective.name) {
         Ok(())
     } else {
@@ -2178,7 +2218,9 @@ async fn recheck_import_parents(
                 "integration import lost a shared parent snapshot",
             )
         })?;
-        let actual = agent_policy_ops::read_parent_snapshot(transport, parent_id).await?;
+        let actual = agent_policy_ops::read_parent_snapshot(transport, parent_id)
+            .await
+            .map_err(|error| import_remote_error(error, "apply parent read"))?;
         if actual != *expected {
             return Err(Error::new(
                 ErrorKind::Conflict,
@@ -2235,8 +2277,11 @@ async fn verify_import_stored(
     transport: &Transport,
     desired: &IntegrationPolicySpec,
 ) -> Result<()> {
-    let stored = integration_policies::get(transport, &desired.id).await?;
-    let stored = normalize(&stored.item, transport.space())?;
+    let stored = integration_policies::get(transport, &desired.id)
+        .await
+        .map_err(|error| import_remote_error(error, "stored-policy read"))?;
+    let stored = normalize(&stored.item, transport.space())
+        .map_err(|error| import_remote_error(error, "stored-policy read"))?;
     if stored == *desired {
         Ok(())
     } else {
@@ -2276,54 +2321,16 @@ fn verify_exact_installed(
     }
 }
 
+fn import_remote_error(error: Error, context: &str) -> Error {
+    let message = format!("integration-policy import {context} failed");
+    match error.http_status {
+        Some(status) => Error::with_status(error.kind, status, message),
+        None => Error::new(error.kind, message),
+    }
+}
+
 fn import_failed_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
     json!({"id": id, "applied": applied, "error": error.into()})
-}
-
-fn redact_error_message(message: &str, spec: &IntegrationPolicySpec) -> String {
-    let mut values = BTreeSet::new();
-    for value in [
-        spec.vars.as_ref().map(|value| Value::Object(value.clone())),
-        spec.var_group_selections
-            .as_ref()
-            .map(|value| Value::Object(value.clone())),
-        Some(Value::Object(spec.inputs.clone())),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_config_strings(&value, &mut values);
-    }
-    let mut values = values.into_iter().collect::<Vec<_>>();
-    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-    values
-        .into_iter()
-        .fold(message.to_owned(), |message, value| {
-            if value.is_empty() {
-                message
-            } else {
-                message.replace(&value, "[redacted]")
-            }
-        })
-}
-
-fn collect_config_strings(value: &Value, strings: &mut BTreeSet<String>) {
-    match value {
-        Value::String(value) => {
-            strings.insert(value.clone());
-        }
-        Value::Array(values) => {
-            for value in values {
-                collect_config_strings(value, strings);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                collect_config_strings(value, strings);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
 }
 
 fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
@@ -2551,6 +2558,14 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
             Ok(paths) if paths.is_empty() => {}
             _ => return invalid("effective integration policy has unsafe configured variables"),
         }
+        if let Some(current) = &target.current {
+            match configured_secret_paths(&current.spec, &group.metadata) {
+                Ok(paths) if paths.is_empty() => {}
+                _ => {
+                    return invalid("current integration policy has unsafe configured variables");
+                }
+            }
+        }
     }
     if expected_bodies.len()
         != plan
@@ -2573,6 +2588,28 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
     }
     if (!plan.skip_existing && !plan.skipped.is_empty()) || plan.skipped != expected_skipped {
         return invalid("skipped rows do not match the canonical artifact");
+    }
+    let expected_skipped_ids = expected_skipped
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    if plan
+        .skipped_existing_snapshot
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != expected_skipped_ids
+    {
+        return invalid("skipped existing snapshots do not match skipped rows");
+    }
+    for (id, item) in &plan.skipped_existing_snapshot {
+        if required_string(item, "id", "skipped integration policy")
+            .ok()
+            .as_deref()
+            != Some(id)
+        {
+            return invalid("skipped existing snapshot has an unexpected id");
+        }
     }
     let expected_installs = planned_package_installs(&plan.package_groups);
     if plan.package_installs != expected_installs {
@@ -2683,6 +2720,7 @@ mod import_plan_tests {
             name_owners_snapshot: BTreeMap::from([(effective.name.clone(), BTreeSet::new())]),
             parent_snapshots,
             skipped_snapshot: Vec::new(),
+            skipped_existing_snapshot: BTreeMap::new(),
             targets,
             package_groups,
             overwrite: false,
@@ -2860,6 +2898,21 @@ mod import_plan_tests {
             .get_mut("parent-1")
             .expect("parent snapshot")
             .agents = 42;
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+
+        assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_target_removal_rebuilt_as_a_skipped_row() {
+        let mut plan = existing_plan_without_overwrite();
+        plan.skip_existing = true;
+        plan.targets.clear();
+        plan.parent_snapshots.clear();
+        plan.package_groups.clear();
+        plan.skipped = vec![json!({"id": "fresh", "reason": "exists"})];
+        plan.skipped_snapshot = plan.skipped.clone();
+        plan.package_installs.clear();
         plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
 
         assert!(validate_import_plan(&plan).is_err());
