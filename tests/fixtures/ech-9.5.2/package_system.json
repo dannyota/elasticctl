@@ -1,0 +1,15 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "package_system",
+  "response": {
+    "item": {
+      "name": "system",
+      "version": "2.23.4",
+      "status": "installed",
+      "installationInfo": {
+        "version": "2.23.4"
+      }
+    }
+  }
+}

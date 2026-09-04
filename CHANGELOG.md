@@ -14,6 +14,11 @@
 - Offline tests cover integration-policy normalization, parent and package
   dependency preflight, import conflict handling, overwrite and skip behavior,
   and delete guards.
+- Scrubbed 16-exchange integration-policy fixtures pass through the production
+  decoders on Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and self-managed
+  9.5.1. Each run preserved the materialized System input map, updated without
+  sending the response-only `enabled` field, and finished with no marker-policy
+  residue.
 
 ## 0.6.0 — 2026-09-04
 

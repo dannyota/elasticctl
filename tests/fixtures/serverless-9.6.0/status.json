@@ -5,11 +5,11 @@
   "response": {
     "version": {
       "number": "9.6.0",
-      "build_hash": "97d22c5dbabd493aadf410f8dfcf1439e3050c8b",
-      "build_number": 109830,
+      "build_hash": "5723c23eb008dcb200f43049c211e0ee9720e6da",
+      "build_number": 110016,
       "build_snapshot": false,
       "build_flavor": "serverless",
-      "build_date": "2026-08-30T20:03:48.544Z"
+      "build_date": "2026-09-02T01:03:53.576Z"
     },
     "status": {
       "overall": {

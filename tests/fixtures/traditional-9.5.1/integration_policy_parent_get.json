@@ -1,0 +1,19 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "integration_policy_parent_get",
+  "response": {
+    "item": {
+      "id": "elasticctl-sample-integration-policy-parent",
+      "name": "elasticctl-sample-integration-policy-parent",
+      "namespace": "default",
+      "description": "elasticctl sample integration policy parent",
+      "monitoring_enabled": [],
+      "inactivity_timeout": 1209600,
+      "agents": 0,
+      "package_policies": [
+        "elasticctl-sample-integration-policy"
+      ]
+    }
+  }
+}

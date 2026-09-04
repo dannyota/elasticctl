@@ -1,0 +1,15 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "package_system",
+  "response": {
+    "item": {
+      "name": "system",
+      "version": "2.23.4",
+      "status": "installed",
+      "installationInfo": {
+        "version": "2.23.4"
+      }
+    }
+  }
+}

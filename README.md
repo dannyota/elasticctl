@@ -188,7 +188,10 @@ elkctl fleet integration-policies delete retired-system --yes
 ```
 
 `import` and `delete` are guarded mutations. They preview by default and apply
-only with `--yes`.
+only with `--yes`. Exported integration policies retain the complete
+simplified input map needed for an exact round trip. A create or replacement
+whose package declares inputs rejects `inputs: {}`; export the live policy
+instead of replacing that map with an empty object.
 
 ## Triage alerts and cases
 

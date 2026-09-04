@@ -1,0 +1,651 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "package_system_metadata",
+  "response": {
+    "item": {
+      "name": "system",
+      "version": "2.23.4",
+      "status": "installed",
+      "vars": [],
+      "policy_templates": [
+        {
+          "name": "system",
+          "inputs": [
+            {
+              "type": "journald",
+              "vars": [
+                {
+                  "name": "condition",
+                  "secret": false
+                }
+              ],
+              "streams": []
+            },
+            {
+              "type": "logfile",
+              "vars": [
+                {
+                  "name": "condition",
+                  "secret": false
+                }
+              ],
+              "streams": []
+            },
+            {
+              "type": "system/metrics",
+              "vars": [
+                {
+                  "name": "system.hostfs",
+                  "secret": false
+                }
+              ],
+              "streams": []
+            },
+            {
+              "type": "winlog",
+              "vars": [],
+              "streams": []
+            }
+          ]
+        }
+      ],
+      "data_streams": [
+        {
+          "dataset": "system.application",
+          "streams": [
+            {
+              "input": "winlog",
+              "vars": [
+                {
+                  "name": "custom",
+                  "secret": false
+                },
+                {
+                  "name": "event_id",
+                  "secret": false
+                },
+                {
+                  "name": "ignore_older",
+                  "secret": false
+                },
+                {
+                  "name": "language",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.auth",
+          "streams": [
+            {
+              "input": "journald",
+              "vars": [
+                {
+                  "name": "include_matches",
+                  "secret": false
+                },
+                {
+                  "name": "paths",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            },
+            {
+              "input": "logfile",
+              "vars": [
+                {
+                  "name": "ignore_older",
+                  "secret": false
+                },
+                {
+                  "name": "paths",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.core",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "core.metrics",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                },
+                {
+                  "name": "use_performance_counters",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.cpu",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "cpu.metrics",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                },
+                {
+                  "name": "use_performance_counters",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.diskio",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "diskio.include_devices",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.filesystem",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "filesystem.ignore_types",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.fsstat",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "filesystem.ignore_types",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.load",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.memory",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.network",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "network.interfaces",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.ntp",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "ntp.servers",
+                  "secret": false
+                },
+                {
+                  "name": "ntp.timeout",
+                  "secret": false
+                },
+                {
+                  "name": "ntp.version",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.process",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "degrade_on_partial",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "process.cgroups.enabled",
+                  "secret": false
+                },
+                {
+                  "name": "process.cmdline.cache.enabled",
+                  "secret": false
+                },
+                {
+                  "name": "process.env.whitelist",
+                  "secret": false
+                },
+                {
+                  "name": "process.include_cpu_ticks",
+                  "secret": false
+                },
+                {
+                  "name": "process.include_top_n.by_cpu",
+                  "secret": false
+                },
+                {
+                  "name": "process.include_top_n.by_memory",
+                  "secret": false
+                },
+                {
+                  "name": "processes",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.process.summary",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "degrade_on_partial",
+                  "secret": false
+                },
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.security",
+          "streams": [
+            {
+              "input": "winlog",
+              "vars": [
+                {
+                  "name": "custom",
+                  "secret": false
+                },
+                {
+                  "name": "event_id",
+                  "secret": false
+                },
+                {
+                  "name": "ignore_older",
+                  "secret": false
+                },
+                {
+                  "name": "language",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.socket_summary",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.syslog",
+          "streams": [
+            {
+              "input": "journald",
+              "vars": [
+                {
+                  "name": "include_matches",
+                  "secret": false
+                },
+                {
+                  "name": "paths",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            },
+            {
+              "input": "logfile",
+              "vars": [
+                {
+                  "name": "exclude_files",
+                  "secret": false
+                },
+                {
+                  "name": "ignore_older",
+                  "secret": false
+                },
+                {
+                  "name": "paths",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.system",
+          "streams": [
+            {
+              "input": "winlog",
+              "vars": [
+                {
+                  "name": "custom",
+                  "secret": false
+                },
+                {
+                  "name": "event_id",
+                  "secret": false
+                },
+                {
+                  "name": "ignore_older",
+                  "secret": false
+                },
+                {
+                  "name": "language",
+                  "secret": false
+                },
+                {
+                  "name": "preserve_original_event",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "dataset": "system.uptime",
+          "streams": [
+            {
+              "input": "system/metrics",
+              "vars": [
+                {
+                  "name": "period",
+                  "secret": false
+                },
+                {
+                  "name": "processors",
+                  "secret": false
+                },
+                {
+                  "name": "tags",
+                  "secret": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

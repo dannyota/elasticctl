@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "integration_policy_name_conflict",
+  "error": {
+    "kind": "conflict",
+    "message": "Fleet integration-policy recording endpoint returned an error",
+    "http_status": 409
+  }
+}

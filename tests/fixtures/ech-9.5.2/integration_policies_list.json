@@ -1,0 +1,255 @@
+{
+  "flavor": "ech",
+  "version": "9.5.2",
+  "operation": "integration_policies_list",
+  "response": {
+    "items": [
+      {
+        "id": "elasticctl-sample-integration-policy",
+        "name": "elasticctl-sample-integration-policy",
+        "namespace": "default",
+        "description": "elasticctl sample integration policy",
+        "policy_ids": [
+          "elasticctl-sample-integration-policy-parent"
+        ],
+        "package": {
+          "name": "system",
+          "version": "2.23.4"
+        },
+        "inputs": {
+          "system-logfile": {
+            "enabled": true,
+            "vars": {
+              "condition": "(${host.platform} != \"windows\") and (${host.os_version} != \"12 (bookworm)\" and ${host.os_version} != \"13 (trixie)\" and (${host.os_platform} != \"amzn\" or ${host.os_version} != \"2023\") and (${host.os_platform} != \"sles\" or (${host.os_version} != \"15 SP1\" and ${host.os_version} != \"15-SP1\" and ${host.os_version} != \"15 SP2\" and ${host.os_version} != \"15-SP2\" and ${host.os_version} != \"15 SP3\" and ${host.os_version} != \"15-SP3\" and ${host.os_version} != \"15 SP4\" and ${host.os_version} != \"15-SP4\" and ${host.os_version} != \"15 SP5\" and ${host.os_version} != \"15-SP5\" and ${host.os_version} != \"15 SP6\" and ${host.os_version} != \"15-SP6\" and ${host.os_version} != \"15 SP7\" and ${host.os_version} != \"15-SP7\" and ${host.os_version} != \"16.0\")))"
+            },
+            "streams": {
+              "system.auth": {
+                "enabled": true,
+                "vars": {
+                  "ignore_older": "72h",
+                  "paths": [
+                    "/var/log/auth.log*",
+                    "/var/log/secure*"
+                  ],
+                  "preserve_original_event": false,
+                  "tags": [
+                    "system-auth"
+                  ]
+                }
+              },
+              "system.syslog": {
+                "enabled": true,
+                "vars": {
+                  "paths": [
+                    "/var/log/messages*",
+                    "/var/log/syslog*",
+                    "/var/log/system*"
+                  ],
+                  "preserve_original_event": false,
+                  "tags": [],
+                  "ignore_older": "72h",
+                  "exclude_files": [
+                    "\\.gz$"
+                  ]
+                }
+              }
+            }
+          },
+          "system-journald": {
+            "enabled": true,
+            "vars": {
+              "condition": "(${host.platform} != \"windows\") and (${host.os_version} == \"12 (bookworm)\" or ${host.os_version} == \"13 (trixie)\" or (${host.os_platform} == \"amzn\" and ${host.os_version} == \"2023\") or (${host.os_platform} == \"sles\" and (${host.os_version} == \"15 SP1\" or ${host.os_version} == \"15-SP1\" or ${host.os_version} == \"15 SP2\" or ${host.os_version} == \"15-SP2\" or ${host.os_version} == \"15 SP3\" or ${host.os_version} == \"15-SP3\" or ${host.os_version} == \"15 SP4\" or ${host.os_version} == \"15-SP4\" or ${host.os_version} == \"15 SP5\" or ${host.os_version} == \"15-SP5\" or ${host.os_version} == \"15 SP6\" or ${host.os_version} == \"15-SP6\" or ${host.os_version} == \"15 SP7\" or ${host.os_version} == \"15-SP7\" or ${host.os_version} == \"16.0\")))"
+            },
+            "streams": {
+              "system.auth": {
+                "enabled": true,
+                "vars": {
+                  "preserve_original_event": false,
+                  "paths": [],
+                  "include_matches": [],
+                  "tags": []
+                }
+              },
+              "system.syslog": {
+                "enabled": true,
+                "vars": {
+                  "preserve_original_event": false,
+                  "paths": [],
+                  "include_matches": [],
+                  "tags": []
+                }
+              }
+            }
+          },
+          "system-winlog": {
+            "enabled": true,
+            "streams": {
+              "system.application": {
+                "enabled": true,
+                "vars": {
+                  "preserve_original_event": false,
+                  "ignore_older": "72h",
+                  "language": 0,
+                  "tags": [],
+                  "custom": "# Winlog configuration example\n#batch_read_size: 100"
+                }
+              },
+              "system.security": {
+                "enabled": true,
+                "vars": {
+                  "preserve_original_event": false,
+                  "ignore_older": "72h",
+                  "language": 0,
+                  "tags": [],
+                  "custom": "# Winlog configuration example\n#batch_read_size: 100"
+                }
+              },
+              "system.system": {
+                "enabled": true,
+                "vars": {
+                  "preserve_original_event": false,
+                  "ignore_older": "72h",
+                  "language": 0,
+                  "tags": [],
+                  "custom": "# Winlog configuration example\n#batch_read_size: 100"
+                }
+              }
+            }
+          },
+          "system-system/metrics": {
+            "enabled": true,
+            "vars": {},
+            "streams": {
+              "system.core": {
+                "enabled": false,
+                "vars": {
+                  "period": "10s",
+                  "core.metrics": [
+                    "percentages"
+                  ],
+                  "tags": [],
+                  "use_performance_counters": false
+                }
+              },
+              "system.cpu": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "cpu.metrics": [
+                    "percentages",
+                    "normalized_percentages"
+                  ],
+                  "tags": [],
+                  "use_performance_counters": false
+                }
+              },
+              "system.diskio": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "diskio.include_devices": [],
+                  "tags": []
+                }
+              },
+              "system.filesystem": {
+                "enabled": true,
+                "vars": {
+                  "period": "1m",
+                  "filesystem.ignore_types": [],
+                  "tags": [],
+                  "processors": "- drop_event.when.regexp:\n    system.filesystem.mount_point: ^/(sys|cgroup|proc|dev|etc|host|lib|snap)($|/)\n"
+                }
+              },
+              "system.fsstat": {
+                "enabled": true,
+                "vars": {
+                  "period": "1m",
+                  "filesystem.ignore_types": [],
+                  "tags": [],
+                  "processors": "- drop_event.when.regexp:\n    system.fsstat.mount_point: ^/(sys|cgroup|proc|dev|etc|host|lib|snap)($|/)\n"
+                }
+              },
+              "system.load": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "tags": []
+                }
+              },
+              "system.memory": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "tags": []
+                }
+              },
+              "system.network": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "network.interfaces": [],
+                  "tags": []
+                }
+              },
+              "system.ntp": {
+                "enabled": false,
+                "vars": {
+                  "period": "10s",
+                  "ntp.servers": [
+                    "pool.ntp.org"
+                  ],
+                  "ntp.timeout": "5s",
+                  "ntp.version": "4",
+                  "tags": []
+                }
+              },
+              "system.process": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "process.include_top_n.by_cpu": 5,
+                  "process.include_top_n.by_memory": 5,
+                  "process.cmdline.cache.enabled": true,
+                  "process.cgroups.enabled": false,
+                  "process.env.whitelist": [],
+                  "process.include_cpu_ticks": false,
+                  "degrade_on_partial": false,
+                  "processes": [
+                    ".*"
+                  ],
+                  "tags": []
+                }
+              },
+              "system.process.summary": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "degrade_on_partial": false,
+                  "tags": []
+                }
+              },
+              "system.socket_summary": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "tags": []
+                }
+              },
+              "system.uptime": {
+                "enabled": true,
+                "vars": {
+                  "period": "10s",
+                  "tags": []
+                }
+              }
+            }
+          }
+        },
+        "enabled": true
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "perPage": 1000
+  }
+}

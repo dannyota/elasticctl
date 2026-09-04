@@ -815,24 +815,26 @@ one-string `searchAfter` on both cloud targets. The cursor is the last item's
 sort value even when the response contains the full result set.
 
 After `system` 2.23.4 was installed out of band, its exact package response on
-both cloud targets omitted package `vars` and put stream definitions under 18
-top-level data streams: 20 distinct input/dataset pairs and 101 variable
-definitions. Its policy template carried four input types and empty legacy
-stream lists. Variable definitions omitted `secret`, which therefore means
-false. A read-only `azure` 1.40.0 probe confirmed the multi-template join: 10
-templates reuse one input type, each template lists short data-stream
-selectors, and each selector resolves to a unique `azure.<selector>` dataset.
+Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and self-managed 9.5.1 omitted
+package `vars` and put stream definitions under 18 top-level data streams: 20
+distinct input/dataset pairs and 101 variable definitions. Its policy template
+carried four input types and empty legacy stream lists. Variable definitions
+omitted `secret`, which therefore means false. A read-only `azure` 1.40.0 probe
+confirmed the multi-template join: 10 templates reuse one input type, each
+template lists short data-stream selectors, and each selector resolves to a
+unique `azure.<selector>` dataset.
 
-On Serverless 9.6.0, creating a `system` 2.23.4 marker with `inputs: {}`
-materialized all four simplified inputs and 20 streams. Supplying those four
-inputs as disabled with empty stream maps still materialized registry vars and
-streams. Supplying the first complete simplified response on a second create
-was stable: the create response and following GET returned the same input map.
-The simplified update route rejected that stable map when the otherwise exact
-body also carried top-level `enabled: true`, and accepted the same body after
-that response-only field was removed.
-Each bounded probe deleted the integration before its parent and ended with
-both exact marker ids absent.
+On all three supported targets, creating a `system` 2.23.4 marker with
+`inputs: {}` materialized all four simplified inputs and 20 streams. Reusing
+the first complete simplified response on the recorded create was stable
+through create, get, list, update, and export round trip. The update request
+omitted top-level `enabled`; every response reported `enabled: true` and kept
+the exact input map. A bounded Serverless probe also found that supplying the
+four inputs as disabled with empty stream maps still materialized registry vars
+and streams. Its simplified update rejected the otherwise exact body when it
+carried top-level `enabled: true`, then accepted the same body after that
+response-only field was removed. Every recorder leg and bounded probe deleted
+the integration before its parent and ended with both exact marker ids absent.
 
 The marker agent-policy lifecycle recorded again on 2026-09-04, against
 Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed 9.5.1 lab.

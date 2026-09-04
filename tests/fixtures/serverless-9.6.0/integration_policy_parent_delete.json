@@ -1,0 +1,9 @@
+{
+  "flavor": "serverless",
+  "version": "9.6.0",
+  "operation": "integration_policy_parent_delete",
+  "response": {
+    "id": "elasticctl-sample-integration-policy-parent",
+    "name": "elasticctl-sample-integration-policy-parent"
+  }
+}

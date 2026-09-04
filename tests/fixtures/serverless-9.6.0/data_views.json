@@ -12,6 +12,16 @@
         "title": "REDACTED",
         "name": "REDACTED",
         "timeFieldName": "@timestamp",
+        "managed": true
+      },
+      {
+        "id": "REDACTED",
+        "namespaces": [
+          "REDACTED"
+        ],
+        "title": "REDACTED",
+        "name": "REDACTED",
+        "timeFieldName": "@timestamp",
         "managed": false
       },
       {
@@ -51,16 +61,6 @@
           "REDACTED"
         ],
         "title": "REDACTED",
-        "timeFieldName": "@timestamp",
-        "managed": true
-      },
-      {
-        "id": "REDACTED",
-        "namespaces": [
-          "REDACTED"
-        ],
-        "title": "REDACTED",
-        "name": "REDACTED",
         "timeFieldName": "@timestamp",
         "managed": true
       },
