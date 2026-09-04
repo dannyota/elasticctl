@@ -627,8 +627,15 @@ unselected integration configuration.
 
 Fixtures are recorded from real traffic for Serverless, Hosted, and
 self-managed deployments. Every created id and name starts with
-`elasticctl-sample-`. The recorder registers ids before create and deletes
-integrations before agent policies.
+`elasticctl-sample-`. Each recording session creates a nonce kept in memory
+for ownership proof and embeds it in the live parent and integration
+descriptions; the duplicate create probe reuses that nonce. Fixed marker ids
+are preflighted as absent. After an ambiguous create error, an exact GET may
+claim cleanup only when the live object carries this session's nonce and all
+strict marker state matches; another session's nonce is never deleted. Normal
+update preserves the session nonce. Fixture reducers replace nonce-bearing
+descriptions with fixed public descriptions, so public fixtures stay
+deterministic. The recorder deletes integrations before agent policies.
 
 Fleet setup is idempotent and required before the first Fleet read on a fresh
 stack. The recorder and the conformance runner call `POST /api/fleet/setup`
@@ -641,7 +648,11 @@ list or full-policy response enters a public fixture. The recorder strictly
 decodes responses, requires every policy to be an owned marker, and scrubs
 usernames, timestamps, secret references, space ids, deployment details, and
 unrelated package inventory. Marker agent policies use empty
-`monitoring_enabled`, so recording never installs `elastic_agent`.
+`monitoring_enabled`, so recording never installs `elastic_agent`. The 0.6.1
+recorder requires the exact `system` package to be preinstalled before it
+writes marker objects. It never installs, uninstalls, upgrades, or downgrades
+packages; it retains the baseline inventory only to prove the exact status
+version is already present and to audit that inventory is unchanged.
 
 0.6.0 fixtures cover Fleet setup, agent-policy not found, the read-only
 `elastic_agent` package status that drives the monitoring preflight,
@@ -653,12 +664,17 @@ Attached integrations arrive with the 0.6.1 fixtures. Platform-owned refusals
 have offline unit coverage only, because a public fixture never holds a
 non-marker policy.
 
-0.6.1 fixtures cover integration-policy simplified list, get, explicit-id
-create, update, delete, parent validation, exact package state, conflicts,
-managed/hosted and secret refusals, version conflict, and normalized round
-trips. The absent-package behavior remains source-derived unless a recording
-can prove the package absent and restore inventory without weakening marker or
-residue rules. Planner behavior still has offline unit coverage.
+0.6.1 live fixtures cover a simplified integration-policy lifecycle: missing
+integration and parent selectors, exact `system` package status and reduced
+package metadata, marker-parent creation, explicit-id integration create,
+simplified get and list, name-conflict classification, parent attachment
+observation, update, normalized round trip, explicit integration delete and
+delete-not-found, then parent delete and parent-delete-not-found. The recorder
+deletes the integration before the parent and never asks Fleet to delete an
+attached parent. It requires preinstalled exact `system` and never mutates
+package inventory. Absent-package behavior, managed or hosted refusals, secret
+refusals, and package-version conflict remain source-derived with offline
+planner coverage unless a safe live recording proves them.
 
 0.6.2 adds the tenth conformance contract,
 `fleet_transfers_agent_and_integration_policies_without_residue`, registered as
@@ -674,8 +690,9 @@ residue rules. Planner behavior still has offline unit coverage.
    round-trips a marker agent policy with empty monitoring;
 5. performs the same lifecycle for a marker `system` integration attached to
    the agent policy;
-6. proves parent deletion is refused while the integration is attached;
-7. deletes the integration, then the agent policy;
+6. proves elasticctl refuses parent deletion client-side while the integration
+   is attached and sends no parent-delete request to Fleet;
+7. deletes the integration, then explicitly deletes the agent policy;
 8. imports both again in dependency order and proves the same ids;
 9. deletes both again;
 10. uninstalls `system` with `DELETE /api/fleet/epm/packages/system/{version}`
@@ -685,10 +702,10 @@ residue rules. Planner behavior still has offline unit coverage.
 
 The contract creates no agents and changes no unmarked policy. A package the
 contract did not install is never uninstalled. Cleanup owns ids before
-mutation. A remaining integration blocks parent cleanup until retry, and a
-remaining marker integration blocks the package uninstall. Every cleanup
-mutation names an explicit marker id or the claimed package version and omits
-`force`.
+mutation. The attached-parent proof is client-side; cleanup deletes a
+remaining marker integration before retrying parent cleanup, and a remaining
+marker integration blocks the package uninstall. Every cleanup mutation names
+an explicit marker id or the claimed package version and omits `force`.
 
 Current design targets are Serverless 9.6.x, Hosted 9.5.x, and the self-managed
 9.5.1 lab. Reports record actual versions under `docs/conformance/v0.6.2/`.
