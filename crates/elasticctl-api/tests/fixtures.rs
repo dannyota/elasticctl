@@ -375,22 +375,54 @@ fn assert_object_fields_are_exact(value: &Value, expected: &[&str], context: &st
     assert_eq!(actual, expected, "{context}: exact object field shape");
 }
 
+fn assert_package_metadata_variables(value: &Value, context: &str) {
+    let variables = value
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: vars must be an array"));
+    let mut previous = None;
+    for (index, variable) in variables.iter().enumerate() {
+        let variable_context = format!("{context}.vars[{index}]");
+        assert_object_fields_are_exact(variable, &["name", "secret"], &variable_context);
+        let name = variable
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| panic!("{variable_context}: name must be a non-empty string"));
+        assert!(
+            variable.get("secret").and_then(Value::as_bool).is_some(),
+            "{variable_context}: secret must be boolean"
+        );
+        if let Some(previous) = previous {
+            assert!(
+                previous < name,
+                "{context}: variable names must be sorted and unique"
+            );
+        }
+        previous = Some(name);
+    }
+}
+
 fn assert_package_metadata_shape(value: &Value, name: &str, version: &str, context: &str) {
     let item = value
         .get("item")
         .and_then(Value::as_object)
         .unwrap_or_else(|| panic!("{context}: response.item must be an object"));
-    let fields: std::collections::BTreeSet<&str> = item.keys().map(String::as_str).collect();
-    let expected: std::collections::BTreeSet<&str> =
-        ["name", "version", "status", "vars", "policy_templates"]
-            .into_iter()
-            .collect();
-    assert_eq!(fields, expected, "{context}: exact package metadata shape");
+    assert_object_fields_are_exact(
+        &Value::Object(item.clone()),
+        &[
+            "name",
+            "version",
+            "status",
+            "vars",
+            "policy_templates",
+            "data_streams",
+        ],
+        context,
+    );
     assert_eq!(
         item.get("name").and_then(Value::as_str),
         Some(name),
-        "{}",
-        context
+        "{context}"
     );
     assert_eq!(
         item.get("version").and_then(Value::as_str),
@@ -404,122 +436,217 @@ fn assert_package_metadata_shape(value: &Value, name: &str, version: &str, conte
         ),
         "{context}: status must be installed or not_installed"
     );
+    assert_package_metadata_variables(&item["vars"], context);
 
-    let vars = item
-        .get("vars")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("{context}: vars must be an array"));
-    for (index, variable) in vars.iter().enumerate() {
-        let variable_context = format!("{context}.vars[{index}]");
-        assert_object_fields_are_exact(variable, &["name", "secret"], &variable_context);
-        assert!(
-            variable
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty()),
-            "{variable_context}: name must be a non-empty string"
-        );
-        assert!(
-            variable.get("secret").and_then(Value::as_bool).is_some(),
-            "{variable_context}: secret must be boolean"
-        );
-    }
-
-    let templates = item
-        .get("policy_templates")
-        .and_then(Value::as_array)
+    let templates = item["policy_templates"]
+        .as_array()
         .unwrap_or_else(|| panic!("{context}: policy_templates must be an array"));
+    let mut previous_template = None;
+    let mut input_keys = BTreeSet::new();
+    let mut legacy_stream_keys = BTreeSet::new();
     for (template_index, template) in templates.iter().enumerate() {
         let template_context = format!("{context}.policy_templates[{template_index}]");
-        assert_object_fields_are_exact(template, &["name", "inputs"], &template_context);
-        assert!(
-            template
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty()),
-            "{template_context}: name must be a non-empty string"
+        let has_selectors = template.get("data_streams").is_some();
+        assert_object_fields_are_exact(
+            template,
+            if has_selectors {
+                &["name", "data_streams", "inputs"]
+            } else {
+                &["name", "inputs"]
+            },
+            &template_context,
         );
-        let inputs = template
-            .get("inputs")
-            .and_then(Value::as_array)
+        let template_name = template
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| panic!("{template_context}: name must be a non-empty string"));
+        if let Some(previous) = previous_template {
+            assert!(
+                previous < template_name,
+                "{context}: template names must be sorted and unique"
+            );
+        }
+        previous_template = Some(template_name);
+        if let Some(selectors) = template.get("data_streams") {
+            let selectors = selectors.as_array().unwrap_or_else(|| {
+                panic!("{template_context}: data_streams selectors must be an array")
+            });
+            let mut previous_selector = None;
+            for (selector_index, selector) in selectors.iter().enumerate() {
+                let selector_context = format!("{template_context}.data_streams[{selector_index}]");
+                let selector = selector
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        panic!("{selector_context}: selector must be a non-empty string")
+                    });
+                if let Some(previous) = previous_selector {
+                    assert!(
+                        previous < selector,
+                        "{template_context}: selectors must be sorted and unique"
+                    );
+                }
+                previous_selector = Some(selector);
+            }
+        }
+
+        let inputs = template["inputs"]
+            .as_array()
             .unwrap_or_else(|| panic!("{template_context}: inputs must be an array"));
+        let mut previous_input = None;
         for (input_index, input) in inputs.iter().enumerate() {
             let input_context = format!("{template_context}.inputs[{input_index}]");
             assert_object_fields_are_exact(input, &["type", "vars", "streams"], &input_context);
-            assert!(
-                input
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.trim().is_empty()),
-                "{input_context}: type must be a non-empty string"
-            );
-            let vars = input["vars"]
-                .as_array()
-                .unwrap_or_else(|| panic!("{input_context}: vars must be an array"));
-            for (index, variable) in vars.iter().enumerate() {
-                let variable_context = format!("{input_context}.vars[{index}]");
-                assert_object_fields_are_exact(variable, &["name", "secret"], &variable_context);
+            let input_type = input
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| panic!("{input_context}: type must be a non-empty string"));
+            if let Some(previous) = previous_input {
                 assert!(
-                    variable
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| !value.trim().is_empty()),
-                    "{variable_context}: name must be a non-empty string"
-                );
-                assert!(
-                    variable.get("secret").and_then(Value::as_bool).is_some(),
-                    "{variable_context}: secret must be boolean"
+                    previous < input_type,
+                    "{template_context}: input types must be sorted and unique"
                 );
             }
+            previous_input = Some(input_type);
+            let input_key = format!("{template_name}-{input_type}");
+            assert!(
+                input_keys.insert(input_key.clone()),
+                "{context}: composite input keys must be unique"
+            );
+            assert_package_metadata_variables(&input["vars"], &input_context);
+
             let streams = input["streams"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{input_context}: streams must be an array"));
+            let mut previous_dataset = None;
             for (stream_index, stream) in streams.iter().enumerate() {
                 let stream_context = format!("{input_context}.streams[{stream_index}]");
                 assert_object_fields_are_exact(stream, &["data_stream", "vars"], &stream_context);
                 let data_stream = stream
                     .get("data_stream")
-                    .and_then(Value::as_object)
-                    .unwrap_or_else(|| panic!("{stream_context}: data_stream must be an object"));
-                let data_stream_fields: std::collections::BTreeSet<&str> =
-                    data_stream.keys().map(String::as_str).collect();
-                assert_eq!(
-                    data_stream_fields,
-                    std::collections::BTreeSet::from(["dataset"]),
-                    "{stream_context}: exact data_stream shape"
-                );
-                assert!(
-                    data_stream
-                        .get("dataset")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| !value.trim().is_empty()),
-                    "{stream_context}: dataset must be a non-empty string"
-                );
-                let vars = stream["vars"]
-                    .as_array()
-                    .unwrap_or_else(|| panic!("{stream_context}: vars must be an array"));
-                for (index, variable) in vars.iter().enumerate() {
-                    let variable_context = format!("{stream_context}.vars[{index}]");
-                    assert_object_fields_are_exact(
-                        variable,
-                        &["name", "secret"],
-                        &variable_context,
-                    );
+                    .unwrap_or_else(|| panic!("{stream_context}: data_stream must be present"));
+                assert_object_fields_are_exact(data_stream, &["dataset"], &stream_context);
+                let dataset = data_stream
+                    .get("dataset")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        panic!("{stream_context}: dataset must be a non-empty string")
+                    });
+                if let Some(previous) = previous_dataset {
                     assert!(
-                        variable
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .is_some_and(|value| !value.trim().is_empty()),
-                        "{variable_context}: name must be a non-empty string"
-                    );
-                    assert!(
-                        variable.get("secret").and_then(Value::as_bool).is_some(),
-                        "{variable_context}: secret must be boolean"
+                        previous < dataset,
+                        "{input_context}: legacy stream datasets must be sorted and unique"
                     );
                 }
+                previous_dataset = Some(dataset);
+                assert!(
+                    legacy_stream_keys.insert((input_key.clone(), dataset.to_owned())),
+                    "{context}: composite legacy stream keys must be unique"
+                );
+                assert_package_metadata_variables(&stream["vars"], &stream_context);
             }
         }
     }
+
+    let data_streams = item["data_streams"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: data_streams must be an array"));
+    let mut previous_dataset = None;
+    for (data_stream_index, data_stream) in data_streams.iter().enumerate() {
+        let data_stream_context = format!("{context}.data_streams[{data_stream_index}]");
+        assert_object_fields_are_exact(data_stream, &["dataset", "streams"], &data_stream_context);
+        let dataset = data_stream
+            .get("dataset")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| panic!("{data_stream_context}: dataset must be a non-empty string"));
+        if let Some(previous) = previous_dataset {
+            assert!(
+                previous < dataset,
+                "{context}: data stream datasets must be sorted and unique"
+            );
+        }
+        previous_dataset = Some(dataset);
+        let streams = data_stream["streams"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{data_stream_context}: streams must be an array"));
+        let mut previous_input = None;
+        for (stream_index, stream) in streams.iter().enumerate() {
+            let stream_context = format!("{data_stream_context}.streams[{stream_index}]");
+            assert_object_fields_are_exact(stream, &["input", "vars"], &stream_context);
+            let input = stream
+                .get("input")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| panic!("{stream_context}: input must be a non-empty string"));
+            if let Some(previous) = previous_input {
+                assert!(
+                    previous < input,
+                    "{data_stream_context}: stream inputs must be sorted and unique"
+                );
+            }
+            previous_input = Some(input);
+            assert_package_metadata_variables(&stream["vars"], &stream_context);
+        }
+    }
+}
+
+#[test]
+fn package_metadata_shape_accepts_sorted_modern_metadata_and_preserves_selector_absence() {
+    let metadata = serde_json::json!({
+        "item": {
+            "name": "system",
+            "version": "2.0.0",
+            "status": "installed",
+            "vars": [
+                {"name": "package_a", "secret": false},
+                {"name": "package_z", "secret": true}
+            ],
+            "policy_templates": [
+                {
+                    "name": "all-streams",
+                    "inputs": [{
+                        "type": "logs",
+                        "vars": [{"name": "input_a", "secret": false}],
+                        "streams": [{
+                            "data_stream": {"dataset": "system.auth"},
+                            "vars": [{"name": "legacy_a", "secret": false}]
+                        }]
+                    }]
+                },
+                {
+                    "name": "no-streams",
+                    "data_streams": [],
+                    "inputs": [{
+                        "type": "metrics",
+                        "vars": [{"name": "input_z", "secret": true}],
+                        "streams": []
+                    }]
+                }
+            ],
+            "data_streams": [
+                {
+                    "dataset": "system.auth",
+                    "streams": [{
+                        "input": "logs",
+                        "vars": [{"name": "modern_a", "secret": false}]
+                    }]
+                },
+                {
+                    "dataset": "system.cpu",
+                    "streams": [{
+                        "input": "metrics",
+                        "vars": [{"name": "modern_z", "secret": true}]
+                    }]
+                }
+            ]
+        }
+    });
+
+    assert_package_metadata_shape(&metadata, "system", "2.0.0", "synthetic modern metadata");
 }
 
 fn fixture_transport(server: &MockServer) -> Transport {
@@ -1954,6 +2081,9 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
                 ResponseTemplate::new(200)
                     .set_body_json(package_metadata_fixture["response"].clone()),
             )
+            // `package_metadata` consumes this once, and `export` must fetch
+            // it again through its secret-schema path.
+            .expect(2)
             .mount(&server)
             .await;
 
