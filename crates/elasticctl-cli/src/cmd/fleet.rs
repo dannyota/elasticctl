@@ -6,6 +6,7 @@ use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::content_codec::ContentFormat;
 use elasticctl_api::fleet::agent_policy_ops::{self, AgentPolicyFilter};
+use elasticctl_api::fleet::integration_policy_ops::{self, IntegrationPolicyFilter};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -116,5 +117,109 @@ pub async fn delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
         to_value(&agent_policy_ops::apply_delete(transport, &plan).await?)
     } else {
         Ok(json!({"applied": false, "total": plan.targets.len()}))
+    }
+}
+
+pub async fn integration_list(ctx: &Context, filter: &IntegrationPolicyFilter) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let report = integration_policy_ops::list_op(transport, filter).await?;
+    if report.truncated
+        && let Some(limit) = filter.limit
+    {
+        eprintln!("capped at {limit} rows");
+    }
+    to_value(&report.integration_policies)
+}
+
+pub async fn integration_get(ctx: &Context, selector: &str) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    to_value(&integration_policy_ops::get_op(transport, selector).await?)
+}
+
+/// Check a portable integration-policy file without building a context or transport.
+pub fn integration_validate(path: &Path) -> Result<Value> {
+    let specs = integration_policy_ops::validate(path)?;
+    Ok(json!({"valid": true, "total": specs.len()}))
+}
+
+/// Validate the entire import artifact before configuration is consulted.
+pub fn validate_integration_import_artifact(path: &Path) -> Result<()> {
+    if integration_policy_ops::validate(path)?.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "integration-policy import needs at least one integration policy",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn integration_export(
+    ctx: &Context,
+    selectors: &[String],
+    all_custom: bool,
+    out: Option<&Path>,
+    format: ContentFormat,
+) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let outcome = integration_policy_ops::export(transport, selectors, all_custom, format).await?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &outcome.body).map_err(|error| {
+                Error::new(
+                    ErrorKind::Error,
+                    format!("writing {}: {error}", path.display()),
+                )
+            })?;
+            Ok(json!({
+                "exported": outcome.exported,
+                "path": path.display().to_string(),
+                "failed": outcome.missing,
+            }))
+        }
+        None => Ok(json!({"text": outcome.body, "failed": outcome.missing})),
+    }
+}
+
+pub async fn integration_import(
+    ctx: &Context,
+    path: &Path,
+    overwrite: bool,
+    skip_existing: bool,
+) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let plan =
+        integration_policy_ops::plan_import(transport, path, overwrite, skip_existing).await?;
+    let preview = Preview {
+        action: plan.preview.preview_action.clone(),
+        details: plan.preview.preview_details.clone(),
+    };
+    if !guard::check(ctx, "fleet integration-policies import", &preview) {
+        return Ok(json!({
+            "applied": false,
+            "total": plan.total,
+            "skipped": plan.skipped,
+            "pending": plan.preview.targets.len(),
+            "package_installs": plan.package_installs,
+        }));
+    }
+    to_value(&integration_policy_ops::apply_import(transport, &plan).await?)
+}
+
+pub async fn integration_delete(ctx: &Context, selectors: &[String]) -> Result<Value> {
+    ctx.require_credential()?;
+    let transport = ctx.transport().await?;
+    let plan = integration_policy_ops::plan_delete(transport, selectors).await?;
+    let preview = Preview {
+        action: plan.preview.preview_action.clone(),
+        details: plan.preview.preview_details.clone(),
+    };
+    if guard::check(ctx, "fleet integration-policies delete", &preview) {
+        to_value(&integration_policy_ops::apply_delete(transport, &plan).await?)
+    } else {
+        Ok(json!({"applied": false, "total": plan.total}))
     }
 }

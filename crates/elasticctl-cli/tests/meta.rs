@@ -121,6 +121,51 @@ fn data_view_command_tree_has_the_documented_guarded_paths() {
 }
 
 #[test]
+fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_one_mutations() {
+    fn count_mutations(node: &serde_json::Value) -> usize {
+        usize::from(node["mutates"] == true)
+            + node["subcommands"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(count_mutations)
+                .sum::<usize>()
+    }
+
+    let out = bin().args(["commands", "--json"]).output().unwrap();
+    let tree: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let fleet = tree["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "fleet")
+        .expect("fleet command");
+    let integrations = fleet["subcommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "integration-policies")
+        .expect("integration-policies command");
+    let children = integrations["subcommands"].as_array().unwrap();
+    let find = |name: &str| children.iter().find(|child| child["name"] == name).unwrap();
+    for verb in ["list", "get", "validate", "export"] {
+        assert_eq!(find(verb)["mutates"], false, "{verb}");
+    }
+    for verb in ["import", "delete"] {
+        assert_eq!(find(verb)["mutates"], true, "{verb}");
+    }
+    assert_eq!(
+        tree["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(count_mutations)
+            .sum::<usize>(),
+        31
+    );
+}
+
+#[test]
 fn the_command_tree_marks_which_commands_mutate() {
     let out = bin().args(["commands", "--json"]).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();

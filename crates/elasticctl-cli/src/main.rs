@@ -12,8 +12,8 @@ use clap::Parser;
 use cli::{
     AgentPoliciesAction, AlertsAction, CasesAction, Cli, Command, ConfigAction,
     DashboardBundleAction, DashboardsAction, DataViewDefaultAction, DataViewsAction,
-    ExceptionsAction, FleetAction, Format, GlobalArgs, PrebuiltAction, RulesAction, SearchAction,
-    SourceArg, StateAction,
+    ExceptionsAction, FleetAction, Format, GlobalArgs, IntegrationPoliciesAction, PrebuiltAction,
+    RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -428,6 +428,88 @@ async fn main() {
                     Err(e) => Err(e),
                 },
             },
+            FleetAction::IntegrationPolicies { action } => match action {
+                IntegrationPoliciesAction::List { search, limit } => {
+                    match Context::build(&args.global) {
+                        Ok(ctx) => {
+                            cmd::fleet::integration_list(
+                                &ctx,
+                                &elasticctl_api::fleet::integration_policy_ops::IntegrationPolicyFilter {
+                                    search: search.clone(),
+                                    limit: *limit,
+                                },
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                IntegrationPoliciesAction::Get { selector } => match Context::build(&args.global) {
+                    Ok(ctx) => cmd::fleet::integration_get(&ctx, selector).await,
+                    Err(e) => Err(e),
+                },
+                // Local only: no context, credential check, transport, or
+                // capability probe.
+                IntegrationPoliciesAction::Validate { path } => {
+                    cmd::fleet::integration_validate(path)
+                }
+                IntegrationPoliciesAction::Export {
+                    selectors,
+                    all_custom,
+                    ..
+                } if selectors.is_empty() && !*all_custom => Err(Error::new(
+                    ErrorKind::Error,
+                    "integration-policy export needs selectors or --all-custom",
+                )),
+                IntegrationPoliciesAction::Export {
+                    selectors,
+                    all_custom,
+                    format_file,
+                } => match parse_content_format(format_file) {
+                    Ok(format) => match Context::build(&args.global) {
+                        Ok(ctx) => {
+                            cmd::fleet::integration_export(
+                                &ctx,
+                                selectors,
+                                *all_custom,
+                                args.global.out.as_deref(),
+                                format,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                },
+                IntegrationPoliciesAction::Import {
+                    path,
+                    overwrite,
+                    skip_existing,
+                } => match cmd::fleet::validate_integration_import_artifact(path) {
+                    Ok(()) => match Context::build(&args.global) {
+                        Ok(ctx) => {
+                            cmd::fleet::integration_import(&ctx, path, *overwrite, *skip_existing)
+                                .await
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                },
+                // Reject empty selectors before building a context so this cannot
+                // express an unscoped mutation.
+                IntegrationPoliciesAction::Delete { selectors } if selectors.is_empty() => {
+                    Err(Error::new(
+                        ErrorKind::Error,
+                        "integration-policy delete needs at least one selector",
+                    ))
+                }
+                IntegrationPoliciesAction::Delete { selectors } => {
+                    match Context::build(&args.global) {
+                        Ok(ctx) => cmd::fleet::integration_delete(&ctx, selectors).await,
+                        Err(e) => Err(e),
+                    }
+                }
+            },
         },
         Command::State { action } => match action {
             StateAction::Pull {
@@ -743,6 +825,10 @@ async fn main() {
                     action: FleetAction::AgentPolicies {
                         action: AgentPoliciesAction::Export { .. }
                     }
+                } | Command::Fleet {
+                    action: FleetAction::IntegrationPolicies {
+                        action: IntegrationPoliciesAction::Export { .. }
+                    }
                 }
             ) && args.global.out.is_none();
             if export_to_stdout && let Some(text) = value.get("text").and_then(Value::as_str) {
@@ -770,6 +856,10 @@ async fn main() {
                 } | Command::Fleet {
                     action: FleetAction::AgentPolicies {
                         action: AgentPoliciesAction::Export { .. }
+                    }
+                } | Command::Fleet {
+                    action: FleetAction::IntegrationPolicies {
+                        action: IntegrationPoliciesAction::Export { .. }
                     }
                 }
             ) && args.global.out.is_some();

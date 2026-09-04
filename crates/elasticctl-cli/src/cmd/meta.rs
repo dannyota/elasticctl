@@ -168,6 +168,8 @@ mod tests {
             "dashboards bundle import",
             "fleet agent-policies import",
             "fleet agent-policies delete",
+            "fleet integration-policies import",
+            "fleet integration-policies delete",
         ];
         expected.sort();
 
