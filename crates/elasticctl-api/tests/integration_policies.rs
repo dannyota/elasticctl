@@ -5643,6 +5643,235 @@ async fn delete_apply_rechecks_integration_parent_and_package_snapshots() {
 }
 
 #[tokio::test]
+async fn delete_apply_rereads_metadata_for_each_target_and_continues_after_change() {
+    let server = verified_server().await;
+    let mut a = live_item("a");
+    a.insert("policy_ids".into(), json!(["parent-a"]));
+    let mut b = live_item("b");
+    b.insert("policy_ids".into(), json!(["parent-b"]));
+    for (id, policy, parent_id) in [("a", a, "parent-a"), ("b", b, "parent-b")] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/package_policies/{id}")))
+            .and(query_param("format", "simplified"))
+            .respond_with(SequenceResponder::new(vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": policy.clone()})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": policy})),
+            ]))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let parent = parent_item(parent_id, "default", 1, json!([id]));
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(SequenceResponder::new(vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent.clone()})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent})),
+            ]))
+            .expect(2)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    let safe_metadata = safe_package_metadata();
+    let mut changed_metadata = safe_metadata.clone();
+    changed_metadata["registry-value-must-not-leak"] =
+        json!("changed-metadata-value-must-not-leak");
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": safe_metadata.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": safe_metadata.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": changed_metadata})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": safe_metadata})),
+        ]))
+        .expect(4)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/fleet/package_policies/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "b"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["b".into(), "a".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("metadata change is a row failure");
+    assert_eq!(report.deleted, vec![json!({"id": "b"})]);
+    assert_eq!(report.affected_agents, 1);
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "a",
+            "applied": false,
+            "error": "integration policy package metadata changed since preview"
+        })]
+    );
+    assert!(
+        !report.failed[0]["error"]
+            .as_str()
+            .expect("error string")
+            .contains("changed-metadata-value-must-not-leak")
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+        4,
+        "each target must read exact metadata during planning and immediately before deletion"
+    );
+    let delete_paths = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .filter(|request| request.method == "DELETE")
+        .map(|request| request.url.path().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(delete_paths, ["/api/fleet/package_policies/b"]);
+}
+
+async fn assert_delete_apply_metadata_read_failure(
+    label: &str,
+    status: u16,
+    body: Value,
+    forbidden: &[&str],
+    metadata_requests: u64,
+) {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let parent = parent_item("parent-1", "default", 4, json!(["integration-1"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent})),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": safe_package_metadata()})),
+            ResponseTemplate::new(status).set_body_json(body),
+        ]))
+        .expect(metadata_requests)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "integration-1"})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["integration-1".into()])
+        .await
+        .expect(label);
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("metadata recheck failure is a row failure");
+    assert!(report.deleted.is_empty(), "{label}");
+    assert_eq!(report.affected_agents, 0, "{label}");
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "integration-1",
+            "applied": false,
+            "error": "integration-policy delete apply package metadata read failed"
+        })],
+        "{label}"
+    );
+    for value in forbidden {
+        assert!(
+            !report.failed[0]["error"]
+                .as_str()
+                .expect("error string")
+                .contains(value),
+            "{label} leaked {value}"
+        );
+    }
+    let requests = server.received_requests().await.expect("recorded requests");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/api/fleet/epm/packages/system/2.0.0")
+            .count(),
+        metadata_requests as usize,
+        "{label} must re-read exact metadata"
+    );
+    assert!(
+        requests.iter().all(|request| request.method != "DELETE"),
+        "{label} must not delete"
+    );
+}
+
+#[tokio::test]
+async fn delete_apply_fails_malformed_metadata_reads_without_leaks() {
+    assert_delete_apply_metadata_read_failure(
+        "malformed metadata",
+        200,
+        json!({
+            "item": {
+                "name": "system",
+                "version": "2.0.0",
+                "vars": "malformed-metadata-value-must-not-leak",
+                "policy_templates": []
+            }
+        }),
+        &["malformed-metadata-value-must-not-leak"],
+        2,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn delete_apply_fails_metadata_route_reads_without_leaks() {
+    assert_delete_apply_metadata_read_failure(
+        "metadata route failure",
+        500,
+        json!({
+            "message": "metadata-route-value-must-not-leak",
+            "config": "metadata-route-config-must-not-leak"
+        }),
+        &[
+            "metadata-route-value-must-not-leak",
+            "metadata-route-config-must-not-leak",
+        ],
+        4,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn delete_applies_exact_single_id_routes_advances_shared_parents_and_unions_agents() {
     let server = verified_server().await;
     let mut first = live_item("a");
@@ -5694,7 +5923,7 @@ async fn delete_applies_exact_single_id_routes_advances_shared_parents_and_union
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "item": safe_package_metadata()
         })))
-        .expect(2)
+        .expect(4)
         .mount(&server)
         .await;
     for id in ["a", "b"] {
@@ -5764,6 +5993,7 @@ async fn delete_reports_applied_true_for_a_wrong_success_id_without_echoing_it()
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "item": safe_package_metadata()
         })))
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("DELETE"))
@@ -5848,7 +6078,7 @@ async fn delete_continues_after_an_independent_target_fails() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "item": safe_package_metadata()
         })))
-        .expect(2)
+        .expect(3)
         .mount(&server)
         .await;
     Mock::given(method("DELETE"))
@@ -5942,6 +6172,7 @@ async fn delete_sanitizes_planning_and_route_error_bodies() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "item": safe_package_metadata()
         })))
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("DELETE"))

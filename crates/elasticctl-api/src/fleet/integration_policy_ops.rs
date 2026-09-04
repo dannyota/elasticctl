@@ -3169,6 +3169,10 @@ pub async fn apply_delete(
                 continue;
             }
         }
+        if let Err(error) = recheck_delete_metadata(transport, target).await {
+            failed.push(delete_failed_row(&target.id, false, error.message));
+            continue;
+        }
 
         match integration_policies::delete(transport, &target.id).await {
             Ok(()) => {
@@ -3227,6 +3231,29 @@ async fn recheck_delete_parents(
             }
             Err(error) => return Err(delete_remote_error(error, "apply parent read")),
         }
+    }
+    Ok(())
+}
+
+async fn recheck_delete_metadata(
+    transport: &Transport,
+    target: &IntegrationPolicyDeleteTarget,
+) -> Result<()> {
+    let metadata = integration_policies::package_metadata(
+        transport,
+        &target.package.name,
+        &target.package.version,
+    )
+    .await
+    .map_err(|error| delete_remote_error(error, "apply package metadata read"))?
+    .item;
+    validate_package_metadata_snapshot(&metadata, &target.package)
+        .map_err(|error| delete_remote_error(error, "apply package metadata read"))?;
+    if metadata != target.metadata {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "integration policy package metadata changed since preview",
+        ));
     }
     Ok(())
 }
@@ -3705,6 +3732,35 @@ mod import_plan_tests {
 #[cfg(test)]
 mod delete_plan_tests {
     use super::*;
+    use elasticctl_core::{Profile, Transport};
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn verified_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": {"number": "9.5.1", "build_flavor": "traditional"}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn transport_for(server: &MockServer) -> Transport {
+        Transport::new(&Profile {
+            kibana_url: server.uri(),
+            es_url: None,
+            api_key: Some("essu_test".into()),
+            username: None,
+            password: None,
+            space: "default".into(),
+            verify: true,
+            timeout_secs: 5,
+        })
+        .expect("transport")
+    }
 
     fn valid_plan() -> IntegrationPolicyDeletePlan {
         let spec = IntegrationPolicySpec::try_from(json!({
@@ -3862,5 +3918,181 @@ mod delete_plan_tests {
             .metadata
             .insert("version".into(), json!("9.9.9"));
         assert!(validate_delete_plan(&metadata).is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_apply_rereads_metadata_after_coherent_secret_tampering() {
+        let server = verified_server().await;
+        let transport = transport_for(&server);
+        let spec = IntegrationPolicySpec::try_from(json!({
+            "id": "delete-1",
+            "name": "Delete integration",
+            "namespace": "default",
+            "policy_ids": ["parent-1"],
+            "package": {"name": "system", "version": "2.0.0"},
+            "vars": {"package_secret": "live-plaintext-value-must-not-leak"},
+            "inputs": {}
+        }))
+        .expect("valid integration policy");
+        let mut item = serde_json::to_value(&spec)
+            .expect("serialize integration policy")
+            .as_object()
+            .expect("integration policy is an object")
+            .clone();
+        item.insert("enabled".into(), Value::Bool(true));
+        let parent = agent_policy_ops::AgentPolicyParentSnapshot {
+            id: "parent-1".into(),
+            name: "Parent 1".into(),
+            namespace: "default".into(),
+            agents: 4,
+            attached_integrations: vec![spec.id.clone()],
+            platform_owned: false,
+            protected: false,
+        };
+        let parents = BTreeMap::from([(parent.id.clone(), parent)]);
+        let dependency = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "2.0.0".into(),
+            },
+        };
+        let original_metadata = json!({
+            "name": "system",
+            "version": "2.0.0",
+            "vars": [{"name": "package_secret", "secret": true}],
+            "policy_templates": []
+        })
+        .as_object()
+        .expect("metadata object")
+        .clone();
+        let mut target = IntegrationPolicyDeleteTarget {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            item_snapshot: item.clone(),
+            item,
+            spec_snapshot: spec.clone(),
+            spec,
+            parents: parents.clone(),
+            package: IntegrationPackageSpec {
+                name: "system".into(),
+                version: "2.0.0".into(),
+            },
+            dependency_snapshot: dependency.clone(),
+            dependency,
+            metadata_snapshot: original_metadata.clone(),
+            metadata: original_metadata.clone(),
+        };
+        let mut plan = IntegrationPolicyDeletePlan {
+            preview: delete_preview(std::slice::from_ref(&target)),
+            total: 1,
+            host: server.uri(),
+            host_snapshot: server.uri(),
+            space: "default".into(),
+            space_snapshot: "default".into(),
+            parent_snapshots_snapshot: parents.clone(),
+            parent_snapshots: parents,
+            targets: vec![target.clone()],
+        };
+        assert!(validate_delete_plan(&plan).is_err());
+
+        let forged_metadata = json!({
+            "name": "system",
+            "version": "2.0.0",
+            "vars": [{"name": "package_secret", "secret": false}],
+            "policy_templates": []
+        })
+        .as_object()
+        .expect("metadata object")
+        .clone();
+        target.metadata = forged_metadata.clone();
+        target.metadata_snapshot = forged_metadata;
+        target.item_snapshot = target.item.clone();
+        target.spec_snapshot = target.spec.clone();
+        plan.targets = vec![target];
+        plan.parent_snapshots = shared_delete_parents(&plan.targets).expect("shared parents");
+        plan.parent_snapshots_snapshot = plan.parent_snapshots.clone();
+        plan.preview = delete_preview(&plan.targets);
+        assert!(validate_delete_plan(&plan).is_ok());
+
+        let item = plan.targets[0].item.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/delete-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item_for_delete_test("parent-1", "delete-1")
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": {
+                    "name": "system",
+                    "status": "installed",
+                    "installationInfo": {"version": "2.0.0"}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": original_metadata
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/fleet/package_policies/delete-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "delete-1"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let report = apply_delete(&transport, &plan)
+            .await
+            .expect("metadata race is a row failure");
+        assert!(report.deleted.is_empty());
+        assert_eq!(
+            report.failed,
+            vec![json!({
+                "id": "delete-1",
+                "applied": false,
+                "error": "integration policy package metadata changed since preview"
+            })]
+        );
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/api/fleet/epm/packages/system/2.0.0")
+                .count(),
+            1
+        );
+        assert!(requests.iter().all(|request| request.method != "DELETE"));
+        assert!(
+            !report.failed[0]["error"]
+                .as_str()
+                .expect("error string")
+                .contains("live-plaintext-value-must-not-leak")
+        );
+    }
+
+    fn parent_item_for_delete_test(id: &str, attached: &str) -> Value {
+        json!({
+            "id": id,
+            "name": "Parent 1",
+            "namespace": "default",
+            "agents": 4,
+            "package_policies": [attached],
+        })
     }
 }
