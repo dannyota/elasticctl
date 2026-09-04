@@ -14,7 +14,7 @@ use elasticctl_core::{Profile, Transport};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const V0_2_FIXTURES: [&str; 15] = [
@@ -127,6 +127,28 @@ const V0_6_AGENT_POLICY_FIXTURES: [&str; 12] = [
     "agent_policy_get_after_omit.json",
     "agent_policy_delete.json",
     "agent_policy_delete_not_found.json",
+];
+
+/// Integration-policy fixtures added in 0.6.1, recorded from the marker
+/// integration and its marker parent lifecycle.
+const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 17] = [
+    "integration_policy_not_found.json",
+    "integration_policy_parent_not_found.json",
+    "package_system.json",
+    "integration_policy_parent_create.json",
+    "package_system_metadata.json",
+    "integration_policy_create.json",
+    "integration_policy_get.json",
+    "integration_policies_list.json",
+    "integration_policy_name_conflict.json",
+    "integration_policy_parent_get.json",
+    "integration_policy_update.json",
+    "integration_policy_round_trip.json",
+    "integration_policy_parent_delete_refused.json",
+    "integration_policy_delete.json",
+    "integration_policy_delete_not_found.json",
+    "integration_policy_parent_delete.json",
+    "integration_policy_parent_delete_not_found.json",
 ];
 
 fn fixtures_root() -> PathBuf {
@@ -273,6 +295,18 @@ fn every_fixture_parses_and_carries_its_metadata() {
             set.display(),
             missing.join(", ")
         );
+
+        let missing: Vec<&str> = V0_6_INTEGRATION_POLICY_FIXTURES
+            .iter()
+            .copied()
+            .filter(|name| !set.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} lacks integration-policy fixture(s): {}",
+            set.display(),
+            missing.join(", ")
+        );
     }
 }
 
@@ -330,6 +364,162 @@ fn fixture_body(path: &Path) -> Value {
     let body = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("{} is not valid JSON: {e}", path.display()))
+}
+
+fn assert_object_fields_are_exact(value: &Value, expected: &[&str], context: &str) {
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{context}: expected an object"));
+    let actual: std::collections::BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    let expected: std::collections::BTreeSet<&str> = expected.iter().copied().collect();
+    assert_eq!(actual, expected, "{context}: exact object field shape");
+}
+
+fn assert_package_metadata_shape(value: &Value, name: &str, version: &str, context: &str) {
+    let item = value
+        .get("item")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("{context}: response.item must be an object"));
+    let fields: std::collections::BTreeSet<&str> = item.keys().map(String::as_str).collect();
+    let expected: std::collections::BTreeSet<&str> =
+        ["name", "version", "status", "vars", "policy_templates"]
+            .into_iter()
+            .collect();
+    assert_eq!(fields, expected, "{context}: exact package metadata shape");
+    assert_eq!(
+        item.get("name").and_then(Value::as_str),
+        Some(name),
+        "{}",
+        context
+    );
+    assert_eq!(
+        item.get("version").and_then(Value::as_str),
+        Some(version),
+        "{context}: package version"
+    );
+    assert!(
+        matches!(
+            item.get("status").and_then(Value::as_str),
+            Some("installed" | "not_installed")
+        ),
+        "{context}: status must be installed or not_installed"
+    );
+
+    let vars = item
+        .get("vars")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{context}: vars must be an array"));
+    for (index, variable) in vars.iter().enumerate() {
+        let variable_context = format!("{context}.vars[{index}]");
+        assert_object_fields_are_exact(variable, &["name", "secret"], &variable_context);
+        assert!(
+            variable
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()),
+            "{variable_context}: name must be a non-empty string"
+        );
+        assert!(
+            variable.get("secret").and_then(Value::as_bool).is_some(),
+            "{variable_context}: secret must be boolean"
+        );
+    }
+
+    let templates = item
+        .get("policy_templates")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{context}: policy_templates must be an array"));
+    for (template_index, template) in templates.iter().enumerate() {
+        let template_context = format!("{context}.policy_templates[{template_index}]");
+        assert_object_fields_are_exact(template, &["name", "inputs"], &template_context);
+        assert!(
+            template
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()),
+            "{template_context}: name must be a non-empty string"
+        );
+        let inputs = template
+            .get("inputs")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{template_context}: inputs must be an array"));
+        for (input_index, input) in inputs.iter().enumerate() {
+            let input_context = format!("{template_context}.inputs[{input_index}]");
+            assert_object_fields_are_exact(input, &["type", "vars", "streams"], &input_context);
+            assert!(
+                input
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "{input_context}: type must be a non-empty string"
+            );
+            let vars = input["vars"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{input_context}: vars must be an array"));
+            for (index, variable) in vars.iter().enumerate() {
+                let variable_context = format!("{input_context}.vars[{index}]");
+                assert_object_fields_are_exact(variable, &["name", "secret"], &variable_context);
+                assert!(
+                    variable
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "{variable_context}: name must be a non-empty string"
+                );
+                assert!(
+                    variable.get("secret").and_then(Value::as_bool).is_some(),
+                    "{variable_context}: secret must be boolean"
+                );
+            }
+            let streams = input["streams"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{input_context}: streams must be an array"));
+            for (stream_index, stream) in streams.iter().enumerate() {
+                let stream_context = format!("{input_context}.streams[{stream_index}]");
+                assert_object_fields_are_exact(stream, &["data_stream", "vars"], &stream_context);
+                let data_stream = stream
+                    .get("data_stream")
+                    .and_then(Value::as_object)
+                    .unwrap_or_else(|| panic!("{stream_context}: data_stream must be an object"));
+                let data_stream_fields: std::collections::BTreeSet<&str> =
+                    data_stream.keys().map(String::as_str).collect();
+                assert_eq!(
+                    data_stream_fields,
+                    std::collections::BTreeSet::from(["dataset"]),
+                    "{stream_context}: exact data_stream shape"
+                );
+                assert!(
+                    data_stream
+                        .get("dataset")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "{stream_context}: dataset must be a non-empty string"
+                );
+                let vars = stream["vars"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{stream_context}: vars must be an array"));
+                for (index, variable) in vars.iter().enumerate() {
+                    let variable_context = format!("{stream_context}.vars[{index}]");
+                    assert_object_fields_are_exact(
+                        variable,
+                        &["name", "secret"],
+                        &variable_context,
+                    );
+                    assert!(
+                        variable
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty()),
+                        "{variable_context}: name must be a non-empty string"
+                    );
+                    assert!(
+                        variable.get("secret").and_then(Value::as_bool).is_some(),
+                        "{variable_context}: secret must be boolean"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn fixture_transport(server: &MockServer) -> Transport {
@@ -1568,5 +1758,482 @@ async fn agent_policy_fixtures_decode_through_the_production_paths() {
             .expect("delete decodes through the production path");
         let conflict = fixture_body(&set.join("agent_policy_name_conflict.json"));
         assert_eq!(conflict["error"]["kind"], "conflict", "{}", set.display());
+    }
+}
+
+#[tokio::test]
+async fn integration_policy_fixtures_decode_through_the_production_paths() {
+    use elasticctl_api::content_codec::ContentFormat;
+    use elasticctl_api::fleet::agent_policies::{self, AgentPolicySpec};
+    use elasticctl_api::fleet::integration_policies::{self, IntegrationPolicySpec};
+    use elasticctl_api::fleet::integration_policy_ops::{self, IntegrationPolicyFilter};
+    use elasticctl_core::urlencode;
+
+    for set in fixture_sets() {
+        let read = |name: &str| fixture_body(&set.join(name));
+        let integration_not_found = read("integration_policy_not_found.json");
+        let parent_not_found = read("integration_policy_parent_not_found.json");
+        let package_status_fixture = read("package_system.json");
+        let parent_create = read("integration_policy_parent_create.json");
+        let package_metadata_fixture = read("package_system_metadata.json");
+        let create = read("integration_policy_create.json");
+        let got_fixture = read("integration_policy_get.json");
+        let list_fixture = read("integration_policies_list.json");
+        let conflict = read("integration_policy_name_conflict.json");
+        let parent_get = read("integration_policy_parent_get.json");
+        let update = read("integration_policy_update.json");
+        let round_trip = read("integration_policy_round_trip.json");
+        let parent_delete_refused = read("integration_policy_parent_delete_refused.json");
+        let integration_delete = read("integration_policy_delete.json");
+        let integration_delete_not_found = read("integration_policy_delete_not_found.json");
+        let parent_delete = read("integration_policy_parent_delete.json");
+        let parent_delete_not_found = read("integration_policy_parent_delete_not_found.json");
+
+        for (fixture, kind, status) in [
+            (&integration_not_found, "not_found", 404),
+            (&parent_not_found, "not_found", 404),
+            (&integration_delete_not_found, "not_found", 404),
+            (&parent_delete_not_found, "not_found", 404),
+            (&conflict, "conflict", 409),
+            (&parent_delete_refused, "conflict", 409),
+        ] {
+            assert_eq!(fixture["error"]["kind"], kind, "{}", set.display());
+            assert_eq!(fixture["error"]["http_status"], status, "{}", set.display());
+        }
+
+        let create_request = create["request"].clone();
+        let requested =
+            IntegrationPolicySpec::try_from(create_request.clone()).unwrap_or_else(|error| {
+                panic!("{}: integration create request: {error}", set.display())
+            });
+        let marker_id = requested.id.clone();
+        assert!(
+            marker_id.starts_with("elasticctl-sample-"),
+            "{}: integration create must use a marker id",
+            set.display()
+        );
+        assert_eq!(create_request["id"], marker_id, "{}", set.display());
+        assert!(
+            create_request.get("force").is_none(),
+            "{}: integration create must not send force",
+            set.display()
+        );
+        assert!(
+            create_request.get("create_dataset_templates").is_none(),
+            "{}: integration create must not send create_dataset_templates",
+            set.display()
+        );
+
+        let parent_request = parent_create["request"].clone();
+        let parent_spec = AgentPolicySpec::try_from(parent_request.clone())
+            .unwrap_or_else(|error| panic!("{}: parent create request: {error}", set.display()));
+        let parent_id = parent_spec.id.clone();
+        assert!(
+            parent_id.starts_with("elasticctl-sample-"),
+            "{}: parent create must use a marker id",
+            set.display()
+        );
+        assert_eq!(requested.policy_ids, vec![parent_id.clone()]);
+        assert!(
+            parent_request.get("force").is_none(),
+            "{}: parent create must not send force",
+            set.display()
+        );
+
+        let mut update_spec_value = update["request"].clone();
+        let update_object = update_spec_value
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("{}: update request must be an object", set.display()));
+        assert!(
+            update_object.get("id").is_none(),
+            "{}: integration update must omit id from its wire body",
+            set.display()
+        );
+        assert_eq!(update_object.get("enabled"), Some(&serde_json::json!(true)));
+        assert!(
+            update_object.get("force").is_none(),
+            "{}: integration update must not send force",
+            set.display()
+        );
+        assert!(
+            update_object.get("create_dataset_templates").is_none(),
+            "{}: integration update must not send create_dataset_templates",
+            set.display()
+        );
+        update_object.remove("enabled");
+        update_object.insert("id".into(), serde_json::json!(marker_id));
+        let updated_spec =
+            IntegrationPolicySpec::try_from(update_spec_value).unwrap_or_else(|error| {
+                panic!("{}: integration update request: {error}", set.display())
+            });
+
+        assert_package_metadata_shape(
+            &package_metadata_fixture["response"],
+            &requested.package.name,
+            &requested.package.version,
+            &format!("{}: package_system_metadata", set.display()),
+        );
+        let package_status_item = package_status_fixture["response"]["item"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{}: package status item", set.display()));
+        assert_eq!(
+            package_status_item.get("name").and_then(Value::as_str),
+            Some(requested.package.name.as_str()),
+            "{}: package status name",
+            set.display()
+        );
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/status"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(fixture_body(&set.join("status.json"))["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(parent_create["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{}",
+                urlencode(&parent_id)
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(parent_get["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(serde_json::json!({"agentPolicyId": parent_id})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(parent_delete["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/epm/packages/{}",
+                urlencode(&requested.package.name)
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(package_status_fixture["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/epm/packages/{}/{}",
+                urlencode(&requested.package.name),
+                urlencode(&requested.package.version)
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(package_metadata_fixture["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(body_json(create_request.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(create["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{}",
+                urlencode(&marker_id)
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(got_fixture["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("page", "1"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortField", "created_at"))
+            .and(query_param("sortOrder", "asc"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(list_fixture["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{}",
+                urlencode(&marker_id)
+            )))
+            .and(body_json(update["request"].clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(update["response"].clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{}",
+                urlencode(&marker_id)
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(integration_delete["response"].clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let transport = fixture_transport(&server);
+        let parent = agent_policies::create(&transport, &parent_spec)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode parent create: {error}", set.display()));
+        assert_eq!(
+            parent.item.get("id").and_then(Value::as_str),
+            Some(parent_id.as_str())
+        );
+
+        let package_status = agent_policies::package_status(&transport, &requested.package.name)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode package status: {error}", set.display()));
+        assert_eq!(
+            package_status.name,
+            requested.package.name,
+            "{}",
+            set.display()
+        );
+        assert_eq!(
+            package_status.status,
+            package_status_item["status"].as_str().unwrap_or_default(),
+            "{}",
+            set.display()
+        );
+        let expected_installed_version = package_status_item
+            .get("installationInfo")
+            .and_then(Value::as_object)
+            .and_then(|info| info.get("version"))
+            .and_then(Value::as_str);
+        assert_eq!(
+            package_status.installed_version.as_deref(),
+            expected_installed_version,
+            "{}: package status installed version",
+            set.display()
+        );
+
+        let metadata = integration_policies::package_metadata(
+            &transport,
+            &requested.package.name,
+            &requested.package.version,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{}: decode package metadata: {error}", set.display()));
+        let _ = metadata;
+
+        let created = integration_policies::create(&transport, &requested)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{}: decode integration create: {error}", set.display())
+            });
+        assert_eq!(
+            created.item.get("id").and_then(Value::as_str),
+            Some(marker_id.as_str())
+        );
+        let normalized = integration_policy_ops::normalize(&created.item, transport.space())
+            .unwrap_or_else(|error| {
+                panic!("{}: normalize integration create: {error}", set.display())
+            });
+        assert_eq!(
+            normalized,
+            requested,
+            "{}: create/normalize round trip",
+            set.display()
+        );
+
+        let got = integration_policies::get(&transport, &marker_id)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode integration get: {error}", set.display()));
+        assert_eq!(
+            got.item.get("id").and_then(Value::as_str),
+            Some(marker_id.as_str())
+        );
+
+        let parent_item = parent_get["response"]["item"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{}: parent get item", set.display()));
+        let attached = parent_item["package_policies"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: parent package_policies", set.display()));
+        assert!(
+            attached.iter().any(|entry| {
+                entry.as_str() == Some(marker_id.as_str())
+                    || entry.get("id").and_then(Value::as_str) == Some(marker_id.as_str())
+            }),
+            "{}: parent get must retain the marker attachment",
+            set.display()
+        );
+        let parent_read = agent_policies::get(&transport, &parent_id)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode parent get: {error}", set.display()));
+        assert_eq!(
+            parent_read.item.get("id").and_then(Value::as_str),
+            Some(parent_id.as_str()),
+            "{}",
+            set.display()
+        );
+
+        let listed_raw = list_fixture["response"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: integration list items", set.display()));
+        assert_eq!(
+            list_fixture["response"]["total"],
+            1,
+            "{}: integration list must report only the marker",
+            set.display()
+        );
+        assert_eq!(
+            listed_raw.len(),
+            1,
+            "{}: marker-only integration list",
+            set.display()
+        );
+        assert_eq!(
+            listed_raw[0].get("id").and_then(Value::as_str),
+            Some(marker_id.as_str()),
+            "{}: integration list id",
+            set.display()
+        );
+        let listed =
+            integration_policy_ops::list_op(&transport, &IntegrationPolicyFilter::default())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{}: decode integration list: {error}", set.display())
+                });
+        assert_eq!(listed.total, 1, "{}", set.display());
+        assert_eq!(listed.integration_policies.len(), 1, "{}", set.display());
+        assert_eq!(
+            listed.integration_policies[0].id,
+            marker_id,
+            "{}",
+            set.display()
+        );
+
+        let detail = integration_policy_ops::get_op(&transport, &marker_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{}: decode integration detail: {error}", set.display())
+            });
+        assert_eq!(detail.id, marker_id, "{}", set.display());
+        assert_eq!(
+            detail.policy_ids,
+            vec![parent_id.clone()],
+            "{}",
+            set.display()
+        );
+        assert_eq!(detail.package, requested.package, "{}", set.display());
+        assert_eq!(detail.blocked_by, Vec::<String>::new(), "{}", set.display());
+
+        let exported = integration_policy_ops::export(
+            &transport,
+            std::slice::from_ref(&marker_id),
+            false,
+            ContentFormat::Json,
+        )
+        .await;
+        match package_status.status.as_str() {
+            "installed"
+                if package_status.installed_version.as_deref()
+                    == Some(&requested.package.version) =>
+            {
+                let exported = exported.unwrap_or_else(|error| {
+                    panic!("{}: decode integration export: {error}", set.display())
+                });
+                assert_eq!(exported.exported, 1, "{}", set.display());
+                let specs: Vec<IntegrationPolicySpec> = serde_json::from_str(&exported.body)
+                    .unwrap_or_else(|error| {
+                        panic!("{}: decode exported integration: {error}", set.display())
+                    });
+                assert_eq!(specs, vec![requested.clone()], "{}", set.display());
+            }
+            "not_installed" => {
+                assert_eq!(
+                    exported
+                        .expect_err("an absent package cannot prove a live integration export")
+                        .kind,
+                    elasticctl_core::ErrorKind::Conflict,
+                    "{}",
+                    set.display()
+                );
+            }
+            status => panic!("{}: unexpected package status {status:?}", set.display()),
+        }
+
+        let updated = integration_policies::update(&transport, &marker_id, &updated_spec)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{}: decode integration update: {error}", set.display())
+            });
+        assert_eq!(
+            updated.item.get("id").and_then(Value::as_str),
+            Some(marker_id.as_str())
+        );
+        let normalized_round_trip = integration_policy_ops::normalize(
+            round_trip["response"]["item"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{}: round-trip item", set.display())),
+            transport.space(),
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "{}: normalize integration round trip: {error}",
+                set.display()
+            )
+        });
+        assert_eq!(
+            normalized_round_trip,
+            updated_spec,
+            "{}: update must replace omitted fields rather than merge them",
+            set.display()
+        );
+        for field in [
+            "description",
+            "vars",
+            "var_group_selections",
+            "condition",
+            "additional_datastreams_permissions",
+        ] {
+            if create_request.get(field).is_some() && update["request"].get(field).is_none() {
+                assert!(
+                    round_trip["response"]
+                        .get("item")
+                        .and_then(|item| item.get(field))
+                        .is_none(),
+                    "{}: omitted update field {field} survived a full replacement",
+                    set.display()
+                );
+            }
+        }
+
+        let integration_delete_id = integration_delete["response"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{}: integration delete id", set.display()));
+        assert_eq!(integration_delete_id, marker_id, "{}", set.display());
+        integration_policies::delete(&transport, &marker_id)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{}: decode integration delete: {error}", set.display())
+            });
+
+        let parent_delete_id = parent_delete["response"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{}: parent delete id", set.display()));
+        assert_eq!(parent_delete_id, parent_id, "{}", set.display());
+        agent_policies::delete(&transport, &parent_id)
+            .await
+            .unwrap_or_else(|error| panic!("{}: decode parent delete: {error}", set.display()));
     }
 }
