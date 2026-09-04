@@ -1102,16 +1102,18 @@ struct CleanupOwnership {
     /// duplicate that somehow survives is still cleaned up and fails the
     /// recording.
     agent_policy_dup: bool,
-    /// Claimed before the marker integration create and cleared only after
-    /// its exact-id delete is observed as absent. This must run before the
+    /// Claimed only after a successful marker create response passes the
+    /// strict exact integration and package-version proof. It clears only
+    /// after its exact-id delete is observed as absent. This must run before
     /// parent cleanup because Fleet can reject a parent with an attachment.
     integration_policy: bool,
-    /// The duplicate-name conflict write should never create this id, but a
-    /// surviving object remains owned until an exact-id cleanup proves it is
-    /// gone.
+    /// Claimed only when a duplicate-create success response passes the
+    /// strict exact proof. A conflict never claims it. A proven surviving
+    /// object remains owned until exact-id cleanup proves it is gone.
     integration_policy_dup: bool,
-    /// Claimed before the integration marker parent create and cleared after
-    /// its exact-id delete is observed as absent.
+    /// Claimed only after a successful parent create response passes the
+    /// strict marker-identity proof. It clears after exact-id deletion is
+    /// observed as absent.
     integration_policy_parent: bool,
     /// The strict, normalized inventory captured before an integration create.
     /// It is memory-only evidence: the recorder requires the exact `system`
@@ -1447,18 +1449,101 @@ fn owns_item(value: &Value) -> bool {
         && has_marker_tags(value)
 }
 
-fn integration_item(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+fn integration_response_item(
+    value: &Value,
+) -> elasticctl_core::Result<&serde_json::Map<String, Value>> {
     value
         .get("item")
         .and_then(Value::as_object)
-        .or_else(|| value.as_object())
+        .ok_or_else(|| recording_error("integration policy response must contain an item object"))
 }
 
-fn owns_marker_integration(value: &Value, id: &str) -> bool {
-    let Some(item) = integration_item(value) else {
-        return false;
-    };
-    item.get("id").and_then(Value::as_str) == Some(id)
+fn is_optional_false(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+    fields.iter().all(|field| {
+        matches!(
+            item.get(*field),
+            None | Some(Value::Null) | Some(Value::Bool(false))
+        )
+    })
+}
+
+fn is_optional_null(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+    fields
+        .iter()
+        .all(|field| matches!(item.get(*field), None | Some(Value::Null)))
+}
+
+fn is_optional_empty_object(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+    fields.iter().all(|field| match item.get(*field) {
+        None | Some(Value::Null) => true,
+        Some(Value::Object(values)) => values.is_empty(),
+        Some(_) => false,
+    })
+}
+
+fn is_optional_empty_array(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+    fields.iter().all(|field| match item.get(*field) {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(values)) => values.is_empty(),
+        Some(_) => false,
+    })
+}
+
+fn is_optional_empty_string(item: &serde_json::Map<String, Value>, field: &str) -> bool {
+    match item.get(field) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) => value.is_empty(),
+        Some(_) => false,
+    }
+}
+
+fn normalized_active_space(active_space: &str) -> &str {
+    if active_space.is_empty() {
+        "default"
+    } else {
+        active_space
+    }
+}
+
+fn has_only_active_spaces(
+    item: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    active_space: &str,
+) -> bool {
+    let active_space = normalized_active_space(active_space);
+    fields.iter().all(|field| match item.get(*field) {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(spaces)) => spaces
+            .iter()
+            .all(|space| space.as_str() == Some(active_space)),
+        Some(_) => false,
+    })
+}
+
+fn marker_integration_package_matches(
+    item: &serde_json::Map<String, Value>,
+    expected_version: &str,
+) -> bool {
+    !expected_version.trim().is_empty()
+        && item
+            .get("package")
+            .and_then(Value::as_object)
+            .is_some_and(|package| {
+                package.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PACKAGE)
+                    && package.get("version").and_then(Value::as_str) == Some(expected_version)
+            })
+}
+
+/// Prove that one package-policy item is still the recorder's exact portable
+/// marker. List rows use this directly; single responses must pass the strict
+/// envelope validator below as well.
+fn validate_marker_integration_item(
+    item: &serde_json::Map<String, Value>,
+    id: &str,
+    expected_version: &str,
+    active_space: &str,
+) -> elasticctl_core::Result<()> {
+    let identity_matches = item.get("id").and_then(Value::as_str) == Some(id)
         && item.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAME)
         && item.get("namespace").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAMESPACE)
         && matches!(
@@ -1471,35 +1556,71 @@ fn owns_marker_integration(value: &Value, id: &str) -> bool {
             .is_some_and(|ids| {
                 ids.len() == 1 && ids[0].as_str() == Some(INTEGRATION_POLICY_PARENT_ID)
             })
-        && item
-            .get("package")
-            .and_then(Value::as_object)
-            .is_some_and(|package| {
-                package.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PACKAGE)
-                    && package
-                        .get("version")
-                        .and_then(Value::as_str)
-                        .is_some_and(|version| !version.trim().is_empty())
-            })
+        && match item.get("policy_id") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(id)) => id == INTEGRATION_POLICY_PARENT_ID,
+            Some(_) => false,
+        }
+        && marker_integration_package_matches(item, expected_version)
         && item
             .get("inputs")
             .and_then(Value::as_object)
             .is_some_and(serde_json::Map::is_empty)
+        && item.get("enabled").and_then(Value::as_bool) == Some(true)
+        && is_optional_false(
+            item,
+            &[
+                "is_managed",
+                "supports_agentless",
+                "supports_cloud_connector",
+            ],
+        )
+        && is_optional_false(
+            item,
+            &["output_id", "cloud_connector_id", "cloud_connector_name"],
+        )
+        && is_optional_empty_array(item, &["secret_references"])
+        && has_only_active_spaces(item, &["spaceIds", "space_ids"], active_space)
+        && is_optional_empty_object(item, &["vars", "var_group_selections"])
+        && is_optional_empty_string(item, "condition")
+        && is_optional_empty_array(
+            item,
+            &["additional_datastreams_permissions", "global_data_tags"],
+        );
+    if identity_matches {
+        Ok(())
+    } else {
+        Err(recording_error(
+            "integration policy response did not preserve the marker identity",
+        ))
+    }
 }
 
-fn owns_integration_policy(value: &Value) -> bool {
-    owns_marker_integration(value, INTEGRATION_POLICY_ID)
+/// Prove that one live package-policy response is still the recorder's exact
+/// portable marker. Every mutation and cleanup path calls this same validator
+/// with the package version observed in the strict preflight inventory.
+fn validate_marker_integration<'a>(
+    value: &'a Value,
+    id: &str,
+    expected_version: &str,
+    active_space: &str,
+) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
+    let item = integration_response_item(value)?;
+    validate_marker_integration_item(item, id, expected_version, active_space)?;
+    Ok(item)
 }
 
-fn owns_integration_policy_parent(value: &Value) -> bool {
-    let Some(item) = value
-        .get("item")
-        .and_then(Value::as_object)
-        .or_else(|| value.as_object())
-    else {
-        return false;
-    };
-    item.get("id").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PARENT_ID)
+/// Create responses may omit `agents`, but every parent state that can lead to
+/// a delete must additionally prove an empty attached-agent count below.
+fn validate_marker_integration_parent_identity<'a>(
+    value: &'a Value,
+    active_space: &str,
+) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
+    let item = integration_response_item(value).map_err(|_| {
+        recording_error("integration policy parent response must contain an item object")
+    })?;
+    let identity_matches = item.get("id").and_then(Value::as_str)
+        == Some(INTEGRATION_POLICY_PARENT_ID)
         && item.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PARENT_NAME)
         && item.get("namespace").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAMESPACE)
         && item.get("description").and_then(Value::as_str)
@@ -1510,6 +1631,64 @@ fn owns_integration_policy_parent(value: &Value) -> bool {
             .is_some_and(Vec::is_empty)
         && item.get("inactivity_timeout").and_then(Value::as_u64)
             == Some(INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT)
+        && is_optional_false(
+            item,
+            &[
+                "is_default",
+                "is_default_fleet_server",
+                "has_fleet_server",
+                "is_managed",
+                "is_preconfigured",
+                "supports_agentless",
+                "is_verifier",
+                "is_protected",
+            ],
+        )
+        && is_optional_null(item, &["agentless"])
+        && is_optional_null(
+            item,
+            &[
+                "data_output_id",
+                "monitoring_output_id",
+                "download_source_id",
+                "fleet_server_host_id",
+                "required_versions",
+            ],
+        )
+        && has_only_active_spaces(item, &["space_ids", "spaceIds"], active_space)
+        && is_optional_empty_array(item, &["agent_features", "global_data_tags"])
+        && is_optional_empty_object(
+            item,
+            &[
+                "advanced_settings",
+                "overrides",
+                "monitoring_http",
+                "monitoring_diagnostics",
+            ],
+        )
+        && is_optional_false(item, &["keep_monitoring_alive", "monitoring_pprof_enabled"])
+        && is_optional_null(item, &["unenroll_timeout"]);
+    if identity_matches {
+        Ok(item)
+    } else {
+        Err(recording_error(
+            "integration policy parent did not preserve the marker identity",
+        ))
+    }
+}
+
+fn validate_marker_integration_parent_for_delete<'a>(
+    value: &'a Value,
+    active_space: &str,
+) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
+    let item = validate_marker_integration_parent_identity(value, active_space)?;
+    if item.get("agents").and_then(Value::as_u64) == Some(0) {
+        Ok(item)
+    } else {
+        Err(recording_error(
+            "integration policy parent did not preserve the marker identity",
+        ))
+    }
 }
 
 fn owns_scratch_index(value: &Value) -> bool {
@@ -2420,11 +2599,21 @@ fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize
 /// Keep the marker integration only. Package-policy list responses otherwise
 /// expose every integration in a shared Fleet space, including user-owned
 /// configuration and possible secret references.
-fn scope_integration_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize {
+fn scope_integration_policy_list_to_marker(
+    body: &mut Value,
+    marker_id: &str,
+    expected_version: &str,
+    active_space: &str,
+) -> usize {
     let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
         return 0;
     };
-    items.retain(|item| owns_marker_integration(item, marker_id));
+    items.retain(|item| {
+        item.as_object().is_some_and(|item| {
+            validate_marker_integration_item(item, marker_id, expected_version, active_space)
+                .is_ok()
+        })
+    });
     let kept = items.len();
     if let Some(map) = body.as_object_mut() {
         map.insert("total".to_string(), json!(kept));
@@ -2432,18 +2621,29 @@ fn scope_integration_policy_list_to_marker(body: &mut Value, marker_id: &str) ->
     kept
 }
 
+#[cfg(test)]
 fn integration_policy_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
+    integration_policy_fixture_in_space(name, flavor, version, INTEGRATION_POLICY_NAMESPACE, body)
+}
+
+fn integration_policy_fixture_in_space(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    active_space: &str,
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
     let body = match name {
         "integration_policy_get" | "integration_policy_round_trip" => {
-            reduce_marker_integration_response(&body)?
+            reduce_marker_integration_response(&body, active_space)?
         }
-        "integration_policies_list" => reduce_marker_integration_list(&body)?,
-        "integration_policy_parent_get" => reduce_marker_parent_get_response(&body)?,
+        "integration_policies_list" => reduce_marker_integration_list(&body, active_space)?,
+        "integration_policy_parent_get" => reduce_marker_parent_get_response(&body, active_space)?,
         "integration_policy_delete" => reduce_integration_delete_response(&body)?,
         "integration_policy_parent_delete" => reduce_parent_delete_response(&body)?,
         _ => {
@@ -2455,6 +2655,7 @@ fn integration_policy_fixture(
     Ok(response_fixture(name, flavor, version, body, None))
 }
 
+#[cfg(test)]
 fn integration_policy_exchange_fixture(
     name: &'static str,
     flavor: &str,
@@ -2462,18 +2663,36 @@ fn integration_policy_exchange_fixture(
     request: Value,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
+    integration_policy_exchange_fixture_in_space(
+        name,
+        flavor,
+        version,
+        INTEGRATION_POLICY_NAMESPACE,
+        request,
+        body,
+    )
+}
+
+fn integration_policy_exchange_fixture_in_space(
+    name: &'static str,
+    flavor: &str,
+    version: &str,
+    active_space: &str,
+    request: Value,
+    body: Value,
+) -> elasticctl_core::Result<RecordedFixture> {
     let (request, body) = match name {
         "integration_policy_parent_create" => (
             reduce_marker_parent_create_request(&request)?,
-            reduce_marker_parent_create_response(&body)?,
+            reduce_marker_parent_create_response(&body, active_space)?,
         ),
         "integration_policy_create" => (
             reduce_marker_integration_create_request(&request)?,
-            reduce_marker_integration_response(&body)?,
+            reduce_marker_integration_response(&body, active_space)?,
         ),
         "integration_policy_update" => (
             reduce_marker_integration_update_request(&request)?,
-            reduce_marker_integration_response(&body)?,
+            reduce_marker_integration_response(&body, active_space)?,
         ),
         _ => {
             return Err(recording_error(
@@ -2488,21 +2707,13 @@ fn integration_policy_exchange_fixture(
 /// identity. The allowlist is intentionally smaller than the public Fleet
 /// schema: response-only metadata, active-space references, secrets, and new
 /// unknown fields do not prove this recorder's route contract.
-fn reduce_marker_integration_response(body: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_marker_integration_response(
+    body: &Value,
+    active_space: &str,
+) -> elasticctl_core::Result<Value> {
     let item = body.get("item").and_then(Value::as_object).ok_or_else(|| {
         recording_error("integration policy response must contain an item object")
     })?;
-    if !owns_integration_policy(body) {
-        return Err(recording_error(
-            "integration policy response did not preserve the marker identity",
-        ));
-    }
-    if item.get("enabled").and_then(Value::as_bool) != Some(true) {
-        return Err(recording_error(
-            "integration policy response must retain enabled true",
-        ));
-    }
-    require_safe_marker_integration_references(item)?;
     let package_version = item
         .get("package")
         .and_then(Value::as_object)
@@ -2512,6 +2723,7 @@ fn reduce_marker_integration_response(body: &Value) -> elasticctl_core::Result<V
         .ok_or_else(|| {
             recording_error("integration policy response package version must be non-empty")
         })?;
+    validate_marker_integration(body, INTEGRATION_POLICY_ID, package_version, active_space)?;
     let description = item
         .get("description")
         .and_then(Value::as_str)
@@ -2533,28 +2745,6 @@ fn reduce_marker_integration_response(body: &Value) -> elasticctl_core::Result<V
             "enabled": true,
         }
     }))
-}
-
-fn require_safe_marker_integration_references(
-    item: &serde_json::Map<String, Value>,
-) -> elasticctl_core::Result<()> {
-    for field in ["output_id", "cloud_connector_id", "cloud_connector_name"] {
-        if item
-            .get(field)
-            .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false))
-        {
-            return Err(recording_error(
-                "integration policy response carries a nonportable environment reference",
-            ));
-        }
-    }
-    match item.get("secret_references") {
-        None | Some(Value::Null) => Ok(()),
-        Some(Value::Array(references)) if references.is_empty() => Ok(()),
-        Some(_) => Err(recording_error(
-            "integration policy response carries secret references",
-        )),
-    }
 }
 
 fn marker_integration_request_version<'a>(
@@ -2600,12 +2790,13 @@ fn reduce_marker_parent_create_request(request: &Value) -> elasticctl_core::Resu
     Ok(expected)
 }
 
-fn reduce_marker_parent_create_response(body: &Value) -> elasticctl_core::Result<Value> {
-    if !owns_integration_policy_parent(body) {
-        return Err(recording_error(
-            "integration policy parent create did not preserve the marker identity",
-        ));
-    }
+fn reduce_marker_parent_create_response(
+    body: &Value,
+    active_space: &str,
+) -> elasticctl_core::Result<Value> {
+    validate_marker_integration_parent_identity(body, active_space).map_err(|_| {
+        recording_error("integration policy parent create did not preserve the marker identity")
+    })?;
     Ok(json!({
         "item": {
             "id": INTEGRATION_POLICY_PARENT_ID,
@@ -2618,8 +2809,11 @@ fn reduce_marker_parent_create_response(body: &Value) -> elasticctl_core::Result
     }))
 }
 
-fn reduce_marker_parent_get_response(body: &Value) -> elasticctl_core::Result<Value> {
-    require_parent_attachment(body)?;
+fn reduce_marker_parent_get_response(
+    body: &Value,
+    active_space: &str,
+) -> elasticctl_core::Result<Value> {
+    require_parent_attachment(body, active_space)?;
     let agents = body
         .pointer("/item/agents")
         .and_then(Value::as_u64)
@@ -2640,7 +2834,10 @@ fn reduce_marker_parent_get_response(body: &Value) -> elasticctl_core::Result<Va
     }))
 }
 
-fn reduce_marker_integration_list(body: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_marker_integration_list(
+    body: &Value,
+    active_space: &str,
+) -> elasticctl_core::Result<Value> {
     let items = body
         .get("items")
         .and_then(Value::as_array)
@@ -2656,7 +2853,7 @@ fn reduce_marker_integration_list(body: &Value) -> elasticctl_core::Result<Value
             "integration policy list did not preserve the exact marker page metadata",
         ));
     }
-    let reduced = reduce_marker_integration_response(&json!({"item": items[0]}))?;
+    let reduced = reduce_marker_integration_response(&json!({"item": items[0]}), active_space)?;
     Ok(json!({
         "items": [reduced["item"].clone()],
         "total": 1,
@@ -2959,8 +3156,17 @@ fn require_matching_inventory(
     }
 }
 
+fn baseline_system_package_version(inventory: &BTreeSet<(String, String)>) -> Option<&str> {
+    inventory
+        .iter()
+        .find(|(name, _)| name == INTEGRATION_POLICY_PACKAGE)
+        .map(|(_, version)| version.as_str())
+        .filter(|version| !version.trim().is_empty())
+}
+
 #[derive(Clone, Debug)]
 struct SystemPackageStatus {
+    registry_version: String,
     version: String,
     installed: bool,
 }
@@ -2992,6 +3198,7 @@ fn decode_system_package_status(body: &Value) -> elasticctl_core::Result<SystemP
                 "installed system package status",
             )?;
             Ok(SystemPackageStatus {
+                registry_version,
                 version,
                 installed: true,
             })
@@ -3003,7 +3210,8 @@ fn decode_system_package_status(body: &Value) -> elasticctl_core::Result<SystemP
                 ));
             }
             Ok(SystemPackageStatus {
-                version: registry_version,
+                version: registry_version.clone(),
+                registry_version,
                 installed: false,
             })
         }
@@ -3011,6 +3219,21 @@ fn decode_system_package_status(body: &Value) -> elasticctl_core::Result<SystemP
             "system package status must be installed or not_installed",
         )),
     }
+}
+
+/// `package_system` is an integration-recorder-only fixture. Build it solely
+/// from the strict status decoder so registry metadata such as `latestVersion`
+/// never reaches a public fixture.
+fn reduce_system_package_status(status: &SystemPackageStatus) -> Value {
+    let mut item = json!({
+        "name": INTEGRATION_POLICY_PACKAGE,
+        "version": status.registry_version,
+        "status": if status.installed { "installed" } else { "not_installed" },
+    });
+    if status.installed {
+        item["installationInfo"] = json!({"version": status.version});
+    }
+    item
 }
 
 async fn read_installed_package_inventory(
@@ -3083,12 +3306,14 @@ fn marker_integration_update_body(version: &str) -> Value {
 fn require_marker_integration_response(
     body: &Value,
     expected_version: &str,
+    active_space: &str,
     context: &str,
 ) -> elasticctl_core::Result<()> {
     require_marker_integration_response_for_id(
         body,
         INTEGRATION_POLICY_ID,
         expected_version,
+        active_space,
         context,
     )
 }
@@ -3097,14 +3322,10 @@ fn require_marker_integration_response_for_id(
     body: &Value,
     expected_id: &str,
     expected_version: &str,
+    active_space: &str,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    if !owns_marker_integration(body, expected_id)
-        || body
-            .pointer("/item/package/version")
-            .and_then(Value::as_str)
-            != Some(expected_version)
-    {
+    if validate_marker_integration(body, expected_id, expected_version, active_space).is_err() {
         return Err(recording_error(format!(
             "{context}: integration response did not preserve the marker identity"
         )));
@@ -3115,21 +3336,25 @@ fn require_marker_integration_response_for_id(
 fn require_parent_attachments(
     body: &Value,
     expected: &[&str],
+    active_space: &str,
     context: &'static str,
 ) -> elasticctl_core::Result<()> {
-    if !owns_integration_policy_parent(body) {
-        return Err(recording_error(format!(
-            "{context}: integration parent did not preserve the marker identity"
-        )));
-    }
-    let attachments = body
-        .pointer("/item/package_policies")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            recording_error(format!(
+    let item = match validate_marker_integration_parent_for_delete(body, active_space) {
+        Ok(item) => item,
+        Err(_) => {
+            return Err(recording_error(format!(
+                "{context}: integration parent did not preserve the marker identity"
+            )));
+        }
+    };
+    let attachments = match item.get("package_policies").and_then(Value::as_array) {
+        Some(attachments) => attachments,
+        None => {
+            return Err(recording_error(format!(
                 "{context}: integration parent did not contain package_policies"
-            ))
-        })?;
+            )));
+        }
+    };
     let mut ids = Vec::with_capacity(attachments.len());
     for attachment in attachments {
         let id = attachment
@@ -3154,8 +3379,13 @@ fn require_parent_attachments(
     Ok(())
 }
 
-fn require_parent_attachment(body: &Value) -> elasticctl_core::Result<()> {
-    require_parent_attachments(body, &[INTEGRATION_POLICY_ID], "integration parent get")
+fn require_parent_attachment(body: &Value, active_space: &str) -> elasticctl_core::Result<()> {
+    require_parent_attachments(
+        body,
+        &[INTEGRATION_POLICY_ID],
+        active_space,
+        "integration parent get",
+    )
 }
 
 async fn reread_marker_integration_before_mutation(
@@ -3170,7 +3400,7 @@ async fn reread_marker_integration_before_mutation(
         ))
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
-    require_marker_integration_response(&body, expected_version, context)
+    require_marker_integration_response(&body, expected_version, t.space(), context)
 }
 
 async fn reread_marker_parent_before_mutation(
@@ -3185,7 +3415,7 @@ async fn reread_marker_parent_before_mutation(
         ))
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
-    require_parent_attachments(&body, expected_attachments, context)
+    require_parent_attachments(&body, expected_attachments, t.space(), context)
 }
 
 fn require_exact_delete_id(body: &Value, id: &str, context: &str) -> elasticctl_core::Result<()> {
@@ -3293,6 +3523,7 @@ async fn create_marked_rule(
 async fn cleanup_marker_integration(
     t: &elasticctl_core::Transport,
     id: &str,
+    expected_version: &str,
 ) -> elasticctl_core::Result<()> {
     let path = format!(
         "/api/fleet/package_policies/{}?format=simplified",
@@ -3308,7 +3539,7 @@ async fn cleanup_marker_integration(
             ));
         }
     };
-    if !owns_marker_integration(&current, id) {
+    if validate_marker_integration(&current, id, expected_version, t.space()).is_err() {
         return Err(recording_error(
             "refusing to delete integration policy: its marker identity no longer matches",
         ));
@@ -3347,12 +3578,12 @@ async fn cleanup_marker_integration_parent(
             ));
         }
     };
-    if !owns_integration_policy_parent(&current) {
+    if validate_marker_integration_parent_for_delete(&current, t.space()).is_err() {
         return Err(recording_error(
             "refusing to delete integration policy parent: its marker identity no longer matches",
         ));
     }
-    require_parent_attachments(&current, &[], "integration parent cleanup")?;
+    require_parent_attachments(&current, &[], t.space(), "integration parent cleanup")?;
     let deleted = t
         .post(
             "/api/fleet/agent_policies/delete",
@@ -3387,22 +3618,50 @@ impl RecordingSession<'_> {
     /// inventory must remain exactly equal to its preflight baseline.
     async fn cleanup_integration_resources(&mut self) -> elasticctl_core::Result<()> {
         let mut errors = Vec::new();
+        let expected_system_version = self
+            .ownership
+            .integration_package_inventory
+            .as_ref()
+            .and_then(baseline_system_package_version)
+            .map(str::to_owned);
 
         if self.ownership.integration_policy {
-            match cleanup_marker_integration(self.transport, INTEGRATION_POLICY_ID).await {
-                Ok(()) => self.ownership.integration_policy = false,
-                Err(error) => errors.push(format!(
-                    "cleaning integration policy {INTEGRATION_POLICY_ID}: {}",
-                    error.message
+            match expected_system_version.as_deref() {
+                Some(version) => match cleanup_marker_integration(
+                    self.transport,
+                    INTEGRATION_POLICY_ID,
+                    version,
+                )
+                .await
+                {
+                    Ok(()) => self.ownership.integration_policy = false,
+                    Err(error) => errors.push(format!(
+                        "cleaning integration policy {INTEGRATION_POLICY_ID}: {}",
+                        error.message
+                    )),
+                },
+                None => errors.push(format!(
+                    "refusing to delete integration policy {INTEGRATION_POLICY_ID}: exact baseline system package version is unavailable"
                 )),
             }
         }
         if self.ownership.integration_policy_dup {
-            match cleanup_marker_integration(self.transport, INTEGRATION_POLICY_DUP_ID).await {
-                Ok(()) => self.ownership.integration_policy_dup = false,
-                Err(error) => errors.push(format!(
-                    "cleaning integration policy {INTEGRATION_POLICY_DUP_ID}: {}",
-                    error.message
+            match expected_system_version.as_deref() {
+                Some(version) => match cleanup_marker_integration(
+                    self.transport,
+                    INTEGRATION_POLICY_DUP_ID,
+                    version,
+                )
+                .await
+                {
+                    Ok(()) => self.ownership.integration_policy_dup = false,
+                    Err(error) => errors.push(format!(
+                        "cleaning integration policy {INTEGRATION_POLICY_DUP_ID}: {}",
+                        error.message
+                    )),
+                },
+                None => errors.push(format!(
+                    "refusing to delete integration policy {INTEGRATION_POLICY_DUP_ID}: exact baseline system package version is unavailable"
                 )),
             }
         }
@@ -5756,9 +6015,7 @@ async fn record_integration_policies(
             safe_recording_transport_error("reading system package status failed", error)
         })?;
     let package_status = decode_system_package_status(&package_status_body)?;
-    let reduced_status = reduce_package_status_item(&package_status_body).ok_or_else(|| {
-        recording_error("refusing to record: system package status did not carry a reducible item")
-    })?;
+    let reduced_status = reduce_system_package_status(&package_status);
     recording.fixtures.push(response_fixture(
         "package_system",
         flavor,
@@ -5860,11 +6117,10 @@ async fn record_integration_policies(
         }
     }
 
-    // No mutation before this point can change the package inventory. Once
-    // the parent is about to be created, retain the baseline so outer cleanup
-    // can prove restoration after any later failure.
+    // No mutation before this point can change the package inventory. Retain
+    // the baseline for later audit and package-coordinate proof, never as an
+    // ownership claim for an ambiguous create result.
     session.ownership.integration_package_inventory = Some(baseline_inventory.clone());
-    session.ownership.integration_policy_parent = true;
     let parent_create_body = marker_integration_parent_create_body();
     record_trace("fleet-integration-policy-parent-create");
     let parent_created = t
@@ -5879,18 +6135,20 @@ async fn record_integration_policies(
                 error,
             )
         })?;
-    if !owns_integration_policy_parent(&parent_created) {
-        return Err(recording_error(
-            "integration policy parent create did not preserve the marker identity",
-        ));
-    }
-    recording.fixtures.push(integration_policy_exchange_fixture(
-        "integration_policy_parent_create",
-        flavor,
-        version,
-        parent_create_body,
-        parent_created,
-    )?);
+    validate_marker_integration_parent_identity(&parent_created, t.space()).map_err(|_| {
+        recording_error("integration policy parent create did not preserve the marker identity")
+    })?;
+    session.ownership.integration_policy_parent = true;
+    recording
+        .fixtures
+        .push(integration_policy_exchange_fixture_in_space(
+            "integration_policy_parent_create",
+            flavor,
+            version,
+            t.space(),
+            parent_create_body,
+            parent_created,
+        )?);
 
     record_trace("fleet-integration-policy-metadata");
     let package_metadata = t
@@ -5916,7 +6174,6 @@ async fn record_integration_policies(
         None,
     ));
 
-    session.ownership.integration_policy = true;
     let create_body = marker_integration_create_body(&package_status.version);
     record_trace("fleet-integration-policy-create");
     let created_result = t
@@ -5936,14 +6193,32 @@ async fn record_integration_policies(
     )
     .await;
     let created = match (created_result, inventory_observation) {
-        (Ok(created), Ok(())) => created,
+        (Ok(created), Ok(())) => {
+            require_marker_integration_response(
+                &created,
+                &package_status.version,
+                t.space(),
+                "integration policy create",
+            )?;
+            session.ownership.integration_policy = true;
+            created
+        }
         (Err(error), Ok(())) => {
             return Err(safe_recording_transport_error(
                 "creating integration policy marker failed",
                 error,
             ));
         }
-        (Ok(_), Err(error)) => return Err(error),
+        (Ok(created), Err(observation)) => {
+            require_marker_integration_response(
+                &created,
+                &package_status.version,
+                t.space(),
+                "integration policy create",
+            )?;
+            session.ownership.integration_policy = true;
+            return Err(observation);
+        }
         (Err(error), Err(observation)) => {
             return Err(combine_package_policy_attempt_and_inventory_errors(
                 "creating integration policy marker failed",
@@ -5952,18 +6227,16 @@ async fn record_integration_policies(
             ));
         }
     };
-    require_marker_integration_response(
-        &created,
-        &package_status.version,
-        "integration policy create",
-    )?;
-    recording.fixtures.push(integration_policy_exchange_fixture(
-        "integration_policy_create",
-        flavor,
-        version,
-        create_body,
-        created,
-    )?);
+    recording
+        .fixtures
+        .push(integration_policy_exchange_fixture_in_space(
+            "integration_policy_create",
+            flavor,
+            version,
+            t.space(),
+            create_body,
+            created,
+        )?);
 
     record_trace("fleet-integration-policy-get");
     let got = t
@@ -5975,11 +6248,17 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy marker failed", error)
         })?;
-    require_marker_integration_response(&got, &package_status.version, "integration policy get")?;
-    recording.fixtures.push(integration_policy_fixture(
+    require_marker_integration_response(
+        &got,
+        &package_status.version,
+        t.space(),
+        "integration policy get",
+    )?;
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_get",
         flavor,
         version,
+        t.space(),
         got,
     )?);
 
@@ -5992,15 +6271,22 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("listing integration policy marker failed", error)
         })?;
-    if scope_integration_policy_list_to_marker(&mut listed, INTEGRATION_POLICY_ID) != 1 {
+    if scope_integration_policy_list_to_marker(
+        &mut listed,
+        INTEGRATION_POLICY_ID,
+        &package_status.version,
+        t.space(),
+    ) != 1
+    {
         return Err(recording_error(
             "integration policy list never contained the marker item",
         ));
     }
-    recording.fixtures.push(integration_policy_fixture(
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policies_list",
         flavor,
         version,
+        t.space(),
         listed,
     )?);
 
@@ -6041,6 +6327,7 @@ async fn record_integration_policies(
                 &created,
                 INTEGRATION_POLICY_DUP_ID,
                 &package_status.version,
+                t.space(),
                 "duplicate integration policy create",
             )?;
             session.ownership.integration_policy_dup = true;
@@ -6053,6 +6340,7 @@ async fn record_integration_policies(
                 &created,
                 INTEGRATION_POLICY_DUP_ID,
                 &package_status.version,
+                t.space(),
                 "duplicate integration policy create",
             )?;
             session.ownership.integration_policy_dup = true;
@@ -6107,11 +6395,12 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy parent failed", error)
         })?;
-    require_parent_attachment(&parent_attached)?;
-    recording.fixtures.push(integration_policy_fixture(
+    require_parent_attachment(&parent_attached, t.space())?;
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_parent_get",
         flavor,
         version,
+        t.space(),
         parent_attached,
     )?);
 
@@ -6138,15 +6427,19 @@ async fn record_integration_policies(
     require_marker_integration_response(
         &updated,
         &package_status.version,
+        t.space(),
         "integration policy update",
     )?;
-    recording.fixtures.push(integration_policy_exchange_fixture(
-        "integration_policy_update",
-        flavor,
-        version,
-        update_body,
-        updated,
-    )?);
+    recording
+        .fixtures
+        .push(integration_policy_exchange_fixture_in_space(
+            "integration_policy_update",
+            flavor,
+            version,
+            t.space(),
+            update_body,
+            updated,
+        )?);
 
     record_trace("fleet-integration-policy-round-trip");
     let round_trip = t
@@ -6161,6 +6454,7 @@ async fn record_integration_policies(
     require_marker_integration_response(
         &round_trip,
         &package_status.version,
+        t.space(),
         "integration policy round trip",
     )?;
     if round_trip
@@ -6172,10 +6466,11 @@ async fn record_integration_policies(
             "integration policy round trip did not retain the update description",
         ));
     }
-    recording.fixtures.push(integration_policy_fixture(
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_round_trip",
         flavor,
         version,
+        t.space(),
         round_trip,
     )?);
 
@@ -6237,10 +6532,11 @@ async fn record_integration_policies(
             safe_recording_transport_error("deleting integration policy marker failed", error)
         })?;
     require_exact_delete_id(&deleted, INTEGRATION_POLICY_ID, "integration policy delete")?;
-    recording.fixtures.push(integration_policy_fixture(
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_delete",
         flavor,
         version,
+        t.space(),
         deleted,
     )?);
     record_trace("fleet-integration-policy-delete-check");
@@ -6294,10 +6590,11 @@ async fn record_integration_policies(
         INTEGRATION_POLICY_PARENT_ID,
         "integration policy parent delete",
     )?;
-    recording.fixtures.push(integration_policy_fixture(
+    recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_parent_delete",
         flavor,
         version,
+        t.space(),
         parent_deleted,
     )?);
     record_trace("fleet-integration-policy-parent-delete-check");
@@ -8333,6 +8630,180 @@ mod tests {
         })
     }
 
+    fn merge_marker_item_fields(response: &mut Value, fields: &Value) {
+        let item = response["item"]
+            .as_object_mut()
+            .expect("marker response item is an object");
+        for (field, value) in fields.as_object().expect("marker field patch is an object") {
+            item.insert(field.clone(), value.clone());
+        }
+    }
+
+    fn unsafe_marker_integration_fields() -> Vec<(&'static str, Value)> {
+        vec![
+            ("managed", json!({"is_managed": true})),
+            ("agentless", json!({"supports_agentless": true})),
+            (
+                "cloud connector support",
+                json!({"supports_cloud_connector": true}),
+            ),
+            ("output reference", json!({"output_id": "foreign-output"})),
+            (
+                "cloud connector id",
+                json!({"cloud_connector_id": "foreign-connector"}),
+            ),
+            (
+                "cloud connector name",
+                json!({"cloud_connector_name": "foreign-connector"}),
+            ),
+            (
+                "inconsistent deprecated parent id",
+                json!({"policy_id": "foreign-parent"}),
+            ),
+            ("malformed deprecated parent id", json!({"policy_id": {}})),
+            (
+                "secret references",
+                json!({"secret_references": [{"id": "foreign-secret"}]}),
+            ),
+            (
+                "malformed secret references",
+                json!({"secret_references": {"id": "foreign-secret"}}),
+            ),
+            ("cross-space camel case", json!({"spaceIds": ["other"]})),
+            ("malformed camel case spaces", json!({"spaceIds": {}})),
+            ("cross-space snake case", json!({"space_ids": ["other"]})),
+            ("malformed snake case spaces", json!({"space_ids": {}})),
+            ("disabled", json!({"enabled": false})),
+            ("variables", json!({"vars": {"token": "foreign"}})),
+            ("malformed variables", json!({"vars": []})),
+            (
+                "variable group selections",
+                json!({"var_group_selections": {"group": "foreign"}}),
+            ),
+            (
+                "malformed variable group selections",
+                json!({"var_group_selections": []}),
+            ),
+            ("condition", json!({"condition": "host.name == 'foreign'"})),
+            ("malformed condition", json!({"condition": {}})),
+            (
+                "additional permissions",
+                json!({"additional_datastreams_permissions": ["foreign"]}),
+            ),
+            (
+                "malformed additional permissions",
+                json!({"additional_datastreams_permissions": {}}),
+            ),
+            (
+                "global data tags",
+                json!({"global_data_tags": [{"name": "foreign"}]}),
+            ),
+            (
+                "malformed global data tags",
+                json!({"global_data_tags": {}}),
+            ),
+        ]
+    }
+
+    fn unsafe_marker_parent_fields() -> Vec<(&'static str, Value)> {
+        let mut fields = vec![
+            ("default policy", "is_default"),
+            ("default Fleet Server policy", "is_default_fleet_server"),
+            ("Fleet Server policy", "has_fleet_server"),
+            ("managed parent", "is_managed"),
+            ("preconfigured parent", "is_preconfigured"),
+            ("agentless parent", "supports_agentless"),
+            ("verifier parent", "is_verifier"),
+            ("protected parent", "is_protected"),
+        ]
+        .into_iter()
+        .map(|(label, field)| (label, json!({field: true})))
+        .collect::<Vec<_>>();
+        fields.extend([
+            ("agentless configuration", json!({"agentless": {}})),
+            (
+                "data output reference",
+                json!({"data_output_id": "foreign-output"}),
+            ),
+            (
+                "monitoring output reference",
+                json!({"monitoring_output_id": "foreign-output"}),
+            ),
+            (
+                "download source reference",
+                json!({"download_source_id": "foreign-source"}),
+            ),
+            (
+                "Fleet Server host reference",
+                json!({"fleet_server_host_id": "foreign-host"}),
+            ),
+            ("required versions", json!({"required_versions": []})),
+            ("attached agents", json!({"agents": 1})),
+            ("cross-space parent", json!({"space_ids": ["other"]})),
+            ("malformed parent spaces", json!({"space_ids": {}})),
+            ("cross-space camel parent", json!({"spaceIds": ["other"]})),
+            ("malformed camel parent spaces", json!({"spaceIds": {}})),
+            (
+                "parent global data tags",
+                json!({"global_data_tags": [{"name": "foreign"}]}),
+            ),
+            (
+                "malformed parent global data tags",
+                json!({"global_data_tags": {}}),
+            ),
+            (
+                "agent features",
+                json!({"agent_features": [{"name": "foreign", "enabled": true}]}),
+            ),
+            ("malformed agent features", json!({"agent_features": {}})),
+            (
+                "advanced settings",
+                json!({"advanced_settings": {"token": "foreign"}}),
+            ),
+            (
+                "malformed advanced settings",
+                json!({"advanced_settings": []}),
+            ),
+            ("overrides", json!({"overrides": {"token": "foreign"}})),
+            ("malformed overrides", json!({"overrides": []})),
+            (
+                "keep monitoring alive",
+                json!({"keep_monitoring_alive": true}),
+            ),
+            (
+                "malformed keep monitoring alive",
+                json!({"keep_monitoring_alive": {}}),
+            ),
+            (
+                "monitoring pprof",
+                json!({"monitoring_pprof_enabled": true}),
+            ),
+            (
+                "malformed monitoring pprof",
+                json!({"monitoring_pprof_enabled": {}}),
+            ),
+            (
+                "monitoring http",
+                json!({"monitoring_http": {"token": "foreign"}}),
+            ),
+            ("malformed monitoring http", json!({"monitoring_http": []})),
+            (
+                "monitoring diagnostics",
+                json!({"monitoring_diagnostics": {"token": "foreign"}}),
+            ),
+            (
+                "malformed monitoring diagnostics",
+                json!({"monitoring_diagnostics": []}),
+            ),
+            ("unenroll timeout", json!({"unenroll_timeout": 1})),
+            (
+                "malformed unenroll timeout",
+                json!({"unenroll_timeout": false}),
+            ),
+        ]);
+        fields
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum IntegrationLifecycleFailure {
         None,
@@ -8346,6 +8817,8 @@ mod tests {
     ) {
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
             .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
             .mount(server)
             .await;
@@ -8369,6 +8842,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 match integration_reads_for_response
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -8385,6 +8859,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
             .mount(server)
             .await;
@@ -8411,6 +8886,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
             .and(body_json(marker_integration_parent_create_body()))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
@@ -8443,6 +8919,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("page", "1"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortField", "created_at"))
+            .and(query_param("sortOrder", "asc"))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "items": [marker_integration_response("elasticctl sample integration policy")["item"].clone()],
                 "total": 1,
@@ -8522,12 +9003,18 @@ mod tests {
     /// must make before each destructive mutation. With the old lifecycle, the
     /// swapped response arrives only after the unsafe write; with the fixed
     /// lifecycle, it arrives immediately before the write and stops it.
-    async fn mount_integration_lifecycle_with_revalidation_race(
+    async fn mount_integration_lifecycle_with_revalidation_changes(
         server: &MockServer,
         swap: IntegrationLifecycleSwap,
+        integration_fields: &Value,
+        parent_fields: &Value,
+        integration_response_override: Option<Value>,
+        parent_response_override: Option<Value>,
     ) {
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
             .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
             .mount(server)
             .await;
@@ -8549,7 +9036,8 @@ mod tests {
         let integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
         let updated = marker_integration_response(INTEGRATION_POLICY_UPDATED_DESCRIPTION);
         let mut swapped_integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
-        swapped_integration["item"]["inputs"] = json!({"untrusted": {"token": "private"}});
+        merge_marker_item_fields(&mut swapped_integration, integration_fields);
+        let swapped_integration = integration_response_override.unwrap_or(swapped_integration);
         let integration_swap_at = match swap {
             IntegrationLifecycleSwap::Update => Some(2),
             IntegrationLifecycleSwap::IntegrationDelete => Some(5),
@@ -8560,6 +9048,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 let read = integration_reads_for_response
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -8585,6 +9074,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
             .mount(server)
             .await;
@@ -8596,7 +9086,8 @@ mod tests {
         let mut attached_parent = marker_integration_parent_response();
         attached_parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
         let mut swapped_parent = attached_parent.clone();
-        swapped_parent["item"]["monitoring_enabled"] = json!(["logs"]);
+        merge_marker_item_fields(&mut swapped_parent, parent_fields);
+        let swapped_parent = parent_response_override.unwrap_or(swapped_parent);
         let parent_swap_at = match swap {
             IntegrationLifecycleSwap::AttachedParentDelete => Some(2),
             IntegrationLifecycleSwap::FinalParentDelete => Some(3),
@@ -8629,6 +9120,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
             .and(body_json(marker_integration_parent_create_body()))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
@@ -8657,6 +9149,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("page", "1"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortField", "created_at"))
+            .and(query_param("sortOrder", "asc"))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "items": [marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone()],
                 "total": 1,
@@ -8710,6 +9207,303 @@ mod tests {
                 integration_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
             })
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_integration_lifecycle_with_revalidation_race(
+        server: &MockServer,
+        swap: IntegrationLifecycleSwap,
+    ) {
+        mount_integration_lifecycle_with_revalidation_changes(
+            server,
+            swap,
+            &json!({"inputs": {"untrusted": {"token": "private"}}}),
+            &json!({"monitoring_enabled": ["logs"]}),
+            None,
+            None,
+        )
+        .await;
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum AmbiguousCreateOutcome {
+        Conflict,
+        ServerError,
+        RootItem,
+    }
+
+    fn ambiguous_create_response(
+        outcome: AmbiguousCreateOutcome,
+        root_item: Value,
+    ) -> ResponseTemplate {
+        match outcome {
+            AmbiguousCreateOutcome::Conflict => {
+                ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
+            }
+            AmbiguousCreateOutcome::ServerError => {
+                ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
+            }
+            AmbiguousCreateOutcome::RootItem => ResponseTemplate::new(200).set_body_json(root_item),
+        }
+    }
+
+    async fn mount_parent_create_ambiguous_winner(
+        server: &MockServer,
+        outcome: AmbiguousCreateOutcome,
+    ) {
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(server)
+            .await;
+        for id in [INTEGRATION_POLICY_ID, INTEGRATION_POLICY_DUP_ID] {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/fleet/package_policies/{id}")))
+                .and(query_param("format", "simplified"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+                .mount(server)
+                .await;
+        }
+
+        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_reads_for_response = parent_reads.clone();
+        let mut winner = marker_integration_parent_response();
+        winner["item"]["package_policies"] = json!([]);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(winner.clone())
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(ambiguous_create_response(
+                outcome,
+                marker_integration_parent_response()["item"].clone(),
+            ))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_primary_create_ambiguous_winner(
+        server: &MockServer,
+        outcome: AmbiguousCreateOutcome,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(system_package_metadata()))
+            .mount(server)
+            .await;
+
+        let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let primary_reads_for_response = primary_reads.clone();
+        let winner = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                if primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(winner.clone())
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(server)
+            .await;
+
+        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_reads_for_response = parent_reads.clone();
+        let mut attached_parent = marker_integration_parent_response();
+        attached_parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(attached_parent.clone())
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(ambiguous_create_response(
+                outcome,
+                marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone(),
+            ))
+            .mount(server)
+            .await;
+
+        primary_reads
+    }
+
+    async fn mount_primary_create_with_failed_inventory_observation(server: &MockServer) {
+        let inventory_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inventory_reads_for_response = inventory_reads.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(move |_: &wiremock::Request| {
+                let read =
+                    inventory_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if (1..=3).contains(&read) {
+                    ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(installed_system_inventory())
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(system_package_metadata()))
+            .mount(server)
+            .await;
+
+        let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let primary_reads_for_response = primary_reads.clone();
+        let primary = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                match primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 => ResponseTemplate::new(200).set_body_json(primary.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})))
+            .mount(server)
+            .await;
+
+        let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let parent_reads_for_response = parent_reads.clone();
+        let mut detached_parent = marker_integration_parent_response();
+        detached_parent["item"]["package_policies"] = json!([]);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                match parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                    1 => ResponseTemplate::new(200).set_body_json(detached_parent.clone()),
+                    _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
+                }
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
+            .and(body_json(marker_integration_parent_create_body()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/package_policies"))
+            .and(query_param("format", "simplified"))
+            .and(body_json(marker_integration_create_body("2.0.0")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID})),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id": INTEGRATION_POLICY_PARENT_ID})),
+            )
+            .expect(1)
             .mount(server)
             .await;
     }
@@ -10394,6 +11188,31 @@ mod tests {
     }
 
     #[test]
+    fn strict_system_status_reducer_drops_latest_version_metadata() {
+        let mut body = installed_system_status();
+        body["item"]["latestVersion"] = json!({
+            "host": "private.example",
+            "token": "private-registry-token"
+        });
+
+        let status = decode_system_package_status(&body).expect("validated system status");
+        let reduced = reduce_system_package_status(&status);
+
+        assert_eq!(
+            reduced,
+            json!({
+                "name": INTEGRATION_POLICY_PACKAGE,
+                "version": "2.0.0",
+                "status": "installed",
+                "installationInfo": {"version": "2.0.0"}
+            })
+        );
+        let encoded = reduced.to_string();
+        assert!(!encoded.contains("private.example"));
+        assert!(!encoded.contains("private-registry-token"));
+    }
+
+    #[test]
     fn scrub_data_view_default_preserves_shape_without_real_default_id() {
         let mut nonmarker = json!({"data_view_id": "private-default"});
         scrub_data_view_default(&mut nonmarker);
@@ -11039,7 +11858,7 @@ mod tests {
                     "enabled": true,
                     "created_by": "private-user",
                     "created_at": "2026-09-04T00:00:00.000Z",
-                    "spaceIds": ["private-space"],
+                    "spaceIds": ["default"],
                     "version": "private-concurrency-token"
                 }
             ],
@@ -11049,7 +11868,12 @@ mod tests {
         });
 
         assert_eq!(
-            scope_integration_policy_list_to_marker(&mut list, INTEGRATION_POLICY_ID),
+            scope_integration_policy_list_to_marker(
+                &mut list,
+                INTEGRATION_POLICY_ID,
+                "2.0.0",
+                "default",
+            ),
             1
         );
         let fixture =
@@ -11067,7 +11891,6 @@ mod tests {
             "private policy reusing the marker id",
             "private-package",
             "private-user",
-            "private-space",
             "private-concurrency-token",
         ] {
             assert!(!encoded.contains(private), "fixture leaked {private}");
@@ -11133,6 +11956,176 @@ mod tests {
             };
             assert!(!error.message.contains(private), "reducer leaked {private}");
         }
+    }
+
+    #[test]
+    fn integration_marker_proofs_reject_every_nonportable_live_shape() {
+        for (label, fields) in unsafe_marker_integration_fields() {
+            let mut response = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+            merge_marker_item_fields(&mut response, &fields);
+            assert!(
+                require_marker_integration_response(
+                    &response,
+                    "2.0.0",
+                    "default",
+                    "integration strict-proof regression",
+                )
+                .is_err(),
+                "{label} must not pass an integration ownership proof"
+            );
+            assert!(
+                integration_policy_fixture("integration_policy_get", "test", "9.6.0", response)
+                    .is_err(),
+                "{label} must not become a public fixture"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_marker_delete_proofs_reject_every_nonportable_live_shape() {
+        for (label, fields) in unsafe_marker_parent_fields() {
+            let mut response = marker_integration_parent_response();
+            response["item"]["package_policies"] = json!([]);
+            merge_marker_item_fields(&mut response, &fields);
+            assert!(
+                require_parent_attachments(
+                    &response,
+                    &[],
+                    "default",
+                    "parent strict-proof regression",
+                )
+                .is_err(),
+                "{label} must not pass a parent delete proof"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_marker_proofs_accept_documented_empty_simplified_shapes() {
+        let mut integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        merge_marker_item_fields(
+            &mut integration,
+            &json!({
+                "is_managed": false,
+                "supports_agentless": false,
+                "supports_cloud_connector": false,
+                "output_id": false,
+                "cloud_connector_id": false,
+                "cloud_connector_name": false,
+                "policy_id": INTEGRATION_POLICY_PARENT_ID,
+                "secret_references": [],
+                "spaceIds": ["default"],
+                "space_ids": null,
+                "vars": {},
+                "var_group_selections": {},
+                "condition": "",
+                "additional_datastreams_permissions": [],
+                "global_data_tags": []
+            }),
+        );
+        require_marker_integration_response(
+            &integration,
+            "2.0.0",
+            "default",
+            "integration simplified compatibility",
+        )
+        .expect("documented empty integration fields are safe");
+        integration["item"]["output_id"] = Value::Null;
+        integration["item"]["cloud_connector_id"] = Value::Null;
+        integration["item"]["cloud_connector_name"] = Value::Null;
+        require_marker_integration_response(
+            &integration,
+            "2.0.0",
+            "default",
+            "integration nullable simplified compatibility",
+        )
+        .expect("documented nullable integration fields are safe");
+
+        let mut parent = marker_integration_parent_response();
+        parent["item"]["package_policies"] = json!([]);
+        merge_marker_item_fields(
+            &mut parent,
+            &json!({
+                "is_default": false,
+                "is_default_fleet_server": false,
+                "has_fleet_server": false,
+                "is_managed": false,
+                "is_preconfigured": false,
+                "supports_agentless": false,
+                "is_verifier": false,
+                "is_protected": false,
+                "agentless": null,
+                "data_output_id": null,
+                "monitoring_output_id": null,
+                "download_source_id": null,
+                "fleet_server_host_id": null,
+                "required_versions": null,
+                "space_ids": ["default"],
+                "global_data_tags": [],
+                "agent_features": [],
+                "advanced_settings": {},
+                "overrides": null,
+                "keep_monitoring_alive": false,
+                "monitoring_pprof_enabled": false,
+                "monitoring_http": {},
+                "monitoring_diagnostics": null,
+                "unenroll_timeout": null
+            }),
+        );
+        require_parent_attachments(&parent, &[], "default", "parent simplified compatibility")
+            .expect("documented empty parent fields are safe");
+    }
+
+    #[test]
+    fn marker_space_proofs_normalize_an_empty_active_space_to_default() {
+        let mut integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        integration["item"]["spaceIds"] = json!(["default"]);
+        require_marker_integration_response(
+            &integration,
+            "2.0.0",
+            "",
+            "default-space integration compatibility",
+        )
+        .expect("an empty configured space resolves to Kibana's default space");
+
+        let mut parent = marker_integration_parent_response();
+        parent["item"]["package_policies"] = json!([]);
+        parent["item"]["space_ids"] = json!(["default"]);
+        require_parent_attachments(&parent, &[], "", "default-space parent compatibility")
+            .expect("an empty configured space resolves to Kibana's default space");
+    }
+
+    #[test]
+    fn marker_space_proofs_use_the_active_kibana_space() {
+        let mut integration = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        integration["item"]["spaceIds"] = json!(["security"]);
+        require_marker_integration_response(
+            &integration,
+            "2.0.0",
+            "security",
+            "non-default integration space",
+        )
+        .expect("the active non-default space is safe");
+        assert!(
+            require_marker_integration_response(
+                &integration,
+                "2.0.0",
+                "default",
+                "wrong integration space",
+            )
+            .is_err(),
+            "a non-default live space is not the default space"
+        );
+
+        let mut parent = marker_integration_parent_response();
+        parent["item"]["package_policies"] = json!([]);
+        parent["item"]["space_ids"] = json!(["security"]);
+        require_parent_attachments(&parent, &[], "security", "non-default parent space")
+            .expect("the active non-default parent space is safe");
+        assert!(
+            require_parent_attachments(&parent, &[], "default", "wrong parent space").is_err(),
+            "a non-default parent space is not the default space"
+        );
     }
 
     #[test]
@@ -11268,7 +12261,12 @@ mod tests {
             "unknown_envelope": {"host": "private.example"},
         });
         assert_eq!(
-            scope_integration_policy_list_to_marker(&mut list, INTEGRATION_POLICY_ID),
+            scope_integration_policy_list_to_marker(
+                &mut list,
+                INTEGRATION_POLICY_ID,
+                "2.0.0",
+                "default",
+            ),
             1
         );
         let list_fixture =
@@ -11362,6 +12360,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {}})))
             .expect(1)
             .mount(&server)
@@ -11408,6 +12407,8 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(json!({"items": [], "total": 0})),
             )
@@ -11454,6 +12455,8 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "items": [{"name": "system", "status": "installed", "version": "1.9.0"}],
                 "total": 1
@@ -11559,6 +12562,8 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
             .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
             .mount(&server)
             .await;
@@ -11580,6 +12585,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 match primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
@@ -11598,6 +12604,7 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 if duplicate_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                     == 0
@@ -11629,6 +12636,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies"))
+            .and(query_param("sys_monitoring", "false"))
             .and(body_json(marker_integration_parent_create_body()))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(marker_integration_parent_response()),
@@ -11656,6 +12664,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/package_policies"))
+            .and(query_param("page", "1"))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortField", "created_at"))
+            .and(query_param("sortOrder", "asc"))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "items": [marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone()],
                 "total": 1,
@@ -11702,6 +12715,151 @@ mod tests {
                 && request.url.path()
                     == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"))
         }));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_parent_create_never_claims_another_runs_marker_for_cleanup() {
+        for outcome in [
+            AmbiguousCreateOutcome::Conflict,
+            AmbiguousCreateOutcome::ServerError,
+            AmbiguousCreateOutcome::RootItem,
+        ] {
+            let server = MockServer::start().await;
+            mount_parent_create_ambiguous_winner(&server, outcome).await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("an ambiguous parent create must stop recording");
+            assert!(
+                !session.ownership.integration_policy_parent,
+                "{outcome:?} must not claim a parent it cannot prove"
+            );
+            assert!(
+                session.cleanup().await.is_err(),
+                "a concurrent marker parent remains for investigation"
+            );
+
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete")
+                }),
+                "{outcome:?} must not let outer cleanup delete the winner parent"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_primary_create_never_claims_another_runs_marker_for_cleanup() {
+        for outcome in [
+            AmbiguousCreateOutcome::Conflict,
+            AmbiguousCreateOutcome::ServerError,
+            AmbiguousCreateOutcome::RootItem,
+        ] {
+            let server = MockServer::start().await;
+            let primary_reads = mount_primary_create_ambiguous_winner(&server, outcome).await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("an ambiguous integration create must stop recording");
+            assert!(
+                !session.ownership.integration_policy,
+                "{outcome:?} must not claim an integration it cannot prove"
+            );
+            assert!(
+                session.ownership.integration_policy_parent,
+                "the independently proven parent remains eligible for safe cleanup checks"
+            );
+            assert!(
+                session.cleanup().await.is_err(),
+                "the attached concurrent integration remains for investigation"
+            );
+
+            assert_eq!(
+                primary_reads.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{outcome:?} must not reread the winner as cleanup-owned"
+            );
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+                }),
+                "{outcome:?} must not let outer cleanup delete the winner integration"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn proven_primary_create_is_claimed_before_a_failed_inventory_observation() {
+        let server = MockServer::start().await;
+        mount_primary_create_with_failed_inventory_observation(&server).await;
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership::default(),
+        };
+        let mut recording = Recording {
+            dir: PathBuf::from("unused-in-test"),
+            fixtures: Vec::new(),
+        };
+
+        record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+            .await
+            .expect_err("the failed inventory observation must stop recording");
+        assert!(
+            session.ownership.integration_policy,
+            "a proven create remains cleanup-owned when only its observation failed"
+        );
+        session
+            .cleanup_integration_resources()
+            .await
+            .expect("integration cleanup removes the proven create");
+
+        let requests = server.received_requests().await.expect("requests");
+        let mutations: Vec<_> = requests
+            .iter()
+            .filter(|request| matches!(request.method.as_str(), "POST" | "PUT" | "DELETE"))
+            .map(|request| (request.method.as_str(), request.url.path().to_string()))
+            .collect();
+        let calls: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.method.as_str(),
+                    request.url.path().to_string(),
+                    request.url.query().map(str::to_owned),
+                )
+            })
+            .collect();
+        assert!(
+            mutations.iter().any(|(method, path)| {
+                *method == "DELETE"
+                    && path == &format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+            }),
+            "expected integration cleanup DELETE, got mutations={mutations:?} calls={calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -11788,19 +12946,13 @@ mod tests {
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 if integration_gets_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                     == 0
                 {
-                    ResponseTemplate::new(200).set_body_json(json!({"item": {
-                        "id": INTEGRATION_POLICY_ID,
-                        "name": INTEGRATION_POLICY_NAME,
-                        "namespace": "default",
-                        "description": "elasticctl sample integration policy",
-                        "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
-                        "package": {"name": "system", "version": "2.0.0"},
-                        "inputs": {}
-                    }}))
+                    ResponseTemplate::new(200)
+                        .set_body_json(marker_integration_response(INTEGRATION_POLICY_DESCRIPTION))
                 } else {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                 }
@@ -11815,15 +12967,9 @@ mod tests {
             )))
             .respond_with(move |_: &wiremock::Request| {
                 if parent_gets_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    ResponseTemplate::new(200).set_body_json(json!({"item": {
-                        "id": INTEGRATION_POLICY_PARENT_ID,
-                        "name": INTEGRATION_POLICY_PARENT_NAME,
-                        "namespace": "default",
-                        "description": "elasticctl sample integration policy parent",
-                        "monitoring_enabled": [],
-                        "inactivity_timeout": 1_209_600,
-                        "package_policies": []
-                    }}))
+                    let mut parent = marker_integration_parent_response();
+                    parent["item"]["package_policies"] = json!([]);
+                    ResponseTemplate::new(200).set_body_json(parent)
                 } else {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                 }
@@ -11854,9 +13000,9 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "items": [], "total": 0
-            })))
+            .and(query_param("perPage", "1000"))
+            .and(query_param("sortOrder", "asc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
             .expect(1)
             .mount(&server)
             .await;
@@ -11866,7 +13012,10 @@ mod tests {
             ownership: CleanupOwnership {
                 integration_policy: true,
                 integration_policy_parent: true,
-                integration_package_inventory: Some(std::collections::BTreeSet::new()),
+                integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                    INTEGRATION_POLICY_PACKAGE.to_string(),
+                    "2.0.0".to_string(),
+                )])),
                 ..Default::default()
             },
         };
@@ -11906,12 +13055,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_cleanup_refuses_a_changed_package_version_without_delete() {
+        let server = MockServer::start().await;
+        let mut changed = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        changed["item"]["package"]["version"] = json!("2.0.1");
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(changed))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &transport,
+            ownership: CleanupOwnership {
+                integration_policy: true,
+                integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                    INTEGRATION_POLICY_PACKAGE.to_string(),
+                    "2.0.0".to_string(),
+                )])),
+                ..Default::default()
+            },
+        };
+
+        assert!(
+            session.cleanup_integration_resources().await.is_err(),
+            "a changed package version must remain for investigation"
+        );
+        assert!(session.ownership.integration_policy);
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && request.url.path()
+                    == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+        }));
+    }
+
+    #[tokio::test]
     async fn integration_cleanup_refuses_a_swapped_integration_without_delete() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
+            .and(query_param("format", "simplified"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
                 "id": INTEGRATION_POLICY_ID,
                 "name": INTEGRATION_POLICY_NAME,
@@ -11929,6 +13120,10 @@ mod tests {
             transport: &transport,
             ownership: CleanupOwnership {
                 integration_policy: true,
+                integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                    INTEGRATION_POLICY_PACKAGE.to_string(),
+                    "2.0.0".to_string(),
+                )])),
                 ..Default::default()
             },
         };
@@ -12059,6 +13254,337 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn integration_lifecycle_revalidation_blocks_nonportable_state_before_put_and_delete() {
+        let mut cases = unsafe_marker_integration_fields();
+        cases.push((
+            "changed package version",
+            json!({
+                "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.1"}
+            }),
+        ));
+
+        for (label, fields) in cases {
+            for (stage, swap, method_name) in [
+                ("update", IntegrationLifecycleSwap::Update, "PUT"),
+                (
+                    "integration delete",
+                    IntegrationLifecycleSwap::IntegrationDelete,
+                    "DELETE",
+                ),
+            ] {
+                let server = MockServer::start().await;
+                mount_integration_lifecycle_with_revalidation_changes(
+                    &server,
+                    swap,
+                    &fields,
+                    &json!({}),
+                    None,
+                    None,
+                )
+                .await;
+                let transport = mock_transport(&server);
+                let mut session = RecordingSession {
+                    transport: &transport,
+                    ownership: CleanupOwnership::default(),
+                };
+                let mut recording = Recording {
+                    dir: PathBuf::from("unused-in-test"),
+                    fixtures: Vec::new(),
+                };
+
+                let error =
+                    record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                        .await
+                        .expect_err("a changed marker must stop the lifecycle");
+                assert!(
+                    !error.message.contains("foreign"),
+                    "{label} {stage} error leaked injected state"
+                );
+                let requests = server.received_requests().await.expect("requests");
+                assert!(
+                    requests.iter().all(|request| {
+                        !(request.method.as_str() == method_name
+                            && request.url.path()
+                                == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+                    }),
+                    "{label} must stop before the {stage} {method_name}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_lifecycle_revalidation_blocks_nonportable_state_before_delete() {
+        for (label, fields) in unsafe_marker_parent_fields() {
+            let server = MockServer::start().await;
+            mount_integration_lifecycle_with_revalidation_changes(
+                &server,
+                IntegrationLifecycleSwap::AttachedParentDelete,
+                &json!({}),
+                &fields,
+                None,
+                None,
+            )
+            .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("a changed parent must stop the lifecycle");
+            assert!(
+                !error.message.contains("foreign"),
+                "{label} error leaked injected parent state"
+            );
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete")
+                }),
+                "{label} must stop before the attached-parent delete"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_revalidation_rejects_root_item_envelopes_before_mutation() {
+        let cases = [
+            (
+                "integration",
+                IntegrationLifecycleSwap::Update,
+                Some(marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone()),
+                None,
+                "PUT",
+                format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"),
+            ),
+            (
+                "parent",
+                IntegrationLifecycleSwap::AttachedParentDelete,
+                None,
+                Some(marker_integration_parent_response()["item"].clone()),
+                "POST",
+                "/api/fleet/agent_policies/delete".to_string(),
+            ),
+        ];
+
+        for (label, swap, integration_override, parent_override, method_name, route) in cases {
+            let server = MockServer::start().await;
+            mount_integration_lifecycle_with_revalidation_changes(
+                &server,
+                swap,
+                &json!({}),
+                &json!({}),
+                integration_override,
+                parent_override,
+            )
+            .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("a root item must not pass a strict single-response proof");
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == method_name && request.url.path() == route)
+                }),
+                "a root {label} response must stop before {method_name} {route}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_cleanup_rejects_nonportable_marker_state_without_delete() {
+        for (label, fields) in unsafe_marker_integration_fields() {
+            let server = MockServer::start().await;
+            let mut response = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+            merge_marker_item_fields(&mut response, &fields);
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+                )))
+                .and(query_param("format", "simplified"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership {
+                    integration_policy: true,
+                    integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                        INTEGRATION_POLICY_PACKAGE.to_string(),
+                        "2.0.0".to_string(),
+                    )])),
+                    ..Default::default()
+                },
+            };
+
+            let error = session
+                .cleanup_integration_resources()
+                .await
+                .expect_err("a changed integration must remain for investigation");
+            assert!(
+                !error.message.contains("foreign"),
+                "{label} cleanup error leaked injected state"
+            );
+            assert!(
+                session.ownership.integration_policy,
+                "{label} retained ownership"
+            );
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+                }),
+                "{label} must not be deleted during cleanup"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_rejects_nonportable_marker_state_without_delete() {
+        for (label, fields) in unsafe_marker_parent_fields() {
+            let server = MockServer::start().await;
+            let mut response = marker_integration_parent_response();
+            response["item"]["package_policies"] = json!([]);
+            merge_marker_item_fields(&mut response, &fields);
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership {
+                    integration_policy_parent: true,
+                    ..Default::default()
+                },
+            };
+
+            let error = session
+                .cleanup_integration_resources()
+                .await
+                .expect_err("a changed parent must remain for investigation");
+            assert!(
+                !error.message.contains("foreign"),
+                "{label} cleanup error leaked injected state"
+            );
+            assert!(
+                session.ownership.integration_policy_parent,
+                "{label} retained ownership"
+            );
+            let requests = server.received_requests().await.expect("requests");
+            assert!(
+                requests.iter().all(|request| {
+                    !(request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete")
+                }),
+                "{label} must not be deleted during cleanup"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_rejects_root_item_envelopes_without_mutation() {
+        let integration_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone(),
+            ))
+            .expect(1)
+            .mount(&integration_server)
+            .await;
+        let integration_transport = mock_transport(&integration_server);
+        let mut integration_session = RecordingSession {
+            transport: &integration_transport,
+            ownership: CleanupOwnership {
+                integration_policy: true,
+                integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                    INTEGRATION_POLICY_PACKAGE.to_string(),
+                    "2.0.0".to_string(),
+                )])),
+                ..Default::default()
+            },
+        };
+
+        integration_session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("a root integration response cannot authorize cleanup");
+        let integration_requests = integration_server
+            .received_requests()
+            .await
+            .expect("integration requests");
+        assert!(integration_requests.iter().all(|request| {
+            !(request.method.as_str() == "DELETE"
+                && request.url.path()
+                    == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+        }));
+
+        let parent_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(marker_integration_parent_response()["item"].clone()),
+            )
+            .expect(1)
+            .mount(&parent_server)
+            .await;
+        let parent_transport = mock_transport(&parent_server);
+        let mut parent_session = RecordingSession {
+            transport: &parent_transport,
+            ownership: CleanupOwnership {
+                integration_policy_parent: true,
+                ..Default::default()
+            },
+        };
+
+        parent_session
+            .cleanup_integration_resources()
+            .await
+            .expect_err("a root parent response cannot authorize cleanup");
+        let parent_requests = parent_server
+            .received_requests()
+            .await
+            .expect("parent requests");
+        assert!(parent_requests.iter().all(|request| {
+            !(request.method.as_str() == "POST"
+                && request.url.path() == "/api/fleet/agent_policies/delete")
+        }));
     }
 
     #[tokio::test]
