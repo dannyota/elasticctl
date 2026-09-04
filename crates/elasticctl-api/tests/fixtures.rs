@@ -132,7 +132,7 @@ const V0_6_AGENT_POLICY_FIXTURES: [&str; 12] = [
 
 /// Integration-policy fixtures added in 0.6.1, recorded from the marker
 /// integration and its marker parent lifecycle.
-const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 17] = [
+const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 16] = [
     "integration_policy_not_found.json",
     "integration_policy_parent_not_found.json",
     "package_system.json",
@@ -145,7 +145,6 @@ const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 17] = [
     "integration_policy_parent_get.json",
     "integration_policy_update.json",
     "integration_policy_round_trip.json",
-    "integration_policy_parent_delete_refused.json",
     "integration_policy_delete.json",
     "integration_policy_delete_not_found.json",
     "integration_policy_parent_delete.json",
@@ -1784,7 +1783,6 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
         let parent_get = read("integration_policy_parent_get.json");
         let update = read("integration_policy_update.json");
         let round_trip = read("integration_policy_round_trip.json");
-        let parent_delete_refused = read("integration_policy_parent_delete_refused.json");
         let integration_delete = read("integration_policy_delete.json");
         let integration_delete_not_found = read("integration_policy_delete_not_found.json");
         let parent_delete = read("integration_policy_parent_delete.json");
@@ -1796,7 +1794,6 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
             (&integration_delete_not_found, "not_found", 404),
             (&parent_delete_not_found, "not_found", 404),
             (&conflict, "conflict", 409),
-            (&parent_delete_refused, "conflict", 409),
         ] {
             assert_eq!(fixture["error"]["kind"], kind, "{}", set.display());
             assert_eq!(fixture["error"]["http_status"], status, "{}", set.display());

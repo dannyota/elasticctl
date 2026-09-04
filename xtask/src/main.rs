@@ -11,6 +11,8 @@ use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const RULE_ID: &str = "elasticctl-fixture-probe";
 const LIST_ID: &str = "elasticctl-sample-exceptions";
@@ -100,10 +102,9 @@ const AGENT_POLICY_ID: &str = "elasticctl-sample-agent-policy";
 const AGENT_POLICY_DUP_ID: &str = "elasticctl-sample-agent-policy-dup";
 const AGENT_POLICY_NAME: &str = "elasticctl-sample-agent-policy";
 
-/// The integration-policy probe owns a separate marker parent. The agent
-/// policy probe deletes its own parent as part of its 0.6.0 contract, whereas
-/// this one must stay attached until the package-policy delete and the parent
-/// delete-refusal measurement have both completed.
+/// The integration-policy probe owns a separate marker parent. Its integration
+/// is deleted before the parent, so the recorder never attempts to delete an
+/// attached parent.
 const INTEGRATION_POLICY_PARENT_ID: &str = "elasticctl-sample-integration-policy-parent";
 const INTEGRATION_POLICY_PARENT_NAME: &str = "elasticctl-sample-integration-policy-parent";
 const INTEGRATION_POLICY_ID: &str = "elasticctl-sample-integration-policy";
@@ -117,6 +118,49 @@ const INTEGRATION_POLICY_PARENT_DESCRIPTION: &str = "elasticctl sample integrati
 const INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT: u64 = 1_209_600;
 const INSTALLED_PACKAGE_INVENTORY_PATH: &str =
     "/api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc";
+const INTEGRATION_RECORDING_NONCE_PREFIX: &str = " [elasticctl-recorder-nonce=";
+const INTEGRATION_RECORDING_NONCE_SUFFIX: &str = "]";
+
+#[cfg(test)]
+const TEST_INTEGRATION_RECORDING_NONCE: &str = "test-integration-recording-nonce";
+
+#[cfg(not(test))]
+static INTEGRATION_RECORDING_NONCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Return a nonce that identifies one recorder session's live marker objects.
+/// It stays in memory and is never sent to output or public fixtures.
+#[cfg(not(test))]
+fn integration_recording_nonce() -> String {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let sequence = INTEGRATION_RECORDING_NONCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{timestamp:x}-{:x}-{sequence:x}", std::process::id())
+}
+
+#[cfg(test)]
+fn integration_recording_nonce() -> String {
+    TEST_INTEGRATION_RECORDING_NONCE.to_string()
+}
+
+fn nonce_bearing_integration_description(description: &str, nonce: &str) -> String {
+    format!(
+        "{description}{INTEGRATION_RECORDING_NONCE_PREFIX}{nonce}{INTEGRATION_RECORDING_NONCE_SUFFIX}"
+    )
+}
+
+fn marker_integration_description(nonce: &str) -> String {
+    nonce_bearing_integration_description(INTEGRATION_POLICY_DESCRIPTION, nonce)
+}
+
+fn marker_integration_updated_description(nonce: &str) -> String {
+    nonce_bearing_integration_description(INTEGRATION_POLICY_UPDATED_DESCRIPTION, nonce)
+}
+
+fn marker_integration_parent_description(nonce: &str) -> String {
+    nonce_bearing_integration_description(INTEGRATION_POLICY_PARENT_DESCRIPTION, nonce)
+}
 
 /// Fixed replacement for `created_at`/`updated_at` on a recorded agent
 /// policy (`scrub_agent_policy`). Kept probe-scoped rather than shared with
@@ -1102,19 +1146,30 @@ struct CleanupOwnership {
     /// duplicate that somehow survives is still cleaned up and fails the
     /// recording.
     agent_policy_dup: bool,
-    /// Claimed only after a successful marker create response passes the
-    /// strict exact integration and package-version proof. It clears only
-    /// after its exact-id delete is observed as absent. This must run before
-    /// parent cleanup because Fleet can reject a parent with an attachment.
+    /// Claimed after a create response or an exact-id ambiguity recovery
+    /// passes the strict nonce, integration, and package-version proof. It
+    /// clears only after its exact-id delete is observed as absent. This must
+    /// run before parent cleanup because Fleet can reject a parent with an
+    /// attachment.
     integration_policy: bool,
-    /// Claimed only when a duplicate-create success response passes the
-    /// strict exact proof. A conflict never claims it. A proven surviving
-    /// object remains owned until exact-id cleanup proves it is gone.
+    /// Claimed only when a duplicate create response or exact-id ambiguity
+    /// recovery passes the strict nonce proof. A conflicting response alone
+    /// never claims it. A proven surviving object remains owned until exact-id
+    /// cleanup proves it is gone.
     integration_policy_dup: bool,
-    /// Claimed only after a successful parent create response passes the
-    /// strict marker-identity proof. It clears after exact-id deletion is
-    /// observed as absent.
+    /// Claimed after a parent create response or exact-id ambiguity recovery
+    /// passes the strict nonce and empty-attachment proof. It clears after
+    /// exact-id deletion is observed as absent.
     integration_policy_parent: bool,
+    /// The session-only nonce embedded in every live integration marker
+    /// description. Cleanup retains it so an object from another recording
+    /// session can never be claimed or deleted by these fixed ids.
+    integration_recording_nonce: Option<String>,
+    /// The exact `system` version proven present before marker writes. This
+    /// is kept independently of the audit inventory so every cleanup GET can
+    /// prove the integration still points at the package version this session
+    /// was authorized to use.
+    integration_system_package_version: Option<String>,
     /// The strict, normalized inventory captured before an integration create.
     /// It is memory-only evidence: the recorder requires the exact `system`
     /// package to pre-exist and every package-policy create attempt must leave
@@ -1296,7 +1351,6 @@ const RECORD_TRACE_LABELS: &[&str] = &[
     "fleet-integration-policy-parent-get",
     "fleet-integration-policy-update",
     "fleet-integration-policy-round-trip",
-    "fleet-integration-policy-parent-delete-refused",
     "fleet-integration-policy-delete",
     "fleet-integration-policy-delete-check",
     "fleet-integration-policy-parent-delete",
@@ -1537,19 +1591,32 @@ fn marker_integration_package_matches(
 /// Prove that one package-policy item is still the recorder's exact portable
 /// marker. List rows use this directly; single responses must pass the strict
 /// envelope validator below as well.
-fn validate_marker_integration_item(
+fn validate_marker_integration_item_with_nonce(
     item: &serde_json::Map<String, Value>,
     id: &str,
     expected_version: &str,
     active_space: &str,
+    nonce: &str,
+    expected_description: Option<&str>,
 ) -> elasticctl_core::Result<()> {
+    let created_description = marker_integration_description(nonce);
+    let updated_description = marker_integration_updated_description(nonce);
+    let description_matches = match expected_description {
+        Some(expected) => {
+            (expected == created_description.as_str() || expected == updated_description.as_str())
+                && item.get("description").and_then(Value::as_str) == Some(expected)
+        }
+        None => matches!(
+            item.get("description").and_then(Value::as_str),
+            Some(description)
+                if description == created_description || description == updated_description
+        ),
+    };
     let identity_matches = item.get("id").and_then(Value::as_str) == Some(id)
         && item.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAME)
         && item.get("namespace").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAMESPACE)
-        && matches!(
-            item.get("description").and_then(Value::as_str),
-            Some(INTEGRATION_POLICY_DESCRIPTION | INTEGRATION_POLICY_UPDATED_DESCRIPTION)
-        )
+        && !nonce.trim().is_empty()
+        && description_matches
         && item
             .get("policy_ids")
             .and_then(Value::as_array)
@@ -1599,22 +1666,32 @@ fn validate_marker_integration_item(
 /// Prove that one live package-policy response is still the recorder's exact
 /// portable marker. Every mutation and cleanup path calls this same validator
 /// with the package version observed in the strict preflight inventory.
-fn validate_marker_integration<'a>(
+fn validate_marker_integration_with_nonce<'a>(
     value: &'a Value,
     id: &str,
     expected_version: &str,
     active_space: &str,
+    nonce: &str,
+    expected_description: Option<&str>,
 ) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
     let item = integration_response_item(value)?;
-    validate_marker_integration_item(item, id, expected_version, active_space)?;
+    validate_marker_integration_item_with_nonce(
+        item,
+        id,
+        expected_version,
+        active_space,
+        nonce,
+        expected_description,
+    )?;
     Ok(item)
 }
 
 /// Create responses may omit `agents`, but every parent state that can lead to
 /// a delete must additionally prove an empty attached-agent count below.
-fn validate_marker_integration_parent_identity<'a>(
+fn validate_marker_integration_parent_identity_with_nonce<'a>(
     value: &'a Value,
     active_space: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
     let item = integration_response_item(value).map_err(|_| {
         recording_error("integration policy parent response must contain an item object")
@@ -1624,7 +1701,8 @@ fn validate_marker_integration_parent_identity<'a>(
         && item.get("name").and_then(Value::as_str) == Some(INTEGRATION_POLICY_PARENT_NAME)
         && item.get("namespace").and_then(Value::as_str) == Some(INTEGRATION_POLICY_NAMESPACE)
         && item.get("description").and_then(Value::as_str)
-            == Some(INTEGRATION_POLICY_PARENT_DESCRIPTION)
+            == Some(marker_integration_parent_description(nonce).as_str())
+        && !nonce.trim().is_empty()
         && item
             .get("monitoring_enabled")
             .and_then(Value::as_array)
@@ -1677,11 +1755,12 @@ fn validate_marker_integration_parent_identity<'a>(
     }
 }
 
-fn validate_marker_integration_parent_for_delete<'a>(
+fn validate_marker_integration_parent_for_delete_with_nonce<'a>(
     value: &'a Value,
     active_space: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<&'a serde_json::Map<String, Value>> {
-    let item = validate_marker_integration_parent_identity(value, active_space)?;
+    let item = validate_marker_integration_parent_identity_with_nonce(value, active_space, nonce)?;
     if item.get("agents").and_then(Value::as_u64) == Some(0) {
         Ok(item)
     } else {
@@ -2599,19 +2678,27 @@ fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize
 /// Keep the marker integration only. Package-policy list responses otherwise
 /// expose every integration in a shared Fleet space, including user-owned
 /// configuration and possible secret references.
-fn scope_integration_policy_list_to_marker(
+fn scope_integration_policy_list_to_marker_with_nonce(
     body: &mut Value,
     marker_id: &str,
     expected_version: &str,
     active_space: &str,
+    nonce: &str,
 ) -> usize {
     let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
         return 0;
     };
     items.retain(|item| {
         item.as_object().is_some_and(|item| {
-            validate_marker_integration_item(item, marker_id, expected_version, active_space)
-                .is_ok()
+            validate_marker_integration_item_with_nonce(
+                item,
+                marker_id,
+                expected_version,
+                active_space,
+                nonce,
+                None,
+            )
+            .is_ok()
         })
     });
     let kept = items.len();
@@ -2622,13 +2709,36 @@ fn scope_integration_policy_list_to_marker(
 }
 
 #[cfg(test)]
+fn scope_integration_policy_list_to_marker(
+    body: &mut Value,
+    marker_id: &str,
+    expected_version: &str,
+    active_space: &str,
+) -> usize {
+    scope_integration_policy_list_to_marker_with_nonce(
+        body,
+        marker_id,
+        expected_version,
+        active_space,
+        TEST_INTEGRATION_RECORDING_NONCE,
+    )
+}
+
+#[cfg(test)]
 fn integration_policy_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
-    integration_policy_fixture_in_space(name, flavor, version, INTEGRATION_POLICY_NAMESPACE, body)
+    integration_policy_fixture_in_space(
+        name,
+        flavor,
+        version,
+        INTEGRATION_POLICY_NAMESPACE,
+        TEST_INTEGRATION_RECORDING_NONCE,
+        body,
+    )
 }
 
 fn integration_policy_fixture_in_space(
@@ -2636,14 +2746,22 @@ fn integration_policy_fixture_in_space(
     flavor: &str,
     version: &str,
     active_space: &str,
+    nonce: &str,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
     let body = match name {
-        "integration_policy_get" | "integration_policy_round_trip" => {
-            reduce_marker_integration_response(&body, active_space)?
+        "integration_policy_get" => {
+            let description = marker_integration_description(nonce);
+            reduce_marker_integration_response(&body, active_space, nonce, &description)?
         }
-        "integration_policies_list" => reduce_marker_integration_list(&body, active_space)?,
-        "integration_policy_parent_get" => reduce_marker_parent_get_response(&body, active_space)?,
+        "integration_policy_round_trip" => {
+            let description = marker_integration_updated_description(nonce);
+            reduce_marker_integration_response(&body, active_space, nonce, &description)?
+        }
+        "integration_policies_list" => reduce_marker_integration_list(&body, active_space, nonce)?,
+        "integration_policy_parent_get" => {
+            reduce_marker_parent_get_response(&body, active_space, nonce)?
+        }
         "integration_policy_delete" => reduce_integration_delete_response(&body)?,
         "integration_policy_parent_delete" => reduce_parent_delete_response(&body)?,
         _ => {
@@ -2668,6 +2786,7 @@ fn integration_policy_exchange_fixture(
         flavor,
         version,
         INTEGRATION_POLICY_NAMESPACE,
+        TEST_INTEGRATION_RECORDING_NONCE,
         request,
         body,
     )
@@ -2678,21 +2797,32 @@ fn integration_policy_exchange_fixture_in_space(
     flavor: &str,
     version: &str,
     active_space: &str,
+    nonce: &str,
     request: Value,
     body: Value,
 ) -> elasticctl_core::Result<RecordedFixture> {
     let (request, body) = match name {
         "integration_policy_parent_create" => (
-            reduce_marker_parent_create_request(&request)?,
-            reduce_marker_parent_create_response(&body, active_space)?,
+            reduce_marker_parent_create_request(&request, nonce)?,
+            reduce_marker_parent_create_response(&body, active_space, nonce)?,
         ),
         "integration_policy_create" => (
-            reduce_marker_integration_create_request(&request)?,
-            reduce_marker_integration_response(&body, active_space)?,
+            reduce_marker_integration_create_request(&request, nonce)?,
+            reduce_marker_integration_response(
+                &body,
+                active_space,
+                nonce,
+                &marker_integration_description(nonce),
+            )?,
         ),
         "integration_policy_update" => (
-            reduce_marker_integration_update_request(&request)?,
-            reduce_marker_integration_response(&body, active_space)?,
+            reduce_marker_integration_update_request(&request, nonce)?,
+            reduce_marker_integration_response(
+                &body,
+                active_space,
+                nonce,
+                &marker_integration_updated_description(nonce),
+            )?,
         ),
         _ => {
             return Err(recording_error(
@@ -2710,6 +2840,8 @@ fn integration_policy_exchange_fixture_in_space(
 fn reduce_marker_integration_response(
     body: &Value,
     active_space: &str,
+    nonce: &str,
+    expected_description: &str,
 ) -> elasticctl_core::Result<Value> {
     let item = body.get("item").and_then(Value::as_object).ok_or_else(|| {
         recording_error("integration policy response must contain an item object")
@@ -2723,13 +2855,25 @@ fn reduce_marker_integration_response(
         .ok_or_else(|| {
             recording_error("integration policy response package version must be non-empty")
         })?;
-    validate_marker_integration(body, INTEGRATION_POLICY_ID, package_version, active_space)?;
-    let description = item
-        .get("description")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            recording_error("integration policy response description must be a string")
-        })?;
+    let created_description = marker_integration_description(nonce);
+    let updated_description = marker_integration_updated_description(nonce);
+    let description = if expected_description == created_description {
+        INTEGRATION_POLICY_DESCRIPTION
+    } else if expected_description == updated_description {
+        INTEGRATION_POLICY_UPDATED_DESCRIPTION
+    } else {
+        return Err(recording_error(
+            "integration policy response did not preserve the marker identity",
+        ));
+    };
+    validate_marker_integration_with_nonce(
+        body,
+        INTEGRATION_POLICY_ID,
+        package_version,
+        active_space,
+        nonce,
+        Some(expected_description),
+    )?;
     Ok(json!({
         "item": {
             "id": INTEGRATION_POLICY_ID,
@@ -2758,45 +2902,63 @@ fn marker_integration_request_version<'a>(
         .ok_or_else(|| recording_error(format!("{context} package version must be non-empty")))
 }
 
-fn reduce_marker_integration_create_request(request: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_marker_integration_create_request(
+    request: &Value,
+    nonce: &str,
+) -> elasticctl_core::Result<Value> {
     let version = marker_integration_request_version(request, "integration policy create request")?;
-    let expected = marker_integration_create_body(version);
+    let expected = marker_integration_create_body_with_nonce(version, nonce);
     if request != &expected {
         return Err(recording_error(
             "integration policy create request did not preserve the exact marker body",
         ));
     }
-    Ok(expected)
+    let mut reduced = expected;
+    reduced["description"] = json!(INTEGRATION_POLICY_DESCRIPTION);
+    Ok(reduced)
 }
 
-fn reduce_marker_integration_update_request(request: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_marker_integration_update_request(
+    request: &Value,
+    nonce: &str,
+) -> elasticctl_core::Result<Value> {
     let version = marker_integration_request_version(request, "integration policy update request")?;
-    let expected = marker_integration_update_body(version);
+    let expected = marker_integration_update_body_with_nonce(version, nonce);
     if request != &expected {
         return Err(recording_error(
             "integration policy update request did not preserve the exact marker body",
         ));
     }
-    Ok(expected)
+    let mut reduced = expected;
+    reduced["description"] = json!(INTEGRATION_POLICY_UPDATED_DESCRIPTION);
+    Ok(reduced)
 }
 
-fn reduce_marker_parent_create_request(request: &Value) -> elasticctl_core::Result<Value> {
-    let expected = marker_integration_parent_create_body();
+fn reduce_marker_parent_create_request(
+    request: &Value,
+    nonce: &str,
+) -> elasticctl_core::Result<Value> {
+    let expected = marker_integration_parent_create_body_with_nonce(nonce);
     if request != &expected {
         return Err(recording_error(
             "integration policy parent create request did not preserve the exact marker body",
         ));
     }
-    Ok(expected)
+    let mut reduced = expected;
+    reduced["description"] = json!(INTEGRATION_POLICY_PARENT_DESCRIPTION);
+    Ok(reduced)
 }
 
 fn reduce_marker_parent_create_response(
     body: &Value,
     active_space: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<Value> {
-    validate_marker_integration_parent_identity(body, active_space).map_err(|_| {
-        recording_error("integration policy parent create did not preserve the marker identity")
-    })?;
+    validate_marker_integration_parent_identity_with_nonce(body, active_space, nonce).map_err(
+        |_| {
+            recording_error("integration policy parent create did not preserve the marker identity")
+        },
+    )?;
     Ok(json!({
         "item": {
             "id": INTEGRATION_POLICY_PARENT_ID,
@@ -2812,8 +2974,9 @@ fn reduce_marker_parent_create_response(
 fn reduce_marker_parent_get_response(
     body: &Value,
     active_space: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<Value> {
-    require_parent_attachment(body, active_space)?;
+    require_parent_attachment_with_nonce(body, active_space, nonce)?;
     let agents = body
         .pointer("/item/agents")
         .and_then(Value::as_u64)
@@ -2837,6 +3000,7 @@ fn reduce_marker_parent_get_response(
 fn reduce_marker_integration_list(
     body: &Value,
     active_space: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<Value> {
     let items = body
         .get("items")
@@ -2853,7 +3017,13 @@ fn reduce_marker_integration_list(
             "integration policy list did not preserve the exact marker page metadata",
         ));
     }
-    let reduced = reduce_marker_integration_response(&json!({"item": items[0]}), active_space)?;
+    let description = marker_integration_description(nonce);
+    let reduced = reduce_marker_integration_response(
+        &json!({"item": items[0]}),
+        active_space,
+        nonce,
+        &description,
+    )?;
     Ok(json!({
         "items": [reduced["item"].clone()],
         "total": 1,
@@ -3156,14 +3326,6 @@ fn require_matching_inventory(
     }
 }
 
-fn baseline_system_package_version(inventory: &BTreeSet<(String, String)>) -> Option<&str> {
-    inventory
-        .iter()
-        .find(|(name, _)| name == INTEGRATION_POLICY_PACKAGE)
-        .map(|(_, version)| version.as_str())
-        .filter(|version| !version.trim().is_empty())
-}
-
 #[derive(Clone, Debug)]
 struct SystemPackageStatus {
     registry_version: String,
@@ -3266,22 +3428,22 @@ fn combine_package_policy_attempt_and_inventory_errors(
     ))
 }
 
-fn marker_integration_parent_create_body() -> Value {
+fn marker_integration_parent_create_body_with_nonce(nonce: &str) -> Value {
     json!({
         "id": INTEGRATION_POLICY_PARENT_ID,
         "name": INTEGRATION_POLICY_PARENT_NAME,
         "namespace": INTEGRATION_POLICY_NAMESPACE,
-        "description": INTEGRATION_POLICY_PARENT_DESCRIPTION,
+        "description": marker_integration_parent_description(nonce),
         "monitoring_enabled": [],
         "inactivity_timeout": INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT,
     })
 }
 
-fn marker_integration_create_body(version: &str) -> Value {
+fn marker_integration_create_body_with_nonce(version: &str, nonce: &str) -> Value {
     json!({
         "id": INTEGRATION_POLICY_ID,
         "name": INTEGRATION_POLICY_NAME,
-        "description": INTEGRATION_POLICY_DESCRIPTION,
+        "description": marker_integration_description(nonce),
         "namespace": INTEGRATION_POLICY_NAMESPACE,
         "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
         "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": version},
@@ -3289,43 +3451,73 @@ fn marker_integration_create_body(version: &str) -> Value {
     })
 }
 
-fn marker_integration_update_body(version: &str) -> Value {
-    let mut body = marker_integration_create_body(version);
+fn marker_integration_update_body_with_nonce(version: &str, nonce: &str) -> Value {
+    let mut body = marker_integration_create_body_with_nonce(version, nonce);
     let object = body
         .as_object_mut()
         .expect("marker integration body is an object");
     object.remove("id");
     object.insert(
         "description".to_string(),
-        json!(INTEGRATION_POLICY_UPDATED_DESCRIPTION),
+        json!(marker_integration_updated_description(nonce)),
     );
     object.insert("enabled".to_string(), Value::Bool(true));
     body
 }
 
-fn require_marker_integration_response(
+#[cfg(test)]
+fn marker_integration_parent_create_body() -> Value {
+    marker_integration_parent_create_body_with_nonce(TEST_INTEGRATION_RECORDING_NONCE)
+}
+
+#[cfg(test)]
+fn marker_integration_create_body(version: &str) -> Value {
+    marker_integration_create_body_with_nonce(version, TEST_INTEGRATION_RECORDING_NONCE)
+}
+
+#[cfg(test)]
+fn marker_integration_update_body(version: &str) -> Value {
+    marker_integration_update_body_with_nonce(version, TEST_INTEGRATION_RECORDING_NONCE)
+}
+
+fn require_marker_integration_response_with_nonce(
     body: &Value,
     expected_version: &str,
     active_space: &str,
+    nonce: &str,
+    expected_description: Option<&str>,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    require_marker_integration_response_for_id(
+    require_marker_integration_response_for_id_with_nonce(
         body,
         INTEGRATION_POLICY_ID,
         expected_version,
         active_space,
+        nonce,
+        expected_description,
         context,
     )
 }
 
-fn require_marker_integration_response_for_id(
+fn require_marker_integration_response_for_id_with_nonce(
     body: &Value,
     expected_id: &str,
     expected_version: &str,
     active_space: &str,
+    nonce: &str,
+    expected_description: Option<&str>,
     context: &str,
 ) -> elasticctl_core::Result<()> {
-    if validate_marker_integration(body, expected_id, expected_version, active_space).is_err() {
+    if validate_marker_integration_with_nonce(
+        body,
+        expected_id,
+        expected_version,
+        active_space,
+        nonce,
+        expected_description,
+    )
+    .is_err()
+    {
         return Err(recording_error(format!(
             "{context}: integration response did not preserve the marker identity"
         )));
@@ -3333,20 +3525,22 @@ fn require_marker_integration_response_for_id(
     Ok(())
 }
 
-fn require_parent_attachments(
+fn require_parent_attachments_with_nonce(
     body: &Value,
     expected: &[&str],
     active_space: &str,
+    nonce: &str,
     context: &'static str,
 ) -> elasticctl_core::Result<()> {
-    let item = match validate_marker_integration_parent_for_delete(body, active_space) {
-        Ok(item) => item,
-        Err(_) => {
-            return Err(recording_error(format!(
-                "{context}: integration parent did not preserve the marker identity"
-            )));
-        }
-    };
+    let item =
+        match validate_marker_integration_parent_for_delete_with_nonce(body, active_space, nonce) {
+            Ok(item) => item,
+            Err(_) => {
+                return Err(recording_error(format!(
+                    "{context}: integration parent did not preserve the marker identity"
+                )));
+            }
+        };
     let attachments = match item.get("package_policies").and_then(Value::as_array) {
         Some(attachments) => attachments,
         None => {
@@ -3379,18 +3573,24 @@ fn require_parent_attachments(
     Ok(())
 }
 
-fn require_parent_attachment(body: &Value, active_space: &str) -> elasticctl_core::Result<()> {
-    require_parent_attachments(
+fn require_parent_attachment_with_nonce(
+    body: &Value,
+    active_space: &str,
+    nonce: &str,
+) -> elasticctl_core::Result<()> {
+    require_parent_attachments_with_nonce(
         body,
         &[INTEGRATION_POLICY_ID],
         active_space,
+        nonce,
         "integration parent get",
     )
 }
 
-async fn reread_marker_integration_before_mutation(
+async fn reread_marker_integration_before_mutation_with_nonce(
     t: &elasticctl_core::Transport,
     expected_version: &str,
+    nonce: &str,
     context: &'static str,
 ) -> elasticctl_core::Result<()> {
     let body = t
@@ -3400,12 +3600,20 @@ async fn reread_marker_integration_before_mutation(
         ))
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
-    require_marker_integration_response(&body, expected_version, t.space(), context)
+    require_marker_integration_response_with_nonce(
+        &body,
+        expected_version,
+        t.space(),
+        nonce,
+        None,
+        context,
+    )
 }
 
-async fn reread_marker_parent_before_mutation(
+async fn reread_marker_parent_before_mutation_with_nonce(
     t: &elasticctl_core::Transport,
     expected_attachments: &[&str],
+    nonce: &str,
     context: &'static str,
 ) -> elasticctl_core::Result<()> {
     let body = t
@@ -3415,7 +3623,40 @@ async fn reread_marker_parent_before_mutation(
         ))
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
-    require_parent_attachments(&body, expected_attachments, t.space(), context)
+    require_parent_attachments_with_nonce(&body, expected_attachments, t.space(), nonce, context)
+}
+
+#[cfg(test)]
+fn require_marker_integration_response(
+    body: &Value,
+    expected_version: &str,
+    active_space: &str,
+    context: &str,
+) -> elasticctl_core::Result<()> {
+    require_marker_integration_response_with_nonce(
+        body,
+        expected_version,
+        active_space,
+        TEST_INTEGRATION_RECORDING_NONCE,
+        None,
+        context,
+    )
+}
+
+#[cfg(test)]
+fn require_parent_attachments(
+    body: &Value,
+    expected: &[&str],
+    active_space: &str,
+    context: &'static str,
+) -> elasticctl_core::Result<()> {
+    require_parent_attachments_with_nonce(
+        body,
+        expected,
+        active_space,
+        TEST_INTEGRATION_RECORDING_NONCE,
+        context,
+    )
 }
 
 fn require_exact_delete_id(body: &Value, id: &str, context: &str) -> elasticctl_core::Result<()> {
@@ -3520,10 +3761,88 @@ async fn create_marked_rule(
     Ok((body, created))
 }
 
+/// An error or malformed 2xx create response is not proof that Fleet did not
+/// commit the write. Re-read only the fixed id and claim it only if its full
+/// marker state carries this session's exact creation description.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AmbiguousMarkerCreateOwnership {
+    Claimed,
+    Absent,
+    Unclaimed,
+}
+
+async fn claim_ambiguous_marker_integration_create(
+    t: &elasticctl_core::Transport,
+    id: &str,
+    expected_version: &str,
+    nonce: &str,
+) -> AmbiguousMarkerCreateOwnership {
+    let expected_description = marker_integration_description(nonce);
+    match t
+        .get(&format!(
+            "/api/fleet/package_policies/{}?format=simplified",
+            urlencode(id)
+        ))
+        .await
+    {
+        Ok(current) => {
+            if validate_marker_integration_with_nonce(
+                &current,
+                id,
+                expected_version,
+                t.space(),
+                nonce,
+                Some(&expected_description),
+            )
+            .is_ok()
+            {
+                AmbiguousMarkerCreateOwnership::Claimed
+            } else {
+                AmbiguousMarkerCreateOwnership::Unclaimed
+            }
+        }
+        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {
+            AmbiguousMarkerCreateOwnership::Absent
+        }
+        Err(_) => AmbiguousMarkerCreateOwnership::Unclaimed,
+    }
+}
+
+/// Parent creation can also commit despite an ambiguous response. A claimed
+/// parent must be the same nonce-bearing marker, have no agents, and have no
+/// attached integrations before cleanup is allowed to own it.
+async fn claim_ambiguous_marker_integration_parent_create(
+    t: &elasticctl_core::Transport,
+    nonce: &str,
+) -> bool {
+    match t
+        .get(&format!(
+            "/api/fleet/agent_policies/{}",
+            urlencode(INTEGRATION_POLICY_PARENT_ID)
+        ))
+        .await
+    {
+        Ok(current) => {
+            validate_marker_integration_parent_for_delete_with_nonce(&current, t.space(), nonce)
+                .is_ok()
+                && require_parent_attachments_with_nonce(
+                    &current,
+                    &[],
+                    t.space(),
+                    nonce,
+                    "ambiguous integration policy parent create",
+                )
+                .is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
 async fn cleanup_marker_integration(
     t: &elasticctl_core::Transport,
     id: &str,
     expected_version: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<()> {
     let path = format!(
         "/api/fleet/package_policies/{}?format=simplified",
@@ -3539,7 +3858,16 @@ async fn cleanup_marker_integration(
             ));
         }
     };
-    if validate_marker_integration(&current, id, expected_version, t.space()).is_err() {
+    if validate_marker_integration_with_nonce(
+        &current,
+        id,
+        expected_version,
+        t.space(),
+        nonce,
+        None,
+    )
+    .is_err()
+    {
         return Err(recording_error(
             "refusing to delete integration policy: its marker identity no longer matches",
         ));
@@ -3563,6 +3891,8 @@ async fn cleanup_marker_integration(
 
 async fn cleanup_marker_integration_parent(
     t: &elasticctl_core::Transport,
+    nonce: &str,
+    expected_attachments: &[&str],
 ) -> elasticctl_core::Result<()> {
     let path = format!(
         "/api/fleet/agent_policies/{}",
@@ -3578,12 +3908,19 @@ async fn cleanup_marker_integration_parent(
             ));
         }
     };
-    if validate_marker_integration_parent_for_delete(&current, t.space()).is_err() {
+    if validate_marker_integration_parent_for_delete_with_nonce(&current, t.space(), nonce).is_err()
+    {
         return Err(recording_error(
             "refusing to delete integration policy parent: its marker identity no longer matches",
         ));
     }
-    require_parent_attachments(&current, &[], t.space(), "integration parent cleanup")?;
+    require_parent_attachments_with_nonce(
+        &current,
+        expected_attachments,
+        t.space(),
+        nonce,
+        "integration parent cleanup",
+    )?;
     let deleted = t
         .post(
             "/api/fleet/agent_policies/delete",
@@ -3618,19 +3955,16 @@ impl RecordingSession<'_> {
     /// inventory must remain exactly equal to its preflight baseline.
     async fn cleanup_integration_resources(&mut self) -> elasticctl_core::Result<()> {
         let mut errors = Vec::new();
-        let expected_system_version = self
-            .ownership
-            .integration_package_inventory
-            .as_ref()
-            .and_then(baseline_system_package_version)
-            .map(str::to_owned);
+        let expected_system_version = self.ownership.integration_system_package_version.clone();
+        let session_nonce = self.ownership.integration_recording_nonce.clone();
 
         if self.ownership.integration_policy {
-            match expected_system_version.as_deref() {
-                Some(version) => match cleanup_marker_integration(
+            match (expected_system_version.as_deref(), session_nonce.as_deref()) {
+                (Some(version), Some(nonce)) => match cleanup_marker_integration(
                     self.transport,
                     INTEGRATION_POLICY_ID,
                     version,
+                    nonce,
                 )
                 .await
                 {
@@ -3640,17 +3974,18 @@ impl RecordingSession<'_> {
                         error.message
                     )),
                 },
-                None => errors.push(format!(
-                    "refusing to delete integration policy {INTEGRATION_POLICY_ID}: exact baseline system package version is unavailable"
+                _ => errors.push(format!(
+                    "refusing to delete integration policy {INTEGRATION_POLICY_ID}: session cleanup ownership is incomplete"
                 )),
             }
         }
         if self.ownership.integration_policy_dup {
-            match expected_system_version.as_deref() {
-                Some(version) => match cleanup_marker_integration(
+            match (expected_system_version.as_deref(), session_nonce.as_deref()) {
+                (Some(version), Some(nonce)) => match cleanup_marker_integration(
                     self.transport,
                     INTEGRATION_POLICY_DUP_ID,
                     version,
+                    nonce,
                 )
                 .await
                 {
@@ -3660,8 +3995,8 @@ impl RecordingSession<'_> {
                         error.message
                     )),
                 },
-                None => errors.push(format!(
-                    "refusing to delete integration policy {INTEGRATION_POLICY_DUP_ID}: exact baseline system package version is unavailable"
+                _ => errors.push(format!(
+                    "refusing to delete integration policy {INTEGRATION_POLICY_DUP_ID}: session cleanup ownership is incomplete"
                 )),
             }
         }
@@ -3670,11 +4005,16 @@ impl RecordingSession<'_> {
             && !self.ownership.integration_policy_dup
             && self.ownership.integration_policy_parent
         {
-            match cleanup_marker_integration_parent(self.transport).await {
-                Ok(()) => self.ownership.integration_policy_parent = false,
-                Err(error) => errors.push(format!(
-                    "cleaning integration policy parent {INTEGRATION_POLICY_PARENT_ID}: {}",
-                    error.message
+            match session_nonce.as_deref() {
+                Some(nonce) => match cleanup_marker_integration_parent(self.transport, nonce, &[]).await {
+                    Ok(()) => self.ownership.integration_policy_parent = false,
+                    Err(error) => errors.push(format!(
+                        "cleaning integration policy parent {INTEGRATION_POLICY_PARENT_ID}: {}",
+                        error.message
+                    )),
+                },
+                None => errors.push(format!(
+                    "refusing to delete integration policy parent {INTEGRATION_POLICY_PARENT_ID}: session cleanup ownership is incomplete"
                 )),
             }
         }
@@ -3687,7 +4027,11 @@ impl RecordingSession<'_> {
             match read_installed_package_inventory(self.transport).await {
                 Ok(current) => match require_matching_inventory(&baseline, &current) {
                     Ok(()) => match require_absent_integration_markers(self.transport).await {
-                        Ok(()) => self.ownership.integration_package_inventory = None,
+                        Ok(()) => {
+                            self.ownership.integration_package_inventory = None;
+                            self.ownership.integration_system_package_version = None;
+                            self.ownership.integration_recording_nonce = None;
+                        }
                         Err(error) => errors.push(format!(
                             "verifying integration marker cleanup: {}",
                             error.message
@@ -5989,13 +6333,24 @@ async fn record_agent_policies(
 /// Record the 0.6.1 package-policy lifecycle against a dedicated marker
 /// parent. The marker has no variables and empty simplified inputs, so the
 /// public fixtures prove Fleet's route shapes without retaining user policy
-/// content or secrets. The parent remains alive through the delete-refusal
-/// measurement and only disappears after the integration has gone.
+/// content or secrets. The parent disappears only after the integration has
+/// gone, so the recorder never sends an attached-parent delete.
 async fn record_integration_policies(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,
     version: &str,
+) -> elasticctl_core::Result<()> {
+    let nonce = integration_recording_nonce();
+    record_integration_policies_with_nonce(session, recording, flavor, version, &nonce).await
+}
+
+async fn record_integration_policies_with_nonce(
+    session: &mut RecordingSession<'_>,
+    recording: &mut Recording,
+    flavor: &str,
+    version: &str,
+    nonce: &str,
 ) -> elasticctl_core::Result<()> {
     let t = session.transport;
 
@@ -6118,27 +6473,49 @@ async fn record_integration_policies(
     }
 
     // No mutation before this point can change the package inventory. Retain
-    // the baseline for later audit and package-coordinate proof, never as an
-    // ownership claim for an ambiguous create result.
+    // the exact package version and session nonce before the first marker
+    // write, so any ambiguous create can prove only this session's ownership.
     session.ownership.integration_package_inventory = Some(baseline_inventory.clone());
-    let parent_create_body = marker_integration_parent_create_body();
+    session.ownership.integration_system_package_version = Some(package_status.version.clone());
+    session.ownership.integration_recording_nonce = Some(nonce.to_owned());
+    let parent_create_body = marker_integration_parent_create_body_with_nonce(nonce);
     record_trace("fleet-integration-policy-parent-create");
-    let parent_created = t
+    let parent_created_result = t
         .post(
             "/api/fleet/agent_policies?sys_monitoring=false",
             Some(&parent_create_body),
         )
-        .await
-        .map_err(|error| {
-            safe_recording_transport_error(
+        .await;
+    let parent_created = match parent_created_result {
+        Ok(parent_created)
+            if validate_marker_integration_parent_identity_with_nonce(
+                &parent_created,
+                t.space(),
+                nonce,
+            )
+            .is_ok() =>
+        {
+            session.ownership.integration_policy_parent = true;
+            parent_created
+        }
+        Ok(_) => {
+            if claim_ambiguous_marker_integration_parent_create(t, nonce).await {
+                session.ownership.integration_policy_parent = true;
+            }
+            return Err(recording_error(
+                "integration policy parent create did not preserve the marker identity",
+            ));
+        }
+        Err(error) => {
+            if claim_ambiguous_marker_integration_parent_create(t, nonce).await {
+                session.ownership.integration_policy_parent = true;
+            }
+            return Err(safe_recording_transport_error(
                 "creating integration policy marker parent failed",
                 error,
-            )
-        })?;
-    validate_marker_integration_parent_identity(&parent_created, t.space()).map_err(|_| {
-        recording_error("integration policy parent create did not preserve the marker identity")
-    })?;
-    session.ownership.integration_policy_parent = true;
+            ));
+        }
+    };
     recording
         .fixtures
         .push(integration_policy_exchange_fixture_in_space(
@@ -6146,6 +6523,7 @@ async fn record_integration_policies(
             flavor,
             version,
             t.space(),
+            nonce,
             parent_create_body,
             parent_created,
         )?);
@@ -6174,7 +6552,7 @@ async fn record_integration_policies(
         None,
     ));
 
-    let create_body = marker_integration_create_body(&package_status.version);
+    let create_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
     record_trace("fleet-integration-policy-create");
     let created_result = t
         .post(
@@ -6192,39 +6570,59 @@ async fn record_integration_policies(
         "reading installed package inventory after integration policy create failed",
     )
     .await;
-    let created = match (created_result, inventory_observation) {
-        (Ok(created), Ok(())) => {
-            require_marker_integration_response(
+    let created_description = marker_integration_description(nonce);
+    let created = match created_result {
+        Ok(created) => {
+            if let Err(error) = require_marker_integration_response_with_nonce(
                 &created,
                 &package_status.version,
                 t.space(),
+                nonce,
+                Some(&created_description),
                 "integration policy create",
-            )?;
+            ) {
+                if claim_ambiguous_marker_integration_create(
+                    t,
+                    INTEGRATION_POLICY_ID,
+                    &package_status.version,
+                    nonce,
+                )
+                .await
+                    == AmbiguousMarkerCreateOwnership::Claimed
+                {
+                    session.ownership.integration_policy = true;
+                }
+                return Err(error);
+            }
             session.ownership.integration_policy = true;
+            if let Err(observation) = inventory_observation {
+                return Err(observation);
+            }
             created
         }
-        (Err(error), Ok(())) => {
-            return Err(safe_recording_transport_error(
-                "creating integration policy marker failed",
-                error,
-            ));
-        }
-        (Ok(created), Err(observation)) => {
-            require_marker_integration_response(
-                &created,
+        Err(error) => {
+            if claim_ambiguous_marker_integration_create(
+                t,
+                INTEGRATION_POLICY_ID,
                 &package_status.version,
-                t.space(),
-                "integration policy create",
-            )?;
-            session.ownership.integration_policy = true;
-            return Err(observation);
-        }
-        (Err(error), Err(observation)) => {
-            return Err(combine_package_policy_attempt_and_inventory_errors(
-                "creating integration policy marker failed",
-                &error,
-                &observation,
-            ));
+                nonce,
+            )
+            .await
+                == AmbiguousMarkerCreateOwnership::Claimed
+            {
+                session.ownership.integration_policy = true;
+            }
+            return match inventory_observation {
+                Ok(()) => Err(safe_recording_transport_error(
+                    "creating integration policy marker failed",
+                    error,
+                )),
+                Err(observation) => Err(combine_package_policy_attempt_and_inventory_errors(
+                    "creating integration policy marker failed",
+                    &error,
+                    &observation,
+                )),
+            };
         }
     };
     recording
@@ -6234,6 +6632,7 @@ async fn record_integration_policies(
             flavor,
             version,
             t.space(),
+            nonce,
             create_body,
             created,
         )?);
@@ -6248,10 +6647,12 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy marker failed", error)
         })?;
-    require_marker_integration_response(
+    require_marker_integration_response_with_nonce(
         &got,
         &package_status.version,
         t.space(),
+        nonce,
+        Some(&marker_integration_description(nonce)),
         "integration policy get",
     )?;
     recording.fixtures.push(integration_policy_fixture_in_space(
@@ -6259,6 +6660,7 @@ async fn record_integration_policies(
         flavor,
         version,
         t.space(),
+        nonce,
         got,
     )?);
 
@@ -6271,11 +6673,12 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("listing integration policy marker failed", error)
         })?;
-    if scope_integration_policy_list_to_marker(
+    if scope_integration_policy_list_to_marker_with_nonce(
         &mut listed,
         INTEGRATION_POLICY_ID,
         &package_status.version,
         t.space(),
+        nonce,
     ) != 1
     {
         return Err(recording_error(
@@ -6287,10 +6690,12 @@ async fn record_integration_policies(
         flavor,
         version,
         t.space(),
+        nonce,
         listed,
     )?);
 
-    let mut duplicate_body = marker_integration_create_body(&package_status.version);
+    let mut duplicate_body =
+        marker_integration_create_body_with_nonce(&package_status.version, nonce);
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
@@ -6306,82 +6711,90 @@ async fn record_integration_policies(
         "reading installed package inventory after duplicate integration policy create failed",
     )
     .await;
-    match (duplicate_result, duplicate_inventory_observation) {
-        (Err(error), Ok(())) if error.kind == elasticctl_core::ErrorKind::Conflict => {
-            recording.fixtures.push(integration_policy_error_fixture(
-                "integration_policy_name_conflict",
-                flavor,
-                version,
-                error,
-            ));
-        }
-        (Err(error), Err(observation)) if error.kind == elasticctl_core::ErrorKind::Conflict => {
-            return Err(combine_package_policy_attempt_and_inventory_errors(
-                "checking integration policy name conflict failed",
-                &error,
-                &observation,
-            ));
-        }
-        (Ok(created), Ok(())) => {
-            require_marker_integration_response_for_id(
+    let duplicate_description = marker_integration_description(nonce);
+    match duplicate_result {
+        Ok(created) => {
+            if let Err(error) = require_marker_integration_response_for_id_with_nonce(
                 &created,
                 INTEGRATION_POLICY_DUP_ID,
                 &package_status.version,
                 t.space(),
+                nonce,
+                Some(&duplicate_description),
                 "duplicate integration policy create",
-            )?;
+            ) {
+                if claim_ambiguous_marker_integration_create(
+                    t,
+                    INTEGRATION_POLICY_DUP_ID,
+                    &package_status.version,
+                    nonce,
+                )
+                .await
+                    == AmbiguousMarkerCreateOwnership::Claimed
+                {
+                    session.ownership.integration_policy_dup = true;
+                }
+                return Err(error);
+            }
             session.ownership.integration_policy_dup = true;
-            return Err(recording_error(
-                "duplicate integration-policy name did not conflict",
-            ));
-        }
-        (Ok(created), Err(observation)) => {
-            require_marker_integration_response_for_id(
-                &created,
-                INTEGRATION_POLICY_DUP_ID,
-                &package_status.version,
-                t.space(),
-                "duplicate integration policy create",
-            )?;
-            session.ownership.integration_policy_dup = true;
-            return Err(recording_error(format!(
-                "duplicate integration-policy name did not conflict; installed package inventory observation also failed: {}",
-                safe_recording_error_summary(&observation),
-            )));
-        }
-        (Err(error), Ok(())) => {
-            return Err(safe_recording_transport_error(
-                "checking integration policy name conflict failed",
-                error,
-            ));
-        }
-        (Err(error), Err(observation)) => {
-            return Err(combine_package_policy_attempt_and_inventory_errors(
-                "checking integration policy name conflict failed",
-                &error,
-                &observation,
-            ));
-        }
-    }
-    record_trace("fleet-integration-policy-name-conflict-check");
-    match t
-        .get(&format!(
-            "/api/fleet/package_policies/{}?format=simplified",
-            urlencode(INTEGRATION_POLICY_DUP_ID)
-        ))
-        .await
-    {
-        Err(error) if error.kind == elasticctl_core::ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(recording_error(
-                "duplicate integration-policy id exists after a conflicting create",
-            ));
+            return match duplicate_inventory_observation {
+                Ok(()) => Err(recording_error(
+                    "duplicate integration-policy name did not conflict",
+                )),
+                Err(observation) => Err(recording_error(format!(
+                    "duplicate integration-policy name did not conflict; installed package inventory observation also failed: {}",
+                    safe_recording_error_summary(&observation),
+                ))),
+            };
         }
         Err(error) => {
-            return Err(safe_recording_transport_error(
-                "checking duplicate integration policy cleanup failed",
-                error,
-            ));
+            record_trace("fleet-integration-policy-name-conflict-check");
+            let ownership = claim_ambiguous_marker_integration_create(
+                t,
+                INTEGRATION_POLICY_DUP_ID,
+                &package_status.version,
+                nonce,
+            )
+            .await;
+            if ownership == AmbiguousMarkerCreateOwnership::Claimed {
+                session.ownership.integration_policy_dup = true;
+            }
+
+            if let Err(observation) = duplicate_inventory_observation {
+                return Err(combine_package_policy_attempt_and_inventory_errors(
+                    "checking integration policy name conflict failed",
+                    &error,
+                    &observation,
+                ));
+            }
+
+            if error.kind == elasticctl_core::ErrorKind::Conflict {
+                match ownership {
+                    AmbiguousMarkerCreateOwnership::Absent => {
+                        recording.fixtures.push(integration_policy_error_fixture(
+                            "integration_policy_name_conflict",
+                            flavor,
+                            version,
+                            error,
+                        ));
+                    }
+                    AmbiguousMarkerCreateOwnership::Claimed => {
+                        return Err(recording_error(
+                            "duplicate integration-policy name did not conflict",
+                        ));
+                    }
+                    AmbiguousMarkerCreateOwnership::Unclaimed => {
+                        return Err(recording_error(
+                            "duplicate integration-policy id exists after a conflicting create",
+                        ));
+                    }
+                }
+            } else {
+                return Err(safe_recording_transport_error(
+                    "checking integration policy name conflict failed",
+                    error,
+                ));
+            }
         }
     }
 
@@ -6395,19 +6808,21 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy parent failed", error)
         })?;
-    require_parent_attachment(&parent_attached, t.space())?;
+    require_parent_attachment_with_nonce(&parent_attached, t.space(), nonce)?;
     recording.fixtures.push(integration_policy_fixture_in_space(
         "integration_policy_parent_get",
         flavor,
         version,
         t.space(),
+        nonce,
         parent_attached,
     )?);
 
-    let update_body = marker_integration_update_body(&package_status.version);
-    reread_marker_integration_before_mutation(
+    let update_body = marker_integration_update_body_with_nonce(&package_status.version, nonce);
+    reread_marker_integration_before_mutation_with_nonce(
         t,
         &package_status.version,
+        nonce,
         "rechecking integration policy marker before update",
     )
     .await?;
@@ -6424,10 +6839,12 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("updating integration policy marker failed", error)
         })?;
-    require_marker_integration_response(
+    require_marker_integration_response_with_nonce(
         &updated,
         &package_status.version,
         t.space(),
+        nonce,
+        Some(&marker_integration_updated_description(nonce)),
         "integration policy update",
     )?;
     recording
@@ -6437,6 +6854,7 @@ async fn record_integration_policies(
             flavor,
             version,
             t.space(),
+            nonce,
             update_body,
             updated,
         )?);
@@ -6451,16 +6869,18 @@ async fn record_integration_policies(
         .map_err(|error| {
             safe_recording_transport_error("reading integration policy round trip failed", error)
         })?;
-    require_marker_integration_response(
+    require_marker_integration_response_with_nonce(
         &round_trip,
         &package_status.version,
         t.space(),
+        nonce,
+        Some(&marker_integration_updated_description(nonce)),
         "integration policy round trip",
     )?;
     if round_trip
         .pointer("/item/description")
         .and_then(Value::as_str)
-        != Some(INTEGRATION_POLICY_UPDATED_DESCRIPTION)
+        != Some(marker_integration_updated_description(nonce).as_str())
     {
         return Err(recording_error(
             "integration policy round trip did not retain the update description",
@@ -6471,53 +6891,14 @@ async fn record_integration_policies(
         flavor,
         version,
         t.space(),
+        nonce,
         round_trip,
     )?);
 
-    reread_marker_integration_before_mutation(
+    reread_marker_integration_before_mutation_with_nonce(
         t,
         &package_status.version,
-        "rechecking integration policy marker before attached parent delete",
-    )
-    .await?;
-    reread_marker_parent_before_mutation(
-        t,
-        &[INTEGRATION_POLICY_ID],
-        "rechecking integration policy parent before attached parent delete",
-    )
-    .await?;
-    record_trace("fleet-integration-policy-parent-delete-refused");
-    match t
-        .post(
-            "/api/fleet/agent_policies/delete",
-            Some(&json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID})),
-        )
-        .await
-    {
-        Err(error) if error.kind == elasticctl_core::ErrorKind::Conflict => {
-            recording.fixtures.push(integration_policy_error_fixture(
-                "integration_policy_parent_delete_refused",
-                flavor,
-                version,
-                error,
-            ));
-        }
-        Ok(_) => {
-            return Err(recording_error(
-                "integration policy parent delete unexpectedly succeeded while attached",
-            ));
-        }
-        Err(error) => {
-            return Err(safe_recording_transport_error(
-                "checking attached integration policy parent delete refusal failed",
-                error,
-            ));
-        }
-    }
-
-    reread_marker_integration_before_mutation(
-        t,
-        &package_status.version,
+        nonce,
         "rechecking integration policy marker before delete",
     )
     .await?;
@@ -6537,6 +6918,7 @@ async fn record_integration_policies(
         flavor,
         version,
         t.space(),
+        nonce,
         deleted,
     )?);
     record_trace("fleet-integration-policy-delete-check");
@@ -6569,9 +6951,10 @@ async fn record_integration_policies(
         }
     }
 
-    reread_marker_parent_before_mutation(
+    reread_marker_parent_before_mutation_with_nonce(
         t,
         &[],
+        nonce,
         "rechecking integration policy parent before final delete",
     )
     .await?;
@@ -6595,6 +6978,7 @@ async fn record_integration_policies(
         flavor,
         version,
         t.space(),
+        nonce,
         parent_deleted,
     )?);
     record_trace("fleet-integration-policy-parent-delete-check");
@@ -8601,13 +8985,15 @@ mod tests {
         })
     }
 
-    fn marker_integration_response(description: &str) -> Value {
+    const OTHER_INTEGRATION_RECORDING_NONCE: &str = "other-integration-recording-nonce";
+
+    fn marker_integration_response_with_nonce(description: &str, nonce: &str) -> Value {
         json!({
             "item": {
                 "id": INTEGRATION_POLICY_ID,
                 "name": INTEGRATION_POLICY_NAME,
                 "namespace": "default",
-                "description": description,
+                "description": nonce_bearing_integration_description(description, nonce),
                 "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
                 "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
                 "inputs": {},
@@ -8616,18 +9002,38 @@ mod tests {
         })
     }
 
-    fn marker_integration_parent_response() -> Value {
+    fn marker_integration_response(description: &str) -> Value {
+        marker_integration_response_with_nonce(description, TEST_INTEGRATION_RECORDING_NONCE)
+    }
+
+    fn marker_integration_parent_response_with_nonce(nonce: &str) -> Value {
         json!({
             "item": {
                 "id": INTEGRATION_POLICY_PARENT_ID,
                 "name": INTEGRATION_POLICY_PARENT_NAME,
                 "namespace": "default",
-                "description": "elasticctl sample integration policy parent",
+                "description": marker_integration_parent_description(nonce),
                 "monitoring_enabled": [],
                 "inactivity_timeout": 1_209_600,
                 "agents": 0
             }
         })
+    }
+
+    fn marker_integration_parent_response() -> Value {
+        marker_integration_parent_response_with_nonce(TEST_INTEGRATION_RECORDING_NONCE)
+    }
+
+    fn integration_cleanup_ownership() -> CleanupOwnership {
+        CleanupOwnership {
+            integration_package_inventory: Some(std::collections::BTreeSet::from([(
+                INTEGRATION_POLICY_PACKAGE.to_string(),
+                "2.0.0".to_string(),
+            )])),
+            integration_system_package_version: Some("2.0.0".to_string()),
+            integration_recording_nonce: Some(TEST_INTEGRATION_RECORDING_NONCE.to_string()),
+            ..Default::default()
+        }
     }
 
     fn merge_marker_item_fields(response: &mut Value, fields: &Value) {
@@ -8833,6 +9239,8 @@ mod tests {
             .mount(server)
             .await;
 
+        let integration_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let integration_deleted_for_reads = integration_deleted.clone();
         let integration_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let integration_reads_for_response = integration_reads.clone();
         let integration = marker_integration_response("elasticctl sample integration policy");
@@ -8849,7 +9257,12 @@ mod tests {
                 {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                     1 | 2 => ResponseTemplate::new(200).set_body_json(integration.clone()),
-                    3..=5 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
+                    3 | 4 => ResponseTemplate::new(200).set_body_json(updated_integration.clone()),
+                    5 if integration_deleted_for_reads
+                        .load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                    }
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
@@ -8864,6 +9277,9 @@ mod tests {
             .mount(server)
             .await;
 
+        let parent_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_deleted_for_reads = parent_deleted.clone();
+        let integration_deleted_for_parent_reads = integration_deleted.clone();
         let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let parent_reads_for_response = parent_reads.clone();
         let mut parent = marker_integration_parent_response();
@@ -8877,8 +9293,15 @@ mod tests {
             .respond_with(move |_: &wiremock::Request| {
                 match parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
-                    1 | 2 => ResponseTemplate::new(200).set_body_json(parent.clone()),
-                    3 => ResponseTemplate::new(200).set_body_json(detached_parent.clone()),
+                    1 => ResponseTemplate::new(200).set_body_json(parent.clone()),
+                    2 if integration_deleted_for_parent_reads
+                        .load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        ResponseTemplate::new(200).set_body_json(detached_parent.clone())
+                    }
+                    3 if parent_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst) => {
+                        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                    }
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
@@ -8952,41 +9375,43 @@ mod tests {
             .mount(server)
             .await;
 
-        let parent_delete_attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let parent_delete_attempts_for_response = parent_delete_attempts.clone();
+        let integration_deleted_for_parent_delete = integration_deleted.clone();
+        let parent_deleted_for_response = parent_deleted.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies/delete"))
             .and(body_json(
                 json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
             ))
             .respond_with(move |_: &wiremock::Request| {
-                if parent_delete_attempts_for_response
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    == 0
-                {
-                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
-                } else {
+                if integration_deleted_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                    parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "id": INTEGRATION_POLICY_PARENT_ID,
                         "name": INTEGRATION_POLICY_PARENT_NAME,
                     }))
+                } else {
+                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
                 }
             })
             .mount(server)
             .await;
 
-        let delete_response = if failure == IntegrationLifecycleFailure::Delete {
-            ResponseTemplate::new(500).set_body_json(json!({
-                "message": "private DELETE integration policy identity"
-            }))
-        } else {
-            ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
-        };
+        let integration_deleted_for_response = integration_deleted.clone();
         Mock::given(method("DELETE"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
             )))
-            .respond_with(delete_response)
+            .respond_with(move |_: &wiremock::Request| {
+                if failure == IntegrationLifecycleFailure::Delete {
+                    ResponseTemplate::new(500).set_body_json(json!({
+                        "message": "private DELETE integration policy identity"
+                    }))
+                } else {
+                    integration_deleted_for_response
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+                }
+            })
             .mount(server)
             .await;
     }
@@ -8994,7 +9419,6 @@ mod tests {
     #[derive(Clone, Copy, Debug)]
     enum IntegrationLifecycleSwap {
         Update,
-        AttachedParentDelete,
         IntegrationDelete,
         FinalParentDelete,
     }
@@ -9040,9 +9464,8 @@ mod tests {
         let swapped_integration = integration_response_override.unwrap_or(swapped_integration);
         let integration_swap_at = match swap {
             IntegrationLifecycleSwap::Update => Some(2),
-            IntegrationLifecycleSwap::IntegrationDelete => Some(5),
-            IntegrationLifecycleSwap::AttachedParentDelete
-            | IntegrationLifecycleSwap::FinalParentDelete => None,
+            IntegrationLifecycleSwap::IntegrationDelete => Some(4),
+            IntegrationLifecycleSwap::FinalParentDelete => None,
         };
         Mock::given(method("GET"))
             .and(path(format!(
@@ -9057,14 +9480,13 @@ mod tests {
                 }
                 match read {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
-                    1 => ResponseTemplate::new(200).set_body_json(integration.clone()),
-                    2 => ResponseTemplate::new(200).set_body_json(updated.clone()),
-                    3 if integration_deleted_for_reads
+                    1 | 2 => ResponseTemplate::new(200).set_body_json(integration.clone()),
+                    3 | 4 => ResponseTemplate::new(200).set_body_json(updated.clone()),
+                    5 if integration_deleted_for_reads
                         .load(std::sync::atomic::Ordering::SeqCst) =>
                     {
                         ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                     }
-                    3..=5 => ResponseTemplate::new(200).set_body_json(updated.clone()),
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
@@ -9079,18 +9501,20 @@ mod tests {
             .mount(server)
             .await;
 
-        let parent_delete_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let parent_delete_calls_for_reads = parent_delete_calls.clone();
+        let parent_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_deleted_for_reads = parent_deleted.clone();
+        let integration_deleted_for_parent_reads = integration_deleted.clone();
         let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let parent_reads_for_response = parent_reads.clone();
         let mut attached_parent = marker_integration_parent_response();
         attached_parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        let mut detached_parent = marker_integration_parent_response();
+        detached_parent["item"]["package_policies"] = json!([]);
         let mut swapped_parent = attached_parent.clone();
         merge_marker_item_fields(&mut swapped_parent, parent_fields);
         let swapped_parent = parent_response_override.unwrap_or(swapped_parent);
         let parent_swap_at = match swap {
-            IntegrationLifecycleSwap::AttachedParentDelete => Some(2),
-            IntegrationLifecycleSwap::FinalParentDelete => Some(3),
+            IntegrationLifecycleSwap::FinalParentDelete => Some(2),
             IntegrationLifecycleSwap::Update | IntegrationLifecycleSwap::IntegrationDelete => None,
         };
         Mock::given(method("GET"))
@@ -9106,13 +9530,14 @@ mod tests {
                 match read {
                     0 => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                     1 => ResponseTemplate::new(200).set_body_json(attached_parent.clone()),
-                    2 if parent_delete_calls_for_reads
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        > 0 =>
+                    2 if integration_deleted_for_parent_reads
+                        .load(std::sync::atomic::Ordering::SeqCst) =>
                     {
+                        ResponseTemplate::new(200).set_body_json(detached_parent.clone())
+                    }
+                    3 if parent_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst) => {
                         ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                     }
-                    2 => ResponseTemplate::new(200).set_body_json(attached_parent.clone()),
                     _ => ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404})),
                 }
             })
@@ -9177,23 +9602,22 @@ mod tests {
             .mount(server)
             .await;
 
-        let parent_delete_calls_for_response = parent_delete_calls.clone();
+        let integration_deleted_for_parent_delete = integration_deleted.clone();
+        let parent_deleted_for_response = parent_deleted.clone();
         Mock::given(method("POST"))
             .and(path("/api/fleet/agent_policies/delete"))
             .and(body_json(
                 json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
             ))
             .respond_with(move |_: &wiremock::Request| {
-                if parent_delete_calls_for_response
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    == 0
-                {
-                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
-                } else {
+                if integration_deleted_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                    parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "id": INTEGRATION_POLICY_PARENT_ID,
                         "name": INTEGRATION_POLICY_PARENT_NAME,
                     }))
+                } else {
+                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
                 }
             })
             .mount(server)
@@ -9251,6 +9675,7 @@ mod tests {
     async fn mount_parent_create_ambiguous_winner(
         server: &MockServer,
         outcome: AmbiguousCreateOutcome,
+        winner_nonce: &str,
     ) {
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
@@ -9273,16 +9698,20 @@ mod tests {
                 .await;
         }
 
+        let parent_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_deleted_for_reads = parent_deleted.clone();
         let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let parent_reads_for_response = parent_reads.clone();
-        let mut winner = marker_integration_parent_response();
+        let mut winner = marker_integration_parent_response_with_nonce(winner_nonce);
         winner["item"]["package_policies"] = json!([]);
+        let root_item = winner["item"].clone();
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
                 if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                    || parent_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst)
                 {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                 } else {
@@ -9295,10 +9724,21 @@ mod tests {
             .and(path("/api/fleet/agent_policies"))
             .and(query_param("sys_monitoring", "false"))
             .and(body_json(marker_integration_parent_create_body()))
-            .respond_with(ambiguous_create_response(
-                outcome,
-                marker_integration_parent_response()["item"].clone(),
+            .respond_with(ambiguous_create_response(outcome, root_item))
+            .mount(server)
+            .await;
+        let parent_deleted_for_response = parent_deleted.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
             ))
+            .respond_with(move |_: &wiremock::Request| {
+                parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": INTEGRATION_POLICY_PARENT_ID,
+                }))
+            })
             .mount(server)
             .await;
     }
@@ -9306,6 +9746,7 @@ mod tests {
     async fn mount_primary_create_ambiguous_winner(
         server: &MockServer,
         outcome: AmbiguousCreateOutcome,
+        winner_nonce: &str,
     ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
@@ -9325,9 +9766,13 @@ mod tests {
             .mount(server)
             .await;
 
+        let primary_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let primary_deleted_for_reads = primary_deleted.clone();
         let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let primary_reads_for_response = primary_reads.clone();
-        let winner = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        let winner =
+            marker_integration_response_with_nonce(INTEGRATION_POLICY_DESCRIPTION, winner_nonce);
+        let root_item = winner["item"].clone();
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
@@ -9335,6 +9780,7 @@ mod tests {
             .and(query_param("format", "simplified"))
             .respond_with(move |_: &wiremock::Request| {
                 if primary_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                    || primary_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst)
                 {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
                 } else {
@@ -9352,18 +9798,27 @@ mod tests {
             .mount(server)
             .await;
 
+        let parent_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parent_deleted_for_reads = parent_deleted.clone();
+        let primary_deleted_for_parent_reads = primary_deleted.clone();
         let parent_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let parent_reads_for_response = parent_reads.clone();
         let mut attached_parent = marker_integration_parent_response();
         attached_parent["item"]["package_policies"] = json!([INTEGRATION_POLICY_ID]);
+        let mut detached_parent = marker_integration_parent_response();
+        detached_parent["item"]["package_policies"] = json!([]);
         Mock::given(method("GET"))
             .and(path(format!(
                 "/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"
             )))
             .respond_with(move |_: &wiremock::Request| {
                 if parent_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+                    || parent_deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst)
                 {
                     ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else if primary_deleted_for_parent_reads.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    ResponseTemplate::new(200).set_body_json(detached_parent.clone())
                 } else {
                     ResponseTemplate::new(200).set_body_json(attached_parent.clone())
                 }
@@ -9383,10 +9838,38 @@ mod tests {
             .and(path("/api/fleet/package_policies"))
             .and(query_param("format", "simplified"))
             .and(body_json(marker_integration_create_body("2.0.0")))
-            .respond_with(ambiguous_create_response(
-                outcome,
-                marker_integration_response(INTEGRATION_POLICY_DESCRIPTION)["item"].clone(),
+            .respond_with(ambiguous_create_response(outcome, root_item))
+            .mount(server)
+            .await;
+
+        let primary_deleted_for_response = primary_deleted.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                primary_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
+            })
+            .mount(server)
+            .await;
+        let primary_deleted_for_parent_delete = primary_deleted.clone();
+        let parent_deleted_for_response = parent_deleted.clone();
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/agent_policies/delete"))
+            .and(body_json(
+                json!({"agentPolicyId": INTEGRATION_POLICY_PARENT_ID}),
             ))
+            .respond_with(move |_: &wiremock::Request| {
+                if primary_deleted_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                    parent_deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "id": INTEGRATION_POLICY_PARENT_ID,
+                    }))
+                } else {
+                    ResponseTemplate::new(409).set_body_json(json!({"statusCode": 409}))
+                }
+            })
             .mount(server)
             .await;
 
@@ -9838,6 +10321,10 @@ mod tests {
     #[test]
     fn record_trace_labels_are_static_safe_words() {
         assert!(RECORD_TRACE_LABELS.contains(&"alerts-close"));
+        assert!(
+            !RECORD_TRACE_LABELS.contains(&"fleet-integration-policy-parent-delete-refused"),
+            "the recorder must never trace an attached-parent delete attempt"
+        );
         for label in [
             "prebuilt-status-before",
             "prebuilt-status-before-check",
@@ -11851,7 +12338,7 @@ mod tests {
                     "id": INTEGRATION_POLICY_ID,
                     "name": INTEGRATION_POLICY_NAME,
                     "namespace": "default",
-                    "description": "elasticctl sample integration policy",
+                    "description": marker_integration_description(TEST_INTEGRATION_RECORDING_NONCE),
                     "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
                     "package": {"name": "system", "version": "2.0.0"},
                     "inputs": {},
@@ -11895,6 +12382,115 @@ mod tests {
         ] {
             assert!(!encoded.contains(private), "fixture leaked {private}");
         }
+    }
+
+    #[test]
+    fn integration_reducer_normalizes_a_session_nonce_without_exposing_it() {
+        let mismatch = match integration_policy_fixture_in_space(
+            "integration_policy_get",
+            "test",
+            "9.6.0",
+            INTEGRATION_POLICY_NAMESPACE,
+            "expected-session-nonce",
+            marker_integration_response_with_nonce(
+                INTEGRATION_POLICY_DESCRIPTION,
+                "other-session-nonce",
+            ),
+        ) {
+            Ok(_) => panic!("a reducer must reject another session's description nonce"),
+            Err(error) => error,
+        };
+        assert!(!mismatch.message.contains("other-session-nonce"));
+
+        let mut documents = Vec::new();
+        for nonce in ["same-session-nonce", "later-session-nonce"] {
+            let get = integration_policy_fixture_in_space(
+                "integration_policy_get",
+                "test",
+                "9.6.0",
+                INTEGRATION_POLICY_NAMESPACE,
+                nonce,
+                marker_integration_response_with_nonce(INTEGRATION_POLICY_DESCRIPTION, nonce),
+            )
+            .expect("a same-session nonce-bearing response is safe to reduce");
+
+            assert_eq!(
+                get.document["response"]["item"]["description"],
+                INTEGRATION_POLICY_DESCRIPTION
+            );
+            let parent = integration_policy_exchange_fixture_in_space(
+                "integration_policy_parent_create",
+                "test",
+                "9.6.0",
+                INTEGRATION_POLICY_NAMESPACE,
+                nonce,
+                marker_integration_parent_create_body_with_nonce(nonce),
+                marker_integration_parent_response_with_nonce(nonce),
+            )
+            .expect("a same-session nonce-bearing parent exchange is safe to reduce");
+            assert_eq!(
+                parent.document["request"]["description"],
+                INTEGRATION_POLICY_PARENT_DESCRIPTION
+            );
+            assert_eq!(
+                parent.document["response"]["item"]["description"],
+                INTEGRATION_POLICY_PARENT_DESCRIPTION
+            );
+            let create = integration_policy_exchange_fixture_in_space(
+                "integration_policy_create",
+                "test",
+                "9.6.0",
+                INTEGRATION_POLICY_NAMESPACE,
+                nonce,
+                marker_integration_create_body_with_nonce("2.0.0", nonce),
+                marker_integration_response_with_nonce(INTEGRATION_POLICY_DESCRIPTION, nonce),
+            )
+            .expect("a same-session nonce-bearing create exchange is safe to reduce");
+            assert_eq!(
+                create.document["request"]["description"],
+                INTEGRATION_POLICY_DESCRIPTION
+            );
+            assert_eq!(
+                create.document["response"]["item"]["description"],
+                INTEGRATION_POLICY_DESCRIPTION
+            );
+            let update = integration_policy_exchange_fixture_in_space(
+                "integration_policy_update",
+                "test",
+                "9.6.0",
+                INTEGRATION_POLICY_NAMESPACE,
+                nonce,
+                marker_integration_update_body_with_nonce("2.0.0", nonce),
+                marker_integration_response_with_nonce(
+                    INTEGRATION_POLICY_UPDATED_DESCRIPTION,
+                    nonce,
+                ),
+            )
+            .expect("a same-session nonce-bearing update exchange is safe to reduce");
+            assert_eq!(
+                update.document["request"]["description"],
+                INTEGRATION_POLICY_UPDATED_DESCRIPTION
+            );
+            assert_eq!(
+                update.document["response"]["item"]["description"],
+                INTEGRATION_POLICY_UPDATED_DESCRIPTION
+            );
+            let document = Value::Array(vec![
+                get.document,
+                parent.document,
+                create.document,
+                update.document,
+            ]);
+            assert!(
+                !document.to_string().contains(nonce),
+                "public fixtures must never retain the in-memory ownership nonce"
+            );
+            documents.push(document);
+        }
+        assert_eq!(
+            documents[0], documents[1],
+            "different session nonces must reduce to one deterministic fixture"
+        );
     }
 
     #[test]
@@ -12248,7 +12844,7 @@ mod tests {
                 "id": INTEGRATION_POLICY_ID,
                 "name": INTEGRATION_POLICY_NAME,
                 "namespace": INTEGRATION_POLICY_NAMESPACE,
-                "description": INTEGRATION_POLICY_DESCRIPTION,
+                "description": marker_integration_description(TEST_INTEGRATION_RECORDING_NONCE),
                 "policy_ids": [INTEGRATION_POLICY_PARENT_ID],
                 "package": {"name": INTEGRATION_POLICY_PACKAGE, "version": "2.0.0"},
                 "inputs": {},
@@ -12380,8 +12976,9 @@ mod tests {
     }
 
     #[test]
-    fn marker_integration_bodies_pin_ids_package_and_force_omission() {
-        let create = marker_integration_create_body("2.0.0");
+    fn marker_integration_bodies_preserve_one_session_nonce_and_force_omission() {
+        let nonce = "one-session-nonce";
+        let create = marker_integration_create_body_with_nonce("2.0.0", nonce);
         assert_eq!(create["id"], INTEGRATION_POLICY_ID);
         assert_eq!(create["name"], INTEGRATION_POLICY_NAME);
         assert_eq!(create["namespace"], "default");
@@ -12391,13 +12988,19 @@ mod tests {
             json!({"name": "system", "version": "2.0.0"})
         );
         assert_eq!(create["inputs"], json!({}));
+        assert_eq!(create["description"], marker_integration_description(nonce));
         assert!(create.get("force").is_none());
         assert!(create.get("enabled").is_none());
         assert!(create.get("create_dataset_templates").is_none());
 
-        let update = marker_integration_update_body("2.0.0");
+        let update = marker_integration_update_body_with_nonce("2.0.0", nonce);
         assert!(update.get("id").is_none());
         assert_eq!(update["enabled"], true);
+        assert_eq!(
+            update["description"],
+            marker_integration_updated_description(nonce),
+            "the update must retain the creation session nonce"
+        );
         assert!(update.get("force").is_none());
         assert!(update.get("create_dataset_templates").is_none());
     }
@@ -12598,7 +13201,10 @@ mod tests {
 
         let duplicate_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let duplicate_reads_for_response = duplicate_reads.clone();
-        let mut duplicate = marker_integration_response(INTEGRATION_POLICY_DESCRIPTION);
+        let mut duplicate = marker_integration_response_with_nonce(
+            INTEGRATION_POLICY_DESCRIPTION,
+            OTHER_INTEGRATION_RECORDING_NONCE,
+        );
         duplicate["item"]["id"] = json!(INTEGRATION_POLICY_DUP_ID);
         Mock::given(method("GET"))
             .and(path(format!(
@@ -12725,7 +13331,12 @@ mod tests {
             AmbiguousCreateOutcome::RootItem,
         ] {
             let server = MockServer::start().await;
-            mount_parent_create_ambiguous_winner(&server, outcome).await;
+            mount_parent_create_ambiguous_winner(
+                &server,
+                outcome,
+                OTHER_INTEGRATION_RECORDING_NONCE,
+            )
+            .await;
             let transport = mock_transport(&server);
             let mut session = RecordingSession {
                 transport: &transport,
@@ -12744,7 +13355,7 @@ mod tests {
                 "{outcome:?} must not claim a parent it cannot prove"
             );
             assert!(
-                session.cleanup().await.is_err(),
+                session.cleanup_integration_resources().await.is_err(),
                 "a concurrent marker parent remains for investigation"
             );
 
@@ -12754,7 +13365,7 @@ mod tests {
                     !(request.method.as_str() == "POST"
                         && request.url.path() == "/api/fleet/agent_policies/delete")
                 }),
-                "{outcome:?} must not let outer cleanup delete the winner parent"
+                "{outcome:?} must not let integration cleanup delete the winner parent"
             );
         }
     }
@@ -12767,7 +13378,12 @@ mod tests {
             AmbiguousCreateOutcome::RootItem,
         ] {
             let server = MockServer::start().await;
-            let primary_reads = mount_primary_create_ambiguous_winner(&server, outcome).await;
+            let primary_reads = mount_primary_create_ambiguous_winner(
+                &server,
+                outcome,
+                OTHER_INTEGRATION_RECORDING_NONCE,
+            )
+            .await;
             let transport = mock_transport(&server);
             let mut session = RecordingSession {
                 transport: &transport,
@@ -12790,14 +13406,14 @@ mod tests {
                 "the independently proven parent remains eligible for safe cleanup checks"
             );
             assert!(
-                session.cleanup().await.is_err(),
+                session.cleanup_integration_resources().await.is_err(),
                 "the attached concurrent integration remains for investigation"
             );
 
             assert_eq!(
                 primary_reads.load(std::sync::atomic::Ordering::SeqCst),
-                1,
-                "{outcome:?} must not reread the winner as cleanup-owned"
+                2,
+                "{outcome:?} must exact-GET the ambiguous winner before refusing ownership"
             );
             let requests = server.received_requests().await.expect("requests");
             assert!(
@@ -12809,6 +13425,252 @@ mod tests {
                 "{outcome:?} must not let outer cleanup delete the winner integration"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_parent_create_claims_the_same_nonce_then_cleans_after_an_exact_get() {
+        for (outcome, expected_error) in [
+            (
+                AmbiguousCreateOutcome::Conflict,
+                "creating integration policy marker parent failed",
+            ),
+            (
+                AmbiguousCreateOutcome::RootItem,
+                "integration policy parent create did not preserve the marker identity",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            mount_parent_create_ambiguous_winner(
+                &server,
+                outcome,
+                TEST_INTEGRATION_RECORDING_NONCE,
+            )
+            .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("an ambiguous parent create must still return its sanitized error");
+            assert_eq!(error.message, expected_error);
+            assert!(!error.message.contains(TEST_INTEGRATION_RECORDING_NONCE));
+            assert!(
+                session.ownership.integration_policy_parent,
+                "{outcome:?} must retain the same-nonce parent for cleanup"
+            );
+
+            let before_cleanup = server.received_requests().await.expect("requests");
+            let parent_create = before_cleanup
+                .iter()
+                .position(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies"
+                })
+                .expect("parent create request");
+            let recovery_get = before_cleanup
+                .iter()
+                .enumerate()
+                .find_map(|(index, request)| {
+                    (index > parent_create
+                        && request.method.as_str() == "GET"
+                        && request.url.path()
+                            == format!("/api/fleet/agent_policies/{INTEGRATION_POLICY_PARENT_ID}"))
+                    .then_some(index)
+                })
+                .expect("exact parent GET after ambiguous create");
+
+            session
+                .cleanup_integration_resources()
+                .await
+                .expect("same-nonce parent cleanup");
+            assert!(!session.ownership.integration_policy_parent);
+
+            let requests = server.received_requests().await.expect("requests");
+            let parent_delete = requests
+                .iter()
+                .position(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete"
+                })
+                .expect("owned parent cleanup delete");
+            assert!(
+                parent_create < recovery_get && recovery_get < parent_delete,
+                "the exact recovery GET must prove ownership before cleanup delete"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_primary_create_claims_the_same_nonce_then_cleans_after_an_exact_get() {
+        for (outcome, expected_error) in [
+            (
+                AmbiguousCreateOutcome::Conflict,
+                "creating integration policy marker failed",
+            ),
+            (
+                AmbiguousCreateOutcome::RootItem,
+                "integration policy create: integration response did not preserve the marker identity",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            let primary_reads = mount_primary_create_ambiguous_winner(
+                &server,
+                outcome,
+                TEST_INTEGRATION_RECORDING_NONCE,
+            )
+            .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err("an ambiguous primary create must still return its sanitized error");
+            assert_eq!(error.message, expected_error);
+            assert!(!error.message.contains(TEST_INTEGRATION_RECORDING_NONCE));
+            assert!(
+                session.ownership.integration_policy,
+                "{outcome:?} must retain the same-nonce integration for cleanup"
+            );
+            assert!(session.ownership.integration_policy_parent);
+
+            let before_cleanup = server.received_requests().await.expect("requests");
+            let primary_create = before_cleanup
+                .iter()
+                .position(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/package_policies"
+                })
+                .expect("primary create request");
+            let recovery_get = before_cleanup
+                .iter()
+                .enumerate()
+                .find_map(|(index, request)| {
+                    (index > primary_create
+                        && request.method.as_str() == "GET"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"))
+                    .then_some(index)
+                })
+                .expect("exact primary GET after ambiguous create");
+
+            session
+                .cleanup_integration_resources()
+                .await
+                .expect("same-nonce integration cleanup");
+            assert!(!session.ownership.integration_policy);
+            assert!(!session.ownership.integration_policy_parent);
+
+            let requests = server.received_requests().await.expect("requests");
+            let integration_delete = requests
+                .iter()
+                .position(|request| {
+                    request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                })
+                .expect("owned integration cleanup delete");
+            let parent_delete = requests
+                .iter()
+                .position(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete"
+                })
+                .expect("owned parent cleanup delete");
+            assert!(
+                primary_create < recovery_get
+                    && recovery_get < integration_delete
+                    && integration_delete < parent_delete,
+                "the exact recovery GET must prove ownership before ordered cleanup deletes"
+            );
+            assert!(
+                primary_reads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+                "preflight and exact ambiguity recovery must both read the primary id"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn same_nonce_duplicate_recovery_requires_an_exact_get_before_cleanup_delete() {
+        let server = MockServer::start().await;
+        let deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deleted_for_reads = deleted.clone();
+        let mut duplicate = marker_integration_response_with_nonce(
+            INTEGRATION_POLICY_DESCRIPTION,
+            TEST_INTEGRATION_RECORDING_NONCE,
+        );
+        duplicate["item"]["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .and(query_param("format", "simplified"))
+            .respond_with(move |_: &wiremock::Request| {
+                if deleted_for_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(duplicate.clone())
+                }
+            })
+            .mount(&server)
+            .await;
+        let deleted_for_response = deleted.clone();
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                deleted_for_response.store(true, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": INTEGRATION_POLICY_DUP_ID,
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let transport = mock_transport(&server);
+        assert_eq!(
+            claim_ambiguous_marker_integration_create(
+                &transport,
+                INTEGRATION_POLICY_DUP_ID,
+                "2.0.0",
+                TEST_INTEGRATION_RECORDING_NONCE,
+            )
+            .await,
+            AmbiguousMarkerCreateOwnership::Claimed
+        );
+        cleanup_marker_integration(
+            &transport,
+            INTEGRATION_POLICY_DUP_ID,
+            "2.0.0",
+            TEST_INTEGRATION_RECORDING_NONCE,
+        )
+        .await
+        .expect("a proven same-nonce duplicate is cleanup-owned");
+
+        let requests = server.received_requests().await.expect("requests");
+        let first_get = requests
+            .iter()
+            .position(|request| request.method.as_str() == "GET")
+            .expect("ambiguity recovery GET");
+        let delete = requests
+            .iter()
+            .position(|request| request.method.as_str() == "DELETE")
+            .expect("duplicate cleanup delete");
+        assert!(first_get < delete);
     }
 
     #[tokio::test]
@@ -13012,11 +13874,7 @@ mod tests {
             ownership: CleanupOwnership {
                 integration_policy: true,
                 integration_policy_parent: true,
-                integration_package_inventory: Some(std::collections::BTreeSet::from([(
-                    INTEGRATION_POLICY_PACKAGE.to_string(),
-                    "2.0.0".to_string(),
-                )])),
-                ..Default::default()
+                ..integration_cleanup_ownership()
             },
         };
 
@@ -13074,11 +13932,7 @@ mod tests {
             transport: &transport,
             ownership: CleanupOwnership {
                 integration_policy: true,
-                integration_package_inventory: Some(std::collections::BTreeSet::from([(
-                    INTEGRATION_POLICY_PACKAGE.to_string(),
-                    "2.0.0".to_string(),
-                )])),
-                ..Default::default()
+                ..integration_cleanup_ownership()
             },
         };
 
@@ -13120,11 +13974,7 @@ mod tests {
             transport: &transport,
             ownership: CleanupOwnership {
                 integration_policy: true,
-                integration_package_inventory: Some(std::collections::BTreeSet::from([(
-                    INTEGRATION_POLICY_PACKAGE.to_string(),
-                    "2.0.0".to_string(),
-                )])),
-                ..Default::default()
+                ..integration_cleanup_ownership()
             },
         };
 
@@ -13166,6 +14016,7 @@ mod tests {
             transport: &transport,
             ownership: CleanupOwnership {
                 integration_policy_parent: true,
+                integration_recording_nonce: Some(TEST_INTEGRATION_RECORDING_NONCE.to_string()),
                 ..Default::default()
             },
         };
@@ -13188,7 +14039,6 @@ mod tests {
     async fn integration_lifecycle_rechecks_swapped_resources_before_each_normal_mutation() {
         for swap in [
             IntegrationLifecycleSwap::Update,
-            IntegrationLifecycleSwap::AttachedParentDelete,
             IntegrationLifecycleSwap::IntegrationDelete,
             IntegrationLifecycleSwap::FinalParentDelete,
         ] {
@@ -13230,12 +14080,6 @@ mod tests {
                         "a swapped integration must stop the update before PUT"
                     );
                 }
-                IntegrationLifecycleSwap::AttachedParentDelete => {
-                    assert!(
-                        requests.iter().all(|request| !parent_delete(request)),
-                        "a swapped attached parent must stop its delete attempt"
-                    );
-                }
                 IntegrationLifecycleSwap::IntegrationDelete => {
                     assert!(
                         requests.iter().all(|request| !integration_delete(request)),
@@ -13248,8 +14092,8 @@ mod tests {
                             .iter()
                             .filter(|request| parent_delete(request))
                             .count(),
-                        1,
-                        "only the expected attached-parent refusal may precede a swapped final parent"
+                        0,
+                        "a swapped final parent must stop before its delete"
                     );
                 }
             }
@@ -13322,7 +14166,7 @@ mod tests {
             let server = MockServer::start().await;
             mount_integration_lifecycle_with_revalidation_changes(
                 &server,
-                IntegrationLifecycleSwap::AttachedParentDelete,
+                IntegrationLifecycleSwap::FinalParentDelete,
                 &json!({}),
                 &fields,
                 None,
@@ -13352,7 +14196,7 @@ mod tests {
                     !(request.method.as_str() == "POST"
                         && request.url.path() == "/api/fleet/agent_policies/delete")
                 }),
-                "{label} must stop before the attached-parent delete"
+                "{label} must stop before the final parent delete"
             );
         }
     }
@@ -13370,7 +14214,7 @@ mod tests {
             ),
             (
                 "parent",
-                IntegrationLifecycleSwap::AttachedParentDelete,
+                IntegrationLifecycleSwap::FinalParentDelete,
                 None,
                 Some(marker_integration_parent_response()["item"].clone()),
                 "POST",
@@ -13432,11 +14276,7 @@ mod tests {
                 transport: &transport,
                 ownership: CleanupOwnership {
                     integration_policy: true,
-                    integration_package_inventory: Some(std::collections::BTreeSet::from([(
-                        INTEGRATION_POLICY_PACKAGE.to_string(),
-                        "2.0.0".to_string(),
-                    )])),
-                    ..Default::default()
+                    ..integration_cleanup_ownership()
                 },
             };
 
@@ -13484,6 +14324,7 @@ mod tests {
                 transport: &transport,
                 ownership: CleanupOwnership {
                     integration_policy_parent: true,
+                    integration_recording_nonce: Some(TEST_INTEGRATION_RECORDING_NONCE.to_string()),
                     ..Default::default()
                 },
             };
@@ -13530,11 +14371,7 @@ mod tests {
             transport: &integration_transport,
             ownership: CleanupOwnership {
                 integration_policy: true,
-                integration_package_inventory: Some(std::collections::BTreeSet::from([(
-                    INTEGRATION_POLICY_PACKAGE.to_string(),
-                    "2.0.0".to_string(),
-                )])),
-                ..Default::default()
+                ..integration_cleanup_ownership()
             },
         };
 
@@ -13569,6 +14406,7 @@ mod tests {
             transport: &parent_transport,
             ownership: CleanupOwnership {
                 integration_policy_parent: true,
+                integration_recording_nonce: Some(TEST_INTEGRATION_RECORDING_NONCE.to_string()),
                 ..Default::default()
             },
         };
@@ -13588,7 +14426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integration_lifecycle_create_update_delete_refusal_and_cleanup_are_force_free() {
+    async fn integration_lifecycle_deletes_the_integration_before_its_parent_and_is_force_free() {
         let server = MockServer::start().await;
         mount_integration_lifecycle(&server, IntegrationLifecycleFailure::None).await;
         let transport = mock_transport(&server);
@@ -13627,14 +14465,13 @@ mod tests {
                     "PUT",
                     format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
                 ),
-                ("POST", "/api/fleet/agent_policies/delete".to_string()),
                 (
                     "DELETE",
                     format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
                 ),
                 ("POST", "/api/fleet/agent_policies/delete".to_string()),
             ],
-            "create, update, refusal, and normal delete routes are exercised",
+            "the attached parent is never deleted before its integration",
         );
         assert!(mutations.iter().all(|request| {
             !request.url.query_pairs().any(|(key, _)| key == "force")
