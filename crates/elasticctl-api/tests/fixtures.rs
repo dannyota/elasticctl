@@ -12,6 +12,7 @@ use elasticctl_api::rules;
 use elasticctl_api::saved_objects;
 use elasticctl_core::{Profile, Transport};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use wiremock::matchers::{body_json, method, path, query_param};
@@ -1799,6 +1800,23 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
         ] {
             assert_eq!(fixture["error"]["kind"], kind, "{}", set.display());
             assert_eq!(fixture["error"]["http_status"], status, "{}", set.display());
+            let error = fixture["error"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{}: error envelope must be an object", set.display()));
+            assert_eq!(
+                error.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+                ["http_status", "kind", "message"]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>(),
+                "{}: error envelope must contain only safe fields",
+                set.display()
+            );
+            assert_eq!(
+                error["message"],
+                "Fleet integration-policy recording endpoint returned an error",
+                "{}: error envelope message",
+                set.display()
+            );
         }
 
         let create_request = create["request"].clone();
