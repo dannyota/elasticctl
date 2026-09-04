@@ -87,7 +87,10 @@ pub struct IntegrationPolicyImportPlan {
     name_owners_snapshot: BTreeMap<String, BTreeSet<String>>,
     parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
     skipped_snapshot: Vec<Value>,
-    skipped_existing_snapshot: BTreeMap<String, Map<String, Value>>,
+    // Exact get-by-id results from before import classification. This covers
+    // every canonical id, so a mutable target or skipped row cannot turn an
+    // absent policy into an existing one (or the reverse).
+    existing_snapshot: BTreeMap<String, Option<Map<String, Value>>>,
     targets: Vec<IntegrationPolicyImportTarget>,
     package_groups: BTreeMap<String, IntegrationPackageGroup>,
     overwrite: bool,
@@ -101,6 +104,7 @@ impl fmt::Debug for IntegrationPolicyImportPlan {
             .field("target_count", &self.preview.targets.len())
             .field("skipped_count", &self.skipped.len())
             .field("package_install_count", &self.package_installs.len())
+            .field("existing_snapshot_count", &self.existing_snapshot.len())
             .field("total", &self.total)
             .finish()
     }
@@ -1464,13 +1468,11 @@ pub async fn plan_import(
     }
 
     let mut skipped = Vec::new();
-    let mut skipped_existing_snapshot = BTreeMap::new();
     let pending: Vec<IntegrationPolicySpec> = canonical
         .iter()
         .filter_map(|spec| match existing.get(&spec.id) {
             Some(Some(item)) if skip_existing => {
                 skipped.push(json!({"id": spec.id, "reason": "exists"}));
-                skipped_existing_snapshot.insert(spec.id.clone(), item.clone());
                 None
             }
             _ => Some(spec.clone()),
@@ -1642,7 +1644,7 @@ pub async fn plan_import(
         name_owners_snapshot: name_owners.clone(),
         name_owners,
         parent_snapshots: shared_parents,
-        skipped_existing_snapshot,
+        existing_snapshot: existing.clone(),
         targets,
         package_groups,
         overwrite,
@@ -2368,6 +2370,26 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
     if validate_requested_package_versions(&plan.canonical).is_err() {
         return invalid("canonical package requests are inconsistent");
     }
+    let canonical_id_set = canonical_ids.keys().copied().collect::<BTreeSet<_>>();
+    if plan
+        .existing_snapshot
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != canonical_id_set
+    {
+        return invalid("existence snapshots do not match canonical integration policies");
+    }
+    for (id, existing) in &plan.existing_snapshot {
+        if let Some(item) = existing
+            && required_string(item, "id", "existing integration policy")
+                .ok()
+                .as_deref()
+                != Some(id.as_str())
+        {
+            return invalid("existence snapshot has an unexpected id");
+        }
+    }
     if plan.name_owners != plan.name_owners_snapshot {
         return invalid("name ownership snapshots do not match");
     }
@@ -2410,6 +2432,17 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
         };
         if !target_ids.insert(target.effective.id.as_str()) {
             return invalid("pending integration policies must be unique and sorted by id");
+        }
+        let exact_current = match (
+            &target.current,
+            plan.existing_snapshot.get(&target.effective.id),
+        ) {
+            (None, Some(None)) => true,
+            (Some(current), Some(Some(item))) => current.item == *item,
+            _ => false,
+        };
+        if !exact_current {
+            return invalid("target does not match its plan-time existence snapshot");
         }
         let current_parent_ids = match &target.current {
             None => Vec::new(),
@@ -2577,10 +2610,26 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
         return invalid("replacement body set does not match changed integration policies");
     }
 
+    let expected_skipped_ids = plan
+        .canonical
+        .iter()
+        .filter(|spec| {
+            plan.skip_existing && matches!(plan.existing_snapshot.get(&spec.id), Some(Some(_)))
+        })
+        .map(|spec| spec.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected_target_ids = canonical_id_set
+        .iter()
+        .copied()
+        .filter(|id| !expected_skipped_ids.contains(id))
+        .collect::<BTreeSet<_>>();
+    if target_ids != expected_target_ids {
+        return invalid("pending integration policies do not match plan-time existence snapshots");
+    }
     let expected_skipped = plan
         .canonical
         .iter()
-        .filter(|spec| !target_ids.contains(spec.id.as_str()))
+        .filter(|spec| expected_skipped_ids.contains(spec.id.as_str()))
         .map(|spec| json!({"id": spec.id, "reason": "exists"}))
         .collect::<Vec<_>>();
     if plan.skipped != plan.skipped_snapshot {
@@ -2588,28 +2637,6 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
     }
     if (!plan.skip_existing && !plan.skipped.is_empty()) || plan.skipped != expected_skipped {
         return invalid("skipped rows do not match the canonical artifact");
-    }
-    let expected_skipped_ids = expected_skipped
-        .iter()
-        .filter_map(|row| row.get("id").and_then(Value::as_str))
-        .collect::<BTreeSet<_>>();
-    if plan
-        .skipped_existing_snapshot
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>()
-        != expected_skipped_ids
-    {
-        return invalid("skipped existing snapshots do not match skipped rows");
-    }
-    for (id, item) in &plan.skipped_existing_snapshot {
-        if required_string(item, "id", "skipped integration policy")
-            .ok()
-            .as_deref()
-            != Some(id)
-        {
-            return invalid("skipped existing snapshot has an unexpected id");
-        }
     }
     let expected_installs = planned_package_installs(&plan.package_groups);
     if plan.package_installs != expected_installs {
@@ -2720,7 +2747,7 @@ mod import_plan_tests {
             name_owners_snapshot: BTreeMap::from([(effective.name.clone(), BTreeSet::new())]),
             parent_snapshots,
             skipped_snapshot: Vec::new(),
-            skipped_existing_snapshot: BTreeMap::new(),
+            existing_snapshot: BTreeMap::from([("fresh".into(), None)]),
             targets,
             package_groups,
             overwrite: false,
@@ -2730,24 +2757,29 @@ mod import_plan_tests {
 
     fn existing_plan_without_overwrite() -> IntegrationPolicyImportPlan {
         let mut plan = valid_plan();
-        let target = plan.targets.first_mut().expect("fresh target");
-        let mut item = serde_json::to_value(&target.effective)
-            .expect("serialize current item")
-            .as_object()
-            .expect("current item object")
-            .clone();
-        item.insert("enabled".into(), Value::Bool(true));
-        target.current = Some(IntegrationPolicyCurrentSnapshot {
-            item,
-            spec: target.effective.clone(),
-            parent_ids: target.effective.policy_ids.clone(),
-        });
-        target
-            .parents
-            .get_mut("parent-1")
-            .expect("parent")
-            .attached_integrations
-            .push(target.effective.id.clone());
+        let existing = {
+            let target = plan.targets.first_mut().expect("fresh target");
+            let mut item = serde_json::to_value(&target.effective)
+                .expect("serialize current item")
+                .as_object()
+                .expect("current item object")
+                .clone();
+            item.insert("enabled".into(), Value::Bool(true));
+            target.current = Some(IntegrationPolicyCurrentSnapshot {
+                item: item.clone(),
+                spec: target.effective.clone(),
+                parent_ids: target.effective.policy_ids.clone(),
+            });
+            target
+                .parents
+                .get_mut("parent-1")
+                .expect("parent")
+                .attached_integrations
+                .push(target.effective.id.clone());
+            item
+        };
+        plan.existing_snapshot
+            .insert("fresh".into(), Some(existing));
 
         let state = PackageDependencySnapshot {
             name: "system".into(),
@@ -2768,6 +2800,19 @@ mod import_plan_tests {
             .insert("fresh".into());
         plan.name_owners_snapshot = plan.name_owners.clone();
         plan.parent_snapshots = plan.targets[0].parents.clone();
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+        plan
+    }
+
+    fn valid_skip_existing_plan() -> IntegrationPolicyImportPlan {
+        let mut plan = existing_plan_without_overwrite();
+        plan.skip_existing = true;
+        plan.targets.clear();
+        plan.parent_snapshots.clear();
+        plan.package_groups.clear();
+        plan.skipped = vec![json!({"id": "fresh", "reason": "exists"})];
+        plan.skipped_snapshot = plan.skipped.clone();
+        plan.package_installs.clear();
         plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
         plan
     }
@@ -2905,7 +2950,7 @@ mod import_plan_tests {
 
     #[test]
     fn import_plan_rejects_target_removal_rebuilt_as_a_skipped_row() {
-        let mut plan = existing_plan_without_overwrite();
+        let mut plan = valid_plan();
         plan.skip_existing = true;
         plan.targets.clear();
         plan.parent_snapshots.clear();
@@ -2916,6 +2961,36 @@ mod import_plan_tests {
         plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
 
         assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_accepts_a_coherent_skip_existing_snapshot() {
+        assert!(validate_import_plan(&valid_skip_existing_plan()).is_ok());
+    }
+
+    #[test]
+    fn import_plan_rejects_existence_snapshot_key_and_target_mismatches() {
+        let mut missing_current = valid_replace_plan();
+        missing_current
+            .existing_snapshot
+            .insert("fresh".into(), None);
+        assert!(validate_import_plan(&missing_current).is_err());
+
+        let mut changed_current = valid_replace_plan();
+        changed_current
+            .existing_snapshot
+            .get_mut("fresh")
+            .expect("existing snapshot")
+            .as_mut()
+            .expect("existing item")
+            .insert("description".into(), json!("tampered"));
+        assert!(validate_import_plan(&changed_current).is_err());
+
+        let mut extra_snapshot = valid_plan();
+        extra_snapshot
+            .existing_snapshot
+            .insert("other".into(), None);
+        assert!(validate_import_plan(&extra_snapshot).is_err());
     }
 
     #[test]
