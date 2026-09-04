@@ -2,7 +2,10 @@ use elasticctl_api::content_codec::{self, ContentFormat};
 use elasticctl_api::fleet::agent_policies::PLATFORM_FLAGS;
 use elasticctl_api::fleet::integration_policies::{self, IntegrationPolicySpec};
 use elasticctl_api::fleet::integration_policy_ops::{self, IntegrationPolicyFilter};
-use elasticctl_api::{IntegrationPolicyImportPlan, IntegrationPolicyImportReport};
+use elasticctl_api::{
+    IntegrationPolicyDeletePlan, IntegrationPolicyDeleteReport, IntegrationPolicyImportPlan,
+    IntegrationPolicyImportReport,
+};
 use elasticctl_core::{ErrorKind, Feature, Profile, Transport};
 use serde_json::{Value, json};
 use std::sync::{
@@ -119,6 +122,15 @@ fn integration_policy_spec_rejects_noncanonical_identity_and_parent_lists() {
 fn integration_import_reports_are_reexported_from_the_api_crate() {
     fn accepts_plan(_: Option<IntegrationPolicyImportPlan>) {}
     fn accepts_report(_: Option<IntegrationPolicyImportReport>) {}
+
+    accepts_plan(None);
+    accepts_report(None);
+}
+
+#[test]
+fn integration_delete_reports_are_reexported_from_the_api_crate() {
+    fn accepts_plan(_: Option<IntegrationPolicyDeletePlan>) {}
+    fn accepts_report(_: Option<IntegrationPolicyDeleteReport>) {}
 
     accepts_plan(None);
     accepts_report(None);
@@ -4736,4 +4748,1302 @@ async fn get_reports_every_direct_safe_blocker_without_serializing_sensitive_con
     ] {
         assert!(!rendered.contains(private), "detail leaked {private}");
     }
+}
+
+#[tokio::test]
+async fn delete_preview_names_every_parent() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert("policy_ids".into(), json!(["parent-a", "parent-b"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for (id, agents) in [("parent-a", 2), ("parent-b", 3)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item(id, "default", agents, json!(["integration-1"]))
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let plan =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+            .await
+            .expect("safe delete plan");
+
+    assert_eq!(
+        plan.preview.preview_action,
+        "Delete 1 integration policy(ies)"
+    );
+    assert_eq!(
+        plan.preview.preview_details,
+        [
+            "integration-1  Integration integration-1  parents parent-a (Parent parent-a) agents 2, parent-b (Parent parent-b) agents 3  agents 5",
+            "affected agents 5",
+            "warning  Fleet can change after the final recheck and before the write",
+        ]
+    );
+    assert_eq!(plan.preview.targets, ["integration-1"]);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .iter()
+            .all(|request| request.method != "DELETE"),
+        "planning must not delete"
+    );
+}
+
+#[tokio::test]
+async fn delete_rejects_empty_selectors_without_transport_io() {
+    let server = verified_server().await;
+    let error = integration_policy_ops::plan_delete(&transport_for(&server), &[])
+        .await
+        .expect_err("an empty delete selection is invalid");
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(
+        error.message,
+        "integration-policy delete needs at least one selector"
+    );
+    let error = integration_policy_ops::plan_delete(&transport_for(&server), &[" ".into()])
+        .await
+        .expect_err("a blank selector is invalid");
+    assert_eq!(error.kind, ErrorKind::Error);
+    assert_eq!(
+        error.message,
+        "integration-policy delete selectors must not be empty"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty(),
+        "empty local validation must precede the feature probe"
+    );
+}
+
+#[tokio::test]
+async fn delete_resolves_id_and_exact_name_deduplicates_and_sorts_targets() {
+    let server = verified_server().await;
+    let mut first = live_item("a-id");
+    first.insert("policy_ids".into(), json!(["parent-a"]));
+    let mut second = live_item("z-id");
+    second.insert("name".into(), json!("Named integration"));
+    second.insert("policy_ids".into(), json!(["parent-z"]));
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/a-id"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": first})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/Named%20integration"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404, "message": "missing"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/z-id"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": second})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut named_summary = item("z-id");
+    named_summary["name"] = json!("Named integration");
+    named_summary["policy_ids"] = json!(["parent-z"]);
+    mount_integration_pages(&server, vec![(1, vec![item("a-id"), named_summary], 2)]).await;
+    for (id, policy) in [("parent-a", "a-id"), ("parent-z", "z-id")] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item(id, "default", 0, json!([policy]))
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let plan = integration_policy_ops::plan_delete(
+        &transport_for(&server),
+        &["Named integration".into(), "a-id".into(), "a-id".into()],
+    )
+    .await
+    .expect("both selectors resolve");
+    assert_eq!(plan.total, 2);
+    assert_eq!(plan.preview.targets, ["a-id", "z-id"]);
+}
+
+#[tokio::test]
+async fn delete_keeps_missing_selector_classification() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/missing"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404, "message": "must not escape"
+        })))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+
+    let error = integration_policy_ops::plan_delete(&transport_for(&server), &["missing".into()])
+        .await
+        .expect_err("missing selector");
+    assert_eq!(error.kind, ErrorKind::NotFound);
+    assert_eq!(
+        error.message,
+        "no integration policy with id or name 'missing'"
+    );
+    assert!(!error.message.contains("must not escape"));
+}
+
+#[tokio::test]
+async fn delete_rejects_a_one_object_response_with_the_wrong_selected_id() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/selected"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": live_item("other")})))
+        .mount(&server)
+        .await;
+
+    let error = integration_policy_ops::plan_delete(&transport_for(&server), &["selected".into()])
+        .await
+        .expect_err("a mutation must not retarget a selector");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding integration policy delete planning read: response id did not match the selector"
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/agent_policies/parent-1").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn delete_sanitizes_a_conflicting_id_selection_response() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "message": "id-selection-conflict-secret",
+            "config": "id-selection-conflict-config"
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+            .await
+            .expect_err("a route conflict must not expose its response body");
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(error.http_status, Some(409));
+    assert_eq!(
+        error.message,
+        "integration-policy delete planning integration read failed"
+    );
+    assert!(!error.message.contains("id-selection-conflict-secret"));
+    assert!(!error.message.contains("id-selection-conflict-config"));
+}
+
+#[tokio::test]
+async fn delete_sanitizes_a_conflicting_name_list_response() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/Named%20integration"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "id-miss-secret"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "message": "name-list-conflict-secret",
+            "config": "name-list-conflict-config"
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["Named integration".into()])
+            .await
+            .expect_err("a list conflict must not expose its response body");
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(error.http_status, Some(409));
+    assert_eq!(
+        error.message,
+        "integration-policy delete planning integration list read failed"
+    );
+    assert!(!error.message.contains("name-list-conflict-secret"));
+    assert!(!error.message.contains("name-list-conflict-config"));
+}
+
+#[tokio::test]
+async fn delete_sanitizes_a_name_resolved_disappearance_response() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/Named%20integration"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "id-miss-secret"
+        })))
+        .mount(&server)
+        .await;
+    let mut named = item("selected-id");
+    named["name"] = json!("Named integration");
+    mount_integration_pages(&server, vec![(1, vec![named], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/selected-id"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "name-disappearance-secret",
+            "config": "name-disappearance-config"
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["Named integration".into()])
+            .await
+            .expect_err("a name-resolved disappearance must not expose its response body");
+    assert_eq!(error.kind, ErrorKind::NotFound);
+    assert_eq!(error.http_status, Some(404));
+    assert_eq!(
+        error.message,
+        "integration-policy delete planning name read failed"
+    );
+    assert!(!error.message.contains("name-disappearance-secret"));
+    assert!(!error.message.contains("name-disappearance-config"));
+}
+
+#[tokio::test]
+async fn delete_refuses_unsafe_direct_state_before_parent_or_package_reads() {
+    for (field, value, expected) in [
+        ("enabled", json!(false), ErrorKind::Unsupported),
+        ("is_managed", json!(true), ErrorKind::Unsupported),
+        ("supports_agentless", json!(true), ErrorKind::Unsupported),
+        (
+            "supports_cloud_connector",
+            json!(true),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "output_id",
+            json!("environment-output-id"),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "cloud_connector_id",
+            json!("environment-connector-id"),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "cloud_connector_name",
+            json!("environment-name"),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "spaceIds",
+            json!(["default", "other-space"]),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "secret_references",
+            json!([{"id": "secret-reference-id"}]),
+            ErrorKind::Unsupported,
+        ),
+        ("is_managed", json!("true"), ErrorKind::Http),
+        ("future_field", json!(true), ErrorKind::Unsupported),
+    ] {
+        let server = verified_server().await;
+        let mut policy = live_item("integration-1");
+        policy.insert(field.into(), value);
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+            .mount(&server)
+            .await;
+
+        let error =
+            integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+                .await
+                .expect_err(field);
+        assert_eq!(error.kind, expected, "{field}: {}", error.message);
+        assert_eq!(
+            request_count(&server, "/api/fleet/agent_policies/parent-1").await,
+            0,
+            "{field} must not read parents"
+        );
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system").await,
+            0,
+            "{field} must not read packages"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("recorded requests")
+                .iter()
+                .all(|request| request.method != "DELETE"),
+            "{field} must not delete"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delete_refuses_unsafe_parent_state_before_package_reads() {
+    for (label, parent, expected) in [
+        (
+            "platform owned",
+            {
+                let mut parent = parent_item("parent-1", "default", 0, json!(["integration-1"]));
+                parent["is_default"] = json!(true);
+                parent
+            },
+            ErrorKind::Unsupported,
+        ),
+        (
+            "protected",
+            {
+                let mut parent = parent_item("parent-1", "default", 0, json!(["integration-1"]));
+                parent["is_protected"] = json!(true);
+                parent
+            },
+            ErrorKind::Unsupported,
+        ),
+        (
+            "other namespace",
+            parent_item("parent-1", "other-space", 0, json!(["integration-1"])),
+            ErrorKind::Unsupported,
+        ),
+        (
+            "attachment inconsistency",
+            parent_item("parent-1", "default", 0, json!([])),
+            ErrorKind::Http,
+        ),
+    ] {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+            .mount(&server)
+            .await;
+
+        let error =
+            integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+                .await
+                .expect_err(label);
+        assert_eq!(error.kind, expected, "{label}: {}", error.message);
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system").await,
+            0,
+            "{label} must stop before package reads"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delete_refuses_secret_references_and_plaintext_or_unknown_variables_without_leaks() {
+    let reference_server = verified_server().await;
+    let mut referenced = live_item("integration-1");
+    referenced.insert(
+        "secret_references".into(),
+        json!([{"id": "secret-reference-id-must-not-leak"}]),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": referenced})))
+        .mount(&reference_server)
+        .await;
+    let error = integration_policy_ops::plan_delete(
+        &transport_for(&reference_server),
+        &["integration-1".into()],
+    )
+    .await
+    .expect_err("secret reference blocks deletion");
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(!error.message.contains("secret-reference-id-must-not-leak"));
+
+    for (label, policy, metadata, expected_path, forbidden) in [
+        (
+            "declared package input and stream secrets",
+            {
+                let mut policy = live_item("integration-1");
+                policy.insert(
+                    "vars".into(),
+                    json!({"package_secret": "package-secret-value"}),
+                );
+                policy.insert(
+                    "inputs".into(),
+                    json!({
+                        "system-system": {
+                            "vars": {"input_secret": "input-secret-value"},
+                            "streams": {
+                                "system.cpu": {"vars": {"stream_secret": "stream-secret-value"}}
+                            }
+                        }
+                    }),
+                );
+                policy
+            },
+            secret_matrix_metadata(),
+            "inputs.system-system.streams.system.cpu.vars.stream_secret",
+            vec![
+                "package-secret-value",
+                "input-secret-value",
+                "stream-secret-value",
+            ],
+        ),
+        (
+            "unknown configured variable",
+            {
+                let mut policy = live_item("integration-1");
+                policy.insert("vars".into(), json!({"unknown": "unknown-variable-value"}));
+                policy
+            },
+            safe_package_metadata(),
+            "vars.unknown",
+            vec!["unknown-variable-value"],
+        ),
+    ] {
+        let server = verified_server().await;
+        mount_export_dependencies(
+            &server,
+            "integration-1",
+            policy,
+            vec![parent_item(
+                "parent-1",
+                "default",
+                0,
+                json!(["integration-1"]),
+            )],
+            installed_package("2.0.0"),
+            metadata,
+        )
+        .await;
+        let error =
+            integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+                .await
+                .expect_err(label);
+        assert_eq!(
+            error.kind,
+            ErrorKind::Unsupported,
+            "{label}: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(expected_path),
+            "{label}: {}",
+            error.message
+        );
+        for value in forbidden {
+            assert!(!error.message.contains(value), "{label} leaked {value}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn delete_requires_an_exact_installed_package_dependency() {
+    for (label, package, expected) in [
+        (
+            "absent package",
+            json!({"name": "system", "status": "not_installed"}),
+            ErrorKind::Conflict,
+        ),
+        (
+            "different version",
+            installed_package("1.0.0"),
+            ErrorKind::Conflict,
+        ),
+        (
+            "installed without version",
+            json!({"name": "system", "status": "installed"}),
+            ErrorKind::Http,
+        ),
+        (
+            "not installed with version",
+            json!({
+                "name": "system", "status": "not_installed",
+                "installationInfo": {"version": "2.0.0"}
+            }),
+            ErrorKind::Http,
+        ),
+        (
+            "unknown status",
+            json!({"name": "system", "status": "installing"}),
+            ErrorKind::Http,
+        ),
+    ] {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item("parent-1", "default", 0, json!(["integration-1"]))
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": package})))
+            .mount(&server)
+            .await;
+
+        let error =
+            integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+                .await
+                .expect_err(label);
+        assert_eq!(error.kind, expected, "{label}: {}", error.message);
+        assert_eq!(
+            request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
+            0,
+            "{label} must not read metadata after an invalid dependency"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delete_aggregates_package_conflicts_in_stable_id_order() {
+    let server = verified_server().await;
+    for (id, parent_id) in [("a", "parent-a"), ("b", "parent-b")] {
+        let mut policy = live_item(id);
+        policy.insert("policy_ids".into(), json!([parent_id]));
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/package_policies/{id}")))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": policy})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item(parent_id, "default", 0, json!([id]))
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": {"name": "system", "status": "not_installed"}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["b".into(), "a".into()])
+            .await
+            .expect_err("both absent package dependencies are conflicts");
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(
+        error.message,
+        "integration policy 'a' package system is not installed; integration policy 'b' package system is not installed"
+    );
+}
+
+#[tokio::test]
+async fn delete_plan_debug_does_not_expose_private_fleet_values() {
+    let server = verified_server().await;
+    let mut policy = live_item("integration-1");
+    policy.insert(
+        "description".into(),
+        json!("integration-delete-raw-description-must-not-leak"),
+    );
+    let mut metadata = safe_package_metadata();
+    metadata["metadata-private-value"] = json!("metadata-value-must-not-leak");
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        policy,
+        vec![parent_item(
+            "parent-1",
+            "default",
+            0,
+            json!(["integration-1"]),
+        )],
+        installed_package("2.0.0"),
+        metadata,
+    )
+    .await;
+
+    let mut plan =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+            .await
+            .expect("safe plan");
+    plan.preview.preview_action = "public-preview-value-must-not-leak".into();
+    let debug = format!("{plan:?}");
+    assert!(debug.contains("IntegrationPolicyDeletePlan"));
+    for value in [
+        "integration-delete-raw-description-must-not-leak",
+        "metadata-value-must-not-leak",
+        "public-preview-value-must-not-leak",
+    ] {
+        assert!(!debug.contains(value), "Debug leaked {value}");
+    }
+}
+
+#[tokio::test]
+async fn delete_apply_fails_a_disappeared_target_without_deleting() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+            ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404, "message": "sensitive disappearance body"
+            })),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 4, json!(["integration-1"]))
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["integration-1".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("disappearance is a row failure");
+    assert!(report.deleted.is_empty());
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "integration-1", "applied": false,
+            "error": "integration policy disappeared since preview"
+        })]
+    );
+    assert_eq!(report.affected_agents, 0);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .iter()
+            .all(|request| request.method != "DELETE")
+    );
+}
+
+#[tokio::test]
+async fn delete_apply_rechecks_integration_parent_and_package_snapshots() {
+    for (label, integration_change, parent_change, package_change, expected_error) in [
+        (
+            "integration",
+            true,
+            None,
+            None,
+            "integration policy changed since preview",
+        ),
+        (
+            "parent agent count",
+            false,
+            Some(parent_item(
+                "parent-1",
+                "default",
+                2,
+                json!(["integration-1"]),
+            )),
+            None,
+            "integration policy parent changed since preview",
+        ),
+        (
+            "parent attachment",
+            false,
+            Some(parent_item("parent-1", "default", 0, json!([]))),
+            None,
+            "integration policy parent changed since preview",
+        ),
+        (
+            "package",
+            false,
+            None,
+            Some(installed_package("1.0.0")),
+            "integration policy package changed since preview",
+        ),
+    ] {
+        let server = verified_server().await;
+        let mut changed_policy = live_item("integration-1");
+        changed_policy.insert("description".into(), json!("changed-but-safe"));
+        let policy_responses = if integration_change {
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": changed_policy})),
+            ]
+        } else {
+            vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": live_item("integration-1")})),
+            ]
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(SequenceResponder::new(policy_responses))
+            .mount(&server)
+            .await;
+        let parent = parent_item("parent-1", "default", 0, json!(["integration-1"]));
+        let parent_responses = match parent_change {
+            Some(changed) => vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": changed})),
+            ],
+            None => vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent.clone()})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": parent})),
+            ],
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/agent_policies/parent-1"))
+            .respond_with(SequenceResponder::new(parent_responses))
+            .mount(&server)
+            .await;
+        let package_responses = match package_change {
+            Some(changed) => vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": installed_package("2.0.0")})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": changed})),
+            ],
+            None => vec![
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"item": installed_package("2.0.0")})),
+            ],
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system"))
+            .respond_with(SequenceResponder::new(package_responses))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/epm/packages/system/2.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": safe_package_metadata()
+            })))
+            .mount(&server)
+            .await;
+
+        let transport = transport_for(&server);
+        let plan = integration_policy_ops::plan_delete(&transport, &["integration-1".into()])
+            .await
+            .expect(label);
+        let report = integration_policy_ops::apply_delete(&transport, &plan)
+            .await
+            .expect("snapshot changes are row failures");
+        assert!(report.deleted.is_empty(), "{label}");
+        assert_eq!(report.failed.len(), 1, "{label}");
+        assert_eq!(report.failed[0]["applied"], false, "{label}");
+        assert_eq!(report.failed[0]["error"], expected_error, "{label}");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("recorded requests")
+                .iter()
+                .all(|request| request.method != "DELETE"),
+            "{label} must not delete after a race"
+        );
+    }
+}
+
+#[tokio::test]
+async fn delete_applies_exact_single_id_routes_advances_shared_parents_and_unions_agents() {
+    let server = verified_server().await;
+    let mut first = live_item("a");
+    first.insert("policy_ids".into(), json!(["parent-shared"]));
+    let mut second = live_item("b");
+    second.insert("policy_ids".into(), json!(["parent-b", "parent-shared"]));
+    for (id, policy) in [("a", first), ("b", second)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/package_policies/{id}")))
+            .and(query_param("format", "simplified"))
+            .respond_with(SequenceResponder::new(vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": policy.clone()})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": policy})),
+            ]))
+            .mount(&server)
+            .await;
+    }
+    let shared_before = parent_item("parent-shared", "default", 5, json!(["a", "b"]));
+    let shared_after_a = parent_item("parent-shared", "default", 5, json!(["b"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-shared"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": shared_before.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": shared_before.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": shared_before})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": shared_after_a})),
+        ]))
+        .mount(&server)
+        .await;
+    let parent_b = parent_item("parent-b", "default", 3, json!(["b"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-b"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent_b.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent_b})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    for id in ["a", "b"] {
+        Mock::given(method("DELETE"))
+            .and(path(format!("/api/fleet/package_policies/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": id})))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["b".into(), "a".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("apply");
+    assert_eq!(report.deleted, vec![json!({"id": "a"}), json!({"id": "b"})]);
+    assert!(report.failed.is_empty());
+    assert_eq!(report.affected_agents, 8);
+    let delete_requests = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .filter(|request| request.method == "DELETE")
+        .collect::<Vec<_>>();
+    assert_eq!(delete_requests.len(), 2);
+    for request in delete_requests {
+        assert!(request.url.query().is_none(), "delete must not send force");
+        assert!(request.body.is_empty(), "delete must not send a body");
+    }
+}
+
+#[tokio::test]
+async fn delete_reports_applied_true_for_a_wrong_success_id_without_echoing_it() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+        ]))
+        .mount(&server)
+        .await;
+    let parent = parent_item("parent-1", "default", 7, json!(["integration-1"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": parent})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "wrong-id-must-not-leak"})),
+        )
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["integration-1".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("wrong echo is a row failure");
+    assert!(report.deleted.is_empty());
+    assert_eq!(report.affected_agents, 0);
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "integration-1", "applied": true,
+            "error": "integration-policy delete response did not confirm the requested id"
+        })]
+    );
+    assert!(
+        !report.failed[0]["error"]
+            .as_str()
+            .expect("error string")
+            .contains("wrong-id-must-not-leak")
+    );
+}
+
+#[tokio::test]
+async fn delete_continues_after_an_independent_target_fails() {
+    let server = verified_server().await;
+    let mut a = live_item("a");
+    a.insert("policy_ids".into(), json!(["parent-a"]));
+    let mut b = live_item("b");
+    b.insert("policy_ids".into(), json!(["parent-b"]));
+    for (id, planned, reapplied) in [("a", a, None), ("b", b.clone(), Some(b))] {
+        let responses = match reapplied {
+            Some(reapplied) => vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": planned})),
+                ResponseTemplate::new(200).set_body_json(json!({"item": reapplied})),
+            ],
+            None => vec![
+                ResponseTemplate::new(200).set_body_json(json!({"item": planned})),
+                ResponseTemplate::new(404).set_body_json(json!({
+                    "statusCode": 404, "message": "body-must-not-leak"
+                })),
+            ],
+        };
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/package_policies/{id}")))
+            .and(query_param("format", "simplified"))
+            .respond_with(SequenceResponder::new(responses))
+            .mount(&server)
+            .await;
+    }
+    let parent_a = parent_item("parent-a", "default", 2, json!(["a"]));
+    let parent_b = parent_item("parent-b", "default", 3, json!(["b"]));
+    for (id, parent, expected) in [("parent-a", parent_a, 1), ("parent-b", parent_b, 2)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+            .expect(expected)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/fleet/package_policies/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "b"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["b".into(), "a".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("independent rows continue");
+    assert_eq!(report.deleted, vec![json!({"id": "b"})]);
+    assert_eq!(report.affected_agents, 3);
+    assert_eq!(
+        report.failed,
+        vec![json!({
+            "id": "a", "applied": false,
+            "error": "integration policy disappeared since preview"
+        })]
+    );
+}
+
+#[tokio::test]
+async fn delete_sanitizes_planning_and_route_error_bodies() {
+    for (label, body, forbidden) in [
+        (
+            "string",
+            json!("planning-secret-token"),
+            vec!["planning-secret-token"],
+        ),
+        (
+            "object",
+            json!({"message": "planning-message-token", "config": "planning-config-token"}),
+            vec!["planning-message-token", "planning-config-token"],
+        ),
+    ] {
+        let server = verified_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(body))
+            .mount(&server)
+            .await;
+        let error =
+            integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+                .await
+                .expect_err(label);
+        assert_eq!(error.kind, ErrorKind::Http, "{label}");
+        assert_eq!(error.http_status, Some(500), "{label}");
+        assert_eq!(
+            error.message, "integration-policy delete planning integration read failed",
+            "{label}"
+        );
+        for value in forbidden {
+            assert!(!error.message.contains(value), "{label} leaked {value}");
+        }
+    }
+
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let parent = parent_item("parent-1", "default", 0, json!(["integration-1"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": parent})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "message": "route-secret-token", "config": "route-config-token"
+        })))
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let plan = integration_policy_ops::plan_delete(&transport, &["integration-1".into()])
+        .await
+        .expect("plan");
+    let report = integration_policy_ops::apply_delete(&transport, &plan)
+        .await
+        .expect("route failure is a row failure");
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0]["applied"], false);
+    assert_eq!(
+        report.failed[0]["error"],
+        "integration-policy delete request failed"
+    );
+    let error = report.failed[0]["error"].as_str().expect("error string");
+    assert!(!error.contains("route-secret-token"));
+    assert!(!error.contains("route-config-token"));
+}
+
+#[tokio::test]
+async fn delete_binds_host_and_space_before_any_apply_request() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("integration-1")})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["integration-1"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+    let plan =
+        integration_policy_ops::plan_delete(&transport_for(&server), &["integration-1".into()])
+            .await
+            .expect("plan");
+    let requests_before = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .len();
+    let error = integration_policy_ops::apply_delete(&transport_for_space(&server, "other"), &plan)
+        .await
+        .expect_err("space changed");
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(
+        error.message,
+        "integration delete target changed since preview"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .len(),
+        requests_before,
+        "target binding must reject before a recheck request"
+    );
+
+    let other = verified_server().await;
+    let error = integration_policy_ops::apply_delete(&transport_for(&other), &plan)
+        .await
+        .expect_err("host changed");
+    assert_eq!(error.kind, ErrorKind::Conflict);
+    assert_eq!(
+        error.message,
+        "integration delete target changed since preview"
+    );
+    assert!(
+        other
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .is_empty(),
+        "host binding must reject before a feature probe or recheck"
+    );
 }

@@ -52,7 +52,8 @@ pub use fleet::agent_policy_ops::{
     AgentPolicyDeletePlan, AgentPolicyDeleteReport, AgentPolicyImportPlan, AgentPolicyImportReport,
 };
 pub use fleet::integration_policy_ops::{
-    IntegrationPolicyImportPlan, IntegrationPolicyImportReport,
+    IntegrationPolicyDeletePlan, IntegrationPolicyDeleteReport, IntegrationPolicyImportPlan,
+    IntegrationPolicyImportReport,
 };
 pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{

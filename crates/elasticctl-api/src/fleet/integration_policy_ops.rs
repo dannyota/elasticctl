@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 const PAGE_SIZE: u64 = 1000;
 const IMPORT_RACE_WARNING: &str =
     "warning  Fleet can change after the final recheck and before the write";
+const DELETE_RACE_WARNING: &str =
+    "warning  Fleet can change after the final recheck and before the write";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IntegrationPolicyFilter {
@@ -122,6 +124,42 @@ pub struct IntegrationPolicyImportReport {
     pub package_installs: Vec<String>,
 }
 
+/// A safe, fully preflighted integration-policy deletion. Only the guard
+/// presentation and count are public: Fleet snapshots and package metadata can
+/// include configuration values, so they remain private to the API layer.
+#[derive(Clone, PartialEq)]
+pub struct IntegrationPolicyDeletePlan {
+    pub preview: MutationPlan,
+    pub total: usize,
+    host: String,
+    host_snapshot: String,
+    space: String,
+    space_snapshot: String,
+    parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    parent_snapshots_snapshot: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    targets: Vec<IntegrationPolicyDeleteTarget>,
+}
+
+impl fmt::Debug for IntegrationPolicyDeletePlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IntegrationPolicyDeletePlan")
+            .field("target_count", &self.targets.len())
+            .field("total", &self.total)
+            .finish()
+    }
+}
+
+/// The result of applying an integration-policy deletion plan.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct IntegrationPolicyDeleteReport {
+    pub applied: bool,
+    pub deleted: Vec<Value>,
+    pub failed: Vec<Value>,
+    pub total: usize,
+    pub affected_agents: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct IntegrationPolicyImportTarget {
     effective: IntegrationPolicySpec,
@@ -135,6 +173,25 @@ struct IntegrationPolicyCurrentSnapshot {
     item: Map<String, Value>,
     spec: IntegrationPolicySpec,
     parent_ids: Vec<String>,
+}
+
+/// Private execution facts for one stable-id delete. The raw item detects a
+/// Fleet change before deletion; the normalized policy and metadata prove that
+/// no secret or environment-bound configuration has crossed the guard.
+#[derive(Clone, PartialEq)]
+struct IntegrationPolicyDeleteTarget {
+    id: String,
+    name: String,
+    item: Map<String, Value>,
+    item_snapshot: Map<String, Value>,
+    spec: IntegrationPolicySpec,
+    spec_snapshot: IntegrationPolicySpec,
+    parents: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    package: IntegrationPackageSpec,
+    dependency: PackageDependencySnapshot,
+    dependency_snapshot: PackageDependencySnapshot,
+    metadata: Map<String, Value>,
+    metadata_snapshot: Map<String, Value>,
 }
 
 /// One package coordinate is shared by every pending policy that uses it.
@@ -2670,6 +2727,636 @@ fn valid_package_state(snapshot: &PackageDependencySnapshot) -> bool {
     }
 }
 
+/// Plan safe, stable-id integration-policy deletion without issuing a
+/// mutation. Each selected object is retained exactly so `apply_delete` can
+/// reject a Fleet change before it reaches the single-id delete route.
+pub async fn plan_delete(
+    transport: &Transport,
+    selectors: &[String],
+) -> Result<IntegrationPolicyDeletePlan> {
+    if selectors.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "integration-policy delete needs at least one selector",
+        ));
+    }
+    if selectors.iter().any(|selector| selector.trim().is_empty()) {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "integration-policy delete selectors must not be empty",
+        ));
+    }
+
+    let mut resolved = BTreeMap::new();
+    for selector in selectors {
+        let resolved_policy = resolve_delete_item(transport, selector).await?;
+        let id = required_string(
+            &resolved_policy.item,
+            "id",
+            "integration policy delete planning read",
+        )?;
+        if id != resolved_policy.summary.id {
+            return Err(http(
+                "decoding integration policy delete planning read: response id did not match its summary",
+            ));
+        }
+        resolved.entry(id).or_insert(resolved_policy);
+    }
+
+    let mut targets = Vec::with_capacity(resolved.len());
+    let mut issues = Vec::new();
+    for (id, resolved_policy) in resolved {
+        match plan_delete_target(transport, &id, resolved_policy.item).await {
+            Ok(target) => targets.push(target),
+            Err(error) => issues.push(error),
+        }
+    }
+    if !issues.is_empty() {
+        return collapse_delete_planning_issues(issues);
+    }
+
+    let parent_snapshots = shared_delete_parents(&targets).map_err(|_| {
+        Error::new(
+            ErrorKind::Conflict,
+            "agent policy changed while planning integration deletion",
+        )
+    })?;
+    let plan = IntegrationPolicyDeletePlan {
+        preview: delete_preview(&targets),
+        total: targets.len(),
+        host_snapshot: transport.kibana_url().to_owned(),
+        host: transport.kibana_url().to_owned(),
+        space_snapshot: transport.space().to_owned(),
+        space: transport.space().to_owned(),
+        parent_snapshots_snapshot: parent_snapshots.clone(),
+        parent_snapshots,
+        targets,
+    };
+    validate_delete_plan(&plan)?;
+    Ok(plan)
+}
+
+/// Delete planning must bind an id selector to the id Fleet returned for that
+/// id route. The general resolver keeps its historical public behavior for
+/// list, get, and export; a mutation cannot accept a mismatched one-object
+/// response as a different target.
+async fn resolve_delete_item(
+    transport: &Transport,
+    selector: &str,
+) -> Result<ResolvedIntegrationPolicy> {
+    match integration_policies::get(transport, selector).await {
+        Ok(policy) => {
+            let summary = summary_from_item(&policy.item)?;
+            if summary.id != selector {
+                return Err(http(
+                    "decoding integration policy delete planning read: response id did not match the selector",
+                ));
+            }
+            return Ok(ResolvedIntegrationPolicy {
+                summary,
+                item: policy.item,
+            });
+        }
+        Err(error) if error.kind == ErrorKind::NotFound => {}
+        Err(error) => return Err(delete_remote_error(error, "planning integration read")),
+    }
+    let matches = collect(transport)
+        .await
+        .map_err(|error| delete_remote_error(error, "planning integration list read"))?
+        .iter()
+        .filter(|item| item.get("name").and_then(Value::as_str) == Some(selector))
+        .map(summary_from_item)
+        .collect::<Result<Vec<_>>>()?;
+    match matches.as_slice() {
+        [] => Err(Error::new(
+            ErrorKind::NotFound,
+            format!("no integration policy with id or name '{selector}'"),
+        )),
+        [summary] => {
+            let policy = integration_policies::get(transport, &summary.id)
+                .await
+                .map_err(|error| delete_remote_error(error, "planning name read"))?;
+            let returned_id = required_string(
+                &policy.item,
+                "id",
+                "integration policy delete planning read",
+            )?;
+            if returned_id != summary.id {
+                return Err(http(
+                    "decoding integration policy delete planning read: name resolution returned an unexpected id",
+                ));
+            }
+            Ok(ResolvedIntegrationPolicy {
+                summary: summary.clone(),
+                item: policy.item,
+            })
+        }
+        many => Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "integration policy '{selector}' is ambiguous: {}",
+                many.iter()
+                    .map(|policy| policy.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+async fn plan_delete_target(
+    transport: &Transport,
+    id: &str,
+    item: Map<String, Value>,
+) -> Result<IntegrationPolicyDeleteTarget> {
+    if required_string(&item, "id", "integration policy delete planning read")? != id {
+        return Err(http(
+            "decoding integration policy delete planning read: response id did not match the request",
+        ));
+    }
+    let spec = normalize(&item, transport.space())?;
+    if spec.id != id {
+        return Err(http(
+            "decoding integration policy delete planning read: normalized id did not match the request",
+        ));
+    }
+    let parent_ids = read_parents(id, &item)?;
+    let parents = read_parent_snapshots(transport, id, &parent_ids)
+        .await
+        .map_err(|error| delete_remote_error(error, "planning parent read"))?;
+    validate_delete_parent_safety(id, &spec, &parents)?;
+
+    let package = package_coordinate(&item, "integration policy delete planning read")?;
+    if package != spec.package {
+        return Err(http(
+            "decoding integration policy delete planning read: package did not normalize canonically",
+        ));
+    }
+    let dependency = read_dependencies(transport, &package)
+        .await
+        .map_err(|error| delete_remote_error(error, "planning package read"))?;
+    ensure_delete_dependency(id, &dependency, &package)?;
+    let metadata =
+        integration_policies::package_metadata(transport, &package.name, &package.version)
+            .await
+            .map_err(|error| delete_remote_error(error, "planning package metadata read"))?
+            .item;
+    validate_package_metadata_snapshot(&metadata, &package)?;
+    let secret_paths = configured_secret_paths(&spec, &metadata)?;
+    if !secret_paths.is_empty() {
+        return unsupported(format!(
+            "integration policy '{id}' is not portable: {}",
+            secret_paths
+                .into_iter()
+                .map(|path| format!("{id}:{path}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    Ok(IntegrationPolicyDeleteTarget {
+        id: id.to_owned(),
+        name: spec.name.clone(),
+        item_snapshot: item.clone(),
+        item,
+        spec_snapshot: spec.clone(),
+        spec,
+        parents,
+        package,
+        dependency_snapshot: dependency.clone(),
+        dependency,
+        metadata_snapshot: metadata.clone(),
+        metadata,
+    })
+}
+
+fn collapse_delete_planning_issues(mut issues: Vec<Error>) -> Result<IntegrationPolicyDeletePlan> {
+    if issues.len() == 1 {
+        return Err(issues.remove(0));
+    }
+    if issues.iter().all(|error| error.kind == ErrorKind::Conflict) {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            issues
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
+    }
+    Err(issues.remove(0))
+}
+
+fn validate_delete_parent_safety(
+    id: &str,
+    spec: &IntegrationPolicySpec,
+    parents: &BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+) -> Result<()> {
+    if parents.len() != spec.policy_ids.len()
+        || parents
+            .keys()
+            .map(String::as_str)
+            .ne(spec.policy_ids.iter().map(String::as_str))
+    {
+        return Err(http(format!(
+            "decoding integration policy '{id}': parent snapshots do not match policy_ids"
+        )));
+    }
+    for parent in parents.values() {
+        if parent.platform_owned {
+            return unsupported(format!(
+                "integration policy '{id}' is not portable: parent {} is platform-owned",
+                parent.id
+            ));
+        }
+        if parent.protected {
+            return unsupported(format!(
+                "integration policy '{id}' is not portable: parent {} is_protected",
+                parent.id
+            ));
+        }
+        if parent
+            .attached_integrations
+            .binary_search_by(|attached| attached.as_str().cmp(id))
+            .is_err()
+        {
+            return Err(http(format!(
+                "decoding integration policy '{id}': parent '{}' is missing its attachment",
+                parent.id
+            )));
+        }
+    }
+    let namespaces = parents
+        .values()
+        .map(|parent| parent.namespace.as_str())
+        .collect::<BTreeSet<_>>();
+    match &spec.namespace {
+        Some(namespace)
+            if parents
+                .values()
+                .all(|parent| &parent.namespace == namespace) => {}
+        Some(_) => {
+            return unsupported(format!(
+                "integration policy '{id}' is not portable: namespace does not match every parent"
+            ));
+        }
+        None if namespaces.len() == 1 => {}
+        None => {
+            return unsupported(format!(
+                "integration policy '{id}' is not portable: parents have different namespaces"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_delete_dependency(
+    id: &str,
+    dependency: &PackageDependencySnapshot,
+    package: &IntegrationPackageSpec,
+) -> Result<()> {
+    match &dependency.state {
+        PackageDependencyState::Installed { version }
+            if dependency.name == package.name && version == &package.version =>
+        {
+            Ok(())
+        }
+        PackageDependencyState::Installed { .. } => Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "integration policy '{id}' package {} has a different installed version",
+                package.name
+            ),
+        )),
+        PackageDependencyState::NotInstalled => Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "integration policy '{id}' package {} is not installed",
+                package.name
+            ),
+        )),
+    }
+}
+
+fn shared_delete_parents(
+    targets: &[IntegrationPolicyDeleteTarget],
+) -> Result<BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>> {
+    let mut shared = BTreeMap::new();
+    for target in targets {
+        for (id, parent) in &target.parents {
+            match shared.entry(id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(parent.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if entry.get() != parent => {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        format!("agent policy '{id}' changed while planning integration deletion"),
+                    ));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+    }
+    Ok(shared)
+}
+
+fn delete_preview(targets: &[IntegrationPolicyDeleteTarget]) -> MutationPlan {
+    let mut affected = BTreeMap::new();
+    let mut preview_details = Vec::with_capacity(targets.len() + 2);
+    for target in targets {
+        let parents = target
+            .parents
+            .values()
+            .map(|parent| {
+                affected.entry(parent.id.clone()).or_insert(parent.agents);
+                format!("{} ({}) agents {}", parent.id, parent.name, parent.agents)
+            })
+            .collect::<Vec<_>>();
+        let agents = target
+            .parents
+            .values()
+            .map(|parent| parent.agents)
+            .sum::<u64>();
+        preview_details.push(format!(
+            "{}  {}  parents {}  agents {agents}",
+            target.id,
+            target.name,
+            parents.join(", ")
+        ));
+    }
+    preview_details.push(format!(
+        "affected agents {}",
+        affected.values().sum::<u64>()
+    ));
+    preview_details.push(DELETE_RACE_WARNING.to_owned());
+    MutationPlan {
+        preview_action: format!("Delete {} integration policy(ies)", targets.len()),
+        preview_details,
+        targets: targets.iter().map(|target| target.id.clone()).collect(),
+    }
+}
+
+/// Recheck the exact planning snapshots, then delete each independent target.
+/// An acknowledged wrong-id response is deliberately not treated as a clean
+/// deletion, and never advances shared parent expectations.
+pub async fn apply_delete(
+    transport: &Transport,
+    plan: &IntegrationPolicyDeletePlan,
+) -> Result<IntegrationPolicyDeleteReport> {
+    validate_delete_plan(plan)?;
+    if plan.host != transport.kibana_url() || plan.space != transport.space() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            "integration delete target changed since preview",
+        ));
+    }
+
+    let mut expected_parents = plan.parent_snapshots.clone();
+    let mut affected = BTreeMap::new();
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+
+    for target in &plan.targets {
+        match integration_policies::get(transport, &target.id).await {
+            Ok(actual) if actual.item == target.item => {}
+            Ok(_) => {
+                failed.push(delete_failed_row(
+                    &target.id,
+                    false,
+                    "integration policy changed since preview",
+                ));
+                continue;
+            }
+            Err(error) if error.kind == ErrorKind::NotFound => {
+                failed.push(delete_failed_row(
+                    &target.id,
+                    false,
+                    "integration policy disappeared since preview",
+                ));
+                continue;
+            }
+            Err(error) => {
+                failed.push(delete_failed_row(
+                    &target.id,
+                    false,
+                    delete_remote_error(error, "apply integration-policy read").message,
+                ));
+                continue;
+            }
+        }
+
+        if let Err(error) = recheck_delete_parents(transport, target, &expected_parents).await {
+            failed.push(delete_failed_row(&target.id, false, error.message));
+            continue;
+        }
+        match read_dependencies(transport, &target.package).await {
+            Ok(actual) if actual == target.dependency => {}
+            Ok(_) => {
+                failed.push(delete_failed_row(
+                    &target.id,
+                    false,
+                    "integration policy package changed since preview",
+                ));
+                continue;
+            }
+            Err(error) => {
+                failed.push(delete_failed_row(
+                    &target.id,
+                    false,
+                    delete_remote_error(error, "apply package read").message,
+                ));
+                continue;
+            }
+        }
+
+        match integration_policies::delete(transport, &target.id).await {
+            Ok(()) => {
+                record_delete_affected_parents(&mut affected, target, &expected_parents);
+                advance_delete_parent_snapshots(&mut expected_parents, target);
+                deleted.push(json!({"id": target.id}));
+            }
+            Err(error) => {
+                let applied = error
+                    .http_status
+                    .is_some_and(|status| (200..300).contains(&status));
+                let message = if applied {
+                    "integration-policy delete response did not confirm the requested id"
+                } else {
+                    "integration-policy delete request failed"
+                };
+                failed.push(delete_failed_row(&target.id, applied, message));
+            }
+        }
+    }
+
+    Ok(IntegrationPolicyDeleteReport {
+        applied: true,
+        deleted,
+        failed,
+        total: plan.total,
+        affected_agents: affected.values().sum(),
+    })
+}
+
+async fn recheck_delete_parents(
+    transport: &Transport,
+    target: &IntegrationPolicyDeleteTarget,
+    expected_parents: &BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+) -> Result<()> {
+    for parent_id in target.parents.keys() {
+        let expected = expected_parents.get(parent_id).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Error,
+                "integration delete lost a shared parent snapshot",
+            )
+        })?;
+        match agent_policy_ops::read_parent_snapshot(transport, parent_id).await {
+            Ok(actual) if actual == *expected => {}
+            Ok(_) => {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    "integration policy parent changed since preview",
+                ));
+            }
+            Err(error) if error.kind == ErrorKind::NotFound => {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    "integration policy parent disappeared since preview",
+                ));
+            }
+            Err(error) => return Err(delete_remote_error(error, "apply parent read")),
+        }
+    }
+    Ok(())
+}
+
+fn record_delete_affected_parents(
+    affected: &mut BTreeMap<String, u64>,
+    target: &IntegrationPolicyDeleteTarget,
+    expected_parents: &BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+) {
+    for parent_id in target.parents.keys() {
+        let parent = expected_parents
+            .get(parent_id)
+            .expect("validated delete target parent exists in shared snapshots");
+        affected.entry(parent.id.clone()).or_insert(parent.agents);
+    }
+}
+
+fn advance_delete_parent_snapshots(
+    parents: &mut BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    target: &IntegrationPolicyDeleteTarget,
+) {
+    for parent_id in target.parents.keys() {
+        let parent = parents
+            .get_mut(parent_id)
+            .expect("validated delete target parent exists in shared snapshots");
+        parent
+            .attached_integrations
+            .retain(|attached| attached != &target.id);
+    }
+}
+
+fn delete_failed_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
+    json!({"id": id, "applied": applied, "error": error.into()})
+}
+
+fn delete_remote_error(error: Error, context: &str) -> Error {
+    let message = format!("integration-policy delete {context} failed");
+    match error.http_status {
+        Some(status) => Error::with_status(error.kind, status, message),
+        None => Error::new(error.kind, message),
+    }
+}
+
+fn validate_delete_plan(plan: &IntegrationPolicyDeletePlan) -> Result<()> {
+    let invalid = || Error::new(ErrorKind::Error, "invalid integration-policy delete plan");
+    if plan.targets.is_empty()
+        || plan.total != plan.targets.len()
+        || plan.host.trim().is_empty()
+        || plan.host != plan.host_snapshot
+        || plan.space != plan.space_snapshot
+    {
+        return Err(invalid());
+    }
+
+    let mut previous: Option<&str> = None;
+    let mut shared = BTreeMap::new();
+    for target in &plan.targets {
+        if target.id.trim().is_empty()
+            || target.name.trim().is_empty()
+            || previous.is_some_and(|previous| previous >= target.id.as_str())
+            || target.item != target.item_snapshot
+            || target.spec.validate().is_err()
+            || target.spec != target.spec_snapshot
+            || target.id != target.spec.id
+            || target.name != target.spec.name
+            || required_string(&target.item, "id", "integration policy delete plan")
+                .ok()
+                .as_deref()
+                != Some(target.id.as_str())
+            || normalize(&target.item, &plan.space).ok().as_ref() != Some(&target.spec)
+            || package_coordinate(&target.item, "integration policy delete plan")
+                .ok()
+                .as_ref()
+                != Some(&target.package)
+            || target.package != target.spec.package
+            || target.dependency != target.dependency_snapshot
+            || !valid_package_state(&target.dependency)
+            || target.dependency.name != target.package.name
+            || !is_exact_installed(&target.dependency, &target.package)
+            || target.metadata != target.metadata_snapshot
+            || validate_package_metadata_snapshot(&target.metadata, &target.package).is_err()
+            || !matches!(configured_secret_paths(&target.spec, &target.metadata), Ok(paths) if paths.is_empty())
+        {
+            return Err(invalid());
+        }
+
+        let parent_ids = match read_parents(&target.id, &target.item) {
+            Ok(ids) => ids,
+            Err(_) => return Err(invalid()),
+        };
+        if parent_ids.iter().collect::<BTreeSet<_>>()
+            != target.parents.keys().collect::<BTreeSet<_>>()
+            || validate_delete_parent_safety(&target.id, &target.spec, &target.parents).is_err()
+        {
+            return Err(invalid());
+        }
+        for (parent_id, parent) in &target.parents {
+            if !valid_parent_snapshot(parent_id, parent)
+                || parent.platform_owned
+                || parent.protected
+                || parent
+                    .attached_integrations
+                    .binary_search_by(|attached| attached.as_str().cmp(&target.id))
+                    .is_err()
+            {
+                return Err(invalid());
+            }
+            match shared.entry(parent_id.as_str()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(parent);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() != parent => {
+                    return Err(invalid());
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+        previous = Some(&target.id);
+    }
+    if plan.parent_snapshots != plan.parent_snapshots_snapshot
+        || shared_delete_parents(&plan.targets).ok().as_ref() != Some(&plan.parent_snapshots)
+    {
+        return Err(invalid());
+    }
+    if plan.preview != delete_preview(&plan.targets) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn http(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::Http, message)
 }
@@ -3012,5 +3699,168 @@ mod import_plan_tests {
         let mut installs = plan;
         installs.package_installs.clear();
         assert!(validate_import_plan(&installs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod delete_plan_tests {
+    use super::*;
+
+    fn valid_plan() -> IntegrationPolicyDeletePlan {
+        let spec = IntegrationPolicySpec::try_from(json!({
+            "id": "delete-1",
+            "name": "Delete integration",
+            "namespace": "default",
+            "policy_ids": ["parent-1"],
+            "package": {"name": "system", "version": "2.0.0"},
+            "inputs": {}
+        }))
+        .expect("valid integration policy");
+        let mut item = serde_json::to_value(&spec)
+            .expect("serialize integration policy")
+            .as_object()
+            .expect("integration policy is an object")
+            .clone();
+        item.insert("enabled".into(), Value::Bool(true));
+        let parent = agent_policy_ops::AgentPolicyParentSnapshot {
+            id: "parent-1".into(),
+            name: "Parent 1".into(),
+            namespace: "default".into(),
+            agents: 4,
+            attached_integrations: vec!["delete-1".into()],
+            platform_owned: false,
+            protected: false,
+        };
+        let parents = BTreeMap::from([(parent.id.clone(), parent)]);
+        let dependency = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "2.0.0".into(),
+            },
+        };
+        let metadata = json!({
+            "name": "system",
+            "version": "2.0.0",
+            "vars": [],
+            "policy_templates": []
+        })
+        .as_object()
+        .expect("metadata object")
+        .clone();
+        let target = IntegrationPolicyDeleteTarget {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+            item_snapshot: item.clone(),
+            item,
+            spec_snapshot: spec.clone(),
+            spec,
+            parents: parents.clone(),
+            package: IntegrationPackageSpec {
+                name: "system".into(),
+                version: "2.0.0".into(),
+            },
+            dependency_snapshot: dependency.clone(),
+            dependency,
+            metadata_snapshot: metadata.clone(),
+            metadata,
+        };
+        let targets = vec![target];
+        let parent_snapshots = parents;
+        IntegrationPolicyDeletePlan {
+            preview: delete_preview(&targets),
+            total: targets.len(),
+            host: "https://fleet.example.invalid".into(),
+            host_snapshot: "https://fleet.example.invalid".into(),
+            space: "default".into(),
+            space_snapshot: "default".into(),
+            parent_snapshots_snapshot: parent_snapshots.clone(),
+            parent_snapshots,
+            targets,
+        }
+    }
+
+    #[test]
+    fn delete_plan_accepts_a_coherent_private_snapshot() {
+        assert!(validate_delete_plan(&valid_plan()).is_ok());
+    }
+
+    #[test]
+    fn delete_plan_rejects_empty_total_order_and_preview_tampering() {
+        let plan = valid_plan();
+
+        let mut empty = plan.clone();
+        empty.targets.clear();
+        empty.total = 0;
+        empty.parent_snapshots.clear();
+        empty.parent_snapshots_snapshot.clear();
+        empty.preview = delete_preview(&empty.targets);
+        assert!(validate_delete_plan(&empty).is_err());
+
+        let mut total = plan.clone();
+        total.total = 2;
+        assert!(validate_delete_plan(&total).is_err());
+
+        let mut duplicate = plan.clone();
+        duplicate.targets.push(duplicate.targets[0].clone());
+        duplicate.total = 2;
+        duplicate.preview = delete_preview(&duplicate.targets);
+        assert!(validate_delete_plan(&duplicate).is_err());
+
+        let mut preview = plan;
+        preview.preview.preview_action = "tampered".into();
+        assert!(validate_delete_plan(&preview).is_err());
+
+        let mut host = valid_plan();
+        host.host = "https://other.example.invalid".into();
+        assert!(validate_delete_plan(&host).is_err());
+
+        let mut space = valid_plan();
+        space.space = "other".into();
+        assert!(validate_delete_plan(&space).is_err());
+    }
+
+    #[test]
+    fn delete_plan_rejects_raw_spec_parent_package_and_metadata_tampering() {
+        let plan = valid_plan();
+
+        let mut raw_and_spec = plan.clone();
+        raw_and_spec.targets[0]
+            .item
+            .insert("description".into(), json!("tampered"));
+        raw_and_spec.targets[0].spec.description = Some("tampered".into());
+        raw_and_spec.preview = delete_preview(&raw_and_spec.targets);
+        assert!(validate_delete_plan(&raw_and_spec).is_err());
+
+        let mut parent = plan.clone();
+        parent.targets[0]
+            .parents
+            .get_mut("parent-1")
+            .expect("parent")
+            .agents = 99;
+        parent.preview = delete_preview(&parent.targets);
+        assert!(validate_delete_plan(&parent).is_err());
+
+        let mut parent_snapshot = plan.clone();
+        parent_snapshot
+            .parent_snapshots
+            .get_mut("parent-1")
+            .expect("parent")
+            .agents = 99;
+        assert!(validate_delete_plan(&parent_snapshot).is_err());
+
+        let mut dependency = plan.clone();
+        dependency.targets[0].dependency = PackageDependencySnapshot {
+            name: "system".into(),
+            state: PackageDependencyState::Installed {
+                version: "1.0.0".into(),
+            },
+        };
+        assert!(validate_delete_plan(&dependency).is_err());
+
+        let mut metadata = plan;
+        metadata.targets[0]
+            .metadata
+            .insert("version".into(), json!("9.9.9"));
+        assert!(validate_delete_plan(&metadata).is_err());
     }
 }
