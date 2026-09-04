@@ -341,9 +341,9 @@ carrying it would break round-trip equality. Top-level `enabled` comes back
 from every read but the simplified create schema does not accept it; only
 per-input and per-stream `enabled` are portable. Normalization requires the
 top-level value to be true and drops it. A false value is `unsupported`.
-Create sends no top-level `enabled`. Replace adds wire-only `enabled: true` to
-the complete desired spec after removing its `id`; neither route sends `force`
-or `create_dataset_templates`.
+Create and replace send no top-level `enabled`. Replace sends the complete
+desired spec after removing its `id`; neither route sends `force` or
+`create_dataset_templates`.
 
 Normalization removes:
 
@@ -828,6 +828,9 @@ materialized all four simplified inputs and 20 streams. Supplying those four
 inputs as disabled with empty stream maps still materialized registry vars and
 streams. Supplying the first complete simplified response on a second create
 was stable: the create response and following GET returned the same input map.
+The simplified update route rejected that stable map when the otherwise exact
+body also carried top-level `enabled: true`, and accepted the same body after
+that response-only field was removed.
 Each bounded probe deleted the integration before its parent and ended with
 both exact marker ids absent.
 
