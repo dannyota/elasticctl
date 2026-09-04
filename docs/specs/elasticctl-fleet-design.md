@@ -648,6 +648,12 @@ observes it absent, or refuses mutation. This prevents a retry or redirect
 from overwriting or deleting a different object that reused the fixed id after
 the first request committed.
 
+The installed-package inventory request uses `perPage=1000`. The recorder
+accepts `searchAfter` as the route's last-item sort cursor, not as proof of a
+second page. It validates at most two string, number, or boolean sort values
+and proves the response is complete by requiring `total <= 1000` and
+`items.len() == total`. The cursor never enters a fixture.
+
 Fleet setup is idempotent and required before the first Fleet read on a fresh
 stack. The recorder and the conformance runner call `POST /api/fleet/setup`
 once per session. The self-managed lab's Kibana container must reach the
@@ -742,6 +748,11 @@ Cloud Hosted 9.5.2 with the project-scoped keys. They created nothing.
 | Preconfigured policy fields | n/a | `is_managed: true`, `is_preconfigured: true`, non-null data and monitoring output ids, `inactivity_timeout: 86400`, null `has_fleet_server`, `supports_agentless`, `agentless`, and `is_verifier` |
 | `system` and `elastic_agent` packages | `not_installed` | `not_installed` |
 | Installed packages | endpoint, fleet_server, security_ai_prompts, security_detection_engine | those plus apm and synthetics |
+
+On 2026-09-04, the exact installed-package inventory route with
+`perPage=1000&sortOrder=asc` returned `items.len() == total` and a non-empty
+one-string `searchAfter` on both cloud targets. The cursor is the last item's
+sort value even when the response contains the full result set.
 
 The marker agent-policy lifecycle recorded again on 2026-09-04, against
 Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed 9.5.1 lab.
