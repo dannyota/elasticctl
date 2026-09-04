@@ -1869,6 +1869,15 @@ pub async fn plan_prepared_import(
         );
     }
 
+    for target in &targets {
+        let package = package_groups
+            .get(&target.effective.package.name)
+            .expect("every effective package has a group");
+        if !matches!(&target.current, Some(current) if current.spec == target.effective) {
+            validate_effective_input_materialization(&target.effective, &package.metadata)?;
+        }
+    }
+
     let mut secret_paths = BTreeSet::new();
     for target in &targets {
         let package = package_groups
@@ -2102,6 +2111,20 @@ fn validate_package_metadata_snapshot(
         )));
     }
     secret_schema(metadata).map(|_| ())
+}
+
+fn validate_effective_input_materialization(
+    spec: &IntegrationPolicySpec,
+    metadata: &Map<String, Value>,
+) -> Result<()> {
+    let (_, known) = secret_schema(metadata)?;
+    if spec.inputs.is_empty() && !known.input_vars.is_empty() {
+        return unsupported(format!(
+            "integration policy '{}' has an empty inputs map but package {}@{} declares inputs",
+            spec.id, spec.package.name, spec.package.version
+        ));
+    }
+    Ok(())
 }
 
 fn replace_wire_body(spec: &IntegrationPolicySpec) -> Result<Value> {
@@ -2867,6 +2890,9 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
         };
         if group.package != target.effective.package {
             return invalid("package group coordinate does not match its target");
+        }
+        if !matches!(&target.current, Some(current) if current.spec == target.effective) {
+            validate_effective_input_materialization(&target.effective, &group.metadata)?;
         }
         match configured_secret_paths(&target.effective, &group.metadata) {
             Ok(paths) if paths.is_empty() => {}
@@ -3771,6 +3797,36 @@ mod import_plan_tests {
         plan
     }
 
+    fn valid_expanded_inputs_plan() -> IntegrationPolicyImportPlan {
+        let mut plan = valid_plan();
+        let inputs = json!({"system-system": {}})
+            .as_object()
+            .expect("inputs object")
+            .clone();
+        plan.canonical[0].inputs = inputs.clone();
+        plan.targets[0].effective.inputs = inputs;
+        let metadata = json!({
+            "name": "system",
+            "version": "2.0.0",
+            "vars": [],
+            "policy_templates": [{
+                "name": "system",
+                "inputs": [{"type": "system"}]
+            }]
+        })
+        .as_object()
+        .expect("metadata object")
+        .clone();
+        let group = plan
+            .package_groups
+            .get_mut("system")
+            .expect("package group");
+        group.metadata = metadata.clone();
+        group.metadata_snapshot = metadata;
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+        plan
+    }
+
     #[test]
     fn import_plan_rejects_a_private_create_name_owner_tamper() {
         let mut plan = valid_plan();
@@ -3780,6 +3836,24 @@ mod import_plan_tests {
             .insert("fresh".into());
 
         assert!(validate_import_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn import_plan_rejects_a_coherent_empty_effective_inputs_tamper() {
+        let mut plan = valid_expanded_inputs_plan();
+        assert!(validate_import_plan(&plan).is_ok());
+
+        plan.canonical[0].inputs.clear();
+        plan.targets[0].effective.inputs.clear();
+        plan.preview = import_preview(&plan.source, &plan.targets, &plan.package_installs);
+
+        let error = validate_import_plan(&plan)
+            .expect_err("an empty effective map must not reach import requests");
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert_eq!(
+            error.message,
+            "integration policy 'fresh' has an empty inputs map but package system@2.0.0 declares inputs"
+        );
     }
 
     #[test]

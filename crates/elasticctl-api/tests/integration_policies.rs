@@ -305,6 +305,20 @@ fn measured_system_metadata() -> Value {
     )
 }
 
+fn expanded_system_inputs() -> Value {
+    json!({
+        "system-system": {
+            "enabled": true,
+            "streams": {
+                "system.cpu": {
+                    "enabled": true,
+                    "vars": {"period": "10s"}
+                }
+            }
+        }
+    })
+}
+
 async fn mount_export_dependencies(
     server: &MockServer,
     id: &str,
@@ -838,6 +852,10 @@ fn validate_decodes_json_and_yaml_rejects_duplicates_and_sorts() {
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
+    assert!(
+        specs.iter().all(|spec| spec.inputs.is_empty()),
+        "offline validation must keep object-shaped empty inputs structurally valid"
+    );
 }
 
 #[test]
@@ -991,6 +1009,335 @@ async fn absent_exact_package_is_previewed_without_an_install_request() {
             .iter()
             .all(|request| request.method == "GET"),
         "planning must not mutate Fleet"
+    );
+}
+
+#[tokio::test]
+async fn plan_import_rejects_empty_inputs_when_exact_metadata_declares_input_keys() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let default_sentinel = "package-default-must-not-leak";
+    let secret_sentinel = "input-secret-default-must-not-leak";
+    let configured_sentinel = "configured-value-must-not-leak";
+    let mut desired = spec_json("empty-create");
+    desired["vars"] = json!({"package_plain": configured_sentinel});
+    let artifact = write_import_artifact(directory.path(), "empty-create.json", &[desired]);
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/empty-create"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404,
+            "error": "Not Found",
+            "message": "missing"
+        })))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!([]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    let mut metadata = measured_system_metadata();
+    metadata["vars"] = json!([
+        {"name": "package_plain", "default": default_sentinel}
+    ]);
+    metadata["policy_templates"][0]["inputs"][0]["vars"] = json!([
+        {"name": "input_secret", "secret": true, "default": secret_sentinel}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": metadata})))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, false, false)
+            .await
+            .expect_err("empty simplified inputs must not form a guard-able import plan");
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy 'empty-create' has an empty inputs map but package system@2.0.0 declares inputs"
+    );
+    for sentinel in [default_sentinel, secret_sentinel, configured_sentinel] {
+        assert!(!error.message.contains(sentinel), "error leaked {sentinel}");
+    }
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn plan_import_rejects_empty_inputs_for_a_pending_replacement() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let mut desired = spec_json("replace-empty");
+    desired["description"] = json!("desired description");
+    let artifact = write_import_artifact(directory.path(), "replace-empty.json", &[desired]);
+
+    let mut current = live_item("replace-empty");
+    current.insert("description".into(), json!("current description"));
+    current.insert("inputs".into(), expanded_system_inputs());
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/replace-empty"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": current})))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, vec![item("replace-empty")], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["replace-empty"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": measured_system_metadata()})),
+        )
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+            .await
+            .expect_err("an empty replacement must not form a guard-able import plan");
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy 'replace-empty' has an empty inputs map but package system@2.0.0 declares inputs"
+    );
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn plan_import_allows_empty_inputs_when_exact_metadata_declares_no_input_keys() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let artifact = write_import_artifact(
+        directory.path(),
+        "no-input-keys.json",
+        &[spec_json("no-input-keys")],
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/no-input-keys"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404,
+            "error": "Not Found",
+            "message": "missing"
+        })))
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, Vec::new(), 0)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!([]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": safe_package_metadata()})),
+        )
+        .mount(&server)
+        .await;
+
+    let plan =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, false, false)
+            .await
+            .expect("packages without declared inputs may retain empty inputs");
+
+    assert_eq!(plan.preview.targets, vec!["no-input-keys"]);
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn plan_import_allows_an_unchanged_empty_snapshot_when_metadata_declares_inputs() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let artifact = write_import_artifact(
+        directory.path(),
+        "unchanged-empty.json",
+        &[spec_json("unchanged-empty")],
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/unchanged-empty"))
+        .and(query_param("format", "simplified"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": live_item("unchanged-empty")})),
+        )
+        .mount(&server)
+        .await;
+    mount_integration_pages(&server, vec![(1, vec![item("unchanged-empty")], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 0, json!(["unchanged-empty"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": measured_system_metadata()})),
+        )
+        .mount(&server)
+        .await;
+
+    let plan = integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+        .await
+        .expect("an unchanged current snapshot is never an empty-input write");
+
+    assert_eq!(plan.preview.targets, vec!["unchanged-empty"]);
+    assert!(
+        plan.preview.preview_details[0].starts_with("unchanged-empty  unchanged"),
+        "{:?}",
+        plan.preview.preview_details
+    );
+    assert!(no_import_mutation_requests(&server).await);
+}
+
+#[tokio::test]
+async fn expanded_system_inputs_create_exactly_and_plan_as_unchanged_on_overwrite() {
+    let server = verified_server().await;
+    let directory = tempfile::tempdir().expect("artifact directory");
+    let mut desired = spec_json("expanded-system");
+    desired["inputs"] = expanded_system_inputs();
+    let artifact = write_import_artifact(
+        directory.path(),
+        "expanded-system.json",
+        std::slice::from_ref(&desired),
+    );
+    let mut stored = live_item("expanded-system");
+    stored.insert("inputs".into(), desired["inputs"].clone());
+
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/expanded-system"))
+        .and(query_param("format", "simplified"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404,
+                "error": "Not Found",
+                "message": "missing"
+            })),
+            ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404,
+                "error": "Not Found",
+                "message": "missing"
+            })),
+            ResponseTemplate::new(200).set_body_json(json!({"item": stored.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": stored.clone()})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [], "total": 0, "page": 1, "perPage": 1000
+            })),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [], "total": 0, "page": 1, "perPage": 1000
+            })),
+            ResponseTemplate::new(200).set_body_json(json!({
+                "items": [item("expanded-system")], "total": 1, "page": 1, "perPage": 1000
+            })),
+        ]))
+        .mount(&server)
+        .await;
+    let before = parent_item("parent-1", "default", 0, json!([]));
+    let after = parent_item("parent-1", "default", 0, json!(["expanded-system"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(json!({"item": before.clone()})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": before})),
+            ResponseTemplate::new(200).set_body_json(json!({"item": after})),
+        ]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"item": measured_system_metadata()})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/fleet/package_policies"))
+        .and(body_json(desired.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": stored})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let transport = transport_for(&server);
+    let create_plan = integration_policy_ops::plan_import(&transport, &artifact, false, false)
+        .await
+        .expect("expanded inputs plan for create");
+    let report = integration_policy_ops::apply_import(&transport, &create_plan)
+        .await
+        .expect("expanded inputs create");
+    assert_eq!(
+        report.succeeded,
+        vec![json!({"id": "expanded-system", "action": "created"})]
+    );
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+
+    let overwrite_plan = integration_policy_ops::plan_import(&transport, &artifact, true, false)
+        .await
+        .expect("stored expanded inputs are unchanged on overwrite planning");
+    assert_eq!(overwrite_plan.preview.targets, vec!["expanded-system"]);
+    assert!(
+        overwrite_plan.preview.preview_details[0].starts_with("expanded-system  unchanged"),
+        "{:?}",
+        overwrite_plan.preview.preview_details
     );
 }
 
@@ -1568,6 +1915,7 @@ async fn plan_import_refuses_configured_secrets_without_leaking_values() {
     let secret = "integration-import-secret-value";
     let mut desired = spec_json("fresh");
     desired["vars"] = json!({"package_secret": secret});
+    desired["inputs"] = json!({"system-system": {}});
     let artifact = write_import_artifact(directory.path(), "secret.json", &[desired]);
     Mock::given(method("GET"))
         .and(path("/api/fleet/package_policies/fresh"))
@@ -1617,6 +1965,7 @@ async fn plan_import_refuses_current_plaintext_secrets_omitted_from_overwrite() 
     let directory = tempfile::tempdir().expect("artifact directory");
     let mut desired = spec_json("existing");
     desired["description"] = json!("new description");
+    desired["inputs"] = json!({"system-system": {}});
     let artifact = write_import_artifact(directory.path(), "current-secrets.json", &[desired]);
 
     let mut current = live_item("existing");
@@ -1746,6 +2095,7 @@ async fn integration_import_plan_debug_exposes_only_public_summary_data() {
     let directory = tempfile::tempdir().expect("artifact directory");
     let mut desired = spec_json("existing");
     desired["description"] = json!("canonical-value-must-not-leak");
+    desired["inputs"] = json!({"system-system": {}});
     let artifact = write_import_artifact(directory.path(), "debug.json", &[desired]);
 
     let mut current = live_item("existing");
