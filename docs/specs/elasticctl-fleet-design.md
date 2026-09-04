@@ -390,6 +390,31 @@ variable is secret, the operation fails `unsupported` before the guard.
 Offline `validate` checks document structure only. Secret injection from an
 environment, file, or secret store is a future capability.
 
+The exact package response defines package variables in optional `item.vars`
+and input variables in optional
+`item.policy_templates[].inputs[].vars`. It defines stream variables in
+`item.data_streams[].streams[].vars`, not only in an input's legacy nested
+`streams`. Every variable definition has a non-empty unique `name`; absent
+`secret` means false, while a present non-boolean value is malformed `http`.
+
+Input schema keys are `<template-name>-<input-type>`. Template names and
+composite input keys are unique. A template's absent `data_streams` selects all
+top-level data streams, an empty list selects none, and each non-empty selector
+must resolve exactly once as either an exact dataset or
+`<package-name>.<selector>`. Each top-level data stream has one unique,
+non-empty full dataset. Each of its stream entries has one non-empty `input`.
+Joining a stream to template inputs with the same type and a matching dataset
+must yield exactly one composite input key. Zero or multiple candidates,
+duplicate selectors, datasets, stream inputs, or resulting stream keys are
+malformed `http`.
+
+For compatibility, legacy `policy_templates[].inputs[].streams` definitions
+remain accepted. When modern and legacy metadata define the same composite
+input and dataset, their normalized variable definitions must be identical;
+otherwise metadata is malformed. A configured package variable, input key,
+stream dataset, or variable without a matching definition remains
+`unsupported` and error text never includes its value.
+
 Output, download-source, Fleet Server host, cloud-connector, and extra-space
 ids name target-local infrastructure. 0.6 neither exports nor remaps them. A
 policy using one is unsupported rather than silently changed to a default.
@@ -654,6 +679,15 @@ second page. It validates at most two string, number, or boolean sort values
 and proves the response is complete by requiring `total <= 1000` and
 `items.len() == total`. The cursor never enters a fixture.
 
+The package-metadata reducer retains only the exact coordinate and status,
+package variables, template names, optional template data-stream selectors,
+input types and variables, and modern or legacy stream input, dataset, and
+variable definitions. It normalizes absent variable arrays to empty arrays and
+absent `secret` flags to false, sorts every retained collection by its stable
+key, and rejects malformed or ambiguous joins. Values and every unrelated
+registry, identity, host, space, or secret-reference field are dropped when
+the fixture is constructed.
+
 Fleet setup is idempotent and required before the first Fleet read on a fresh
 stack. The recorder and the conformance runner call `POST /api/fleet/setup`
 once per session. The self-managed lab's Kibana container must reach the
@@ -753,6 +787,15 @@ On 2026-09-04, the exact installed-package inventory route with
 `perPage=1000&sortOrder=asc` returned `items.len() == total` and a non-empty
 one-string `searchAfter` on both cloud targets. The cursor is the last item's
 sort value even when the response contains the full result set.
+
+After `system` 2.23.4 was installed out of band, its exact package response on
+both cloud targets omitted package `vars` and put stream definitions under 18
+top-level data streams: 20 distinct input/dataset pairs and 101 variable
+definitions. Its policy template carried four input types and empty legacy
+stream lists. Variable definitions omitted `secret`, which therefore means
+false. A read-only `azure` 1.40.0 probe confirmed the multi-template join: 10
+templates reuse one input type, each template lists short data-stream
+selectors, and each selector resolves to a unique `azure.<selector>` dataset.
 
 The marker agent-policy lifecycle recorded again on 2026-09-04, against
 Serverless 9.6.0, Elastic Cloud Hosted 9.5.2, and the self-managed 9.5.1 lab.
