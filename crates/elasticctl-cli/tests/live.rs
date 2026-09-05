@@ -12,6 +12,32 @@ use std::time::Duration;
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[path = "live/fleet.rs"]
+mod fleet;
+
+/// The tenth contract stays at this integration-test root because the
+/// conformance controller invokes this exact name.
+#[test]
+#[ignore = "requires a live stack"]
+fn fleet_transfers_agent_and_integration_policies_without_residue() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serial = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config, &profile).unwrap();
+    let result = match fleet::run_contract(&config, profile.clone(), unique_name("fleet")) {
+        Ok(()) => Ok(()),
+        Err(fleet::FleetFailure::Contract(error)) => Err(error),
+        Err(fleet::FleetFailure::Cleanup(error)) => {
+            panic_conformance(ConformanceFailureClass::Cleanup, error)
+        }
+    };
+    conclude(result, &mut LiveCleanup::new(config, profile), baseline);
+}
+
 type TestResult<T = ()> = std::result::Result<T, String>;
 
 const LIVE_PREFIX: &str = "elasticctl-live-";

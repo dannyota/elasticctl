@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2 — Unreleased
+
+### Added
+
+- Fleet policy transfer live contract with guarded cleanup, exact package
+  inventory audits, and setup shared with the conformance controller.
+
+### Fixed
+
+- Integration-policy get and export reject mismatched ids and inconsistent
+  list-selected responses before returning mixed policy data.
+
 ## 0.6.1 — 2026-09-05
 
 ### Added

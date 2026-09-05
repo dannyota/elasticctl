@@ -806,6 +806,44 @@ remaining marker integration before retrying parent cleanup, and a remaining
 marker integration blocks the package uninstall. Every cleanup mutation names
 an explicit marker id or the claimed package version and omits `force`.
 
+The conformance cleanup lease records the run nonce, exact ids, the allowed
+normalized portable form before each create or update, the Fleet marker and
+package baseline, and the package-install state. An owned object is deleted
+only after a fresh exact read proves its id, name, namespace, nonce-bearing
+description, active-space-only visibility, portable form, and deletion safety
+facts. Parents also require a readable zero agent count and no attachments.
+Integrations require their one owned parent, exact `system` coordinate,
+complete nonsecret inputs accepted by production export, and enabled custom
+state. An unreadable, malformed, changed, or different-nonce object fails
+closed.
+
+Package cleanup has four states: no lease, claimed before install, confirmed
+owned after one decoded install response plus exact status and inventory
+proof, and cleanup pending before its one-shot delete. A claimed but
+unconfirmed install is never removed. A confirmed install is removed only
+when no owned policy remains, no policy consumes `system`, the exact version
+is still installed, and inventory is the baseline plus that one coordinate.
+The guard observes ambiguous bootstrap, package, and cleanup mutations by
+exact reads and never replays them. The final audit requires
+empty Fleet markers and the exact original package inventory.
+
+The live cleanup guard requires explicit identity, namespace, description,
+monitoring, agent-count, attachment, package, enabled, and input fields where
+that policy response defines them. It never fills those facts from portable
+artifact defaults. Known optional platform and environment fields retain the
+recorder's absent/null semantics; present values must prove the same safe
+state, and any reported space must be the active space. Package removal reads
+all integration policies and refuses any consumer, including unmarked
+policies, before its one-shot request.
+
+A registry install success is an asset-list response: `_meta.name` must be
+`system`, `_meta.install_source` must be `registry`, and `items` must contain
+valid asset references. The response has no package-version field. The exact
+version is proved by the requested coordinate, package status, and complete
+installed inventory before ownership is promoted. This shape is source-derived
+from Kibana v9.5.1's [install schema](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/types/rest_spec/epm.ts)
+and [handler](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/routes/epm/handlers.ts).
+
 Current design targets are Serverless 9.6.x, Hosted 9.5.x, and the self-managed
 9.5.1 lab. Reports record actual versions under `docs/conformance/v0.6.2/`.
 
