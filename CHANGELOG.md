@@ -11,6 +11,12 @@
 - The `elasticctl-mcp` library, all-four-crate package checks, and a crates.io
   ownership guard for the normal publishing workflow.
 
+### Verified
+
+- All seven MCP tools passed on Serverless 9.6.0, Hosted 9.5.2 and
+  self-managed 9.5.1. MCP Inspector 2.5.0 passed all seven calls on the lab;
+  exact cleanup and lab teardown passed.
+
 ## 0.6.2 — 2026-09-05
 
 ### Added

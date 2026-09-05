@@ -1513,7 +1513,8 @@ The 0.7 read-only MCP capability area is described in
 [`elasticctl-mcp-design.md`](elasticctl-mcp-design.md), with
 [research](../plans/v0.7-research.md) and separate plans for
 [0.7.0](../plans/v0.7.0.md), [0.7.1](../plans/v0.7.1.md), and
-[0.7.2](../plans/v0.7.2.md). The 0.7.0 plan is in execution; later scopes remain planned.
+[0.7.2](../plans/v0.7.2.md). The 0.7.0 implementation and live proof are complete; final evidence review
+is complete. Later scopes remain planned.
 None grants release or publication approval.
 
 The temporary trial-deployment window changes execution order, not capability
