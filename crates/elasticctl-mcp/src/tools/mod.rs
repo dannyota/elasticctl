@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{PageInfo, ServerState, catalog::ToolId};
 
+mod rules;
 mod stack;
 
 /// Typed adapter output before MCP result projection.
@@ -49,6 +50,9 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::RulesGet | ToolId::RulesList | ToolId::RulesPrebuiltStatus => {
+            Some(rules::adapter())
+        }
         ToolId::StackDoctor | ToolId::StackInfo => Some(stack::adapter()),
         _ => None,
     }
@@ -56,5 +60,7 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
 
 /// Return the production definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
-    stack::definitions()
+    let mut definitions = rules::definitions();
+    definitions.extend(stack::definitions());
+    definitions
 }
