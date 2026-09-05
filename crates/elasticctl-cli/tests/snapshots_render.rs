@@ -88,6 +88,14 @@ const CASES: &[(&str, &[&str])] = &[
 /// it so `info` and `doctor` snapshots do not read as drift.
 const PORT_FILTER: (&str, &str) = (r"127\.0\.0\.1:\d+", "127.0.0.1:<port>");
 
+/// `info` echoes the crate version, which changes every release. Pin it so a
+/// version bump is not drift. The pattern still requires a semver shape, and
+/// `tests/cli.rs` asserts `--version` against the manifest.
+const VERSION_FILTER: (&str, &str) = (
+    r#""elasticctl_version": "\d+\.\d+\.\d+[^"]*""#,
+    r#""elasticctl_version": "<version>""#,
+);
+
 /// Replace the path placeholders with their real values.
 fn substitute(arg: &str, mirror: &Path, rule_file: &Path) -> String {
     match arg {
@@ -149,7 +157,7 @@ async fn rendered_output_is_stable() {
             String::from_utf8_lossy(&out.stderr)
         );
         let rendered = String::from_utf8(out.stdout).unwrap();
-        insta::with_settings!({filters => vec![PORT_FILTER]}, {
+        insta::with_settings!({filters => vec![PORT_FILTER, VERSION_FILTER]}, {
             insta::assert_snapshot!(*name, rendered);
         });
     }
