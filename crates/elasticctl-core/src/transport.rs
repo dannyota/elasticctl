@@ -16,6 +16,16 @@ use tokio::sync::OnceCell;
 const API_VERSION: &str = "2023-10-31";
 const MAX_ATTEMPTS: u32 = 3;
 
+/// Optional transport restrictions for callers that handle untrusted upstream
+/// responses.
+#[derive(Clone, Debug, Default)]
+pub struct TransportOptions {
+    pub debug: bool,
+    pub response_body_limit: Option<usize>,
+    pub disable_redirects: bool,
+    pub disable_retries: bool,
+}
+
 /// Response headers retained past the transport boundary.
 ///
 /// These headers are allowlisted because recorded fixtures are public.
@@ -180,6 +190,8 @@ pub struct Transport {
     space: String,
     auth_header: String,
     debug: bool,
+    response_body_limit: Option<usize>,
+    attempt_limit: u32,
     capabilities: OnceCell<Capabilities>,
 }
 
@@ -191,19 +203,37 @@ impl Transport {
     }
 
     pub fn new(profile: &Profile) -> Result<Transport> {
-        Self::with_debug(profile, false)
+        Self::with_options(profile, TransportOptions::default())
     }
 
     /// Build a transport with HTTP request logging enabled or disabled.
     ///
     /// Keeping `debug` as a `bool` prevents CLI `clap` types entering `-core`.
     pub fn with_debug(profile: &Profile, debug: bool) -> Result<Transport> {
+        Self::with_options(
+            profile,
+            TransportOptions {
+                debug,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Build a transport with opt-in response and request restrictions.
+    pub fn with_options(profile: &Profile, options: TransportOptions) -> Result<Transport> {
         // Scrub URL userinfo before deriving any base URL or logging, so a
         // credential embedded in a URL never reaches a request or debug line.
         let mut profile = profile.clone();
         profile.strip_userinfo();
         let credential = Credential::from_profile(&profile)?;
-        let client = Self::client_builder(&profile)
+        let mut client_builder = Self::client_builder(&profile);
+        if options.disable_redirects {
+            client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
+        }
+        if options.disable_retries {
+            client_builder = client_builder.retry(reqwest::retry::never());
+        }
+        let client = client_builder
             .build()
             .map_err(|e| Error::new(ErrorKind::Connection, format!("building HTTP client: {e}")))?;
         let one_shot_client = Self::client_builder(&profile)
@@ -240,7 +270,13 @@ impl Transport {
             has_es_url,
             space: profile.space.clone(),
             auth_header: credential.header_value(),
-            debug,
+            debug: options.debug,
+            response_body_limit: options.response_body_limit,
+            attempt_limit: if options.disable_retries {
+                1
+            } else {
+                MAX_ATTEMPTS
+            },
             capabilities: OnceCell::new(),
         })
     }
@@ -340,8 +376,48 @@ impl Transport {
         &self,
         method: &Method,
         url: &str,
-        response: Response,
+        mut response: Response,
     ) -> Result<String> {
+        if let Some(limit) = self.response_body_limit {
+            if response
+                .content_length()
+                .is_some_and(|length| usize::try_from(length).map_or(true, |length| length > limit))
+            {
+                return Err(Self::response_limit_error());
+            }
+
+            let mut bytes = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        let length = bytes
+                            .len()
+                            .checked_add(chunk.len())
+                            .ok_or_else(Self::response_limit_error)?;
+                        if length > limit {
+                            return Err(Self::response_limit_error());
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    Ok(None) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
+                    Err(e) if e.is_timeout() => {
+                        self.debug_failure(method, url, "timeout");
+                        return Err(Error::new(
+                            ErrorKind::Timeout,
+                            format!("request timed out while reading response body: {e}"),
+                        ));
+                    }
+                    Err(e) => {
+                        self.debug_failure(method, url, "connection error");
+                        return Err(Error::new(
+                            ErrorKind::Connection,
+                            format!("request failed while reading response body: {e}"),
+                        ));
+                    }
+                }
+            }
+        }
+
         match response.text().await {
             Ok(text) => Ok(text),
             Err(e) if e.is_timeout() => {
@@ -359,6 +435,13 @@ impl Transport {
                 ))
             }
         }
+    }
+
+    fn response_limit_error() -> Error {
+        Error::new(
+            ErrorKind::Unsupported,
+            "response body exceeds configured byte limit",
+        )
     }
 
     async fn send_retrying<F>(
@@ -408,6 +491,12 @@ impl Transport {
             // caller error.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if transient && attempt < attempt_limit {
+                // A configured limit applies to error bodies too. Read the
+                // body before deciding to retry so an over-limit response is
+                // rejected rather than replayed.
+                if self.response_body_limit.is_some() {
+                    self.response_text(&method, url, response).await?;
+                }
                 let backoff = Duration::from_millis(200 * 2u64.pow(attempt - 1));
                 tokio::time::sleep(backoff).await;
                 continue;
@@ -420,7 +509,7 @@ impl Transport {
     }
 
     async fn send(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Response> {
-        self.send_with_attempt_limit(method, path, body, MAX_ATTEMPTS)
+        self.send_with_attempt_limit(method, path, body, self.attempt_limit)
             .await
     }
 
@@ -465,7 +554,7 @@ impl Transport {
     }
 
     async fn send_json(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {
-        self.send_json_with_attempt_limit(method, path, body, MAX_ATTEMPTS)
+        self.send_json_with_attempt_limit(method, path, body, self.attempt_limit)
             .await
     }
 
@@ -517,7 +606,7 @@ impl Transport {
         let method = Method::GET;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
+            .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 Ok(self
                     .client
                     .request(Method::GET, &url)
@@ -550,7 +639,7 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
+            .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 Ok(self
                     .client
                     .request(Method::POST, &url)
@@ -678,7 +767,7 @@ impl Transport {
         let url = format!("{}{}", self.es_base, path);
         let request_method = method.clone();
         let response = self
-            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
+            .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 let mut req = self
                     .client
                     .request(request_method.clone(), &url)
@@ -721,7 +810,7 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path);
         let response = self
-            .send_retrying(method.clone(), &url, MAX_ATTEMPTS, || {
+            .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 // Retryable HTTP responses deliberately replay this POST. Part and Form are
                 // recreated here because reqwest consumes multipart bodies while sending.
                 let part = reqwest::multipart::Part::text(ndjson.to_string())

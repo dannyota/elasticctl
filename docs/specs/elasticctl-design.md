@@ -159,6 +159,15 @@ Does not know about detection rules.
   operator uses `--debug` to diagnose. It logs the method, complete URL, and
   status; it never logs a header or body. URL query strings must not contain
   credentials.
+  `Transport::with_options` adds opt-in decoded response-body limits,
+  redirect suppression, and retry suppression. Existing constructors retain
+  their defaults. A configured body limit covers success and error bodies on
+  every request path: reject an excessive declared size, then count streamed
+  decoded chunks before extending the buffer. Exceeding it returns
+  `unsupported` with `response body exceeds configured byte limit` and is
+  never retried. Retry suppression allows one application attempt and disables
+  HTTP-client retries. Redirect suppression applies to both clients; one-shot
+  requests retain their stricter transport settings.
   Response headers are captured and returned alongside the body, because the
   deployment flavor is not derivable from any response body — see
   `capabilities` below. They are carried, never logged: `--debug` still prints
