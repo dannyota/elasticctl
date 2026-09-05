@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{PageInfo, ServerState, catalog::ToolId};
 
+mod exceptions;
 mod rules;
 mod stack;
 
@@ -50,17 +51,18 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::ExceptionsGet | ToolId::ExceptionsList => Some(exceptions::adapter()),
         ToolId::RulesGet | ToolId::RulesList | ToolId::RulesPrebuiltStatus => {
             Some(rules::adapter())
         }
         ToolId::StackDoctor | ToolId::StackInfo => Some(stack::adapter()),
-        _ => None,
     }
 }
 
 /// Return the production definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
-    let mut definitions = rules::definitions();
+    let mut definitions = exceptions::definitions();
+    definitions.extend(rules::definitions());
     definitions.extend(stack::definitions());
     definitions
 }

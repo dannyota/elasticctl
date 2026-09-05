@@ -244,6 +244,18 @@ Projections live in `-mcp`; they do not change existing CLI output.
 | ES\|QL | `columns: [{name,type}]`, row-major `values`, `is_partial`; duplicate column names remain representable |
 | DSL | `hits: [{id,index,score,source}]`; keep document source separate from metadata |
 
+Exception list data is `{lists: [...]}`; get data is
+`{container: {...}, items: [...]}`. Containers require string `list_id` and projected
+`namespace_type`; preserve a string namespace and emit `single` when it is
+absent or null, matching the API identity default. The other named container
+fields are optional. Each nested item requires only string `item_id`; its
+container supplies `list_id` and `namespace_type`. Item `entries` is an
+optional array of arbitrary JSON values; `name` and `description` are
+optional strings, and `os_types` and `tags` are optional arrays of strings.
+Missing or null optional fields are omitted, and a present selected field of
+the wrong type fails projection. Do not validate entry variants or hidden item
+parent fields.
+
 Data-view get requires string `id` and `title`. Optional string fields are
 `name`, `timeFieldName`, and `type`; optional booleans are `allowNoIndex` and
 `allowHidden`. `sourceFilters` is an optional array of JSON values.
