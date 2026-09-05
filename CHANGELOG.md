@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — 0.7.0
+
+### Added
+
+- `mcp serve` in both binaries, with seven read tools for stack diagnostics,
+  rules, and exception lists under one operator-selected target.
+- Typed tool schemas, selected result fields, static error messages, input
+  and output byte limits, four-call admission, deadlines, and cancellation.
+- The `elasticctl-mcp` library, all-four-crate package checks, and a crates.io
+  ownership guard for the normal publishing workflow.
+
 ## 0.6.2 — 2026-09-05
 
 ### Added

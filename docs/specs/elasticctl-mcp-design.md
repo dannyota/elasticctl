@@ -450,8 +450,15 @@ report a skipped or unavailable target as a pass.
 The fourth published crate requires updates to root and CLI manifests,
 package-content checks, workspace version validation, publishing comments and
 documentation, and Trusted Publishing setup if publication is approved.
-All four crates share one version. `cargo install elasticctl` still installs
-`elasticctl` and `elkctl`; no third binary or new build target is proposed.
+All four crates share one version. The normal publisher checks that all four
+names exist and remain owned by `dannyota` before obtaining a publish token.
+Crate ownership does not prove Trusted Publisher configuration; the owner
+checks each entry before dispatch. The first MCP crate publication needs a
+separate policy decision before the normal workflow can run. Workspace
+verification precedes uploads, but registry uploads are not atomic. These
+publication prerequisites do not block implementation or nonpublishing gates.
+`cargo install elasticctl` still installs `elasticctl` and `elkctl`; no third
+binary or new build target is proposed.
 Each version runs the exact-commit CI and nonpublishing preflight in
 [releasing.md](../releasing.md). Adding a library changes packaging, so that
 guide's published-candidate rule applies if crates.io publishing is requested.

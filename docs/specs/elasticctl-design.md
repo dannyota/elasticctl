@@ -1591,22 +1591,43 @@ GitHub Actions. Local publishing is not a fallback. Dispatch the workflow with
 the released tag after the owner approves publishing that version; its
 `crates-io` environment approval remains required.
 
-The four crates (`elasticctl-core`, `elasticctl-api`, `elasticctl-mcp`, and
-`elasticctl`) are publishable and publish together with
-`cargo publish --workspace`. It packages and verifies every crate against a
-temporary registry before uploading any. Otherwise, a failure partway through
-could strand a crate on crates.io, where a version can be yanked but never
-deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
+An approved publication submits all four crates (`elasticctl-core`,
+`elasticctl-api`, `elasticctl-mcp`, and `elasticctl`) through one
+`cargo publish --workspace --locked --registry crates-io` command. Cargo
+packages and verifies every selected crate against a temporary registry before
+uploading dependency-ready crates. Uploads are not atomic: registry rejection
+or a connection failure can leave a partial version set. A version can be
+yanked, never deleted. `xtask` stays `publish = false` and ships nothing.
+The [Cargo implementation](https://github.com/rust-lang/cargo/blob/c980f4866141969fab6254a680546a277789d6f0/src/cargo/ops/registry/publish.rs#L150-L251)
+separates verification from the per-crate upload loop.
+
+The normal workflow runs `scripts/check-crates-io-publish-ready.sh` in both
+jobs before token exchange or upload. It requires all four names to exist on
+crates.io with `dannyota` as an owner. Missing names, wrong ownership, and
+failed public registry reads stop the workflow. This does not verify Trusted
+Publisher settings. Before each dispatch, the owner checks every crate's
+publisher entry and the `crates-io` environment's required-reviewer rule.
+
+[Trusted Publishing](https://crates.io/docs/trusted-publishing) requires an
+existing crate. The first `elasticctl-mcp` publication therefore needs a
+separate owner decision that resolves the current Actions-only,
+workspace-only, Trusted-Publishing-only policy. No bootstrap or token fallback
+is authorized here. This publication block does not block implementation,
+nonpublishing preflight, or the tag and GitHub Release. A dry run verifies
+packages; it does not prove registry authorization for a later upload.
 
 `elasticctl-api-test-support` remains private and unpublished. The published
-`elasticctl-api`, `elasticctl-mcp`, and `elasticctl` manifests exclude `tests/**`, because Cargo
+`elasticctl-core`, `elasticctl-api`, `elasticctl-mcp`, and `elasticctl`
+manifests exclude `tests/**`, because Cargo
 cannot resolve those integration tests after it omits their path-only private
 dev-dependency from the package. Inline unit tests under `src/` remain in the
 archives. `scripts/check-packages.sh` runs the locked, allow-dirty
-`cargo package --package <name> --list` check separately for those two crates.
+`cargo package --package <name> --list` check separately for all four crates.
 It rejects every `tests/` entry and every `elasticctl-api-test-support` path,
 and requires `Cargo.toml`, `Cargo.toml.orig`, `Cargo.lock`, plus `src/lib.rs`
-for the API crate or `src/main.rs` for the CLI crate. Cargo's package list is
+for each library or `src/main.rs` for the CLI crate. It also checks that all
+four package versions and all three library dependency versions match the
+workspace version. Cargo's package list is
 the archive-content authority for this release gate.
 
 Publishing was deferred through 0.1.2 because a crates.io version is forever
@@ -1642,9 +1663,9 @@ removing it. Tagging first has the binary matrix prove the build while both the
 tag and the Release are still disposable, which is the check a release
 candidate used to buy separately.
 
-All four publish or none do. The binary crate depends on all three libraries
-by version, so publishing it alone leaves `cargo install elasticctl` unable
-to resolve.
+Normal publication always selects the whole workspace. The binary crate
+depends on all three libraries by version; publishing it alone can leave
+`cargo install elasticctl` unable to resolve them.
 
 ## 12. Credentials in this repository
 

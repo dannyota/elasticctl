@@ -186,8 +186,8 @@ GitHub Release binaries.** Publishing needs the owner's explicit approval for th
 approval never carries forward. Ask separately and complete the release meanwhile. Publish last,
 after the matrix produces a complete asset list, only through `.github/workflows/publish-crates.yml`
 with the released tag and `crates-io` environment approval. Never publish locally or crate-by-crate.
-The workflow uses Trusted Publishing and `cargo publish --workspace` to verify all four crates
-against a temporary registry before uploading any. Published versions can be yanked, never deleted.
+The workflow verifies all four crates before upload; registry uploads are not atomic. Crate ownership
+and Trusted Publishing must be ready first; see `docs/releasing.md`. Versions can be yanked, never deleted.
 
 Cut an `-rc.N` only for an unproven or changed build matrix; check the last release's assets.
 For packaging changes, see `docs/releasing.md` for the published-candidate exception and approvals.

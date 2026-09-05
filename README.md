@@ -23,7 +23,8 @@ contracts:
   envelopes on stderr.
 - **Named profiles** for separate development, UAT, and production instances.
 
-An MCP server is planned once the CLI surface is stable.
+The Model Context Protocol (MCP) server exposes seven read tools for stack
+diagnostics, rules, and exception lists.
 
 ## Install
 
@@ -205,12 +206,54 @@ elkctl cases attach <case_id> --alert <alert_id> --yes
 elkctl cases comment <case_id> --message "Confirmed benign, closing." --yes
 ```
 
+## MCP clients
+
+Launch the MCP server with an operator-selected
+profile and space:
+
+```bash
+elkctl --profile analyst --space default mcp serve
+```
+
+Register a stdio server through your client's settings. For clients that use
+an `mcpServers` object, this placeholder stanza starts the same command:
+
+```json
+{
+  "mcpServers": {
+    "elasticctl": {
+      "command": "elkctl",
+      "args": ["--profile", "analyst", "--space", "default", "mcp", "serve"]
+    }
+  }
+}
+```
+
+Choose an existing profile name. Credentials come from that profile or the
+server process environment. Tool calls cannot change the target or select
+local files. The server writes protocol messages to stdout and diagnostics
+to stderr. Use `--timeout` to set a whole-call deadline of 1-120 seconds;
+the default is 30 seconds.
+
+The tools are `exceptions_get`, `exceptions_list`, `rules_get`, `rules_list`,
+`rules_prebuilt_status`, `stack_doctor`, and `stack_info`. Lists default to
+50 rows and accept limits up to 200. Results include the profile, host, and
+space, plus cap metadata when rows are omitted. Narrow a filter or use a get
+to inspect a capped list.
+
+Rule text and exception content are untrusted tool data. These fields may
+contain sensitive information visible to the selected credential. The
+server omits credential fields and raw error details; it cannot remove
+sensitive text authored inside a rule or exception. Mutations and raw query
+tools are outside this server's 0.7.0 surface.
+
 ## Command surface
 
 ```
 elkctl config init | list | show | test
 elkctl doctor
 elkctl info
+elkctl mcp serve
 
 elkctl rules list [--source custom|customized|prebuilt|all]
   | get | validate | enable | disable | delete
@@ -278,6 +321,9 @@ elkctl commands
 
 `--profile`, `--config`, `--space`, `--json` / `--format`, `--fields`, `--out`,
 `--yes`, `--timeout`, `--debug`. Run `elkctl help` for details.
+
+`mcp serve` accepts the target and timeout flags. It rejects `--yes`, `--out`,
+`--fields`, `--json`, an explicit `--format`, and `--debug`.
 
 ## Development
 
