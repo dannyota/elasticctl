@@ -62,6 +62,13 @@ where
         loop {
             let available = self.read.fill_buf().await?;
             if available.is_empty() {
+                if self.line.len() > MAX_INPUT_LINE_BYTES {
+                    eprintln!("MCP input frame exceeds the configured limit");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "MCP input frame exceeds the configured limit",
+                    ));
+                }
                 return Ok(false);
             }
             let newline = available.iter().position(|byte| *byte == b'\n');
@@ -336,6 +343,30 @@ mod tests {
                 .await
                 .expect("the byte cap rejects without waiting for EOF")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_oversized_unterminated_input_ending_in_a_bare_carriage_return() {
+        let (mut writer, reader) = tokio::io::duplex(MAX_INPUT_LINE_BYTES + 1);
+        let (_, output) = tokio::io::duplex(64);
+        let mut frame = vec![b'x'; MAX_INPUT_LINE_BYTES];
+        frame.push(b'\r');
+        writer
+            .write_all(&frame)
+            .await
+            .expect("test writes oversized input");
+        writer.shutdown().await.expect("test closes input");
+
+        let mut transport = BoundedIo::new(reader, output);
+        let error = transport
+            .read_frame()
+            .await
+            .expect_err("a bare trailing carriage return at EOF exceeds the input limit");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "MCP input frame exceeds the configured limit"
         );
     }
 
