@@ -481,6 +481,12 @@ used. `--limit` truncates after sorting and the list reports `truncated`.
 Resolution tries the exact id with the single-object endpoint first. On
 `not_found` it collects the list and keeps exact name matches. Zero matches is
 `not_found`; more than one is `conflict`. A name never becomes stored identity.
+An exact-id read must return that requested id. A read selected from a list by
+name must return the same id, name, namespace, parent-id membership, package
+coordinate, and description as its selected list row. Parent ids compare in
+sorted order without deduplication, so reordering is consistent but duplicates
+remain malformed. A mismatch is a malformed `http` response; its error does
+not include response values.
 
 Selectors are deduplicated by id. Every selector resolves before export or
 delete. The single-object agent-policy read carries populated
@@ -639,8 +645,8 @@ checks against the shared 9.5.1 floor. No Fleet model or orchestration enters
   change, or an overwrite that removes a field the update route cannot clear.
 - `permission`: a single-object agent-policy read without `agents`, which
   Kibana populates only for a caller with Fleet agents read.
-- `http`: malformed success response, paging contradiction, or failed
-  post-write invariant.
+- `http`: malformed success response, paging contradiction, inconsistent
+  selector read, or failed post-write invariant.
 - `error`: malformed artifact or invalid command combination.
 
 List and get return typed values through `render`. A truncated list emits

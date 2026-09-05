@@ -531,7 +531,14 @@ async fn resolve_prefers_id_then_uses_exact_name_and_rejects_ambiguity() {
     }
     Mock::given(method("GET"))
         .and(path("/api/fleet/package_policies/by-name"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("by-name")})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
+            "id": "by-name",
+            "name": "A named integration",
+            "namespace": "default",
+            "policy_ids": ["parent-1"],
+            "package": {"name": "system", "version": "2.0.0"},
+            "inputs": {}
+        }})))
         .expect(1)
         .mount(&server)
         .await;
@@ -582,6 +589,157 @@ async fn resolve_prefers_an_id_over_a_name_collision() {
         .await
         .expect("id wins");
     assert_eq!(resolved.id, "collision");
+}
+
+#[tokio::test]
+async fn get_rejects_a_single_item_with_a_different_requested_id() {
+    let server = verified_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": live_item("other-id")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 1, json!(["other-id"]))
+        })))
+        .mount(&server)
+        .await;
+
+    let error = integration_policy_ops::get_op(&transport_for(&server), "integration-1")
+        .await
+        .expect_err("a single-item response must echo the requested id");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding integration policy selector read: response id did not match the selector"
+    );
+    assert_eq!(
+        request_count(&server, "/api/fleet/agent_policies/parent-1").await,
+        0,
+        "an inconsistent selector read must stop before parent reads"
+    );
+}
+
+#[tokio::test]
+async fn get_rejects_name_resolution_when_the_fetched_summary_changed() {
+    for (label, field, value) in [
+        ("name", "name", json!("Changed integration")),
+        ("namespace", "namespace", json!("changed-namespace")),
+        ("policy ids", "policy_ids", json!(["parent-2"])),
+        (
+            "duplicate policy ids",
+            "policy_ids",
+            json!(["parent-1", "parent-1"]),
+        ),
+        (
+            "package coordinate",
+            "package",
+            json!({"name": "changed-package", "version": "3.0.0"}),
+        ),
+        ("description", "description", json!("changed description")),
+    ] {
+        let server = verified_server().await;
+        let mut selected = item("integration-1");
+        selected["name"] = json!("Selected integration");
+        selected["description"] = json!("selected description");
+        mount_integration_pages(&server, vec![(1, vec![selected], 1)]).await;
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/Selected%20integration"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "statusCode": 404,
+                "message": "missing"
+            })))
+            .mount(&server)
+            .await;
+        let mut fetched = live_item("integration-1");
+        fetched.insert("name".into(), json!("Selected integration"));
+        fetched.insert("description".into(), json!("selected description"));
+        fetched.insert(field.into(), value);
+        let parent_id = fetched["policy_ids"][0]
+            .as_str()
+            .expect("test parent id")
+            .to_owned();
+        Mock::given(method("GET"))
+            .and(path("/api/fleet/package_policies/integration-1"))
+            .and(query_param("format", "simplified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": fetched})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item(&parent_id, "default", 1, json!(["integration-1"]))
+            })))
+            .mount(&server)
+            .await;
+
+        let error = integration_policy_ops::get_op(&transport_for(&server), "Selected integration")
+            .await
+            .expect_err(label);
+        assert_eq!(error.kind, ErrorKind::Http, "{label}");
+        assert_eq!(
+            error.message,
+            "decoding integration policy selector read: fetched item did not match the selected list summary",
+            "{label}"
+        );
+        assert_eq!(
+            request_count(&server, &format!("/api/fleet/agent_policies/{parent_id}")).await,
+            0,
+            "{label}: an inconsistent selector read must stop before parent reads"
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_accepts_a_consistent_name_selected_read() {
+    let server = verified_server().await;
+    let mut selected = item("integration-1");
+    selected["name"] = json!("Selected integration");
+    selected["description"] = json!("selected description");
+    selected["policy_ids"] = json!(["parent-a", "parent-z"]);
+    mount_integration_pages(&server, vec![(1, vec![selected], 1)]).await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/Selected%20integration"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "statusCode": 404,
+            "message": "missing"
+        })))
+        .mount(&server)
+        .await;
+    let mut fetched = live_item("integration-1");
+    fetched.insert("name".into(), json!("Selected integration"));
+    fetched.insert("description".into(), json!("selected description"));
+    fetched.insert("policy_ids".into(), json!(["parent-z", "parent-a"]));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": fetched})))
+        .mount(&server)
+        .await;
+    for parent_id in ["parent-a", "parent-z"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/fleet/agent_policies/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": parent_item(parent_id, "default", 1, json!(["integration-1"]))
+            })))
+            .mount(&server)
+            .await;
+    }
+
+    let detail = integration_policy_ops::get_op(&transport_for(&server), "Selected integration")
+        .await
+        .expect("a consistent fetched item must remain usable");
+    assert_eq!(detail.id, "integration-1");
+    assert_eq!(detail.name, "Selected integration");
+    assert_eq!(detail.description.as_deref(), Some("selected description"));
+    assert_eq!(detail.policy_ids, ["parent-a", "parent-z"]);
 }
 
 #[test]
@@ -4517,6 +4675,62 @@ async fn export_deduplicates_resolved_selectors_and_orders_multiple_artifacts_by
 }
 
 #[tokio::test]
+async fn export_all_custom_rejects_a_fetched_summary_that_differs_from_its_list_row() {
+    let server = verified_server().await;
+    mount_integration_pages(&server, vec![(1, vec![item("integration-1")], 1)]).await;
+    let mut fetched = live_item("integration-1");
+    fetched.insert("description".into(), json!("changed description"));
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/package_policies/integration-1"))
+        .and(query_param("format", "simplified"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": fetched})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/agent_policies/parent-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": parent_item("parent-1", "default", 1, json!(["integration-1"]))
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": installed_package("2.0.0")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/fleet/epm/packages/system/2.0.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "item": safe_package_metadata()
+        })))
+        .mount(&server)
+        .await;
+
+    let error =
+        integration_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+            .await
+            .expect_err("all-custom export must bind the fetched item to its list row");
+    assert_eq!(error.kind, ErrorKind::Http);
+    assert_eq!(
+        error.message,
+        "decoding integration policy selector read: fetched item did not match the selected list summary"
+    );
+    for route in [
+        "/api/fleet/agent_policies/parent-1",
+        "/api/fleet/epm/packages/system",
+        "/api/fleet/epm/packages/system/2.0.0",
+    ] {
+        assert_eq!(
+            request_count(&server, route).await,
+            0,
+            "an inconsistent all-custom read must stop before {route}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn export_requires_an_unambiguous_package_installation_state_before_metadata() {
     let cases = [
         (
@@ -5619,6 +5833,10 @@ async fn all_custom_skips_only_managed_and_parent_platform_owned_rows() {
     let server = verified_server().await;
     let mut listed_managed = item("a-listed-managed");
     listed_managed["is_managed"] = json!(true);
+    let mut listed_platform_child = item("c-platform-parent");
+    listed_platform_child["policy_ids"] = json!(["parent-c"]);
+    let mut listed_safe_child = item("e-safe");
+    listed_safe_child["policy_ids"] = json!(["parent-e"]);
     mount_integration_pages(
         &server,
         vec![(
@@ -5626,8 +5844,8 @@ async fn all_custom_skips_only_managed_and_parent_platform_owned_rows() {
             vec![
                 listed_managed,
                 item("b-full-read-managed"),
-                item("c-platform-parent"),
-                item("e-safe"),
+                listed_platform_child,
+                listed_safe_child,
             ],
             4,
         )],

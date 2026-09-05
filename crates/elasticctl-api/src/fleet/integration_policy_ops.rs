@@ -333,18 +333,14 @@ pub async fn resolve(transport: &Transport, selector: &str) -> Result<Integratio
     Ok(resolve_item(transport, selector).await?.summary)
 }
 
-/// Resolve a selector and retain the exact one-object response for Task 4.
+/// Resolve a selector and retain the checked one-object response for later
+/// read-only operations.
 pub(crate) async fn resolve_item(
     transport: &Transport,
     selector: &str,
 ) -> Result<ResolvedIntegrationPolicy> {
     match integration_policies::get(transport, selector).await {
-        Ok(policy) => {
-            return Ok(ResolvedIntegrationPolicy {
-                summary: summary_from_item(&policy.item)?,
-                item: policy.item,
-            });
-        }
+        Ok(policy) => return checked_read(selector, policy.item, None),
         Err(error) if error.kind == ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
@@ -361,10 +357,7 @@ pub(crate) async fn resolve_item(
         )),
         [one] => {
             let policy = integration_policies::get(transport, &one.id).await?;
-            Ok(ResolvedIntegrationPolicy {
-                summary: one.clone(),
-                item: policy.item,
-            })
+            checked_read(&one.id, policy.item, Some(one))
         }
         many => Err(Error::new(
             ErrorKind::Conflict,
@@ -377,6 +370,46 @@ pub(crate) async fn resolve_item(
             ),
         )),
     }
+}
+
+/// Bind a one-object response to its route id and, when it came from a list
+/// selection, to that row's safe summary. Do not include raw values in errors:
+/// simplified items can contain user configuration.
+fn checked_read(
+    requested_id: &str,
+    item: Map<String, Value>,
+    selected: Option<&IntegrationPolicySummary>,
+) -> Result<ResolvedIntegrationPolicy> {
+    let summary = summary_from_item(&item)?;
+    if summary.id != requested_id {
+        return Err(http(
+            "decoding integration policy selector read: response id did not match the selector",
+        ));
+    }
+    if selected.is_some_and(|selected| !same_summary(&summary, selected)) {
+        return Err(http(
+            "decoding integration policy selector read: fetched item did not match the selected list summary",
+        ));
+    }
+    Ok(ResolvedIntegrationPolicy { summary, item })
+}
+
+/// Fleet can return parent ids in a different order between its list and
+/// single-item routes. Sort for comparison without removing duplicates, so a
+/// malformed repeated parent remains visible to later validation.
+fn same_summary(fetched: &IntegrationPolicySummary, selected: &IntegrationPolicySummary) -> bool {
+    fetched.id == selected.id
+        && fetched.name == selected.name
+        && fetched.namespace == selected.namespace
+        && fetched.description == selected.description
+        && fetched.package == selected.package
+        && sorted_parent_ids(&fetched.policy_ids) == sorted_parent_ids(&selected.policy_ids)
+}
+
+fn sorted_parent_ids(ids: &[String]) -> Vec<&str> {
+    let mut sorted = ids.iter().map(String::as_str).collect::<Vec<_>>();
+    sorted.sort_unstable();
+    sorted
 }
 
 /// Return a safe integration-policy view. Parent reads are both the attachment
@@ -474,16 +507,11 @@ pub async fn export(
                 continue;
             }
             let live = integration_policies::get(transport, &summary.id).await?;
-            if optional_bool(&live.item, "is_managed", &summary.id)? == Some(true) {
+            let resolved = checked_read(&summary.id, live.item, Some(&summary))?;
+            if optional_bool(&resolved.item, "is_managed", &summary.id)? == Some(true) {
                 continue;
             }
-            rows.insert(
-                summary.id.clone(),
-                ResolvedIntegrationPolicy {
-                    summary,
-                    item: live.item,
-                },
-            );
+            rows.insert(summary.id.clone(), resolved);
         }
     } else {
         for selector in selectors {
