@@ -195,17 +195,22 @@ Remap them to ECS and rewrite `@timestamp` to now before ingest, or no rule can 
 ## Release
 
 The binary crate package is `elasticctl` (directory `crates/elasticctl-cli`), so
-`--package elasticctl-cli` does not resolve. Publish with `cargo publish --workspace` after a dry
-run. It verifies all three crates against a temporary registry before uploading any. Never
-publish crate-by-crate. A partial failure strands crates on crates.io, where versions can be
+`--package elasticctl-cli` does not resolve. Publish by dispatching
+`.github/workflows/publish-crates.yml` with the released tag; the owner approves the
+`crates-io` environment and the job runs `cargo publish --workspace` with a Trusted Publishing
+token after checking the Release assets. That command from the tagged commit is the manual
+fallback. Either way `cargo publish --workspace` verifies all three crates against a temporary
+registry before uploading any. Never publish crate-by-crate. A partial failure strands crates on
+crates.io, where versions can be
 yanked but not deleted. cargo-dist installs as `dist`; `cargo dist` does not resolve.
 `dist build --artifacts=host` builds only the host target.
 
 **A release does not publish to crates.io.** The default release is the tag and GitHub Release
 binaries, and stops there. Publishing needs the owner's explicit approval for that release. A
 standing "we publish now" from 0.1.3 or approval for a previous version is not enough. Never run
-`cargo publish` as a step in a release you were asked to cut. Ask, and release the rest meanwhile;
-a version can follow onto crates.io later, but it cannot be taken back.
+`cargo publish` or dispatch the publish workflow as a step in a release you were asked to cut.
+Ask, and release the rest meanwhile; a version can follow onto crates.io later, but it cannot be
+taken back.
 
 When approval is given, tag first and publish last. The tag and GitHub Release are deletable; a
 crates.io version is not, so publish only after the matrix produces a complete asset list.

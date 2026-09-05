@@ -496,11 +496,7 @@ pub async fn export(
     for (id, resolved) in rows {
         let parent_ids = read_parents(&id, &resolved.item)?;
         let parents = read_parent_snapshots(transport, &id, &parent_ids).await?;
-        if all_custom
-            && parents
-                .values()
-                .any(|parent| parent.platform_owned || parent.protected)
-        {
+        if all_custom && parents.values().any(|parent| parent.platform_owned) {
             continue;
         }
         specs.push(effective_spec(transport, &id, &resolved.item, &parents).await?);
@@ -1873,9 +1869,7 @@ pub async fn plan_prepared_import(
         let package = package_groups
             .get(&target.effective.package.name)
             .expect("every effective package has a group");
-        if !matches!(&target.current, Some(current) if current.spec == target.effective) {
-            validate_effective_input_materialization(&target.effective, &package.metadata)?;
-        }
+        validate_effective_input_materialization(&target.effective, &package.metadata)?;
     }
 
     let mut secret_paths = BTreeSet::new();
@@ -2890,9 +2884,7 @@ fn validate_import_plan(plan: &IntegrationPolicyImportPlan) -> Result<()> {
         if group.package != target.effective.package {
             return invalid("package group coordinate does not match its target");
         }
-        if !matches!(&target.current, Some(current) if current.spec == target.effective) {
-            validate_effective_input_materialization(&target.effective, &group.metadata)?;
-        }
+        validate_effective_input_materialization(&target.effective, &group.metadata)?;
         match configured_secret_paths(&target.effective, &group.metadata) {
             Ok(paths) if paths.is_empty() => {}
             _ => return invalid("effective integration policy has unsafe configured variables"),

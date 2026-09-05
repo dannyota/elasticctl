@@ -371,7 +371,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "elasticctl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "elasticctl-api"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "elasticctl-api-test-support",
  "elasticctl-core",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "elasticctl-api-test-support"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "elasticctl-core",
  "http",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "elasticctl-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.23.1",
  "directories",
@@ -2290,7 +2290,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "elasticctl-api",
  "elasticctl-core",

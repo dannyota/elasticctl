@@ -126,6 +126,10 @@ unsupported custom object fails the whole export rather than producing an
 incomplete artifact. An explicit selector for a platform-owned object also
 fails as `unsupported`.
 
+An integration with a protected custom parent remains in the `--all-custom`
+selection and fails the export as `unsupported`; protection alone does not
+make its parent platform-owned.
+
 Mutating commands reject an empty target before building a transport.
 
 ## 5. Agent-policy model
@@ -332,7 +336,9 @@ mutation. Fleet materializes registry defaults for every declared input and
 stream when create receives an empty object, so accepting that shorthand would
 make a successful write fail exact post-write equality and drift again on the
 next import. A package whose exact metadata declares no inputs may keep an
-empty object. Export writes the complete simplified input map returned by
+empty object. The same check applies to an unchanged overwrite target; matching
+an existing empty map does not exempt it from import validation.
+Export writes the complete simplified input map returned by
 Fleet; that map is stable when imported again.
 
 Two response fields are deliberately not portable. `create_dataset_templates`
@@ -715,6 +721,14 @@ recorder requires the exact `system` package to be preinstalled before it
 writes marker objects. It never installs, uninstalls, upgrades, or downgrades
 packages; it retains the baseline inventory only to prove the exact status
 version is already present and to audit that inventory is unchanged.
+
+Immediately before each package-policy create, including bootstrap and
+duplicate-name probes, the recorder rechecks that exact installed `system`
+version and the complete baseline inventory. Missing, changed, malformed, or
+unreadable package state stops the create. A final read-to-write race remains
+because Fleet provides no conditional package-policy create; the post-attempt
+inventory audit still runs to detect a change in that window.
+The recorded exact package metadata must also report `installed`.
 
 The integration recorder materializes `system` defaults without weakening the
 round-trip fixture. After reducing exact package metadata and creating the

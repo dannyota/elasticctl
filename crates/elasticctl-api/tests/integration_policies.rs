@@ -1183,7 +1183,7 @@ async fn plan_import_allows_empty_inputs_when_exact_metadata_declares_no_input_k
 }
 
 #[tokio::test]
-async fn plan_import_allows_an_unchanged_empty_snapshot_when_metadata_declares_inputs() {
+async fn plan_import_refuses_an_unchanged_empty_snapshot_when_metadata_declares_inputs() {
     let server = verified_server().await;
     let directory = tempfile::tempdir().expect("artifact directory");
     let artifact = write_import_artifact(
@@ -1223,15 +1223,15 @@ async fn plan_import_allows_an_unchanged_empty_snapshot_when_metadata_declares_i
         .mount(&server)
         .await;
 
-    let plan = integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
-        .await
-        .expect("an unchanged current snapshot is never an empty-input write");
+    let error =
+        integration_policy_ops::plan_import(&transport_for(&server), &artifact, true, false)
+            .await
+            .expect_err("an unchanged empty input map must not form a guard-able import plan");
 
-    assert_eq!(plan.preview.targets, vec!["unchanged-empty"]);
-    assert!(
-        plan.preview.preview_details[0].starts_with("unchanged-empty  unchanged"),
-        "{:?}",
-        plan.preview.preview_details
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy 'unchanged-empty' has an empty inputs map but package system@2.0.0 declares inputs"
     );
     assert!(no_import_mutation_requests(&server).await);
 }
@@ -5615,7 +5615,7 @@ async fn export_refuses_an_explicitly_selected_managed_integration() {
 }
 
 #[tokio::test]
-async fn all_custom_skips_only_managed_and_parent_owned_rows() {
+async fn all_custom_skips_only_managed_and_parent_platform_owned_rows() {
     let server = verified_server().await;
     let mut listed_managed = item("a-listed-managed");
     listed_managed["is_managed"] = json!(true);
@@ -5627,10 +5627,9 @@ async fn all_custom_skips_only_managed_and_parent_owned_rows() {
                 listed_managed,
                 item("b-full-read-managed"),
                 item("c-platform-parent"),
-                item("d-protected-parent"),
                 item("e-safe"),
             ],
-            5,
+            4,
         )],
     )
     .await;
@@ -5661,20 +5660,6 @@ async fn all_custom_skips_only_managed_and_parent_owned_rows() {
         "c-platform-parent",
         platform_child,
         vec![platform_parent],
-        installed_package("2.0.0"),
-        safe_package_metadata(),
-    )
-    .await;
-
-    let mut protected_child = live_item("d-protected-parent");
-    protected_child.insert("policy_ids".into(), json!(["parent-d"]));
-    let mut protected_parent = parent_item("parent-d", "default", 0, json!(["d-protected-parent"]));
-    protected_parent["is_protected"] = json!(true);
-    mount_export_dependencies(
-        &server,
-        "d-protected-parent",
-        protected_child,
-        vec![protected_parent],
         installed_package("2.0.0"),
         safe_package_metadata(),
     )
@@ -5722,6 +5707,34 @@ async fn all_custom_skips_only_managed_and_parent_owned_rows() {
     assert_eq!(
         request_count(&server, "/api/fleet/epm/packages/system/2.0.0").await,
         1
+    );
+}
+
+#[tokio::test]
+async fn all_custom_refuses_a_custom_integration_with_a_protected_parent() {
+    let server = verified_server().await;
+    mount_integration_pages(&server, vec![(1, vec![item("integration-1")], 1)]).await;
+    let mut protected_parent = parent_item("parent-1", "default", 0, json!(["integration-1"]));
+    protected_parent["is_protected"] = json!(true);
+    mount_export_dependencies(
+        &server,
+        "integration-1",
+        live_item("integration-1"),
+        vec![protected_parent],
+        installed_package("2.0.0"),
+        safe_package_metadata(),
+    )
+    .await;
+
+    let error =
+        integration_policy_ops::export(&transport_for(&server), &[], true, ContentFormat::Json)
+            .await
+            .expect_err("protected custom parent must refuse all-custom export");
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(
+        error.message,
+        "integration policy 'integration-1' is not portable: parent parent-1 is_protected"
     );
 }
 

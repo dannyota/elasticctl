@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.97.1"
 license = "Apache-2.0"
@@ -17,8 +17,8 @@ repository = "https://github.com/dannyota/elasticctl"
 authors = ["Danny"]
 
 [workspace.dependencies]
-elasticctl-core = { path = "crates/elasticctl-core", version = "0.6.0" }
-elasticctl-api = { path = "crates/elasticctl-api", version = "0.6.0" }
+elasticctl-core = { path = "crates/elasticctl-core", version = "0.6.1" }
+elasticctl-api = { path = "crates/elasticctl-api", version = "0.6.1" }
 # Test-only; `publish = false`, referenced by path alone so `cargo publish`
 # omits this dev-dependency from published manifests instead of keeping a
 # version that is not on crates.io.

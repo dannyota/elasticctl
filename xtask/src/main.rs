@@ -1365,16 +1365,19 @@ const RECORD_TRACE_LABELS: &[&str] = &[
     "fleet-integration-policy-preflight",
     "fleet-integration-policy-parent-create",
     "fleet-integration-policy-metadata",
+    "fleet-integration-policy-bootstrap-preflight",
     "fleet-integration-policy-bootstrap-create",
     "fleet-integration-policy-inventory-after-bootstrap-create",
     "fleet-integration-policy-bootstrap-get",
     "fleet-integration-policy-bootstrap-export",
     "fleet-integration-policy-bootstrap-delete",
+    "fleet-integration-policy-create-preflight",
     "fleet-integration-policy-create",
     "fleet-integration-policy-inventory-after-create",
     "fleet-integration-policy-inventory-after-duplicate-create",
     "fleet-integration-policy-get",
     "fleet-integration-policy-list",
+    "fleet-integration-policy-name-conflict-preflight",
     "fleet-integration-policy-name-conflict",
     "fleet-integration-policy-name-conflict-check",
     "fleet-integration-policy-parent-get",
@@ -3847,6 +3850,58 @@ async fn require_unchanged_installed_package_inventory(
         .await
         .map_err(|error| safe_recording_transport_error(context, error))?;
     require_matching_inventory(baseline, &current)
+}
+
+fn require_installed_integration_package_metadata(metadata: &Value) -> elasticctl_core::Result<()> {
+    if metadata
+        .get("item")
+        .and_then(Value::as_object)
+        .and_then(|item| item.get("status"))
+        .and_then(Value::as_str)
+        == Some("installed")
+    {
+        Ok(())
+    } else {
+        Err(recording_error(
+            "refusing to record: system package metadata must be installed",
+        ))
+    }
+}
+
+async fn reread_system_package_before_integration_policy_create(
+    t: &elasticctl_core::Transport,
+    baseline_inventory: &BTreeSet<(String, String)>,
+    expected_version: &str,
+) -> elasticctl_core::Result<()> {
+    let status_body = t
+        .get(&format!(
+            "/api/fleet/epm/packages/{INTEGRATION_POLICY_PACKAGE}"
+        ))
+        .await
+        .map_err(|error| {
+            safe_recording_transport_error(
+                "rereading system package status before integration policy create failed",
+                error,
+            )
+        })?;
+    let status = decode_system_package_status(&status_body)?;
+    if !status.installed || status.version != expected_version {
+        return Err(recording_error(
+            "refusing to record: system package must remain installed at the baseline version before integration policy create",
+        ));
+    }
+
+    let current_inventory = read_installed_package_inventory(t).await.map_err(|error| {
+        safe_recording_transport_error(
+            "rereading installed package inventory before integration policy create failed",
+            error,
+        )
+    })?;
+    require_matching_inventory(baseline_inventory, &current_inventory).map_err(|_| {
+        recording_error(
+            "refusing to record: installed package inventory changed before integration policy create",
+        )
+    })
 }
 
 fn combine_package_policy_attempt_and_inventory_errors(
@@ -7252,6 +7307,7 @@ async fn record_integration_policies_with_nonce(
         INTEGRATION_POLICY_PACKAGE,
         &package_status.version,
     )?;
+    require_installed_integration_package_metadata(&reduced_metadata)?;
     recording.fixtures.push(response_fixture(
         "package_system_metadata",
         flavor,
@@ -7264,6 +7320,13 @@ async fn record_integration_policies_with_nonce(
     // bootstrap body or response: production export classifies the exact
     // marker and supplies the only map allowed into public fixtures.
     let bootstrap_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
+    record_trace("fleet-integration-policy-bootstrap-preflight");
+    reread_system_package_before_integration_policy_create(
+        t,
+        &baseline_inventory,
+        &package_status.version,
+    )
+    .await?;
     record_trace("fleet-integration-policy-bootstrap-create");
     let bootstrap_result = t
         .post_once(
@@ -7391,6 +7454,13 @@ async fn record_integration_policies_with_nonce(
         nonce,
         &stable_inputs,
     );
+    record_trace("fleet-integration-policy-create-preflight");
+    reread_system_package_before_integration_policy_create(
+        t,
+        &baseline_inventory,
+        &package_status.version,
+    )
+    .await?;
     record_trace("fleet-integration-policy-create");
     let created_result = t
         .post_once(
@@ -7551,6 +7621,13 @@ async fn record_integration_policies_with_nonce(
         &stable_inputs,
     );
     duplicate_body["id"] = json!(INTEGRATION_POLICY_DUP_ID);
+    record_trace("fleet-integration-policy-name-conflict-preflight");
+    reread_system_package_before_integration_policy_create(
+        t,
+        &baseline_inventory,
+        &package_status.version,
+    )
+    .await?;
     record_trace("fleet-integration-policy-name-conflict");
     let duplicate_result = t
         .post_once(
@@ -10165,6 +10242,16 @@ mod tests {
         DuplicateCreate,
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum IntegrationCreatePreflightDrift {
+        BootstrapMissing,
+        BootstrapMalformed,
+        BootstrapMetadataNotInstalled,
+        RecordedVersionChanged,
+        DuplicateInventoryChanged,
+        DuplicateInventoryReadFailure,
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum BootstrapExportFailure {
         Transport,
@@ -10390,7 +10477,8 @@ mod tests {
         server: &MockServer,
         failure: IntegrationLifecycleFailure,
     ) {
-        let _ = mount_integration_lifecycle_with_recorded_create(server, failure, None, None).await;
+        let _ = mount_integration_lifecycle_with_recorded_create(server, failure, None, None, None)
+            .await;
     }
 
     async fn mount_integration_lifecycle_with_recorded_create(
@@ -10398,37 +10486,127 @@ mod tests {
         failure: IntegrationLifecycleFailure,
         ambiguous_recorded_create: Option<(AmbiguousCreateOutcome, String)>,
         concurrent_duplicate_nonce: Option<String>,
+        create_preflight_drift: Option<IntegrationCreatePreflightDrift>,
     ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         let inputs = materialized_marker_inputs();
         let policy_state = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let parent_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let parent_foreign = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let duplicate_exists = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let bootstrap_deleted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let duplicate_preflight_ready =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let duplicate_inventory_drift_served =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         Mock::given(method("GET"))
             .and(path("/api/status"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "version": {"number": "9.6.0", "build_flavor": "serverless"}
             })))
-            .expect(1)
+            .expect(
+                if matches!(
+                    create_preflight_drift,
+                    Some(
+                        IntegrationCreatePreflightDrift::BootstrapMissing
+                            | IntegrationCreatePreflightDrift::BootstrapMalformed
+                            | IntegrationCreatePreflightDrift::BootstrapMetadataNotInstalled
+                    )
+                ) {
+                    0
+                } else {
+                    1
+                },
+            )
             .mount(server)
             .await;
+        let duplicate_preflight_ready_for_inventory = duplicate_preflight_ready.clone();
+        let duplicate_inventory_drift_served_for_inventory =
+            duplicate_inventory_drift_served.clone();
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/installed"))
             .and(query_param("perPage", "1000"))
             .and(query_param("sortOrder", "asc"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_inventory()))
+            .respond_with(move |_: &wiremock::Request| {
+                match create_preflight_drift {
+                    Some(IntegrationCreatePreflightDrift::DuplicateInventoryChanged)
+                        if duplicate_preflight_ready_for_inventory
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            && !duplicate_inventory_drift_served_for_inventory
+                                .swap(true, std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        ResponseTemplate::new(200).set_body_json(json!({
+                            "items": [
+                                {"name": "endpoint", "status": "installed", "version": "8.0.0"},
+                                {"name": INTEGRATION_POLICY_PACKAGE, "status": "installed", "version": "2.0.0"}
+                            ],
+                            "total": 2
+                        }))
+                    }
+                    Some(IntegrationCreatePreflightDrift::DuplicateInventoryReadFailure)
+                        if duplicate_preflight_ready_for_inventory
+                            .load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
+                    }
+                    _ => ResponseTemplate::new(200).set_body_json(installed_system_inventory()),
+                }
+            })
             .mount(server)
             .await;
+        let parent_exists_for_status = parent_exists.clone();
+        let bootstrap_deleted_for_status = bootstrap_deleted.clone();
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/system"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(installed_system_status()))
+            .respond_with(move |_: &wiremock::Request| match create_preflight_drift {
+                Some(IntegrationCreatePreflightDrift::BootstrapMissing)
+                    if parent_exists_for_status.load(std::sync::atomic::Ordering::SeqCst)
+                        && !bootstrap_deleted_for_status
+                            .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    ResponseTemplate::new(200).set_body_json(json!({"item": {
+                        "name": INTEGRATION_POLICY_PACKAGE,
+                        "version": "2.0.0",
+                        "status": "not_installed"
+                    }}))
+                }
+                Some(IntegrationCreatePreflightDrift::BootstrapMalformed)
+                    if parent_exists_for_status.load(std::sync::atomic::Ordering::SeqCst)
+                        && !bootstrap_deleted_for_status
+                            .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    ResponseTemplate::new(200).set_body_json(json!({"item": {
+                        "name": INTEGRATION_POLICY_PACKAGE,
+                        "version": "2.0.0",
+                        "status": "installed"
+                    }}))
+                }
+                Some(IntegrationCreatePreflightDrift::RecordedVersionChanged)
+                    if bootstrap_deleted_for_status.load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    ResponseTemplate::new(200).set_body_json(json!({"item": {
+                        "name": INTEGRATION_POLICY_PACKAGE,
+                        "version": "2.1.0",
+                        "status": "installed",
+                        "installationInfo": {"version": "2.1.0"}
+                    }}))
+                }
+                _ => ResponseTemplate::new(200).set_body_json(installed_system_status()),
+            })
             .mount(server)
             .await;
+        let metadata = if matches!(
+            create_preflight_drift,
+            Some(IntegrationCreatePreflightDrift::BootstrapMetadataNotInstalled)
+        ) {
+            let mut metadata = materialized_system_package_metadata();
+            metadata["item"]["status"] = json!("not_installed");
+            metadata
+        } else {
+            materialized_system_package_metadata()
+        };
         Mock::given(method("GET"))
             .and(path("/api/fleet/epm/packages/system/2.0.0"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(materialized_system_package_metadata()),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
             .mount(server)
             .await;
 
@@ -10648,12 +10826,15 @@ mod tests {
             .respond_with({
                 let policy_state_for_list = policy_state.clone();
                 let inputs_for_list = inputs.clone();
+                let duplicate_preflight_ready_for_list = duplicate_preflight_ready.clone();
                 move |_: &wiremock::Request| {
                     assert_eq!(
                         policy_state_for_list.load(std::sync::atomic::Ordering::SeqCst),
                         2,
                         "the list must read the recorded marker"
                     );
+                    duplicate_preflight_ready_for_list
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "items": [marker_integration_response_with_inputs(
                             INTEGRATION_POLICY_DESCRIPTION,
@@ -10722,9 +10903,10 @@ mod tests {
                     ResponseTemplate::new(500).set_body_json(json!({
                         "message": "private POST parent delete identity"
                     }))
-                } else if policy_state_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst)
-                    == 4
-                {
+                } else if matches!(
+                    policy_state_for_parent_delete.load(std::sync::atomic::Ordering::SeqCst),
+                    0 | 4
+                ) {
                     parent_exists_for_delete.store(false, std::sync::atomic::Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(json!({
                         "id": INTEGRATION_POLICY_PARENT_ID,
@@ -10738,6 +10920,7 @@ mod tests {
             .await;
 
         let delete_state = policy_state.clone();
+        let bootstrap_deleted_for_delete = bootstrap_deleted.clone();
         Mock::given(method("DELETE"))
             .and(path(format!(
                 "/api/fleet/package_policies/{INTEGRATION_POLICY_ID}"
@@ -10746,6 +10929,8 @@ mod tests {
                 match delete_state.load(std::sync::atomic::Ordering::SeqCst) {
                     1 => {
                         delete_state.store(0, std::sync::atomic::Ordering::SeqCst);
+                        bootstrap_deleted_for_delete
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                         ResponseTemplate::new(200)
                             .set_body_json(json!({"id": INTEGRATION_POLICY_ID}))
                     }
@@ -11240,6 +11425,7 @@ mod tests {
             IntegrationLifecycleFailure::None,
             Some((outcome, winner_nonce.to_owned())),
             None,
+            None,
         )
         .await
     }
@@ -11254,7 +11440,7 @@ mod tests {
             .respond_with(move |_: &wiremock::Request| {
                 let read =
                     inventory_reads_for_response.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if (1..=3).contains(&read) {
+                if (2..=4).contains(&read) {
                     ResponseTemplate::new(500).set_body_json(json!({"statusCode": 500}))
                 } else {
                     ResponseTemplate::new(200).set_body_json(installed_system_inventory())
@@ -15860,6 +16046,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_recorder_refuses_package_state_drift_before_each_create() {
+        let cases = [
+            (
+                IntegrationCreatePreflightDrift::BootstrapMissing,
+                "bootstrap package absence",
+                "bootstrap",
+            ),
+            (
+                IntegrationCreatePreflightDrift::BootstrapMalformed,
+                "malformed bootstrap package status",
+                "bootstrap",
+            ),
+            (
+                IntegrationCreatePreflightDrift::BootstrapMetadataNotInstalled,
+                "non-installed bootstrap package metadata",
+                "bootstrap",
+            ),
+            (
+                IntegrationCreatePreflightDrift::RecordedVersionChanged,
+                "recorded package version change",
+                "recorded",
+            ),
+            (
+                IntegrationCreatePreflightDrift::DuplicateInventoryChanged,
+                "duplicate package inventory change",
+                "duplicate",
+            ),
+            (
+                IntegrationCreatePreflightDrift::DuplicateInventoryReadFailure,
+                "duplicate package inventory read failure",
+                "duplicate",
+            ),
+        ];
+
+        for (drift, label, blocked_create) in cases {
+            let server = MockServer::start().await;
+            let _ = mount_integration_lifecycle_with_recorded_create(
+                &server,
+                IntegrationLifecycleFailure::None,
+                None,
+                None,
+                Some(drift),
+            )
+            .await;
+            let transport = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &transport,
+                ownership: CleanupOwnership::default(),
+            };
+            let mut recording = Recording {
+                dir: PathBuf::from("unused-in-test"),
+                fixtures: Vec::new(),
+            };
+
+            let error = record_integration_policies(&mut session, &mut recording, "test", "9.6.0")
+                .await
+                .expect_err(label);
+            assert!(!error.message.contains("private"), "{label}: {error}");
+
+            let before_cleanup = server.received_requests().await.expect("requests");
+            let package_policy_posts: Vec<_> = before_cleanup
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/package_policies"
+                })
+                .collect();
+            match blocked_create {
+                "bootstrap" => assert!(
+                    package_policy_posts.is_empty(),
+                    "{label} must refuse before the bootstrap create"
+                ),
+                "recorded" => assert!(
+                    package_policy_posts.iter().all(|request| {
+                        request
+                            .body_json::<Value>()
+                            .ok()
+                            .and_then(|body| body.get("inputs").cloned())
+                            == Some(json!({}))
+                    }),
+                    "{label} must refuse before the recorded create"
+                ),
+                "duplicate" => assert!(
+                    package_policy_posts.iter().all(|request| {
+                        request
+                            .body_json::<Value>()
+                            .ok()
+                            .and_then(|body| body.get("id").cloned())
+                            != Some(json!(INTEGRATION_POLICY_DUP_ID))
+                    }),
+                    "{label} must refuse before the duplicate create"
+                ),
+                _ => unreachable!("test case has a known create stage"),
+            }
+
+            match blocked_create {
+                "bootstrap" | "recorded" => {
+                    assert!(!session.ownership.integration_policy, "{label}");
+                    assert!(session.ownership.integration_policy_parent, "{label}");
+                }
+                "duplicate" => {
+                    assert!(session.ownership.integration_policy, "{label}");
+                    assert!(session.ownership.integration_policy_parent, "{label}");
+                    assert!(!session.ownership.integration_policy_dup, "{label}");
+                }
+                _ => unreachable!("test case has a known create stage"),
+            }
+            let cleanup = session.cleanup_integration_resources().await;
+            if drift == IntegrationCreatePreflightDrift::DuplicateInventoryReadFailure {
+                assert!(
+                    cleanup.is_err(),
+                    "a permanently unreadable inventory must remain unverified"
+                );
+                let requests = server.received_requests().await.expect("requests");
+                assert!(requests.iter().any(|request| {
+                    request.method.as_str() == "DELETE"
+                        && request.url.path()
+                            == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_ID}")
+                }));
+                assert!(requests.iter().any(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path() == "/api/fleet/agent_policies/delete"
+                }));
+            } else {
+                cleanup.expect("preflight refusal preserves cleanup ownership");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn integration_duplicate_conflict_rechecks_the_exact_baseline_inventory() {
         let server = MockServer::start().await;
         mount_integration_lifecycle(&server, IntegrationLifecycleFailure::Update).await;
@@ -15889,8 +16205,8 @@ mod tests {
             .collect();
         assert_eq!(
             inventory_positions.len(),
-            4,
-            "baseline, bootstrap, recorded create, and duplicate conflict each read the strict inventory"
+            7,
+            "baseline, each create preflight, and each post-create audit read the strict inventory"
         );
         let duplicate_position = requests
             .iter()
@@ -15912,8 +16228,9 @@ mod tests {
                         == format!("/api/fleet/package_policies/{INTEGRATION_POLICY_DUP_ID}")
             })
             .expect("duplicate exact-id check");
-        assert!(duplicate_position < inventory_positions[3]);
-        assert!(inventory_positions[3] < duplicate_check_position);
+        assert!(inventory_positions[5] < duplicate_position);
+        assert!(duplicate_position < inventory_positions[6]);
+        assert!(inventory_positions[6] < duplicate_check_position);
     }
 
     #[cfg(any())]
@@ -16089,6 +16406,7 @@ mod tests {
             IntegrationLifecycleFailure::None,
             None,
             Some(OTHER_INTEGRATION_RECORDING_NONCE.to_string()),
+            None,
         )
         .await;
         let transport = mock_transport(&server);
