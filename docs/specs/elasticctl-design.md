@@ -7,9 +7,8 @@ projects.
 
 It is modelled on [splunkctl](https://github.com/dannyota/splunkctl) and
 reuses its operating contracts: named profiles, dry-run-by-default mutations,
-structured output, and a stable error taxonomy. An MCP server is planned once
-the CLI surface is stable; the architecture below exists to make that addition
-additive rather than a rewrite.
+structured output, and a stable error taxonomy. The 0.7 read-only MCP server
+calls the existing API layer through a separate frontend library.
 
 ## 1. Scope
 
@@ -22,7 +21,8 @@ prebuilt rule status and installation, and `--source` scoping for `rules list`,
 debt by moving all command orchestration into `-api`.
 
 Out of scope (additive later): alert triage, cases, Fleet and agent policies,
-ad hoc search, value-list content management, and the MCP server.
+ad hoc search, value-list content management, and the MCP server. These are
+the original 0.1 boundaries; section 11 lists later capability areas.
 
 ## 2. Decisions
 
@@ -58,8 +58,8 @@ and mutation guards, then serialize values for the renderer.** splunkctl
 generates MCP tools by reflecting over its Click tree. Its callbacks print
 through `click.echo`, and the MCP runner captures stdout. Rust commands that
 print directly would leave an MCP server only a string to parse again. Typed
-values let a future MCP crate call the same API functions and serialize the
-same structs.
+values let the MCP crate call the same API functions and project their data
+into explicit tool schemas.
 
 ```
 elasticctl/
@@ -68,14 +68,18 @@ elasticctl/
     elasticctl-core/         config, profiles, auth, transport, errors, capabilities
     elasticctl-api/          typed endpoints, canonical Rule model, NDJSON/YAML codecs
     elasticctl-cli/          clap commands, render layer, mutation guard, main()
+    elasticctl-mcp/          stdio protocol, tool schemas, projections, call limits
   xtask/                     fixture recorder
   tests/fixtures/            recorded HTTP exchanges, tagged by flavor and version
   lab/                       podman compose stack for self-managed recording
   docs/specs/                design documents
 ```
 
-Dependency direction is strictly one way: `cli` → `api` → `core`. A future
-`elasticctl-mcp` depends on `api` and `core`, never on `cli`.
+Dependency direction is strictly one way: `cli` → `mcp` → `api` → `core`.
+The CLI also calls API orchestration directly. Both frontends may use core
+configuration and transport; API and core never depend on either frontend.
+The published MCP library has no binary or `clap` dependency. `xtask` may
+depend on MCP for test tooling, never on the CLI.
 
 That direction only pays off if the logic worth reusing sits below the line.
 **API orchestration belongs in `-api` and returns typed values. `cli/cmd/`
@@ -251,6 +255,19 @@ Does not know about detection rules.
 `clap` v4 derive. CLI adapters call API orchestration, handle context and
 mutation guards, and serialize typed values for `render`. `render` produces
 table, json, yaml, csv, or jsonl. `guard` implements the dry-run contract.
+
+### 3.4 elasticctl-mcp
+
+The MCP library accepts one already resolved core target. It owns stdio
+routing, schemas, safe result projections, static error messages, and call
+limits. It calls API orchestration and never uses the CLI renderer or reads
+model-selected local files. Both existing binaries delegate to it through
+`mcp serve`. The [MCP design](elasticctl-mcp-design.md) defines protocol,
+target validation, tools, and limits.
+
+Each MCP session uses a dedicated runtime thread to suppress SDK tracing
+without changing the embedding process's logger. The public entrypoints
+retain the same target, stream, and result contracts.
 
 ## 4. Command surface
 
@@ -1191,7 +1208,7 @@ CI runs on pushes to `master`, pull requests, the weekly schedule, and manual
 dispatch. Every Cargo command that resolves or builds dependencies uses the
 committed lockfile. The stable job runs formatting, Clippy, workspace tests,
 and package-content checks. Package-content checks inspect every publishable
-crate — `elasticctl-core`, `elasticctl-api`, and `elasticctl` — and fail if any
+crate — `elasticctl-core`, `elasticctl-api`, `elasticctl-mcp`, and `elasticctl` — and fail if any
 packages its integration tests or the private test-support crate. A separate
 job reads
 `workspace.package.rust-version` from `Cargo.toml` and checks every workspace
@@ -1492,12 +1509,12 @@ and data-view capability area is specified in
 The 0.6 Fleet agent- and integration-policy capability area is specified in
 [`elasticctl-fleet-design.md`](elasticctl-fleet-design.md).
 
-The proposed 0.7 read-only MCP capability area is described in
+The 0.7 read-only MCP capability area is described in
 [`elasticctl-mcp-design.md`](elasticctl-mcp-design.md), with
 [research](../plans/v0.7-research.md) and separate plans for
 [0.7.0](../plans/v0.7.0.md), [0.7.1](../plans/v0.7.1.md), and
-[0.7.2](../plans/v0.7.2.md). These are planning documents, not implemented
-behavior or release approval.
+[0.7.2](../plans/v0.7.2.md). The 0.7.0 plan is in execution; later scopes remain planned.
+None grants release or publication approval.
 
 The temporary trial-deployment window changes execution order, not capability
 boundaries. The near-term evidence ladder is:
@@ -1567,21 +1584,22 @@ what it was.
 
 ### 11.2 Publishing
 
-One shared workspace version, so all three crates move together.
+One shared workspace version, so all four published crates move together.
 
 Publish to crates.io only through `.github/workflows/publish-crates.yml` on
 GitHub Actions. Local publishing is not a fallback. Dispatch the workflow with
 the released tag after the owner approves publishing that version; its
 `crates-io` environment approval remains required.
 
-All three crates are publishable and publish together with
+The four crates (`elasticctl-core`, `elasticctl-api`, `elasticctl-mcp`, and
+`elasticctl`) are publishable and publish together with
 `cargo publish --workspace`. It packages and verifies every crate against a
 temporary registry before uploading any. Otherwise, a failure partway through
 could strand a crate on crates.io, where a version can be yanked but never
 deleted. `xtask` stays `publish = false`; it is a dev tool and ships nothing.
 
 `elasticctl-api-test-support` remains private and unpublished. The published
-`elasticctl-api` and `elasticctl` manifests exclude `tests/**`, because Cargo
+`elasticctl-api`, `elasticctl-mcp`, and `elasticctl` manifests exclude `tests/**`, because Cargo
 cannot resolve those integration tests after it omits their path-only private
 dev-dependency from the package. Inline unit tests under `src/` remain in the
 archives. `scripts/check-packages.sh` runs the locked, allow-dirty
@@ -1624,9 +1642,9 @@ removing it. Tagging first has the binary matrix prove the build while both the
 tag and the Release are still disposable, which is the check a release
 candidate used to buy separately.
 
-All three publish or none do. The binary crate depends on both libraries by
-version, so publishing it alone leaves `cargo install elasticctl` unable to
-resolve.
+All four publish or none do. The binary crate depends on all three libraries
+by version, so publishing it alone leaves `cargo install elasticctl` unable
+to resolve.
 
 ## 12. Credentials in this repository
 

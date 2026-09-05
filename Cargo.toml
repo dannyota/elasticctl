@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/elasticctl-core",
     "crates/elasticctl-api",
+    "crates/elasticctl-mcp",
     "crates/elasticctl-cli",
     "crates/elasticctl-api/tests/support",
     "xtask",
@@ -19,6 +20,7 @@ authors = ["Danny"]
 [workspace.dependencies]
 elasticctl-core = { path = "crates/elasticctl-core", version = "0.6.2" }
 elasticctl-api = { path = "crates/elasticctl-api", version = "0.6.2" }
+elasticctl-mcp = { path = "crates/elasticctl-mcp", version = "0.6.2" }
 # Test-only; `publish = false`, referenced by path alone so `cargo publish`
 # omits this dev-dependency from published manifests instead of keeping a
 # version that is not on crates.io.

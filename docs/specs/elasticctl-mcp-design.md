@@ -77,6 +77,16 @@ as the configured legacy fallback. A client that cannot use that version
 disconnects. Do not claim support for the original unsupported revision or
 hand-write a parallel protocol implementation.
 
+Select the lifecycle from the first bounded SDK-decoded message. A complete
+current request enters the SDK concurrent service loop before its handler
+runs, so the first tool call supports cancellation and admission limits.
+Current connections require 2026-07-28 metadata on every request and reject
+a later initialization handshake. The 2025-11-25 revision uses initialization.
+An initial ping without complete current metadata selects legacy startup;
+a later current request without initialization is rejected before tool work.
+Such a client must initialize or reconnect. The SDK still owns parsing,
+legacy negotiation, cancellation routing, and protocol result fields.
+
 Advertise tools only. Return the fixed catalog in lexical name order, in one
 page, with no next cursor. Catalog discovery makes no Elastic requests and
 does not require a credential. The catalog is fixed for a process and its
@@ -97,6 +107,21 @@ Elastic failures use `isError: true` with the error envelope in section 6.
 The SDK owns protocol-specific fields, including the current `resultType`.
 An application must not assume that the current and legacy wire envelopes
 are byte-identical. Their tool data and catalog must agree.
+
+Each public MCP session runs on a dedicated OS thread with a current-thread
+Tokio runtime and a thread-local no-op tracing subscriber. This suppresses SDK
+request, result, error, and notification logs even when the embedding process
+enables tracing. It leaves the process-wide subscriber and ordinary CLI
+logging unchanged. Approved MCP diagnostics use explicit static messages.
+The four active calls remain concurrent as asynchronous work on that thread.
+Caller cancellation reaches the session through the shared root token.
+
+Await SDK and bounded transport cleanup before ending the session runtime.
+Use background runtime shutdown only after that cleanup; Tokio's blocking
+stdin read cannot be cancelled and must not extend the five-second grace.
+The public stream bounds remain unchanged. The supported stdio and duplex
+streams can move to this runtime; runtime-affine stream support would need a
+separate design.
 
 ## 4. Startup target and local access
 
