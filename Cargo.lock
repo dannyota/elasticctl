@@ -440,6 +440,7 @@ dependencies = [
  "elasticctl-api",
  "elasticctl-api-test-support",
  "elasticctl-core",
+ "elasticctl-mcp",
  "insta",
  "predicates",
  "serde",

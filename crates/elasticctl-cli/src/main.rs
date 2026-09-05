@@ -8,12 +8,12 @@ mod render;
 mod report_file;
 mod resolve;
 
-use clap::Parser;
+use clap::{Parser, error::ErrorKind as ClapErrorKind};
 use cli::{
     AgentPoliciesAction, AlertsAction, CasesAction, Cli, Command, ConfigAction,
     DashboardBundleAction, DashboardsAction, DataViewDefaultAction, DataViewsAction,
-    ExceptionsAction, FleetAction, Format, GlobalArgs, IntegrationPoliciesAction, PrebuiltAction,
-    RulesAction, SearchAction, SourceArg, StateAction,
+    ExceptionsAction, FleetAction, Format, GlobalArgs, IntegrationPoliciesAction, McpAction,
+    PrebuiltAction, RulesAction, SearchAction, SourceArg, StateAction,
 };
 use context::Context;
 use elasticctl_api::alerts::AlertStatus;
@@ -25,7 +25,32 @@ use serde_json::{Value, json};
 
 #[tokio::main]
 async fn main() {
-    let args = Cli::parse();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mcp_invocation = cli::is_mcp_invocation(&argv);
+    let args = match Cli::try_parse_from(&argv) {
+        Ok(args) => args,
+        Err(error)
+            if mcp_invocation
+                && !matches!(
+                    error.kind(),
+                    ClapErrorKind::DisplayHelp
+                        | ClapErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                        | ClapErrorKind::DisplayVersion
+                ) =>
+        {
+            cmd::mcp::exit_usage()
+        }
+        Err(error) => error.exit(),
+    };
+
+    if matches!(
+        &args.command,
+        Command::Mcp {
+            action: McpAction::Serve
+        }
+    ) {
+        cmd::mcp::serve(&args.global).await;
+    }
 
     let result = match &args.command {
         Command::Config { action } => match action {
@@ -786,6 +811,7 @@ async fn main() {
         // never rendered because the result match exits first.
         Command::Completion { shell } => cmd::meta::completion(*shell).map(|_| Value::Null),
         Command::Commands => cmd::meta::command_tree(),
+        Command::Mcp { .. } => unreachable!("MCP serve exits through its dedicated branch"),
     };
 
     // Meta commands do not read profiles or config, so permission warnings are
