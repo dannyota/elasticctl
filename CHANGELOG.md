@@ -6,6 +6,8 @@
 
 - Fleet policy transfer live contract with guarded cleanup, exact package
   inventory audits, and setup shared with the conformance controller.
+- Ten-contract conformance evidence for Serverless 9.6.0, Hosted 9.5.2,
+  and self-managed 9.5.1; all 30 checks pass.
 
 ### Fixed
 

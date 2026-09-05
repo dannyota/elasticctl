@@ -844,8 +844,12 @@ installed inventory before ownership is promoted. This shape is source-derived
 from Kibana v9.5.1's [install schema](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/types/rest_spec/epm.ts)
 and [handler](https://github.com/elastic/kibana/blob/v9.5.1/x-pack/platform/plugins/shared/fleet/server/routes/epm/handlers.ts).
 
-Current design targets are Serverless 9.6.x, Hosted 9.5.x, and the self-managed
-9.5.1 lab. Reports record actual versions under `docs/conformance/v0.6.2/`.
+The 2026-09-05 matrix passed all ten contracts on Serverless 9.6.0, Hosted
+9.5.2, and self-managed 9.5.1. Each Fleet lifecycle passed with no marker
+policies and an installed-package inventory equal to its captured baseline.
+Existing baselines passed, and the self-managed lab was removed with its
+containers and volumes. [Reports and findings](../conformance/v0.6.2/findings.md)
+record the measured outcomes.
 
 ## 15. Research basis
 

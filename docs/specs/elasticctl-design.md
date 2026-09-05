@@ -1362,6 +1362,21 @@ Every content leg restored the exact captured default and left zero marker
 dashboards, data views, or indices. Each target's prebuilt-rule count matched
 its baseline. The self-managed leg removed its containers and volumes.
 
+The 0.6.2 measured matrix adds the `fleet` contract; all ten pass on every
+target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 10 pass | Verified | [report](../conformance/v0.6.2/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.2 | 10 pass | Verified | [report](../conformance/v0.6.2/ech-9.5.2.json) |
+| Self-managed | 9.5.1 | 10 pass | Verified | [report](../conformance/v0.6.2/traditional-9.5.1.json) |
+
+Every Fleet leg left zero marker agent and integration policies and restored
+the exact captured installed-package inventory. Existing rule-count, content,
+default-data-view, and triage baselines also passed. The self-managed leg
+removed its containers and volumes. The [findings](../conformance/v0.6.2/findings.md)
+record the measured scope and the older closed-alert residue allowance.
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day
