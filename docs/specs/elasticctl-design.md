@@ -1483,6 +1483,13 @@ and data-view capability area is specified in
 The 0.6 Fleet agent- and integration-policy capability area is specified in
 [`elasticctl-fleet-design.md`](elasticctl-fleet-design.md).
 
+The proposed 0.7 read-only MCP capability area is described in
+[`elasticctl-mcp-design.md`](elasticctl-mcp-design.md), with
+[research](../plans/v0.7-research.md) and separate plans for
+[0.7.0](../plans/v0.7.0.md), [0.7.1](../plans/v0.7.1.md), and
+[0.7.2](../plans/v0.7.2.md). These are planning documents, not implemented
+behavior or release approval.
+
 The temporary trial-deployment window changes execution order, not capability
 boundaries. The near-term evidence ladder is:
 
