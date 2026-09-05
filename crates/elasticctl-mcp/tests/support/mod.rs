@@ -9,7 +9,7 @@ use tokio::{
 
 use elasticctl_mcp::{ServerOptions, serve_io};
 
-pub const EXPECTED_TOOL_NAMES: &[&str] = &[];
+pub const EXPECTED_TOOL_NAMES: &[&str] = &["stack_doctor", "stack_info"];
 
 pub struct Harness {
     input: Option<DuplexStream>,

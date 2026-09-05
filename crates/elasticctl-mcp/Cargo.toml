@@ -21,5 +21,7 @@ tracing = "0.1.44"
 url = "=2.5.8"
 
 [dev-dependencies]
+elasticctl-api-test-support.workspace = true
 rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-io"] }
 tokio = { version = "1.53.1", features = ["full", "test-util"] }
+wiremock = "0.6.5"

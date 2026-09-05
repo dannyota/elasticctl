@@ -498,6 +498,7 @@ name = "elasticctl-mcp"
 version = "0.6.2"
 dependencies = [
  "elasticctl-api",
+ "elasticctl-api-test-support",
  "elasticctl-core",
  "rmcp",
  "serde",
@@ -506,6 +507,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]

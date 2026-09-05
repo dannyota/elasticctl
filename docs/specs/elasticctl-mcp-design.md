@@ -104,6 +104,12 @@ unknown fields. Inputs are validated before network access. Protocol envelope
 and unknown-tool errors use SDK JSON-RPC errors. Tool argument validation and
 Elastic failures use `isError: true` with the error envelope in section 6.
 
+Every output schema declares root `type: "object"` alongside its success and
+failure alternatives. Current MCP permits broader output schemas, but the
+[2025-11-25 tool schema](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2025-11-25/schema.ts#L1193-L1205)
+requires an object root. Both lifecycle paths use the same compatible catalog;
+this declaration does not wrap or change the result envelope.
+
 The SDK owns protocol-specific fields, including the current `resultType`.
 An application must not assume that the current and legacy wire envelopes
 are byte-identical. Their tool data and catalog must agree.

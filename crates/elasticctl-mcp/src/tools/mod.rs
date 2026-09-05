@@ -1,8 +1,7 @@
-//! Shared contracts for the vertical MCP adapters.
+//! Shared contracts and explicit registrations for the vertical MCP adapters.
 //!
-//! The Task 2 catalog is deliberately empty. Later adapter modules implement
-//! these contracts and register through this module without moving admission,
-//! deadlines, result shaping, or error mapping out of `server`.
+//! Adapter modules register here without moving admission, deadlines, result
+//! shaping, or error mapping out of `server`.
 
 use std::{future::Future, pin::Pin};
 
@@ -11,6 +10,8 @@ use rmcp::model::Tool;
 use tokio_util::sync::CancellationToken;
 
 use crate::{PageInfo, ServerState, catalog::ToolId};
+
+mod stack;
 
 /// Typed adapter output before MCP result projection.
 #[derive(Clone, Debug)]
@@ -45,12 +46,15 @@ pub trait ToolAdapter: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = std::result::Result<AdapterResult, AdapterError>> + Send + 'a>>;
 }
 
-/// Resolve an advertised adapter. The foundation publishes no vertical tools.
-pub(crate) fn adapter_for(_tool: ToolId) -> Option<&'static dyn ToolAdapter> {
-    None
+/// Resolve an advertised adapter.
+pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
+    match tool {
+        ToolId::StackDoctor | ToolId::StackInfo => Some(stack::adapter()),
+        _ => None,
+    }
 }
 
-/// Return the production definitions. Adapter tasks extend this explicit list.
+/// Return the production definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
-    Vec::new()
+    stack::definitions()
 }

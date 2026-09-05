@@ -42,7 +42,7 @@ impl ToolId {
     }
 }
 
-/// Return the foundation catalog. Adapters register their definitions in later tasks.
+/// Return the registered production catalog.
 pub fn definitions() -> Vec<Tool> {
     crate::tools::definitions()
 }
