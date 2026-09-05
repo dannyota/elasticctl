@@ -23,23 +23,22 @@ Guidance precedence is: the user's current instruction, the spec, then this file
 
 ## Development workflow
 
-Design first: the brief is its product. Use Opus for design, Sonnet for implementation, and
-Haiku for transcription or single-file mechanical fixes. Set the model explicitly on every
-dispatch; otherwise it silently inherits the session's tier.
+Design first: the brief is its product. Prefer `gpt-5.6-sol` for design, reviews, and
+complex implementation or debugging. Use `gpt-5.6-terra` for routine implementation and
+`gpt-5.6-luna` for exploration, tests, and small mechanical edits. Set the model explicitly
+on every dispatch.
 
-Review tier scales with the cost of being wrong. Invariant-bearing work — mutation paths,
-credential handling, and release workflows — gets adversarial Opus review. Ordinary code gets
-its tests, the gates, and Sonnet review. A well-split task never needs a stronger model. If it
-seems to, the split is wrong, not the tier. When unsure, dispatch Sonnet and escalate from its
-report. Opus agents decide, split, and review; they never implement. State that restriction in
-each Opus brief.
+Use Sol for every code, defect, plan, and phase review. Mutation paths, credential handling,
+and release workflows need adversarial review. Sol may implement complex work; a separate
+Sol reviewer checks it. The coordinator owns planning, verification, Git operations, and the
+final answer. Inspect worker edits and rerun relevant checks before accepting them.
 
-Parallelism follows the design, not the deadline. When the plan pins files and interfaces, tasks
-with no shared files can run in parallel. Each runs in its own git worktree so commits cannot
-tangle. Agents own named files, never directories. A slice needing a test alongside another's
-creates a new file instead of editing a shared one. Assign one directive to one agent. Do not
-fold new work into a running agent because it owns the files. Review each task before the next
-builds on it.
+Use parallel agents for independent tasks once the plan pins files and interfaces. Each runs
+in its own git worktree. Agents own named files, never directories, and no two workers edit
+the same file. Give each worker a self-contained brief with its objective, authorities,
+constraints, owned files, forbidden actions, checks, and report contract. Review each task
+before dependent work uses it. Run only one build-heavy command at a time, with two Cargo
+jobs and four test threads.
 
 ## Architecture rules
 
