@@ -364,21 +364,114 @@ mod tests {
 
     #[tokio::test]
     async fn capture_rejects_policy_paging_contradictions_for_both_kinds() {
-        for (endpoint, simplified) in [("agent_policies", false), ("package_policies", true)] {
+        for (endpoint, simplified) in [(AGENT_POLICIES, false), (INTEGRATION_POLICIES, true)] {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path(format!("/api/fleet/{endpoint}")))
+                .and(path(endpoint))
                 .and(query_param("page", "1"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "items": [], "page": 2, "perPage": 1000, "total": 0
                 })))
                 .mount(&server)
                 .await;
-            assert!(
-                capture_policy_ids(&transport(&server), endpoint, simplified)
-                    .await
-                    .is_err()
-            );
+            let error = capture_policy_ids(&transport(&server), endpoint, simplified)
+                .await
+                .expect_err("inconsistent paging metadata must fail");
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), endpoint);
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_rejects_short_policy_pages_for_both_kinds() {
+        for (endpoint, simplified) in [(AGENT_POLICIES, false), (INTEGRATION_POLICIES, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .and(query_param("page", "1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": [{"id": "ordinary", "name": "ordinary"}],
+                    "page": 1,
+                    "perPage": 1000,
+                    "total": 2
+                })))
+                .mount(&server)
+                .await;
+            let error = capture_policy_ids(&transport(&server), endpoint, simplified)
+                .await
+                .expect_err("a short page before total must fail");
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), endpoint);
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_rejects_changed_totals_and_duplicate_ids_across_pages() {
+        let page_one = (0..PAGE_SIZE)
+            .map(|index| json!({"id": format!("id-{index}"), "name": "ordinary"}))
+            .collect::<Vec<_>>();
+        for (endpoint, simplified) in [(AGENT_POLICIES, false), (INTEGRATION_POLICIES, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .and(query_param("page", "1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": page_one,
+                    "page": 1,
+                    "perPage": 1000,
+                    "total": 1001
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .and(query_param("page", "2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": [],
+                    "page": 2,
+                    "perPage": 1000,
+                    "total": 1000
+                })))
+                .mount(&server)
+                .await;
+            let error = capture_policy_ids(&transport(&server), endpoint, simplified)
+                .await
+                .expect_err("a changed total must fail");
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+            assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .and(query_param("page", "1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": page_one,
+                    "page": 1,
+                    "perPage": 1000,
+                    "total": 1001
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .and(query_param("page", "2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": [{"id": "id-0", "name": "ordinary"}],
+                    "page": 2,
+                    "perPage": 1000,
+                    "total": 1001
+                })))
+                .mount(&server)
+                .await;
+            let error = capture_policy_ids(&transport(&server), endpoint, simplified)
+                .await
+                .expect_err("a duplicate id must fail");
+            assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+            assert_eq!(server.received_requests().await.unwrap().len(), 2);
         }
     }
 }

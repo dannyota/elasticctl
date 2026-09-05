@@ -504,7 +504,7 @@ async fn capture_fleet_state(
 
 async fn setup_fleet(transport: &Transport) -> elasticctl_core::Result<()> {
     let body = transport
-        .post("/api/fleet/setup", Some(&serde_json::json!({})))
+        .post_once("/api/fleet/setup", Some(&serde_json::json!({})))
         .await?;
     if body
         .get("isInitialized")
@@ -515,6 +515,47 @@ async fn setup_fleet(transport: &Transport) -> elasticctl_core::Result<()> {
     } else {
         Err(Error::new(ErrorKind::Http, "invalid Fleet setup response"))
     }
+}
+
+#[derive(Debug)]
+enum InitializationError {
+    Report,
+    FleetSetup(Error),
+    Baseline(Error),
+}
+
+#[derive(Debug)]
+struct InitializedRun {
+    baseline: TargetState,
+    fleet_setup_confirmed: bool,
+}
+
+fn clear_previous_report(path: &std::path::Path) -> std::result::Result<(), InitializationError> {
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|_| InitializationError::Report)?;
+    }
+    Ok(())
+}
+
+async fn initialize_run_before_contracts(
+    transport: &Transport,
+    capabilities: &Capabilities,
+    report_path: &std::path::Path,
+) -> std::result::Result<InitializedRun, InitializationError> {
+    clear_previous_report(report_path)?;
+    let fleet_setup_confirmed = feature_available(capabilities, Feature::FleetPolicies);
+    if fleet_setup_confirmed {
+        setup_fleet(transport)
+            .await
+            .map_err(InitializationError::FleetSetup)?;
+    }
+    let baseline = TargetState::capture(transport, capabilities)
+        .await
+        .map_err(InitializationError::Baseline)?;
+    Ok(InitializedRun {
+        baseline,
+        fleet_setup_confirmed,
+    })
 }
 
 fn write_report_if_clean(
@@ -723,31 +764,30 @@ pub async fn run(values: &[String]) -> Result<(), String> {
             private_failure(&workspace, args.flavor, "harness", error.message.as_bytes())
         })?;
     validate_probe(args.flavor, &capabilities)?;
-    let fleet_setup_confirmed = feature_available(&capabilities, Feature::FleetPolicies);
-    if fleet_setup_confirmed {
-        setup_fleet(&transport).await.map_err(|error| {
-            private_failure(
+    let path = report_path(&args.report_dir, args.flavor, &capabilities.version)?;
+    let initialized = initialize_run_before_contracts(&transport, &capabilities, &path)
+        .await
+        .map_err(|error| match error {
+            InitializationError::Report => {
+                "conformance could not clear the previous report".to_string()
+            }
+            InitializationError::FleetSetup(error) => private_failure(
                 &workspace,
                 args.flavor,
                 "fleet-setup",
                 error.message.as_bytes(),
-            )
+            ),
+            InitializationError::Baseline(error) => private_failure(
+                &workspace,
+                args.flavor,
+                "baseline",
+                error.message.as_bytes(),
+            ),
         })?;
-    }
-    let path = report_path(&args.report_dir, args.flavor, &capabilities.version)?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|_| "conformance could not clear the previous report".to_string())?;
-    }
-
-    let baseline = capture_state(
-        &transport,
-        &capabilities,
-        &workspace,
-        args.flavor,
-        "baseline",
-    )
-    .await?;
+    let InitializedRun {
+        baseline,
+        fleet_setup_confirmed,
+    } = initialized;
     baseline.assert_clean_start()?;
     let mut report = Report {
         flavor: args.flavor.as_str().to_string(),
@@ -889,6 +929,73 @@ mod tests {
             timeout_secs: 5,
         })
         .unwrap()
+    }
+
+    fn temporary_report_path(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("elasticctl-{label}-{nanos}.json"))
+    }
+
+    async fn mount_clean_baseline(server: &MockServer) {
+        for (endpoint, body) in [
+            (
+                "/api/status",
+                serde_json::json!({"version": {"number": "9.5.1", "build_flavor": "traditional"}}),
+            ),
+            (
+                "/api/detection_engine/rules/_find",
+                serde_json::json!({"data": [], "total": 0, "page": 1, "perPage": 1}),
+            ),
+            (
+                "/api/exception_lists/_find",
+                serde_json::json!({"data": [], "page": 1, "per_page": 1000, "total": 0}),
+            ),
+            (
+                "/_resolve/index/elasticctl-live-*",
+                serde_json::json!({"indices": []}),
+            ),
+            ("/api/data_views", serde_json::json!({"data_view": []})),
+            (
+                "/api/dashboards",
+                serde_json::json!({"data": [], "meta": {"page": 1, "per_page": 1000, "total": 0}}),
+            ),
+            (
+                "/api/data_views/default",
+                serde_json::json!({"data_view_id": null}),
+            ),
+            (
+                "/api/cases/_find",
+                serde_json::json!({"cases": [], "total": 0}),
+            ),
+            (
+                "/api/fleet/agent_policies",
+                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
+            ),
+            (
+                "/api/fleet/package_policies",
+                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
+            ),
+            (
+                "/api/fleet/epm/packages/installed",
+                serde_json::json!({"items": [], "total": 0}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path(elasticctl_api::alerts::SEARCH_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hits": {"total": {"value": 0}, "hits": []}
+            })))
+            .mount(server)
+            .await;
     }
 
     #[test]
@@ -1090,16 +1197,18 @@ mod tests {
     #[tokio::test]
     async fn below_floor_fleet_capture_is_none_without_a_fleet_request() {
         let server = MockServer::start().await;
+        mount_clean_baseline(&server).await;
         let capabilities = Capabilities {
             flavor: elasticctl_core::Flavor::SelfManaged,
             version: "9.5.0".to_string(),
         };
-        assert_eq!(
-            capture_fleet_state(&mock_transport(&server), &capabilities)
+        let path = temporary_report_path("below-floor");
+        let initialized =
+            initialize_run_before_contracts(&mock_transport(&server), &capabilities, &path)
                 .await
-                .unwrap(),
-            None
-        );
+                .unwrap();
+        assert!(!initialized.fleet_setup_confirmed);
+        assert_eq!(initialized.baseline.fleet, None);
         assert!(
             server
                 .received_requests()
@@ -1113,6 +1222,7 @@ mod tests {
     #[tokio::test]
     async fn setup_precedes_the_first_supported_fleet_read_and_runs_once() {
         let server = MockServer::start().await;
+        mount_clean_baseline(&server).await;
         Mock::given(method("POST"))
             .and(path("/api/fleet/setup"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1120,42 +1230,17 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        for (endpoint, body) in [
-            (
-                "/api/fleet/agent_policies",
-                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
-            ),
-            (
-                "/api/fleet/package_policies",
-                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
-            ),
-            (
-                "/api/fleet/epm/packages/installed",
-                serde_json::json!({"items": [], "total": 0}),
-            ),
-        ] {
-            Mock::given(method("GET"))
-                .and(path(endpoint))
-                .respond_with(ResponseTemplate::new(200).set_body_json(body))
-                .mount(&server)
-                .await;
-        }
         let capabilities = Capabilities {
             flavor: elasticctl_core::Flavor::SelfManaged,
             version: "9.5.1".to_string(),
         };
         let transport = mock_transport(&server);
-        setup_fleet(&transport).await.unwrap();
-        assert_eq!(
-            capture_fleet_state(&transport, &capabilities)
-                .await
-                .unwrap(),
-            Some(FleetState {
-                agent_policies: Default::default(),
-                integration_policies: Default::default(),
-                packages: Default::default(),
-            })
-        );
+        let path = temporary_report_path("setup-order");
+        let initialized = initialize_run_before_contracts(&transport, &capabilities, &path)
+            .await
+            .unwrap();
+        assert!(initialized.fleet_setup_confirmed);
+        assert_eq!(initialized.baseline.assert_clean_start(), Ok(()));
         let fleet = server
             .received_requests()
             .await
@@ -1172,6 +1257,31 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_setup_failure_is_one_shot_and_removes_a_stale_report() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/setup"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("retryable"))
+            .mount(&server)
+            .await;
+        let path = temporary_report_path("stale-report");
+        std::fs::write(&path, "stale success evidence").unwrap();
+        let capabilities = Capabilities {
+            flavor: elasticctl_core::Flavor::SelfManaged,
+            version: "9.5.1".to_string(),
+        };
+        let error = initialize_run_before_contracts(&mock_transport(&server), &capabilities, &path)
+            .await
+            .expect_err("Fleet setup failure must stop before baseline");
+        assert!(matches!(error, InitializationError::FleetSetup(_)));
+        assert!(!path.exists());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method.as_str(), "POST");
+        assert_eq!(requests[0].url.path(), "/api/fleet/setup");
     }
 
     #[test]

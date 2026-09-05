@@ -1222,9 +1222,12 @@ objects. It checks marker cleanup and default stability after every contract,
 then compares the final state with that baseline. Dashboard marker capture is
 gated below the verified dashboard floor so the content contract can report an
 explicit capability skip; every other required baseline route fails closed.
-Fleet setup runs once before the baseline only when `FleetPolicies` meets its
-verified floor. The setup response must confirm initialization before the
-runner passes its private setup marker to a Fleet child. Gated Fleet baseline
+Fleet setup runs once through the one-shot transport before the baseline only
+when `FleetPolicies` meets its verified floor. The setup response must confirm
+initialization before the runner passes its private setup marker to a Fleet
+child. After probe validation, the runner clears a previous target report
+before Fleet setup, so a setup failure cannot leave stale success evidence.
+Gated Fleet baseline
 reads retain only `elasticctl-live-` policy ids and names, and require both
 zero Fleet markers and an exact installed-package name/version inventory after
 every contract. The shared private test-support module owns these strict Fleet
