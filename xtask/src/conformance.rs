@@ -1,4 +1,5 @@
 use elasticctl_api::{ListFilter, RuleFilter, RuleSource};
+use elasticctl_api_test_support::fleet::FleetState;
 use elasticctl_core::{Capabilities, Error, ErrorKind, Feature, Profile, Transport};
 use std::io::Write;
 use std::path::PathBuf;
@@ -109,8 +110,12 @@ const DASHBOARDS: RequiredFeature = RequiredFeature {
     feature: Feature::Dashboards,
     label: "dashboards",
 };
+const FLEET_POLICIES: RequiredFeature = RequiredFeature {
+    feature: Feature::FleetPolicies,
+    label: "fleet-policies",
+};
 
-const CONTRACTS: [Contract; 9] = [
+const CONTRACTS: [Contract; 10] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -155,6 +160,11 @@ const CONTRACTS: [Contract; 9] = [
         name: "content",
         test: "content_transfers_data_views_and_dashboards_without_residue",
         features: &[DASHBOARDS],
+    },
+    Contract {
+        name: "fleet",
+        test: "fleet_transfers_agent_and_integration_policies_without_residue",
+        features: &[FLEET_POLICIES],
     },
 ];
 
@@ -263,6 +273,7 @@ struct TargetState {
     /// cleanly through a public API, so this carries no such tolerance and
     /// must be zero like every other partition (same spec section).
     marked_cases: u64,
+    fleet: Option<FleetState>,
 }
 
 /// Whether a feature is available on the measured target.
@@ -423,6 +434,7 @@ impl TargetState {
             let (_cases, total) = elasticctl_api::cases::find_page(transport, &query).await?;
             total
         };
+        let fleet = capture_fleet_state(transport, capabilities).await?;
 
         Ok(Self {
             custom,
@@ -436,6 +448,7 @@ impl TargetState {
             default_data_view,
             open_marked_alerts,
             marked_cases,
+            fleet,
         })
     }
 
@@ -453,6 +466,7 @@ impl TargetState {
             && self.marked_dashboards == 0
             && self.open_marked_alerts == 0
             && self.marked_cases == 0
+            && self.fleet.as_ref().is_none_or(FleetState::markers_empty)
     }
 
     fn assert_clean_start(&self) -> Result<(), String> {
@@ -469,11 +483,37 @@ impl TargetState {
             && self.prebuilt == baseline.prebuilt
             && self.customized == baseline.customized
             && self.default_data_view == baseline.default_data_view
+            && self.fleet == baseline.fleet
         {
             Ok(())
         } else {
             Err("conformance cleanup audit failed".to_string())
         }
+    }
+}
+
+async fn capture_fleet_state(
+    transport: &Transport,
+    capabilities: &Capabilities,
+) -> elasticctl_core::Result<Option<FleetState>> {
+    if !feature_available(capabilities, Feature::FleetPolicies) {
+        return Ok(None);
+    }
+    FleetState::capture(transport).await.map(Some)
+}
+
+async fn setup_fleet(transport: &Transport) -> elasticctl_core::Result<()> {
+    let body = transport
+        .post("/api/fleet/setup", Some(&serde_json::json!({})))
+        .await?;
+    if body
+        .get("isInitialized")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        Ok(())
+    } else {
+        Err(Error::new(ErrorKind::Http, "invalid Fleet setup response"))
     }
 }
 
@@ -561,7 +601,11 @@ fn validate_probe(
     }
 }
 
-fn test_command(workspace: &std::path::Path, contract: &Contract) -> std::process::Command {
+fn test_command(
+    workspace: &std::path::Path,
+    contract: &Contract,
+    fleet_setup_confirmed: bool,
+) -> std::process::Command {
     let mut command = std::process::Command::new("cargo");
     command
         .current_dir(workspace)
@@ -577,6 +621,9 @@ fn test_command(workspace: &std::path::Path, contract: &Contract) -> std::proces
             "--exact",
             "--test-threads=1",
         ]);
+    if contract.name == "fleet" && fleet_setup_confirmed {
+        command.env("ELASTICCTL_CONFORMANCE_FLEET_SETUP", "1");
+    }
     command
 }
 
@@ -676,6 +723,17 @@ pub async fn run(values: &[String]) -> Result<(), String> {
             private_failure(&workspace, args.flavor, "harness", error.message.as_bytes())
         })?;
     validate_probe(args.flavor, &capabilities)?;
+    let fleet_setup_confirmed = feature_available(&capabilities, Feature::FleetPolicies);
+    if fleet_setup_confirmed {
+        setup_fleet(&transport).await.map_err(|error| {
+            private_failure(
+                &workspace,
+                args.flavor,
+                "fleet-setup",
+                error.message.as_bytes(),
+            )
+        })?;
+    }
     let path = report_path(&args.report_dir, args.flavor, &capabilities.version)?;
     if path.exists() {
         std::fs::remove_file(&path)
@@ -729,7 +787,7 @@ pub async fn run(values: &[String]) -> Result<(), String> {
             continue;
         }
 
-        let output = test_command(&workspace, contract)
+        let output = test_command(&workspace, contract, fleet_setup_confirmed)
             .output()
             .map_err(|error| {
                 private_failure(
@@ -816,6 +874,22 @@ pub async fn run(values: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn mock_transport(server: &MockServer) -> Transport {
+        Transport::new(&Profile {
+            kibana_url: server.uri(),
+            es_url: None,
+            api_key: Some("test".to_string()),
+            username: None,
+            password: None,
+            space: "default".to_string(),
+            verify: true,
+            timeout_secs: 5,
+        })
+        .unwrap()
+    }
 
     #[test]
     fn parses_the_public_runner_interface() {
@@ -831,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_nine_in_order() {
+    fn contract_table_is_the_approved_ten_in_order() {
         assert_eq!(
             CONTRACTS.map(|contract| contract.name),
             [
@@ -844,11 +918,14 @@ mod tests {
                 "search",
                 "triage",
                 "content",
+                "fleet",
             ]
         );
         assert_eq!(CONTRACTS[8].features.len(), 1);
         assert_eq!(CONTRACTS[8].features[0].feature, Feature::Dashboards);
         assert_eq!(CONTRACTS[8].features[0].label, "dashboards");
+        assert_eq!(CONTRACTS[9].name, "fleet");
+        assert_eq!(CONTRACTS[9].features[0].feature, Feature::FleetPolicies);
     }
 
     #[test]
@@ -974,6 +1051,11 @@ mod tests {
             default_data_view: Some("stable-default".to_string()),
             open_marked_alerts: 0,
             marked_cases: 0,
+            fleet: Some(FleetState {
+                agent_policies: Default::default(),
+                integration_policies: Default::default(),
+                packages: Default::default(),
+            }),
         }
     }
 
@@ -1003,6 +1085,93 @@ mod tests {
         assert!(feature_available(&floor, Feature::ExceptionLists));
         assert!(feature_available(&floor, Feature::PrebuiltRules));
         assert!(feature_available(&floor, Feature::Dashboards));
+    }
+
+    #[tokio::test]
+    async fn below_floor_fleet_capture_is_none_without_a_fleet_request() {
+        let server = MockServer::start().await;
+        let capabilities = Capabilities {
+            flavor: elasticctl_core::Flavor::SelfManaged,
+            version: "9.5.0".to_string(),
+        };
+        assert_eq!(
+            capture_fleet_state(&mock_transport(&server), &capabilities)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| !request.url.path().starts_with("/api/fleet/"))
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_precedes_the_first_supported_fleet_read_and_runs_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/fleet/setup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "isInitialized": true
+            })))
+            .mount(&server)
+            .await;
+        for (endpoint, body) in [
+            (
+                "/api/fleet/agent_policies",
+                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
+            ),
+            (
+                "/api/fleet/package_policies",
+                serde_json::json!({"items": [], "page": 1, "perPage": 1000, "total": 0}),
+            ),
+            (
+                "/api/fleet/epm/packages/installed",
+                serde_json::json!({"items": [], "total": 0}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let capabilities = Capabilities {
+            flavor: elasticctl_core::Flavor::SelfManaged,
+            version: "9.5.1".to_string(),
+        };
+        let transport = mock_transport(&server);
+        setup_fleet(&transport).await.unwrap();
+        assert_eq!(
+            capture_fleet_state(&transport, &capabilities)
+                .await
+                .unwrap(),
+            Some(FleetState {
+                agent_policies: Default::default(),
+                integration_policies: Default::default(),
+                packages: Default::default(),
+            })
+        );
+        let fleet = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path().starts_with("/api/fleet/"))
+            .collect::<Vec<_>>();
+        assert_eq!(fleet[0].method.as_str(), "POST");
+        assert_eq!(fleet[0].url.path(), "/api/fleet/setup");
+        assert_eq!(
+            fleet
+                .iter()
+                .filter(|request| request.url.path() == "/api/fleet/setup")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1042,6 +1211,30 @@ mod tests {
         let mut state = baseline.clone();
         state.marked_cases = 1;
         variants.push(state);
+        let mut state = baseline.clone();
+        state
+            .fleet
+            .as_mut()
+            .unwrap()
+            .agent_policies
+            .insert("marker".into());
+        variants.push(state);
+        let mut state = baseline.clone();
+        state
+            .fleet
+            .as_mut()
+            .unwrap()
+            .integration_policies
+            .insert("marker".into());
+        variants.push(state);
+        let mut state = baseline.clone();
+        state
+            .fleet
+            .as_mut()
+            .unwrap()
+            .packages
+            .insert("system".into(), "different".into());
+        variants.push(state);
 
         for state in variants {
             assert_eq!(
@@ -1077,6 +1270,54 @@ mod tests {
     }
 
     #[test]
+    fn fleet_drift_prevents_report_publication() {
+        let baseline = clean_state();
+        let report = Report {
+            flavor: "serverless".to_string(),
+            version: "9.6.0".to_string(),
+            contracts: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "elasticctl-fleet-conformance-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for drifted in [
+            FleetState {
+                agent_policies: ["marker".to_string()].into_iter().collect(),
+                integration_policies: Default::default(),
+                packages: Default::default(),
+            },
+            FleetState {
+                agent_policies: Default::default(),
+                integration_policies: ["marker".to_string()].into_iter().collect(),
+                packages: Default::default(),
+            },
+            FleetState {
+                agent_policies: Default::default(),
+                integration_policies: Default::default(),
+                packages: [("system".to_string(), "changed".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+        ] {
+            let mut state = baseline.clone();
+            state.fleet = Some(drifted);
+            let path = dir.join(format!(
+                "{}.json",
+                state.fleet.as_ref().unwrap().packages.len()
+            ));
+            assert_eq!(
+                write_report_if_clean(&report, &baseline, &state, &path),
+                Err("conformance cleanup audit failed".to_string())
+            );
+            assert!(!path.exists());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn public_flavor_labels_match_the_measured_core_flavors() {
         assert_eq!(
             FlavorLabel::Serverless.expected(),
@@ -1102,7 +1343,7 @@ mod tests {
 
     #[test]
     fn live_contract_command_is_exact_and_keeps_credentials_out_of_arguments() {
-        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[1]);
+        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[1], false);
         assert_eq!(command.get_program(), std::ffi::OsStr::new("cargo"));
         assert_eq!(
             command
@@ -1134,6 +1375,19 @@ mod tests {
                 .get_args()
                 .all(|arg| !arg.to_string_lossy().contains("essu_"))
         );
+    }
+
+    #[test]
+    fn only_a_validated_fleet_setup_reaches_the_fleet_child() {
+        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[9], true);
+        assert!(command.get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
+                && value == Some(std::ffi::OsStr::new("1"))
+        }));
+        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[9], false);
+        assert!(!command.get_envs().any(|(name, _)| {
+            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
+        }));
     }
 
     #[test]

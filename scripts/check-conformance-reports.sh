@@ -7,12 +7,14 @@ CONTRACTS_V2='["diagnostics","pull_diff","exception_round_trip","stale_pointer_r
 CONTRACTS_V3='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search"]'
 CONTRACTS_V4='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search","triage"]'
 CONTRACTS_V5='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search","triage","content"]'
+CONTRACTS_V6='["diagnostics","pull_diff","exception_round_trip","stale_pointer_repair","source_scoping","rule_round_trip","search","triage","content","fleet"]'
 FLAVORS=(serverless ech traditional)
 declare -A CONTRACT_LISTS=(
   ["v0.2"]="$CONTRACTS_V2"
   ["v0.3"]="$CONTRACTS_V3"
   ["v0.4"]="$CONTRACTS_V4"
   ["v0.5"]="$CONTRACTS_V5"
+  ["v0.6"]="$CONTRACTS_V6"
 )
 
 shopt -s nullglob

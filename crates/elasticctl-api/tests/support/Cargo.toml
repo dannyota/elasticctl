@@ -16,3 +16,6 @@ elasticctl-core.workspace = true
 serde_json.workspace = true
 http = "1"
 wiremock = "0.6.5"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }

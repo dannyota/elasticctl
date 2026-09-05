@@ -4,6 +4,8 @@
 //! around `Transport`. A wrapper would sit in the one place `--debug` must
 //! never log, and would have to be maintained alongside it.
 
+pub mod fleet;
+
 use std::collections::BTreeMap;
 
 use elasticctl_core::{Profile, Transport};

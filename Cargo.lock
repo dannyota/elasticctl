@@ -411,6 +411,7 @@ dependencies = [
  "elasticctl-core",
  "http",
  "serde_json",
+ "tokio",
  "wiremock",
 ]
 
@@ -2293,6 +2294,7 @@ name = "xtask"
 version = "0.6.1"
 dependencies = [
  "elasticctl-api",
+ "elasticctl-api-test-support",
  "elasticctl-core",
  "serde_json",
  "tokio",
