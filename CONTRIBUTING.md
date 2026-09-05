@@ -110,6 +110,6 @@ Maintainers only: [`docs/releasing.md`](docs/releasing.md).
 
 ## Agents
 
-Maintainer-local agent instructions live in globally ignored `AGENTS.md`.
-Durable project rules belong in this file or the design spec, where every
-contributor can read them.
+Agent instructions live in the tracked `AGENTS.md`; `CLAUDE.md` imports it.
+Repository-local ignore exceptions keep both files tracked despite global ignore
+defaults. Durable project rules belong in this file or the design spec.

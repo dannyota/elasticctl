@@ -1,7 +1,4 @@
-<!--
-Maintainer notes: keep under 200 lines because this file loads every session. Include only rules
-that are easy to violate, not rules derivable from code or the spec. Sync changes with their owner.
--->
+<!-- Keep under 200 lines. Include only rules easy to violate, not facts derivable from code or the spec. Sync changes with their owner. -->
 
 # elasticctl
 
@@ -9,37 +6,28 @@ Rust CLI for operating Elastic Security detection rules as code across self-mana
 Cloud Hosted, and Serverless deployments. Its sibling,
 [splunkctl](https://github.com/dannyota/splunkctl), is the reference for operating contracts.
 
-**Read `docs/specs/elasticctl-design.md` before changing anything.** It is the source of truth
-for scope, architecture, and verified API behavior. When code and spec disagree, the spec wins.
-Update the spec first; never silently improve. Documentation is the contract. A behavioral change
-updates the spec in the same commit. Remove a closed backlog item from the current backlog.
+**Read `docs/specs/elasticctl-design.md` before changing anything.** It defines scope, architecture,
+and verified API behavior. When code and spec disagree, the spec wins. Update the spec first and
+in the same commit as any behavior change. Remove closed items from the current backlog.
 Guidance precedence is: the user's current instruction, the spec, then this file.
 
-| Task | Read first |
-| --- | --- |
-| Any behavior change | `docs/specs/elasticctl-design.md` |
-| Releasing | `docs/releasing.md` |
-| Re-recording fixtures | "Testing" and "Sample data" below, `xtask/src/main.rs` |
+Before releasing, read `docs/releasing.md`. Before re-recording fixtures, read "Testing",
+"Sample data", and `xtask/src/main.rs`.
 
 ## Development workflow
 
-Design first: the brief is its product. Use Opus for design, Sonnet for implementation, and
-Haiku for transcription or single-file mechanical fixes. Set the model explicitly on every
-dispatch; otherwise it silently inherits the session's tier.
+Design first: the brief is its product. Follow any user-wide model assignments for the current
+provider; otherwise choose available models by the roles below. Set each dispatch's model explicitly.
+Assign design and complex analysis to the planning role, routine implementation to the
+implementation role, and transcription or single-file mechanical fixes to the support role.
+Mutation paths, credential handling, and release workflows need independent adversarial review.
+Ordinary code needs its tests, the gates, and independent code review. Agents assigned design
+or review must not implement the same slice; state that restriction in each brief.
 
-Review tier scales with the cost of being wrong. Invariant-bearing work — mutation paths,
-credential handling, and release workflows — gets adversarial Opus review. Ordinary code gets
-its tests, the gates, and Sonnet review. A well-split task never needs a stronger model. If it
-seems to, the split is wrong, not the tier. When unsure, dispatch Sonnet and escalate from its
-report. Opus agents decide, split, and review; they never implement. State that restriction in
-each Opus brief.
-
-Parallelism follows the design, not the deadline. When the plan pins files and interfaces, tasks
-with no shared files can run in parallel. Each runs in its own git worktree so commits cannot
-tangle. Agents own named files, never directories. A slice needing a test alongside another's
-creates a new file instead of editing a shared one. Assign one directive to one agent. Do not
-fold new work into a running agent because it owns the files. Review each task before the next
-builds on it.
+Parallel tasks need fixed interfaces, named files with no overlapping ownership, and a separate
+git worktree for each worker that edits files. A slice needing a test alongside another's creates
+a new file instead of editing a shared one. Assign one directive per agent; do not add work to a
+running agent because it owns the files. Review each task before dependent work starts.
 
 ## Architecture rules
 
@@ -87,7 +75,6 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
   identifying data. The trial was extended; it ends 2026-09-08 at 08:56 UTC.
 - The Hosted deployment stays running for the whole trial. Do not stop, suspend, or tear it
   down; a stopped deployment changes its endpoints on restart and invalidates `.env`.
-- `.env.example` is the committed template and must contain placeholders only.
 - An **organization-level** Cloud API key is not enough. Every key type carries the `essu_`
   prefix, so it does not indicate scope. Only `GET /_security/_authenticate` reports the realm.
   An organization key can read and create *disabled* rules, but **cannot enable a rule**. The
@@ -194,35 +181,19 @@ Remap them to ECS and rewrite `@timestamp` to now before ingest, or no rule can 
 
 ## Release
 
-The binary crate package is `elasticctl` (directory `crates/elasticctl-cli`), so
-`--package elasticctl-cli` does not resolve. Publish by dispatching
-`.github/workflows/publish-crates.yml` with the released tag; the owner approves the
-`crates-io` environment and the job runs `cargo publish --workspace` with a Trusted Publishing
-token after checking the Release assets. That command from the tagged commit is the manual
-fallback. Either way `cargo publish --workspace` verifies all three crates against a temporary
-registry before uploading any. Never publish crate-by-crate. A partial failure strands crates on
-crates.io, where versions can be
-yanked but not deleted. cargo-dist installs as `dist`; `cargo dist` does not resolve.
-`dist build --artifacts=host` builds only the host target.
+The binary crate package is `elasticctl`, not `elasticctl-cli`. **A release ends at the tag and
+GitHub Release binaries.** Publishing needs the owner's explicit approval for that version;
+approval never carries forward. Ask separately and complete the release meanwhile. Publish last,
+after the matrix produces a complete asset list, only through `.github/workflows/publish-crates.yml`
+with the released tag and `crates-io` environment approval. Never publish locally or crate-by-crate.
+The workflow uses Trusted Publishing and `cargo publish --workspace` to verify all three crates
+against a temporary registry before uploading any. Published versions can be yanked, never deleted.
 
-**A release does not publish to crates.io.** The default release is the tag and GitHub Release
-binaries, and stops there. Publishing needs the owner's explicit approval for that release. A
-standing "we publish now" from 0.1.3 or approval for a previous version is not enough. Never run
-`cargo publish` or dispatch the publish workflow as a step in a release you were asked to cut.
-Ask, and release the rest meanwhile; a version can follow onto crates.io later, but it cannot be
-taken back.
-
-When approval is given, tag first and publish last. The tag and GitHub Release are deletable; a
-crates.io version is not, so publish only after the matrix produces a complete asset list.
-
-Cut an `-rc.N` tag only when the build matrix is unproven: it has never run, or its target list
-changed. Check the last release's assets first. A complete list means a candidate proves nothing.
-Since 0.1.3 a candidate can also be *published* — pre-release versions are ignored by `^0.1` and
-by `cargo install` — which is worth doing when a release changes packaging rather than targets.
-`docs/releasing.md` explains why.
+Cut an `-rc.N` only for an unproven or changed build matrix; check the last release's assets.
+For packaging changes, see `docs/releasing.md` for the published-candidate exception and approvals.
+cargo-dist installs as `dist`, not `cargo dist`; `dist build --artifacts=host` builds the host only.
 
 ## Git
 
-`AGENTS.md` holds the agent rules and `CLAUDE.md` is its one-line import; both are tracked in the
-repository (re-included via `.gitignore` negations). Durable rules still belong in
-`CONTRIBUTING.md` or the design spec.
+Track `AGENTS.md` and its one-line `CLAUDE.md` import using the existing `.gitignore` negations.
+This overrides the global ignore default. Durable rules belong in `CONTRIBUTING.md` or the spec.
