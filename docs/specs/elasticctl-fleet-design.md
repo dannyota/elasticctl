@@ -481,12 +481,14 @@ used. `--limit` truncates after sorting and the list reports `truncated`.
 Resolution tries the exact id with the single-object endpoint first. On
 `not_found` it collects the list and keeps exact name matches. Zero matches is
 `not_found`; more than one is `conflict`. A name never becomes stored identity.
-An exact-id read must return that requested id. A read selected from a list by
-name must return the same id, name, namespace, parent-id membership, package
-coordinate, and description as its selected list row. Parent ids compare in
-sorted order without deduplication, so reordering is consistent but duplicates
-remain malformed. A mismatch is a malformed `http` response; its error does
-not include response values.
+For read-only integration-policy selection, an exact-id read must return that
+requested id. A read selected from an integration-policy list, including exact
+name fallback and `--all-custom` export, must return the same id, name,
+namespace, parent-id membership, package coordinate, and description as its
+selected list row. Parent ids compare as sorted, duplicate-preserving
+sequences, so reordering is consistent but a multiplicity change is not hidden.
+A mismatch is a malformed `http` response; its error does not include response
+values.
 
 Selectors are deduplicated by id. Every selector resolves before export or
 delete. The single-object agent-policy read carries populated
