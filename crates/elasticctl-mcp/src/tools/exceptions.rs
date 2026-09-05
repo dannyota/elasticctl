@@ -98,9 +98,15 @@ struct ExceptionsListInput {
     #[schemars(default = "default_limit")]
     #[schemars(range(min = 1, max = 200))]
     limit: usize,
+    /// Exact exception-list type filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     list_type: Option<String>,
+    /// Exact exception-list tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     tag: Option<String>,
     namespace: Option<NamespaceInput>,
+    /// Exception-list display-name substring filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     search: Option<String>,
 }
 
@@ -135,6 +141,8 @@ impl ExceptionsListInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ExceptionsGetInput {
+    /// Exact exception-list identifier (list_id). Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     list_id: String,
     namespace: Option<NamespaceInput>,
     #[serde(default = "default_limit")]

@@ -489,6 +489,57 @@ async fn rule_catalog_declares_closed_inputs_safe_schemas_and_static_annotations
             .get("enum")
             .is_none()
     );
+    for (name, field, description, required) in [
+        (
+            "rules_get",
+            "selector",
+            "Exact rule_id or display name. Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            true,
+        ),
+        (
+            "rules_list",
+            "rule_type",
+            "Exact rule-type filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+        (
+            "rules_list",
+            "severity",
+            "Exact rule-severity filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+        (
+            "rules_list",
+            "tag",
+            "Exact rule-tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+        (
+            "rules_list",
+            "search",
+            "Rule display-name substring or exact-tag search. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+    ] {
+        let input = &tool(&tools, name)["inputSchema"];
+        let property = &input["properties"][field];
+        let string = schema_branch_for_type(input, property, "string");
+        assert_eq!(string["description"], description, "{name}.{field}");
+        assert_eq!(string["minLength"], 1, "{name}.{field}");
+        assert_eq!(string["maxLength"], 1024, "{name}.{field}");
+        assert_eq!(
+            input["required"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|value| value == field)),
+            required,
+            "{name}.{field} required"
+        );
+        assert_eq!(
+            schema_allows_type(input, property, "null"),
+            !required,
+            "{name}.{field} nullability"
+        );
+    }
 
     let current = tools.clone();
     harness.close_input();

@@ -183,6 +183,11 @@ UTF-8 bytes. Validate without trimming or rewriting the supplied value. Enum
 values match the existing API vocabulary. Unknown keys fail locally. No input
 has implicit `@file`, path expansion, environment expansion, or URL fetching.
 
+Free-text schemas declare `minLength: 1` and `maxLength: 1024` as character
+constraints. Field descriptions state the exact non-whitespace and UTF-8 byte
+rules and that supplied values stay unchanged. Runtime validation enforces
+those rules; schema constraints preserve optional and explicit-null behavior.
+
 | Since | Tool | Inputs besides list limit | API orchestration |
 | --- | --- | --- | --- |
 | 0.7.0 | `stack_info` | None | `health::info` |

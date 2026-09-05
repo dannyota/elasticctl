@@ -111,9 +111,17 @@ struct RulesListInput {
     #[schemars(range(min = 1, max = 200))]
     limit: usize,
     enabled: Option<bool>,
+    /// Exact rule-type filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     rule_type: Option<String>,
+    /// Exact rule-severity filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     severity: Option<String>,
+    /// Exact rule-tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     tag: Option<String>,
+    /// Rule display-name substring or exact-tag search. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     search: Option<String>,
     #[serde(default)]
     #[schemars(default = "default_source")]
@@ -153,6 +161,8 @@ impl RulesListInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RulesGetInput {
+    /// Exact rule_id or display name. Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
+    #[schemars(length(min = 1, max = 1024))]
     selector: String,
 }
 

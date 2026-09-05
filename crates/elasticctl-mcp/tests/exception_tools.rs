@@ -423,6 +423,61 @@ async fn exception_catalog_has_closed_inputs_and_typed_safe_outputs() {
             .expect("namespace enum branch");
         assert_eq!(namespace["enum"], json!(["single", "agnostic"]));
     }
+    for (name, field, description, required) in [
+        (
+            "exceptions_get",
+            "list_id",
+            "Exact exception-list identifier (list_id). Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            true,
+        ),
+        (
+            "exceptions_list",
+            "list_type",
+            "Exact exception-list type filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+        (
+            "exceptions_list",
+            "tag",
+            "Exact exception-list tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+        (
+            "exceptions_list",
+            "search",
+            "Exception-list display-name substring filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+            false,
+        ),
+    ] {
+        let input = &tool(&catalog, name)["inputSchema"];
+        let property = &input["properties"][field];
+        let string = resolved(input, property);
+        let string = string["anyOf"]
+            .as_array()
+            .map(|branches| {
+                branches
+                    .iter()
+                    .map(|branch| resolved(input, branch))
+                    .find(|branch| allows_type(input, branch, "string"))
+                    .expect("string branch")
+            })
+            .unwrap_or(string);
+        assert_eq!(string["description"], description, "{name}.{field}");
+        assert_eq!(string["minLength"], 1, "{name}.{field}");
+        assert_eq!(string["maxLength"], 1024, "{name}.{field}");
+        assert_eq!(
+            input["required"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|value| value == field)),
+            required,
+            "{name}.{field} required"
+        );
+        assert_eq!(
+            allows_type(input, property, "null"),
+            !required,
+            "{name}.{field} nullability"
+        );
+    }
     for name in ["exceptions_list", "exceptions_get"] {
         let schema = &tool(&catalog, name)["outputSchema"];
         let success = root_success(schema);
