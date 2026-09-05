@@ -1526,6 +1526,11 @@ what it was.
 
 One shared workspace version, so all three crates move together.
 
+Publish to crates.io only through `.github/workflows/publish-crates.yml` on
+GitHub Actions. Local publishing is not a fallback. Dispatch the workflow with
+the released tag after the owner approves publishing that version; its
+`crates-io` environment approval remains required.
+
 All three crates are publishable and publish together with
 `cargo publish --workspace`. It packages and verifies every crate against a
 temporary registry before uploading any. Otherwise, a failure partway through

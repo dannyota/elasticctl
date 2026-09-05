@@ -8,7 +8,7 @@ Requires a stable Rust toolchain.
 git clone https://github.com/dannyota/elasticctl
 cd elasticctl
 cp .env.example .env    # fill in your Elastic endpoints and API key
-cargo test
+cargo test --jobs 2 -- --test-threads=4
 ```
 
 `cargo test` needs no stack and no credentials. `.env` only matters for the
@@ -27,10 +27,15 @@ description written afterwards.
 CI runs all three. Run them before opening a pull request.
 
 ```bash
-cargo test
+cargo test --jobs 2 -- --test-threads=4
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --jobs 2 -- -D warnings
 ```
+
+On the development laptop, use two build jobs and four test threads, and run
+one build-heavy command at a time. Keep these limits per command so CI can use
+its runner defaults. Prefer GitHub Actions for release builds and preflight;
+crates.io publishing runs only through GitHub Actions.
 
 Tests come in three tiers. Unit and fixture tests run offline against recorded
 traffic and need no stack. The live tier runs against a real deployment and is

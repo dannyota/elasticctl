@@ -5,7 +5,8 @@ Maintainer procedure. Users do not need this; see the README to install.
 A release builds cross-platform binaries and publishes a GitHub Release. It
 does **not** publish to crates.io. Publishing is a separate workflow that runs
 only when the owner dispatches it for that version, and most releases never
-reach it.
+reach it. Publish to crates.io only through GitHub Actions; never publish
+locally.
 
 Publishing to crates.io is a separate, opt-in step that needs the owner's
 explicit approval for that specific version. Approval does not carry forward:
@@ -28,8 +29,8 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    `[workspace.dependencies]`. Bumping only `[workspace.package] version`
    leaves stale `0.1.0` requirements in the dependency metadata.
 2. Add a dated entry to `CHANGELOG.md`.
-3. Run formatting, locked Clippy, locked workspace tests, package-content and
-   fixture-leak checks, then `cargo publish --workspace --dry-run --locked`.
+3. Run `cargo fmt --all --check`. Prefer GitHub Actions for the build and test
+   gates below to limit memory use on the development laptop.
 4. Push `master` and require CI success for that exact commit.
 5. Dispatch `.github/workflows/release-preflight.yml` on `master` and require
    success for that same commit.
@@ -44,18 +45,22 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    equals the tag and the GitHub Release for it carries every expected asset,
    and repeats the dry run. Only then does the `publish` job wait for the
    environment approval and publish all three crates with a short-lived
-   crates.io Trusted Publishing token. `cargo publish --workspace` from the
-   tagged commit is the manual fallback.
+   crates.io Trusted Publishing token.
 
-The complete local gate for step 3 is:
+CI in step 4 runs formatting, locked Clippy, locked workspace tests,
+package-content and fixture-leak checks. Preflight in step 5 verifies the
+workspace packages without uploading them. Both must pass for the exact
+release commit before tagging.
+
+For local checks when needed, cap builds at two jobs and tests at four threads.
+Run one build-heavy command at a time:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets --jobs 2 -- -D warnings
+cargo test --locked --workspace --jobs 2 -- --test-threads=4
 ./scripts/check-packages.sh
 ./scripts/check-fixtures.sh
-cargo publish --workspace --dry-run --locked
 ```
 
 After step 4 passes CI, dispatch and identify the preflight run:
@@ -73,8 +78,8 @@ be nonempty, and run
 `gh run watch "$preflight_run_id" --exit-status`. If the run has not appeared
 yet, repeat the list command before selecting it.
 
-Step 3 stays in the default path even though step 8 usually does not run. The
-dry run costs one build and catches packaging errors — a missing `include`, a
+Step 5 stays in the default path even though step 8 usually does not run. Its
+dry run on GitHub Actions catches packaging errors — a missing `include`, a
 path dependency without a version — while they are still free to fix. Finding
 them later, on the day publishing is approved, means fixing them against a
 version already tagged and released.
@@ -113,13 +118,13 @@ once per crate on crates.io (crate settings, Trusted Publishing): repository
 owner `dannyota`, repository name `elasticctl`, workflow filename
 `publish-crates.yml`, environment `crates-io`. All three crates need the same
 entry; a dispatch made before that fails at the token exchange, after the
-`verify` job, and publishes nothing. A crate that has never been published
-must go through the manual fallback once before Trusted Publishing can be
-configured for it.
+`verify` job, and publishes nothing. Resolve publishing setup failures before
+retrying the workflow; do not work around them by publishing locally.
 
 Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
-To build only the host target locally: `dist build --artifacts=host`.
+Prefer the release workflow for builds. If a local host build is needed, use
+`CARGO_BUILD_JOBS=2 dist build --artifacts=host`.
 
 ## Do not write a credential-shaped URL in the changelog
 
@@ -157,7 +162,8 @@ step 6 now runs before step 8: the real tag proves the build while both the tag
 and the Release are still deletable. What it *can* insure, since 0.1.3, is the
 publish. A crates.io version is permanent — yanking hides it from resolution
 but never removes it — and `cargo install elasticctl` now has users to break.
-When a release changes packaging rather than the target list, `cargo publish`
-a `-rc.N` first: pre-release versions are ignored by a `^0.1` requirement and
-by `cargo install` unless asked for by name, so it is a real rehearsal rather
-than a permanent mistake.
+When a release changes packaging rather than the target list, publish a
+`-rc.N` first through `publish-crates.yml`, with the owner's approval for that
+candidate and a complete GitHub Release. Pre-release versions are ignored by
+a `^0.1` requirement and by `cargo install` unless asked for by name, so this
+tests packaging before the final version is permanent.
