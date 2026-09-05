@@ -28,7 +28,9 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    `version` fields for `elasticctl-core` and `elasticctl-api` in
    `[workspace.dependencies]`. Bumping only `[workspace.package] version`
    leaves stale `0.1.0` requirements in the dependency metadata.
-2. Add a dated entry to `CHANGELOG.md`.
+2. Add a dated entry to `CHANGELOG.md`. Refresh the version-bearing render
+   snapshot with `INSTA_UPDATE=always cargo test --locked -p elasticctl --test
+   snapshots_render --jobs 2 -- --test-threads=4`, then inspect the diff.
 3. Run `cargo fmt --all --check`. Prefer GitHub Actions for the build and test
    gates below to limit memory use on the development laptop.
 4. Push `master` and require CI success for that exact commit.

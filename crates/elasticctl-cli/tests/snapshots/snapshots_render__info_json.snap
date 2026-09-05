@@ -3,7 +3,7 @@ source: crates/elasticctl-cli/tests/snapshots_render.rs
 expression: rendered
 ---
 {
-  "elasticctl_version": "0.6.1",
+  "elasticctl_version": "0.6.2",
   "profile": "default",
   "kibana_url": "http://127.0.0.1:<port>",
   "space": "default",
