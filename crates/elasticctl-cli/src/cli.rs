@@ -1,9 +1,36 @@
 //! Argument definitions. Nothing here reaches into `elasticctl-api`.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::OsStringValueParser};
 use elasticctl_core::{Error, ErrorKind};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+const MCP_DETECTION_VALUE_ARGS: [&str; 7] = [
+    "profile", "config", "space", "format", "fields", "out", "timeout",
+];
+
+fn mcp_detection_command() -> clap::Command {
+    let mut command = Cli::command()
+        .ignore_errors(true)
+        .args_override_self(true)
+        .disable_help_flag(true)
+        .disable_help_subcommand(true)
+        .disable_version_flag(true);
+    for id in MCP_DETECTION_VALUE_ARGS {
+        command = command.mut_arg(id, |arg| arg.value_parser(OsStringValueParser::new()));
+    }
+    command
+}
+
+/// Detect the MCP group without accepting its arguments or rendering a clap
+/// error. The ordinary typed parse remains the only authority for syntax.
+pub fn is_mcp_invocation(argv: &[OsString]) -> bool {
+    mcp_detection_command()
+        .try_get_matches_from(argv)
+        .ok()
+        .is_some_and(|matches| matches.subcommand_name() == Some("mcp"))
+}
 
 /// Reject an empty or whitespace-only `--search`, which would otherwise widen a
 /// scoped operation to every rule instead of narrowing it (spec 4.7).
@@ -177,6 +204,11 @@ pub enum Command {
         #[command(subcommand)]
         action: CasesAction,
     },
+    /// Serve read-only Elastic tools over MCP stdio
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
     /// Generate a shell completion script
     Completion {
         #[arg(value_enum)]
@@ -184,6 +216,12 @@ pub enum Command {
     },
     /// Emit the command tree as JSON
     Commands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpAction {
+    /// Serve MCP over stdin and stdout
+    Serve,
 }
 
 #[derive(Debug, Subcommand)]
@@ -864,4 +902,148 @@ pub enum ConfigAction {
     Show,
     /// Verify the profile can reach and authenticate to the stack
     Test,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn detection_relaxes_every_value_taking_global_and_only_those_globals() {
+        let command = Cli::command();
+        let actual = command
+            .get_arguments()
+            .filter(|arg| arg.is_global_set() && arg.get_action().takes_values())
+            .map(|arg| arg.get_id().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, MCP_DETECTION_VALUE_ARGS);
+    }
+
+    #[test]
+    fn detection_classifies_mcp_through_valid_and_invalid_global_placements() {
+        for values in [
+            &["elasticctl", "mcp", "serve"][..],
+            &["elasticctl", "--profile", "analyst", "mcp", "serve"],
+            &["elasticctl", "mcp", "--space", "default", "serve"],
+            &["elasticctl", "mcp", "serve", "--timeout", "30"],
+            &["elasticctl", "--timeout=argument-sentinel", "mcp", "serve"],
+            &["elasticctl", "--format=argument-sentinel", "mcp", "serve"],
+            &[
+                "elasticctl",
+                "--timeout",
+                "argument-sentinel",
+                "--profile",
+                "analyst",
+                "mcp",
+                "serve",
+            ],
+            &[
+                "elasticctl",
+                "--profile=analyst",
+                "mcp",
+                "--space",
+                "default",
+                "serve",
+                "--timeout",
+                "30",
+            ],
+            &[
+                "elasticctl",
+                "--timeout=bad",
+                "--timeout",
+                "worse",
+                "mcp",
+                "serve",
+            ],
+            &[
+                "elasticctl",
+                "--profile",
+                "one",
+                "mcp",
+                "--profile=two",
+                "serve",
+                "--profile",
+                "three",
+            ],
+            &["elasticctl", "--debug", "--debug", "mcp", "serve"],
+            &["elasticctl", "mcp", "--unknown", "serve"],
+            &["elasticctl", "mcp", "serve", "--unknown"],
+            &["elasticctl", "mcp", "serve", "--timeout"],
+            &[
+                "elasticctl",
+                "--timeout",
+                "--profile",
+                "analyst",
+                "mcp",
+                "serve",
+            ],
+        ] {
+            assert!(is_mcp_invocation(&argv(values)), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn detection_respects_values_positionals_and_root_parse_boundaries() {
+        for values in [
+            &["elasticctl", "--profile", "mcp", "info"][..],
+            &["elasticctl", "--profile", "serve", "info"],
+            &["elasticctl", "--config", "mcp", "commands"],
+            &["elasticctl", "--config=mcp", "commands"],
+            &["elasticctl", "rules", "get", "mcp"],
+            &["elasticctl", "rules", "get", "serve"],
+            &["elasticctl", "--profile", "mcp", "serve"],
+            &["elasticctl", "--", "mcp", "serve"],
+            &["elasticctl", "--timeout", "mcp", "serve"],
+            &["elasticctl", "--unknown", "mcp", "serve"],
+        ] {
+            assert!(!is_mcp_invocation(&argv(values)), "{values:?}");
+        }
+        assert!(is_mcp_invocation(&argv(&[
+            "elasticctl",
+            "--profile",
+            "mcp",
+            "mcp",
+            "serve",
+        ])));
+    }
+
+    #[test]
+    fn detection_leaves_help_and_version_to_the_typed_parser() {
+        assert!(!is_mcp_invocation(&argv(&["elasticctl", "--help"])));
+        assert!(!is_mcp_invocation(&argv(&["elasticctl", "--version"])));
+        assert!(is_mcp_invocation(&argv(&["elasticctl", "mcp", "--help"])));
+        assert!(is_mcp_invocation(&argv(&[
+            "elasticctl",
+            "mcp",
+            "serve",
+            "--help",
+        ])));
+        assert!(is_mcp_invocation(&argv(&[
+            "elasticctl",
+            "--timeout=argument-sentinel",
+            "mcp",
+            "serve",
+            "--help",
+        ])));
+    }
+
+    #[test]
+    fn typed_parser_remains_authoritative_for_global_duplicates() {
+        let parsed = Cli::try_parse_from(argv(&[
+            "elasticctl",
+            "--profile",
+            "one",
+            "mcp",
+            "--profile=two",
+            "serve",
+            "--profile",
+            "three",
+        ]));
+        let parsed = parsed.expect("the normal parser retains current duplicate handling");
+        assert_eq!(parsed.global.profile.as_deref(), Some("three"));
+    }
 }

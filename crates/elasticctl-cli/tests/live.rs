@@ -14,6 +14,27 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[path = "live/fleet.rs"]
 mod fleet;
+#[path = "live/mcp_smoke.rs"]
+mod mcp_smoke;
+
+#[test]
+#[ignore = "requires a live stack"]
+fn mcp_reads_foundation_tools_without_residue() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serial = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config, &profile).unwrap();
+    let mut cleanup = LiveCleanup::new(config.clone(), profile);
+    if let Err(error) = assert_clean_baseline(&config, &cleanup, baseline.clone()) {
+        panic_conformance(ConformanceFailureClass::Harness, error);
+    }
+    let result = mcp_smoke::run_contract(&config, dir.path(), &mut cleanup);
+    conclude(result, &mut cleanup, baseline);
+}
 
 /// The tenth contract stays at this integration-test root because the
 /// conformance controller invokes this exact name.

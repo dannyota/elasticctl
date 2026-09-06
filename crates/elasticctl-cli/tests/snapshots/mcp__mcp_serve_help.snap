@@ -1,0 +1,20 @@
+---
+source: crates/elasticctl-cli/tests/mcp.rs
+expression: "String::from_utf8(help.stdout).expect(\"help is UTF-8\")"
+---
+Serve MCP over stdin and stdout
+
+Usage: elasticctl mcp serve [OPTIONS]
+
+Options:
+      --profile <PROFILE>  Use a named profile
+      --config <CONFIG>    Use a specific configuration file
+      --space <SPACE>      Kibana space to operate in
+      --json               Force JSON output
+      --format <FORMAT>    Output format: table, json, yaml, csv, jsonl
+      --fields <FIELDS>    Comma-separated fields to include
+      --out <OUT>          Write output to a file instead of stdout
+  -y, --yes                Apply a mutation after reviewing its preview
+      --timeout <TIMEOUT>  Request timeout in seconds
+      --debug              Log HTTP requests and responses, with secrets redacted
+  -h, --help               Print help

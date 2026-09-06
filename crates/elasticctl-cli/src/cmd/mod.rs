@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod exceptions;
 pub mod fleet;
 pub mod info;
+pub mod mcp;
 pub mod meta;
 pub mod rules;
 pub mod search;

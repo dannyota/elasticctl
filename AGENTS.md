@@ -31,24 +31,24 @@ running agent because it owns the files. Review each task before dependent work 
 
 ## Architecture rules
 
-Dependency direction is strictly one way and must not be broken:
-
+Dependency direction is one way; API/core never depend on a frontend:
 ```
-elasticctl-cli  →  elasticctl-api  →  elasticctl-core
+elasticctl-cli  →  elasticctl-mcp  →  elasticctl-api  →  elasticctl-core
 ```
+CLI also calls API directly; both frontends may use core.
+`-mcp` owns stdio, schemas, projections, and call limits; it never uses CLI rendering.
 `-core` owns config, transport, auth, and errors; `-api` owns the model and the
 rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and the dry-run guard.
 - **API orchestration returns typed values.** CLI adapters handle command context and mutation
-  guards, then serialize values for `elasticctl-cli::render`. This keeps a future MCP server
-  additive: it calls the same API functions and serializes the same structs. A command that prints
-  gives MCP only a string to re-parse.
+  guards, then serialize values for `elasticctl-cli::render`. MCP calls the same API functions
+  and projects their typed data. A command that prints gives MCP only a string to re-parse.
 - **Orchestration belongs in `-api`.** `cli/cmd/` adapters must not own stack orchestration; MCP
   cannot depend on `-cli`. Moving orchestration must preserve byte-identical output, proven by
   snapshots.
-- **`clap` types never appear in `-api` or `-core`.** Pass a value, not a parsed arg struct.
+- **`clap` types never appear in `-mcp`, `-api`, or `-core`.** Pass a value, not a parsed arg struct.
 - Flavor differences use the runtime capability probe, not compile-time traits or per-flavor
   modules.
-- `xtask` may depend on `-api` and `-core`, never on the CLI crate, and ships nothing — it is the
+- `xtask` may depend on `-mcp`, `-api`, and `-core`, never on the CLI crate, and ships nothing — it is the
   dev-tool crate (`publish = false`).
 
 ## Safety contracts
@@ -186,8 +186,8 @@ GitHub Release binaries.** Publishing needs the owner's explicit approval for th
 approval never carries forward. Ask separately and complete the release meanwhile. Publish last,
 after the matrix produces a complete asset list, only through `.github/workflows/publish-crates.yml`
 with the released tag and `crates-io` environment approval. Never publish locally or crate-by-crate.
-The workflow uses Trusted Publishing and `cargo publish --workspace` to verify all three crates
-against a temporary registry before uploading any. Published versions can be yanked, never deleted.
+The workflow verifies all four crates before upload; registry uploads are not atomic. Crate ownership
+and Trusted Publishing must be ready first; see `docs/releasing.md`. Versions can be yanked, never deleted.
 
 Cut an `-rc.N` only for an unproven or changed build matrix; check the last release's assets.
 For packaging changes, see `docs/releasing.md` for the published-candidate exception and approvals.

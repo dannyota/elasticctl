@@ -16,16 +16,17 @@ version can only be yanked, which hides it from resolution without removing it.
 A version withheld today can be published tomorrow; one published today cannot
 be withdrawn.
 
-When approval is given, publish all three crates together or none.
-`cargo publish --workspace` packages and verifies all three before uploading
-any, so a verification failure cannot strand a published crate with an
-unpublished dependency. The binary depends on both libraries by version, so
-publishing it alone leaves `cargo install elasticctl` unable to resolve.
-(`elasticctl-api` depends on `elasticctl-core`, and `elasticctl` on both;
-`xtask` is not published.)
+When approval is given, submit all four crates through one workspace command.
+Cargo packages and verifies all four before uploading dependency-ready crates.
+Uploads are not atomic: a registry rejection or connection failure can leave a
+partial version set. The binary depends on all three libraries by version, so
+publishing it alone can leave `cargo install elasticctl` unable to resolve.
+`elasticctl-mcp` depends on API and core; API depends on core. `xtask` and test
+support are not published. See the
+[Cargo upload sequence](https://github.com/rust-lang/cargo/blob/c980f4866141969fab6254a680546a277789d6f0/src/cargo/ops/registry/publish.rs#L150-L251).
 
 1. Bump the version in `Cargo.toml`: `[workspace.package] version` and the
-   `version` fields for `elasticctl-core` and `elasticctl-api` in
+   `version` fields for `elasticctl-core`, `elasticctl-api`, and `elasticctl-mcp` in
    `[workspace.dependencies]`. Bumping only `[workspace.package] version`
    leaves stale `0.1.0` requirements in the dependency metadata.
 2. Add a dated entry to `CHANGELOG.md`.
@@ -43,9 +44,10 @@ publishing it alone leaves `cargo install elasticctl` unable to resolve.
    `crates-io` environment when the run pauses for review. A `verify` job
    checks out `refs/tags/<tag>`, refuses unless every workspace version field
    equals the tag and the GitHub Release for it carries every expected asset,
-   and repeats the dry run. Only then does the `publish` job wait for the
-   environment approval and publish all three crates with a short-lived
-   crates.io Trusted Publishing token.
+   checks that all four crate names exist with the expected owner, and repeats
+   the dry run. Only then does the `publish` job wait for environment approval.
+   It repeats the crate ownership check before obtaining a short-lived
+   crates.io Trusted Publishing token and submitting the workspace.
 
 CI in step 4 runs formatting, locked Clippy, locked workspace tests,
 package-content and fixture-leak checks. Preflight in step 5 verifies the
@@ -53,6 +55,7 @@ workspace packages without uploading them. Both must pass for the exact
 release commit before tagging.
 
 For local checks when needed, cap builds at two jobs and tests at four threads.
+The package check requires Python 3.11 or later for TOML parsing.
 Run one build-heavy command at a time:
 
 ```bash
@@ -113,13 +116,30 @@ gh api repos/dannyota/elasticctl/environments/crates-io \
   --jq '.protection_rules[] | select(.type == "required_reviewers")'
 ```
 
-Trusted Publishing is the second first-dispatch prerequisite. Configure it
-once per crate on crates.io (crate settings, Trusted Publishing): repository
-owner `dannyota`, repository name `elasticctl`, workflow filename
-`publish-crates.yml`, environment `crates-io`. All three crates need the same
-entry; a dispatch made before that fails at the token exchange, after the
-`verify` job, and publishes nothing. Resolve publishing setup failures before
-retrying the workflow; do not work around them by publishing locally.
+Before every dispatch, verify each crate's Trusted Publishing entry on
+crates.io: repository owner `dannyota`, repository `elasticctl`, workflow
+`publish-crates.yml`, environment `crates-io`. Check all four entries and the
+environment's required-reviewer rule. A successful token exchange does not
+prove the token authorizes all four crates.
+
+The normal workflow runs `scripts/check-crates-io-publish-ready.sh` in both
+jobs before token exchange or upload. The guard requires all four names to
+exist on crates.io with `dannyota` as an owner. A failed registry read also
+stops the workflow. The guard does not inspect Trusted Publisher settings and
+cannot replace the owner's settings check. Both workspace commands use
+`--registry crates-io`. `cargo publish --workspace --dry-run --locked
+--registry crates-io` packages, checks, and builds all selected crates without
+uploading. It does not prove per-crate registry authorization or Trusted
+Publisher configuration.
+
+[Trusted Publishing requires an existing crate](https://crates.io/docs/trusted-publishing).
+The first `elasticctl-mcp` publication is unavailable through the normal
+workflow under current policy. It needs a separate owner decision that
+resolves the Actions-only, workspace-only, Trusted-Publishing-only rules before
+a dispatch. No bootstrap method or token fallback is approved here. This
+publication block does not block implementation, CI, nonpublishing release
+preflight, or the tag and GitHub Release. Resolve publishing prerequisites
+before retrying; do not publish locally or crate by crate.
 
 Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
