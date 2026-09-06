@@ -1236,12 +1236,14 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same ten contracts serially against each target: diagnostics,
+It runs the same eleven contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
 repair, source scoping, rule export/import round-trip, search, triage
 (`elasticctl-triage-design.md` section 9), and content transfer
 (`elasticctl-content-design.md` section 13), then Fleet policy transfer
-(`elasticctl-fleet-design.md` section 14). Before the first mutation, it
+(`elasticctl-fleet-design.md` section 14), followed by
+`mcp_reads_existing_verticals`, the MCP read contract defined in
+`elasticctl-mcp-design.md` section 8. Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker
 objects. It checks marker cleanup and default stability after every contract,
@@ -1250,8 +1252,8 @@ gated below the verified dashboard floor so the content contract can report an
 explicit capability skip; every other required baseline route fails closed.
 Fleet setup runs once through the one-shot transport before the baseline only
 when `FleetPolicies` meets its verified floor. The setup response must confirm
-initialization before the runner passes its private setup marker to a Fleet
-child. After probe validation, the runner clears a previous target report
+initialization before the runner passes its private setup marker to every
+Fleet-feature child. After probe validation, the runner clears a previous target report
 before Fleet setup, so a setup failure cannot leave stale success evidence.
 Gated Fleet baseline
 reads retain only `elasticctl-live-` policy ids and names, and require both

@@ -115,7 +115,7 @@ const FLEET_POLICIES: RequiredFeature = RequiredFeature {
     label: "fleet-policies",
 };
 
-const CONTRACTS: [Contract; 10] = [
+const CONTRACTS: [Contract; 11] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -165,6 +165,11 @@ const CONTRACTS: [Contract; 10] = [
         name: "fleet",
         test: "fleet_transfers_agent_and_integration_policies_without_residue",
         features: &[FLEET_POLICIES],
+    },
+    Contract {
+        name: "mcp_reads_existing_verticals",
+        test: "mcp_reads_existing_verticals",
+        features: &[EXCEPTION_LISTS, PREBUILT_RULES, DASHBOARDS, FLEET_POLICIES],
     },
 ];
 
@@ -662,7 +667,12 @@ fn test_command(
             "--exact",
             "--test-threads=1",
         ]);
-    if contract.name == "fleet" && fleet_setup_confirmed {
+    if fleet_setup_confirmed
+        && contract
+            .features
+            .iter()
+            .any(|required| required.feature == Feature::FleetPolicies)
+    {
         command.env("ELASTICCTL_CONFORMANCE_FLEET_SETUP", "1");
     }
     command
@@ -1012,10 +1022,13 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_ten_in_order() {
+    fn contract_table_is_the_approved_eleven_in_order() {
         assert_eq!(
-            CONTRACTS.map(|contract| contract.name),
-            [
+            CONTRACTS
+                .iter()
+                .map(|contract| contract.name)
+                .collect::<Vec<_>>(),
+            vec![
                 "diagnostics",
                 "pull_diff",
                 "exception_round_trip",
@@ -1026,6 +1039,7 @@ mod tests {
                 "triage",
                 "content",
                 "fleet",
+                "mcp_reads_existing_verticals",
             ]
         );
         assert_eq!(CONTRACTS[8].features.len(), 1);
@@ -1033,6 +1047,21 @@ mod tests {
         assert_eq!(CONTRACTS[8].features[0].label, "dashboards");
         assert_eq!(CONTRACTS[9].name, "fleet");
         assert_eq!(CONTRACTS[9].features[0].feature, Feature::FleetPolicies);
+        let mcp_reads = CONTRACTS.last().unwrap();
+        assert_eq!(mcp_reads.name, "mcp_reads_existing_verticals");
+        assert_eq!(
+            mcp_reads
+                .features
+                .iter()
+                .map(|required| required.feature)
+                .collect::<Vec<_>>(),
+            vec![
+                Feature::ExceptionLists,
+                Feature::PrebuiltRules,
+                Feature::Dashboards,
+                Feature::FleetPolicies,
+            ]
+        );
     }
 
     #[test]
@@ -1093,6 +1122,14 @@ mod tests {
                 ContractResult::pass("diagnostics"),
                 ContractResult::fail("pull_diff"),
                 ContractResult::skip("exception_round_trip", "exception-lists"),
+                ContractResult::pass("stale_pointer_repair"),
+                ContractResult::pass("source_scoping"),
+                ContractResult::pass("rule_round_trip"),
+                ContractResult::pass("search"),
+                ContractResult::pass("triage"),
+                ContractResult::pass("content"),
+                ContractResult::pass("fleet"),
+                ContractResult::pass("mcp_reads_existing_verticals"),
             ],
         };
         assert_eq!(
@@ -1115,6 +1152,46 @@ mod tests {
                         "contract": "exception_round_trip",
                         "result": "skip",
                         "error_class": "unsupported:exception-lists:9.5.1",
+                    },
+                    {
+                        "contract": "stale_pointer_repair",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "source_scoping",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "rule_round_trip",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "search",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "triage",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "content",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "fleet",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "mcp_reads_existing_verticals",
+                        "result": "pass",
+                        "error_class": null,
                     },
                 ],
             })
@@ -1485,19 +1562,37 @@ mod tests {
                 .get_args()
                 .all(|arg| !arg.to_string_lossy().contains("essu_"))
         );
-    }
 
-    #[test]
-    fn only_a_validated_fleet_setup_reaches_the_fleet_child() {
-        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[9], true);
-        assert!(command.get_envs().any(|(name, value)| {
+        let mcp_command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[10], true);
+        assert!(
+            mcp_command
+                .get_args()
+                .any(|arg| { arg == std::ffi::OsStr::new("mcp_reads_existing_verticals") })
+        );
+        assert!(mcp_command.get_envs().any(|(name, value)| {
             name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
                 && value == Some(std::ffi::OsStr::new("1"))
         }));
-        let command = test_command(std::path::Path::new("/workspace"), &CONTRACTS[9], false);
-        assert!(!command.get_envs().any(|(name, _)| {
-            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
-        }));
+    }
+
+    #[test]
+    fn validated_fleet_setup_reaches_every_fleet_policy_child() {
+        let mcp_reads = Contract {
+            name: "mcp_reads_existing_verticals",
+            test: "mcp_reads_existing_verticals",
+            features: &[EXCEPTION_LISTS, PREBUILT_RULES, DASHBOARDS, FLEET_POLICIES],
+        };
+        for contract in [&CONTRACTS[9], &mcp_reads] {
+            let command = test_command(std::path::Path::new("/workspace"), contract, true);
+            assert!(command.get_envs().any(|(name, value)| {
+                name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
+                    && value == Some(std::ffi::OsStr::new("1"))
+            }));
+            let command = test_command(std::path::Path::new("/workspace"), contract, false);
+            assert!(!command.get_envs().any(|(name, _)| {
+                name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
+            }));
+        }
     }
 
     #[test]

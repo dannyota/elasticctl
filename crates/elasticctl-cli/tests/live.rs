@@ -17,9 +17,11 @@ mod fleet;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
 
+/// The eleventh contract stays at this integration-test root because the
+/// conformance controller invokes this exact name.
 #[test]
 #[ignore = "requires a live stack"]
-fn mcp_reads_v071_tools_without_residue() {
+fn mcp_reads_existing_verticals() {
     if skip_unless_live() {
         return;
     }

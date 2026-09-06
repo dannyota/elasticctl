@@ -15,6 +15,48 @@ const MAX_FRAME_BYTES: usize = 1_048_576;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(75);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
 
+#[derive(Clone, Copy)]
+enum McpProtocolPath {
+    Current,
+    Legacy,
+}
+
+fn protocol_request(
+    path: McpProtocolPath,
+    id: u64,
+    method: &'static str,
+    mut params: Value,
+) -> Value {
+    if matches!(path, McpProtocolPath::Current) {
+        params
+            .as_object_mut()
+            .expect("MCP request parameters are an object")
+            .insert("_meta".to_string(), current_metadata());
+    }
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+}
+
+fn current_metadata() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+    })
+}
+
+#[test]
+fn current_request_builder_adds_metadata_to_tool_requests_but_legacy_omits_it() {
+    for (method, params) in [
+        ("tools/list", json!({})),
+        ("tools/call", json!({"name": "stack_info", "arguments": {}})),
+    ] {
+        let current = protocol_request(McpProtocolPath::Current, 1, method, params.clone());
+        let legacy = protocol_request(McpProtocolPath::Legacy, 2, method, params);
+
+        assert_eq!(current["params"]["_meta"], current_metadata(), "{method}");
+        assert!(legacy["params"].get("_meta").is_none(), "{method}");
+    }
+}
+
 #[test]
 fn bounded_frame_reader_accepts_the_exact_limit_without_retaining_the_newline() {
     let mut source = std::io::Cursor::new([vec![b'x'; MAX_FRAME_BYTES], vec![b'\n']].concat());
@@ -310,6 +352,7 @@ fn joining_stdout_panic_still_joins_stderr() {
             observed.store(true, Ordering::SeqCst);
         })),
         next_id: 1,
+        protocol_path: McpProtocolPath::Legacy,
     };
 
     let error = child
@@ -998,27 +1041,11 @@ fn exercise_protocol(
     index: &str,
     lease: &crate::fleet::fixture::FleetFixtureLease,
 ) -> TestResult {
-    let initialize = child.request(
-        "initialize",
-        json!({
-            "protocolVersion": "2025-11-25",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "elasticctl-live-smoke",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-        }),
-    )?;
-    if initialize
-        .get("result")
-        .and_then(Value::as_object)
-        .and_then(|result| result.get("protocolVersion"))
-        .and_then(Value::as_str)
-        != Some("2025-11-25")
+    let discovery = child.request("server/discover", json!({}))?;
+    if discovery.pointer("/result/supportedVersions") != Some(&json!(["2026-07-28", "2025-11-25"]))
     {
-        return Err("MCP initialize did not negotiate the legacy protocol.".to_string());
+        return Err("MCP discovery did not advertise the supported protocols.".to_string());
     }
-    child.notify("notifications/initialized", json!({}))?;
 
     let catalog = child.request("tools/list", json!({}))?;
     validate_catalog(&catalog, false)?;
@@ -1986,6 +2013,7 @@ struct McpChild {
     stdout_reader: Option<JoinHandle<()>>,
     stderr_reader: Option<JoinHandle<()>>,
     next_id: u64,
+    protocol_path: McpProtocolPath,
 }
 
 struct ChildOwner {
@@ -2013,6 +2041,7 @@ impl ChildOwner {
             stdout_reader: self.stdout_reader.take(),
             stderr_reader: self.stderr_reader.take(),
             next_id: 1,
+            protocol_path: McpProtocolPath::Legacy,
         }
     }
 }
@@ -2044,9 +2073,15 @@ impl McpChild {
         let child = command
             .spawn()
             .map_err(|_| "MCP child could not be started.".to_string())?;
-        Self::from_child(child, |name, task| {
+        let mut child = Self::from_child(child, |name, task| {
             thread::Builder::new().name(name.to_string()).spawn(task)
-        })
+        })?;
+        child.protocol_path = if allow_query_tools {
+            McpProtocolPath::Legacy
+        } else {
+            McpProtocolPath::Current
+        };
+        Ok(child)
     }
 
     fn from_child<F>(child: Child, mut start_reader: F) -> TestResult<Self>
@@ -2101,7 +2136,7 @@ impl McpChild {
     fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        self.send(protocol_request(self.protocol_path, id, method, params))?;
         let response = self.receive(method)?;
         if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Err(format!("MCP {method} response was not JSON-RPC 2.0."));
@@ -2129,7 +2164,12 @@ impl McpChild {
     fn method_not_found(&mut self, tool: &'static str) -> TestResult {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":tool,"arguments":{}}}))?;
+        self.send(protocol_request(
+            self.protocol_path,
+            id,
+            "tools/call",
+            json!({"name": tool, "arguments": {}}),
+        ))?;
         let response = self.receive("tools/call")?;
         if response.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
             && response.get("id").and_then(Value::as_u64) == Some(id)
@@ -2151,7 +2191,12 @@ impl McpChild {
     ) -> TestResult {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":tool,"arguments":arguments}}))?;
+        self.send(protocol_request(
+            self.protocol_path,
+            id,
+            "tools/call",
+            json!({"name": tool, "arguments": arguments}),
+        ))?;
         let response = self.receive("tools/call")?;
         normalized_not_found_content(&response, id, tool, http_status)
     }
