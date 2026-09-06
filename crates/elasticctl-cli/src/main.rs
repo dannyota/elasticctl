@@ -46,10 +46,16 @@ async fn main() {
     if matches!(
         &args.command,
         Command::Mcp {
-            action: McpAction::Serve
+            action: McpAction::Serve { .. }
         }
     ) {
-        cmd::mcp::serve(&args.global).await;
+        let Command::Mcp {
+            action: McpAction::Serve { allow_query_tools },
+        } = &args.command
+        else {
+            unreachable!()
+        };
+        cmd::mcp::serve(&args.global, *allow_query_tools).await;
     }
 
     let result = match &args.command {

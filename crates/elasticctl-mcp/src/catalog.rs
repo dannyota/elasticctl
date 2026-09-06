@@ -23,12 +23,14 @@ pub enum ToolId {
     RulesGet,
     RulesList,
     RulesPrebuiltStatus,
+    SearchDsl,
+    SearchEsql,
     StackDoctor,
     StackInfo,
 }
 
 impl ToolId {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::AlertsGet,
         Self::AlertsList,
         Self::CasesGet,
@@ -47,6 +49,8 @@ impl ToolId {
         Self::RulesGet,
         Self::RulesList,
         Self::RulesPrebuiltStatus,
+        Self::SearchDsl,
+        Self::SearchEsql,
         Self::StackDoctor,
         Self::StackInfo,
     ];
@@ -71,6 +75,8 @@ impl ToolId {
             Self::RulesGet => "rules_get",
             Self::RulesList => "rules_list",
             Self::RulesPrebuiltStatus => "rules_prebuilt_status",
+            Self::SearchDsl => "search_dsl",
+            Self::SearchEsql => "search_esql",
             Self::StackDoctor => "stack_doctor",
             Self::StackInfo => "stack_info",
         }
@@ -83,5 +89,9 @@ impl ToolId {
 
 /// Return the registered production catalog.
 pub fn definitions() -> Vec<Tool> {
-    crate::tools::definitions()
+    crate::tools::definitions(false)
+}
+
+pub(crate) fn definitions_for(allow_query_tools: bool) -> Vec<Tool> {
+    crate::tools::definitions(allow_query_tools)
 }

@@ -53,19 +53,45 @@ pub struct ServerState {
     target: TargetContext,
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
+    query_transport: tokio::sync::OnceCell<Transport>,
+    allow_query_tools: bool,
     call_timeout: Duration,
     permits: Arc<Semaphore>,
 }
 
 impl ServerState {
-    fn new(target: TargetContext, resolved: Resolved, call_timeout: Duration) -> Self {
+    fn new(
+        target: TargetContext,
+        resolved: Resolved,
+        call_timeout: Duration,
+        allow_query_tools: bool,
+    ) -> Self {
         Self {
             target,
             resolved,
             transport: tokio::sync::OnceCell::new(),
+            query_transport: tokio::sync::OnceCell::new(),
+            allow_query_tools,
             call_timeout,
             permits: Arc::new(Semaphore::new(4)),
         }
+    }
+
+    /// Lazily construct the one-attempt transport used only by query tools.
+    pub async fn query_transport(&self) -> Result<&Transport> {
+        self.query_transport
+            .get_or_try_init(|| async {
+                Transport::with_options(
+                    &self.resolved.profile,
+                    TransportOptions {
+                        debug: false,
+                        response_body_limit: Some(16_777_216),
+                        disable_redirects: true,
+                        disable_retries: true,
+                    },
+                )
+            })
+            .await
     }
 
     /// Lazily construct the restricted core transport shared by all adapters.
@@ -92,6 +118,10 @@ impl ServerState {
 
     fn try_admit(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.permits.clone().try_acquire_owned().ok()
+    }
+
+    fn allows_query_tools(&self) -> bool {
+        self.allow_query_tools
     }
 }
 
@@ -233,7 +263,12 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let state = Arc::new(ServerState::new(context, target, options.call_timeout));
+    let state = Arc::new(ServerState::new(
+        context,
+        target,
+        options.call_timeout,
+        options.allow_query_tools,
+    ));
     let mut transport = BoundedIo::with_cancellation(input, output, root.clone());
     let Some(first) = transport.receive().await else {
         return Ok(());
@@ -278,12 +313,6 @@ where
 
 /// Validate configuration that can be rejected before MCP startup or network I/O.
 fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetContext> {
-    if options.allow_query_tools {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "query tools are not supported in this release",
-        ));
-    }
     let seconds = options.call_timeout.as_secs();
     if seconds == 0 || seconds > 120 || options.call_timeout.subsec_nanos() != 0 {
         return Err(Error::new(
@@ -643,8 +672,15 @@ enum SyntheticTool {
     RetryingCore,
 }
 
-fn dispatch_target(name: &str) -> Option<DispatchTarget> {
+fn dispatch_target(name: &str, allow_query_tools: bool) -> Option<DispatchTarget> {
     if let Some(tool) = crate::catalog::ToolId::parse(name) {
+        if matches!(
+            tool,
+            crate::catalog::ToolId::SearchDsl | crate::catalog::ToolId::SearchEsql
+        ) && !allow_query_tools
+        {
+            return None;
+        }
         return tools::adapter_for(tool).map(|adapter| DispatchTarget::Adapter(tool, adapter));
     }
     #[cfg(test)]
@@ -784,7 +820,7 @@ impl ServerHandler for McpServer {
     ) -> std::result::Result<ListToolsResult, rmcp::ErrorData> {
         let _ = self.state.target();
         Ok(ListToolsResult {
-            tools: catalog::definitions(),
+            tools: catalog::definitions_for(self.state.allows_query_tools()),
             ..Default::default()
         })
     }
@@ -818,7 +854,9 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
-        let Some(dispatch) = dispatch_target(request.name.as_ref()) else {
+        let Some(dispatch) =
+            dispatch_target(request.name.as_ref(), self.state.allows_query_tools())
+        else {
             return Err(unknown_tool_error());
         };
         let Some(permit) = self.state.try_admit() else {

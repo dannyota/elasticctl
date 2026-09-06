@@ -7,6 +7,7 @@ Serve MCP over stdin and stdout
 Usage: elasticctl mcp serve [OPTIONS]
 
 Options:
+      --allow-query-tools  Enable the synchronous Elasticsearch query tools for this process
       --profile <PROFILE>  Use a named profile
       --config <CONFIG>    Use a specific configuration file
       --space <SPACE>      Kibana space to operate in

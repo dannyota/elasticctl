@@ -400,6 +400,52 @@ fn both_binaries_serve_current_and_legacy_catalog_discovery() {
 }
 
 #[test]
+fn query_startup_flag_adds_only_the_two_query_tools_for_both_binaries() {
+    let expected = vec![
+        "alerts_get",
+        "alerts_list",
+        "cases_get",
+        "cases_list",
+        "dashboards_get",
+        "dashboards_list",
+        "data_views_default_get",
+        "data_views_get",
+        "data_views_list",
+        "exceptions_get",
+        "exceptions_list",
+        "fleet_agent_policies_get",
+        "fleet_agent_policies_list",
+        "fleet_integration_policies_get",
+        "fleet_integration_policies_list",
+        "rules_get",
+        "rules_list",
+        "rules_prebuilt_status",
+        "search_dsl",
+        "search_esql",
+        "stack_doctor",
+        "stack_info",
+    ];
+    for bin in binaries() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let config = config_for(
+            dir.path(),
+            "analyst",
+            "https://kibana.example.test",
+            None,
+            30,
+            true,
+        );
+        let mut args = args_with_config(&config);
+        args.push("--allow-query-tools".to_string());
+        let (reply, output) = current_list(bin, &args);
+        assert!(output.status.success(), "{bin}: {output:?}");
+        assert_eq!(tool_names(&reply), expected, "{bin}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
 fn forbidden_globals_are_rejected_before_config_access_for_both_binaries() {
     let cases: &[&[&str]] = &[
         &["mcp", "serve", "--yes"],

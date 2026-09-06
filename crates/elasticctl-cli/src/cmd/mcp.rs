@@ -28,7 +28,7 @@ pub fn exit_usage() -> ! {
 }
 
 /// Resolve the target and delegate MCP stdio without entering the CLI renderer.
-pub async fn serve(global: &GlobalArgs) -> ! {
+pub async fn serve(global: &GlobalArgs, allow_query_tools: bool) -> ! {
     if global.yes
         || global.out.is_some()
         || global.fields.is_some()
@@ -59,7 +59,7 @@ pub async fn serve(global: &GlobalArgs) -> ! {
         context.resolved,
         elasticctl_mcp::ServerOptions {
             call_timeout: Duration::from_secs(timeout_secs),
-            allow_query_tools: false,
+            allow_query_tools,
         },
     )
     .await;

@@ -221,7 +221,11 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum McpAction {
     /// Serve MCP over stdin and stdout
-    Serve,
+    Serve {
+        /// Enable the synchronous Elasticsearch query tools for this process.
+        #[arg(long)]
+        allow_query_tools: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

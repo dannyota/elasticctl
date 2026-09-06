@@ -426,21 +426,28 @@ async fn a_bare_legacy_ping_cannot_switch_the_connection_to_current_requests() {
 }
 
 #[tokio::test]
-async fn startup_rejects_query_tools_without_opening_the_protocol() {
-    let (input, _) = tokio::io::duplex(64);
-    let (_, output) = tokio::io::duplex(64);
-    let error = elasticctl_mcp::serve_io(
+async fn startup_accepts_query_tools_before_opening_the_protocol() {
+    let mut harness = Harness::start(
         target(),
         elasticctl_mcp::ServerOptions {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: true,
         },
-        input,
-        output,
-    )
-    .await
-    .expect_err("query tools are deferred to a later release");
-    assert_eq!(error.kind, elasticctl_core::ErrorKind::Unsupported);
+    );
+    harness
+        .send_json(json!({
+            "jsonrpc": "2.0", "id": 27, "method": "tools/list",
+            "params": {"_meta": current_metadata()},
+        }))
+        .await;
+    let reply = harness.receive_json().await;
+    assert_eq!(reply["id"], 27);
+    assert_eq!(
+        reply["result"]["tools"].as_array().expect("tools").len(),
+        22
+    );
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
 }
 
 #[tokio::test]

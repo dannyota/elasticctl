@@ -14,6 +14,7 @@ use crate::{PageInfo, ServerState, catalog::ToolId};
 mod content;
 mod exceptions;
 mod fleet;
+mod query;
 mod rules;
 mod stack;
 mod triage;
@@ -70,17 +71,21 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
         ToolId::RulesGet | ToolId::RulesList | ToolId::RulesPrebuiltStatus => {
             Some(rules::adapter())
         }
+        ToolId::SearchDsl | ToolId::SearchEsql => Some(query::adapter()),
         ToolId::StackDoctor | ToolId::StackInfo => Some(stack::adapter()),
     }
 }
 
 /// Return the production definitions in lexical catalog order.
-pub(crate) fn definitions() -> Vec<Tool> {
+pub(crate) fn definitions(allow_query_tools: bool) -> Vec<Tool> {
     let mut definitions = triage::definitions();
     definitions.extend(content::definitions());
     definitions.extend(exceptions::definitions());
     definitions.extend(fleet::definitions());
     definitions.extend(rules::definitions());
+    if allow_query_tools {
+        definitions.extend(query::definitions());
+    }
     definitions.extend(stack::definitions());
     definitions
 }
