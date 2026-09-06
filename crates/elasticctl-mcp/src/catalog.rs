@@ -9,6 +9,11 @@ pub enum ToolId {
     AlertsList,
     CasesGet,
     CasesList,
+    DashboardsGet,
+    DashboardsList,
+    DataViewsDefaultGet,
+    DataViewsGet,
+    DataViewsList,
     ExceptionsGet,
     ExceptionsList,
     RulesGet,
@@ -19,11 +24,16 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 16] = [
         Self::AlertsGet,
         Self::AlertsList,
         Self::CasesGet,
         Self::CasesList,
+        Self::DashboardsGet,
+        Self::DashboardsList,
+        Self::DataViewsDefaultGet,
+        Self::DataViewsGet,
+        Self::DataViewsList,
         Self::ExceptionsGet,
         Self::ExceptionsList,
         Self::RulesGet,
@@ -39,6 +49,11 @@ impl ToolId {
             Self::AlertsList => "alerts_list",
             Self::CasesGet => "cases_get",
             Self::CasesList => "cases_list",
+            Self::DashboardsGet => "dashboards_get",
+            Self::DashboardsList => "dashboards_list",
+            Self::DataViewsDefaultGet => "data_views_default_get",
+            Self::DataViewsGet => "data_views_get",
+            Self::DataViewsList => "data_views_list",
             Self::ExceptionsGet => "exceptions_get",
             Self::ExceptionsList => "exceptions_list",
             Self::RulesGet => "rules_get",
