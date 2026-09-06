@@ -1128,7 +1128,9 @@ fn exercise_inspection_reads(
     validate_empty_list(
         &child.tool(
             "cases_list",
-            json!({"search":unique_name("missing"),"limit":10}),
+            // Cases uses tokenized simple_query_string with OR semantics, so
+            // avoid the shared hyphenated live-fixture terms in this miss.
+            json!({"search":unique_name("missing").replace('-', ""),"limit":10}),
         )?,
         "cases",
     )?;
