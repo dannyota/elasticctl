@@ -1514,7 +1514,8 @@ The 0.7 read-only MCP capability area is described in
 [research](../plans/v0.7-research.md) and separate plans for
 [0.7.0](../plans/v0.7.0.md), [0.7.1](../plans/v0.7.1.md), and
 [0.7.2](../plans/v0.7.2.md). The 0.7.0 implementation, live proof, and evidence
-review are complete. The 0.7.1 implementation is underway; 0.7.2 remains planned.
+review are complete. The 0.7.1 implementation, live proof, and final evidence
+review completed on 2026-09-06. The 0.7.2 scope remains planned.
 None grants release or publication approval.
 
 The temporary trial-deployment window changes execution order, not capability
