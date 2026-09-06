@@ -1,7 +1,8 @@
 # elasticctl 0.7 MCP design
 
-Status: 0.7.0 implementation and live proof are complete; final evidence review
-is complete. Later scopes remain planned. Release and publication need separate approval. The
+Status: 0.7.0 implementation, live proof, and final evidence review are
+complete. The 0.7.1 read coverage implementation is underway; 0.7.2 remains
+planned. Release and publication need separate approval. The
 [shared design](elasticctl-design.md) defines existing behavior.
 [Research](../plans/v0.7-research.md) records sources, the 0.6.2 baseline,
 and unmeasured claims.

@@ -598,6 +598,10 @@ fn parse_response_frame(frame: &[u8]) -> TestResult<Value> {
 
 fn required_catalog() -> Vec<Value> {
     [
+        "alerts_get",
+        "alerts_list",
+        "cases_get",
+        "cases_list",
         "exceptions_get",
         "exceptions_list",
         "rules_get",
@@ -636,6 +640,10 @@ fn validate_catalog(catalog: &Value) -> TestResult {
         .ok_or_else(|| "MCP tools/list response has an invalid tool catalog.".to_string())?;
     if names
         != [
+            "alerts_get",
+            "alerts_list",
+            "cases_get",
+            "cases_list",
             "exceptions_get",
             "exceptions_list",
             "rules_get",

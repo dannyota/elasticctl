@@ -14,6 +14,7 @@ use crate::{PageInfo, ServerState, catalog::ToolId};
 mod exceptions;
 mod rules;
 mod stack;
+mod triage;
 
 /// Typed adapter output before MCP result projection.
 #[derive(Clone, Debug)]
@@ -51,6 +52,9 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::AlertsGet | ToolId::AlertsList | ToolId::CasesGet | ToolId::CasesList => {
+            Some(triage::adapter())
+        }
         ToolId::ExceptionsGet | ToolId::ExceptionsList => Some(exceptions::adapter()),
         ToolId::RulesGet | ToolId::RulesList | ToolId::RulesPrebuiltStatus => {
             Some(rules::adapter())
@@ -61,7 +65,8 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
 
 /// Return the production definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
-    let mut definitions = exceptions::definitions();
+    let mut definitions = triage::definitions();
+    definitions.extend(exceptions::definitions());
     definitions.extend(rules::definitions());
     definitions.extend(stack::definitions());
     definitions

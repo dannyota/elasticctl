@@ -341,6 +341,10 @@ fn both_binaries_leave_protocol_stdout_empty_until_input_and_exit_cleanly_on_eof
 #[test]
 fn both_binaries_serve_current_and_legacy_catalog_discovery() {
     let expected = vec![
+        "alerts_get",
+        "alerts_list",
+        "cases_get",
+        "cases_list",
         "exceptions_get",
         "exceptions_list",
         "rules_get",

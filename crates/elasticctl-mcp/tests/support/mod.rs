@@ -10,6 +10,10 @@ use tokio::{
 use elasticctl_mcp::{ServerOptions, serve_io};
 
 pub const EXPECTED_TOOL_NAMES: &[&str] = &[
+    "alerts_get",
+    "alerts_list",
+    "cases_get",
+    "cases_list",
     "exceptions_get",
     "exceptions_list",
     "rules_get",

@@ -5,6 +5,10 @@ use rmcp::model::Tool;
 /// The complete 0.7 MCP tool namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolId {
+    AlertsGet,
+    AlertsList,
+    CasesGet,
+    CasesList,
     ExceptionsGet,
     ExceptionsList,
     RulesGet,
@@ -15,7 +19,11 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
+        Self::AlertsGet,
+        Self::AlertsList,
+        Self::CasesGet,
+        Self::CasesList,
         Self::ExceptionsGet,
         Self::ExceptionsList,
         Self::RulesGet,
@@ -27,6 +35,10 @@ impl ToolId {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::AlertsGet => "alerts_get",
+            Self::AlertsList => "alerts_list",
+            Self::CasesGet => "cases_get",
+            Self::CasesList => "cases_list",
             Self::ExceptionsGet => "exceptions_get",
             Self::ExceptionsList => "exceptions_list",
             Self::RulesGet => "rules_get",
