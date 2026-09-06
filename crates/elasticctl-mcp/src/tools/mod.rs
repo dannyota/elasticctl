@@ -13,6 +13,7 @@ use crate::{PageInfo, ServerState, catalog::ToolId};
 
 mod content;
 mod exceptions;
+mod fleet;
 mod rules;
 mod stack;
 mod triage;
@@ -58,6 +59,10 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
         | ToolId::DataViewsDefaultGet
         | ToolId::DataViewsGet
         | ToolId::DataViewsList => Some(content::adapter()),
+        ToolId::FleetAgentPoliciesGet
+        | ToolId::FleetAgentPoliciesList
+        | ToolId::FleetIntegrationPoliciesGet
+        | ToolId::FleetIntegrationPoliciesList => Some(fleet::adapter()),
         ToolId::AlertsGet | ToolId::AlertsList | ToolId::CasesGet | ToolId::CasesList => {
             Some(triage::adapter())
         }
@@ -74,6 +79,7 @@ pub(crate) fn definitions() -> Vec<Tool> {
     let mut definitions = triage::definitions();
     definitions.extend(content::definitions());
     definitions.extend(exceptions::definitions());
+    definitions.extend(fleet::definitions());
     definitions.extend(rules::definitions());
     definitions.extend(stack::definitions());
     definitions

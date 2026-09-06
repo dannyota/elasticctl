@@ -16,6 +16,10 @@ pub enum ToolId {
     DataViewsList,
     ExceptionsGet,
     ExceptionsList,
+    FleetAgentPoliciesGet,
+    FleetAgentPoliciesList,
+    FleetIntegrationPoliciesGet,
+    FleetIntegrationPoliciesList,
     RulesGet,
     RulesList,
     RulesPrebuiltStatus,
@@ -24,7 +28,7 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 20] = [
         Self::AlertsGet,
         Self::AlertsList,
         Self::CasesGet,
@@ -36,6 +40,10 @@ impl ToolId {
         Self::DataViewsList,
         Self::ExceptionsGet,
         Self::ExceptionsList,
+        Self::FleetAgentPoliciesGet,
+        Self::FleetAgentPoliciesList,
+        Self::FleetIntegrationPoliciesGet,
+        Self::FleetIntegrationPoliciesList,
         Self::RulesGet,
         Self::RulesList,
         Self::RulesPrebuiltStatus,
@@ -56,6 +64,10 @@ impl ToolId {
             Self::DataViewsList => "data_views_list",
             Self::ExceptionsGet => "exceptions_get",
             Self::ExceptionsList => "exceptions_list",
+            Self::FleetAgentPoliciesGet => "fleet_agent_policies_get",
+            Self::FleetAgentPoliciesList => "fleet_agent_policies_list",
+            Self::FleetIntegrationPoliciesGet => "fleet_integration_policies_get",
+            Self::FleetIntegrationPoliciesList => "fleet_integration_policies_list",
             Self::RulesGet => "rules_get",
             Self::RulesList => "rules_list",
             Self::RulesPrebuiltStatus => "rules_prebuilt_status",
