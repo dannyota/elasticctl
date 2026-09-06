@@ -19,7 +19,7 @@ mod mcp_smoke;
 
 #[test]
 #[ignore = "requires a live stack"]
-fn mcp_reads_foundation_tools_without_residue() {
+fn mcp_reads_v071_tools_without_residue() {
     if skip_unless_live() {
         return;
     }
@@ -28,12 +28,27 @@ fn mcp_reads_foundation_tools_without_residue() {
     let config = write_live_config(dir.path());
     let profile = live_profile();
     let baseline = capture_baseline(&config, &profile).unwrap();
-    let mut cleanup = LiveCleanup::new(config.clone(), profile);
+    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
     if let Err(error) = assert_clean_baseline(&config, &cleanup, baseline.clone()) {
         panic_conformance(ConformanceFailureClass::Harness, error);
     }
-    let result = mcp_smoke::run_contract(&config, dir.path(), &mut cleanup);
-    conclude(result, &mut cleanup, baseline);
+    let mut lease = fleet::fixture::FleetFixtureLease::new(profile, &unique_name("mcp-fleet"));
+    let mut run = LiveMcpRun {
+        config: &config,
+        scratch: dir.path(),
+        baseline,
+        cleanup: &mut cleanup,
+        lease: &mut lease,
+    };
+    match run_mcp_steps(&mut run) {
+        Ok(()) => {}
+        Err(McpOutcomeFailure::Cleanup(error) | McpOutcomeFailure::Baseline(error)) => {
+            panic_conformance(ConformanceFailureClass::Cleanup, error)
+        }
+        Err(McpOutcomeFailure::Contract(error)) => {
+            panic_conformance(ConformanceFailureClass::Contract, error)
+        }
+    }
 }
 
 /// The tenth contract stays at this integration-test root because the
@@ -72,6 +87,83 @@ enum ConformanceFailureClass {
     Harness,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum McpOutcomeFailure {
+    Cleanup(String),
+    Baseline(String),
+    Contract(String),
+}
+
+fn classify_mcp_outcome(
+    contract: TestResult,
+    fleet_cleanup: TestResult,
+    general_cleanup: TestResult,
+    baseline_audit: TestResult,
+) -> Result<(), McpOutcomeFailure> {
+    let mut cleanup = Vec::new();
+    if fleet_cleanup.is_err() {
+        cleanup.push("Fleet cleanup failed");
+    }
+    if general_cleanup.is_err() {
+        cleanup.push("general cleanup failed");
+    }
+    if !cleanup.is_empty() {
+        return Err(McpOutcomeFailure::Cleanup(cleanup.join("; ")));
+    }
+    if baseline_audit.is_err() {
+        return Err(McpOutcomeFailure::Baseline(
+            "baseline audit failed".to_string(),
+        ));
+    }
+    contract.map_err(McpOutcomeFailure::Contract)
+}
+
+trait McpRunSteps {
+    fn run_contract(&mut self) -> TestResult;
+    fn finish_fleet(&mut self) -> TestResult;
+    fn finish_general(&mut self) -> TestResult;
+    fn audit_baseline(&mut self) -> TestResult;
+}
+
+fn run_mcp_steps(steps: &mut impl McpRunSteps) -> Result<(), McpOutcomeFailure> {
+    let contract = steps.run_contract();
+    let fleet_cleanup = steps.finish_fleet();
+    let general_cleanup = steps.finish_general();
+    let baseline_audit = steps.audit_baseline();
+    classify_mcp_outcome(contract, fleet_cleanup, general_cleanup, baseline_audit)
+}
+
+struct LiveMcpRun<'a> {
+    config: &'a Path,
+    scratch: &'a Path,
+    baseline: LiveBaseline,
+    cleanup: &'a mut LiveCleanup,
+    lease: &'a mut fleet::fixture::FleetFixtureLease,
+}
+
+impl McpRunSteps for LiveMcpRun<'_> {
+    fn run_contract(&mut self) -> TestResult {
+        mcp_smoke::run_contract(self.config, self.scratch, self.cleanup, self.lease)
+    }
+
+    fn finish_fleet(&mut self) -> TestResult {
+        match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime
+                .block_on(self.lease.finish())
+                .map_err(|_| "Fleet cleanup failed".to_string()),
+            Err(_) => Err("Fleet cleanup failed".to_string()),
+        }
+    }
+
+    fn finish_general(&mut self) -> TestResult {
+        self.cleanup.finish()
+    }
+
+    fn audit_baseline(&mut self) -> TestResult {
+        assert_clean_baseline(self.config, self.cleanup, self.baseline.clone())
+    }
+}
+
 fn conformance_marker(class: ConformanceFailureClass) -> &'static str {
     match class {
         ConformanceFailureClass::Contract => "elasticctl-conformance-class:contract",
@@ -82,6 +174,150 @@ fn conformance_marker(class: ConformanceFailureClass) -> &'static str {
 
 fn panic_conformance(class: ConformanceFailureClass, detail: impl std::fmt::Display) -> ! {
     panic!("{}\n{detail}", conformance_marker(class));
+}
+
+/// The MCP smoke owns two cleanup domains. A failed protocol must not hide a
+/// Fleet cleanup failure, and both cleanup kinds must remain visible when
+/// they fail together.
+#[test]
+fn mcp_outcome_classifier_gives_combined_cleanup_failures_precedence() {
+    let outcome = classify_mcp_outcome(
+        Err("protocol failed".to_string()),
+        Err("Fleet finish failed".to_string()),
+        Err("general cleanup failed".to_string()),
+        Err("baseline audit failed".to_string()),
+    )
+    .expect_err("cleanup failures must take precedence over the protocol result");
+
+    assert_eq!(
+        outcome,
+        McpOutcomeFailure::Cleanup("Fleet cleanup failed; general cleanup failed".to_string())
+    );
+}
+
+struct RecordingMcpSteps {
+    events: Vec<&'static str>,
+    contract: TestResult,
+    fleet: TestResult,
+    general: TestResult,
+    baseline: TestResult,
+}
+
+impl McpRunSteps for RecordingMcpSteps {
+    fn run_contract(&mut self) -> TestResult {
+        self.events.push("contract");
+        self.contract.clone()
+    }
+    fn finish_fleet(&mut self) -> TestResult {
+        self.events.push("finish-fleet");
+        self.fleet.clone()
+    }
+    fn finish_general(&mut self) -> TestResult {
+        self.events.push("finish-general");
+        self.general.clone()
+    }
+    fn audit_baseline(&mut self) -> TestResult {
+        self.events.push("audit-baseline");
+        self.baseline.clone()
+    }
+}
+
+#[test]
+fn mcp_fleet_cleanup_failure_still_runs_general_cleanup_and_audit() {
+    let mut steps = RecordingMcpSteps {
+        events: Vec::new(),
+        contract: Err("contract".into()),
+        fleet: Err("fleet".into()),
+        general: Ok(()),
+        baseline: Ok(()),
+    };
+    assert_eq!(
+        run_mcp_steps(&mut steps),
+        Err(McpOutcomeFailure::Cleanup("Fleet cleanup failed".into()))
+    );
+    assert_eq!(
+        steps.events,
+        [
+            "contract",
+            "finish-fleet",
+            "finish-general",
+            "audit-baseline"
+        ]
+    );
+}
+
+#[test]
+fn mcp_general_cleanup_failure_still_runs_baseline_audit() {
+    let mut steps = RecordingMcpSteps {
+        events: Vec::new(),
+        contract: Err("contract".into()),
+        fleet: Ok(()),
+        general: Err("general".into()),
+        baseline: Err("baseline".into()),
+    };
+    assert_eq!(
+        run_mcp_steps(&mut steps),
+        Err(McpOutcomeFailure::Cleanup("general cleanup failed".into()))
+    );
+    assert_eq!(
+        steps.events,
+        [
+            "contract",
+            "finish-fleet",
+            "finish-general",
+            "audit-baseline"
+        ]
+    );
+}
+
+#[test]
+fn mcp_combined_cleanup_failures_run_every_step_and_take_precedence() {
+    let mut steps = RecordingMcpSteps {
+        events: Vec::new(),
+        contract: Err("contract".into()),
+        fleet: Err("fleet".into()),
+        general: Err("general".into()),
+        baseline: Err("baseline".into()),
+    };
+    assert_eq!(
+        run_mcp_steps(&mut steps),
+        Err(McpOutcomeFailure::Cleanup(
+            "Fleet cleanup failed; general cleanup failed".into()
+        ))
+    );
+    assert_eq!(
+        steps.events,
+        [
+            "contract",
+            "finish-fleet",
+            "finish-general",
+            "audit-baseline"
+        ]
+    );
+}
+
+#[test]
+fn mcp_baseline_failure_takes_precedence_over_contract_after_every_step() {
+    let mut steps = RecordingMcpSteps {
+        events: Vec::new(),
+        contract: Err("contract".into()),
+        fleet: Ok(()),
+        general: Ok(()),
+        baseline: Err("baseline".into()),
+    };
+    assert_eq!(
+        run_mcp_steps(&mut steps),
+        Err(McpOutcomeFailure::Baseline("baseline audit failed".into()))
+    );
+    assert_eq!(
+        steps.events,
+        [
+            "contract",
+            "finish-fleet",
+            "finish-general",
+            "audit-baseline"
+        ]
+    );
 }
 /// Fact G, measured on Serverless 9.6.0: runtime exception matching follows
 /// `list_id`, so replacing only the saved-object pointer still suppresses the

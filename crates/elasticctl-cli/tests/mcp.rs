@@ -5,6 +5,7 @@
 //! exercised without changing the test runner's process environment.
 
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -18,6 +19,65 @@ use std::{ffi::OsStr, time::Instant};
 const CREDENTIAL_SENTINEL: &str = "essu_credential-sentinel";
 const TARGET_SENTINEL: &str = "target-sentinel.invalid";
 const ARGUMENT_SENTINEL: &str = "argument-sentinel";
+
+const DEFAULT_TOOL_NAMES: &[&str] = &[
+    "alerts_get",
+    "alerts_list",
+    "cases_get",
+    "cases_list",
+    "dashboards_get",
+    "dashboards_list",
+    "data_views_default_get",
+    "data_views_get",
+    "data_views_list",
+    "exceptions_get",
+    "exceptions_list",
+    "fleet_agent_policies_get",
+    "fleet_agent_policies_list",
+    "fleet_integration_policies_get",
+    "fleet_integration_policies_list",
+    "rules_get",
+    "rules_list",
+    "rules_prebuilt_status",
+    "stack_doctor",
+    "stack_info",
+];
+
+const QUERY_TOOL_NAMES: &[&str] = &["search_dsl", "search_esql"];
+
+const QUERY_ENABLED_TOOL_NAMES: &[&str] = &[
+    "alerts_get",
+    "alerts_list",
+    "cases_get",
+    "cases_list",
+    "dashboards_get",
+    "dashboards_list",
+    "data_views_default_get",
+    "data_views_get",
+    "data_views_list",
+    "exceptions_get",
+    "exceptions_list",
+    "fleet_agent_policies_get",
+    "fleet_agent_policies_list",
+    "fleet_integration_policies_get",
+    "fleet_integration_policies_list",
+    "rules_get",
+    "rules_list",
+    "rules_prebuilt_status",
+    "search_dsl",
+    "search_esql",
+    "stack_doctor",
+    "stack_info",
+];
+
+fn read_only_annotations() -> Value {
+    json!({
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+    })
+}
 
 const ELASTIC_ENV: &[&str] = &[
     "ELASTICCTL_KIBANA_URL",
@@ -262,6 +322,143 @@ fn tool_names(reply: &Value) -> Vec<&str> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ProtocolFlow {
+    CurrentMetadata,
+    LegacyInitialize,
+}
+
+impl ProtocolFlow {
+    fn request(self, id: u64, method: &str, mut params: Value) -> Value {
+        if matches!(self, Self::CurrentMetadata) {
+            params
+                .as_object_mut()
+                .expect("MCP request parameters are an object")
+                .insert("_meta".to_string(), current_metadata());
+        }
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+}
+
+fn catalog_schemas(reply: &Value) -> BTreeMap<String, Value> {
+    reply["result"]["tools"]
+        .as_array()
+        .expect("tools list has an array")
+        .iter()
+        .map(|tool| {
+            let name = tool["name"].as_str().expect("tool has a string name");
+            let input = tool.get("inputSchema").expect("tool has an input schema");
+            let output = tool.get("outputSchema").expect("tool has an output schema");
+            assert!(input.is_object(), "{name} input schema is an object");
+            assert!(output.is_object(), "{name} output schema is an object");
+            assert_eq!(input["type"], "object", "{name} input schema root");
+            assert_eq!(output["type"], "object", "{name} output schema root");
+            assert_eq!(tool["annotations"], read_only_annotations(), "{name}");
+            (
+                name.to_string(),
+                json!({
+                    "inputSchema": input,
+                    "outputSchema": output,
+                }),
+            )
+        })
+        .collect()
+}
+
+fn is_local_invalid_argument(reply: &Value) -> bool {
+    reply.get("error").is_none()
+        && reply["result"]["isError"] == true
+        && reply["result"]["structuredContent"]["error"]["code"] == "invalid_argument"
+}
+
+fn assert_local_invalid_argument(reply: &Value, context: &str) {
+    assert!(
+        is_local_invalid_argument(reply),
+        "{context} must return a structured invalid_argument error without a JSON-RPC error: {reply}"
+    );
+}
+
+fn exercise_catalog_process_mode(
+    bin: &str,
+    flow: ProtocolFlow,
+    query_enabled: bool,
+) -> BTreeMap<String, Value> {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let config = config_for(
+        dir.path(),
+        "catalog-proof",
+        "https://kibana.example.test",
+        None,
+        30,
+        true,
+    );
+    let mut args = args_with_config(&config);
+    if query_enabled {
+        args.push("--allow-query-tools".to_string());
+    }
+    let expected_names = if query_enabled {
+        QUERY_ENABLED_TOOL_NAMES
+    } else {
+        DEFAULT_TOOL_NAMES
+    };
+
+    let mut child = spawn(bin, &args);
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let mut stdout = BufReader::new(stdout);
+    let mut id = 1;
+    if matches!(flow, ProtocolFlow::LegacyInitialize) {
+        write_json(&mut child, legacy_initialize(id));
+        let initialized = read_json_line(&mut stdout);
+        assert_eq!(initialized["id"], id, "{bin} {flow:?}");
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+        id += 1;
+    }
+
+    write_json(&mut child, flow.request(id, "tools/list", json!({})));
+    let listed = read_json_line(&mut stdout);
+    assert_eq!(listed["id"], id, "{bin} {flow:?}");
+    if matches!(flow, ProtocolFlow::CurrentMetadata) {
+        assert_eq!(listed["result"]["resultType"], "complete");
+    }
+    assert_eq!(tool_names(&listed), expected_names, "{bin} {flow:?}");
+    let schemas = catalog_schemas(&listed);
+    id += 1;
+
+    for name in expected_names {
+        write_json(
+            &mut child,
+            flow.request(
+                id,
+                "tools/call",
+                json!({"name": name, "arguments": {"unexpected": true}}),
+            ),
+        );
+        let reply = read_json_line(&mut stdout);
+        assert_eq!(reply["id"], id, "{bin} {flow:?} {name}");
+        assert_local_invalid_argument(&reply, &format!("{bin} {flow:?} {name}"));
+        id += 1;
+    }
+
+    if !query_enabled {
+        for name in QUERY_TOOL_NAMES {
+            write_json(
+                &mut child,
+                flow.request(id, "tools/call", json!({"name": name, "arguments": {}})),
+            );
+            let reply = read_json_line(&mut stdout);
+            assert_eq!(reply["id"], id, "{bin} {flow:?} {name}");
+            assert_eq!(reply["error"]["code"], -32601, "{bin} {flow:?} {name}");
+            id += 1;
+        }
+    }
+
+    let output = close_and_collect(child, stdout);
+    assert!(output.status.success(), "{bin} {flow:?}: {output:?}");
+    assert!(output.stdout.is_empty(), "{bin} {flow:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{bin} {flow:?}: {output:?}");
+    schemas
+}
+
 async fn mount_info_routes(server: &MockServer, delay: Duration) {
     for prefix in ["", "/s/routed"] {
         Mock::given(method("GET"))
@@ -336,6 +533,62 @@ fn both_binaries_leave_protocol_stdout_empty_until_input_and_exit_cleanly_on_eof
             String::from_utf8_lossy(&stderr)
         );
     }
+}
+
+#[test]
+fn process_catalog_schemas_annotations_and_router_match_across_all_startup_modes() {
+    let mut default_reference = None;
+    let mut query_reference = None;
+
+    for bin in binaries() {
+        for flow in [
+            ProtocolFlow::CurrentMetadata,
+            ProtocolFlow::LegacyInitialize,
+        ] {
+            let default = exercise_catalog_process_mode(bin, flow, false);
+            let default_reference = default_reference.get_or_insert_with(|| default.clone());
+            assert_eq!(
+                &default, default_reference,
+                "{bin} {flow:?} default catalog schemas"
+            );
+
+            let query_enabled = exercise_catalog_process_mode(bin, flow, true);
+            let query_reference = query_reference.get_or_insert_with(|| query_enabled.clone());
+            assert_eq!(
+                &query_enabled, query_reference,
+                "{bin} {flow:?} query-enabled catalog schemas"
+            );
+
+            let mut query_default_tools = query_enabled;
+            for name in QUERY_TOOL_NAMES {
+                assert!(
+                    query_default_tools.remove(*name).is_some(),
+                    "{bin} {flow:?} query-enabled catalog is missing {name}"
+                );
+            }
+            assert_eq!(
+                &query_default_tools, default_reference,
+                "{bin} {flow:?} changes a default tool schema when query tools are enabled"
+            );
+        }
+    }
+}
+
+#[test]
+fn router_probe_rejects_non_validation_tool_errors() {
+    let upstream_error = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "isError": true,
+            "structuredContent": {"error": {"code": "deadline_exceeded"}},
+        },
+    });
+
+    assert!(
+        !is_local_invalid_argument(&upstream_error),
+        "a transport, authentication, or deadline result must not prove local input validation"
+    );
 }
 
 #[test]

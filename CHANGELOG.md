@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Thirteen MCP inspection tools for alerts, cases, data views, dashboards,
+  and Fleet policies, bringing the default catalog to twenty tools.
+- Startup opt-in through `mcp serve --allow-query-tools` for synchronous
+  ES|QL and Query DSL tools. Each query uses one HTTP attempt and returns
+  bounded results under the selected credential's index privileges.
+
 ## 0.7.0 — 2026-09-06
 
 ### Added

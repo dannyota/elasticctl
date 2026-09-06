@@ -133,13 +133,11 @@ uploading. It does not prove per-crate registry authorization or Trusted
 Publisher configuration.
 
 [Trusted Publishing requires an existing crate](https://crates.io/docs/trusted-publishing).
-The first `elasticctl-mcp` publication is unavailable through the normal
-workflow under current policy. It needs a separate owner decision that
-resolves the Actions-only, workspace-only, Trusted-Publishing-only rules before
-a dispatch. No bootstrap method or token fallback is approved here. This
-publication block does not block implementation, CI, nonpublishing release
-preflight, or the tag and GitHub Release. Resolve publishing prerequisites
-before retrying; do not publish locally or crate by crate.
+Version 0.7.0 of all four crates was published under an explicit, one-time
+owner exception for local publication. That exception is closed.
+Future publication uses the workflow above and requires separate approval
+for each version. Verify every crate's ownership and Trusted Publishing
+entry before dispatch; the first publication does not prove those settings.
 
 Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.

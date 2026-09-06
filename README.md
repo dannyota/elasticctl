@@ -23,8 +23,10 @@ contracts:
   envelopes on stderr.
 - **Named profiles** for separate development, UAT, and production instances.
 
-The Model Context Protocol (MCP) server exposes seven read tools for stack
-diagnostics, rules, and exception lists.
+The Model Context Protocol (MCP) server exposes twenty inspection tools for
+stack diagnostics, rules, exception lists, alerts, cases, data views,
+dashboards, and Fleet policies. Two synchronous query tools require startup
+opt-in.
 
 ## Install
 
@@ -235,17 +237,44 @@ local files. The server writes protocol messages to stdout and diagnostics
 to stderr. Use `--timeout` to set a whole-call deadline of 1-120 seconds;
 the default is 30 seconds.
 
-The tools are `exceptions_get`, `exceptions_list`, `rules_get`, `rules_list`,
-`rules_prebuilt_status`, `stack_doctor`, and `stack_info`. Lists default to
-50 rows and accept limits up to 200. Results include the profile, host, and
-space, plus cap metadata when rows are omitted. Narrow a filter or use a get
-to inspect a capped list.
+The default catalog contains these twenty inspection tools:
 
-Rule text and exception content are untrusted tool data. These fields may
-contain sensitive information visible to the selected credential. The
-server omits credential fields and raw error details; it cannot remove
-sensitive text authored inside a rule or exception. Mutations and raw query
-tools are outside this server's 0.7.0 surface.
+| Area | Tools |
+| --- | --- |
+| Stack | `stack_info`, `stack_doctor` |
+| Rules | `rules_list`, `rules_get`, `rules_prebuilt_status` |
+| Exceptions | `exceptions_list`, `exceptions_get` |
+| Alerts | `alerts_list`, `alerts_get` |
+| Cases | `cases_list`, `cases_get` |
+| Data views | `data_views_list`, `data_views_get`, `data_views_default_get` |
+| Dashboards | `dashboards_list`, `dashboards_get` |
+| Fleet | `fleet_agent_policies_list`, `fleet_agent_policies_get`, `fleet_integration_policies_list`, `fleet_integration_policies_get` |
+
+Lists default to 50 rows and accept limits up to 200. Results include the
+profile, host, and space, plus cap metadata when rows are omitted. Narrow a
+filter or use a get to inspect a capped list.
+
+Enable synchronous ES|QL and Query DSL tools when starting the server:
+
+```bash
+elkctl --profile analyst --space default mcp serve --allow-query-tools
+```
+
+This adds `search_esql` and `search_dsl` for the life of the process. They can
+read indices allowed by the selected Elastic credential. Kibana space
+selection does not restrict Elasticsearch index access.
+
+Each query call makes one HTTP attempt, including on 429 and server errors.
+A later client call starts new work. Queries may invoke inference services;
+row and output limits bound returned data, not inference cost or earlier
+query work. Use Elastic privileges to control which indices and services the
+credential can access.
+
+Returned text and nested content are untrusted tool data. They may contain
+sensitive information visible to the selected credential. The server excludes
+configured credentials and raw upstream error details. Authored content and
+queried document fields can still contain secrets. The catalog exposes no
+object mutation tools.
 
 ## Command surface
 
@@ -253,7 +282,7 @@ tools are outside this server's 0.7.0 surface.
 elkctl config init | list | show | test
 elkctl doctor
 elkctl info
-elkctl mcp serve
+elkctl mcp serve [--allow-query-tools]
 
 elkctl rules list [--source custom|customized|prebuilt|all]
   | get | validate | enable | disable | delete
