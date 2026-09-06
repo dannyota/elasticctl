@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.2 (unreleased)
+
+### Verified
+
+- All eleven conformance contracts pass on Serverless 9.6.0, Hosted 9.5.2,
+  and self-managed 9.5.1, including all twenty-two MCP tools.
+- Claude Code 2.1.263 and Codex CLI 0.153.4 pass scoped MCP client checks
+  against the local lab, with captured protocol negotiation and results.
+- SDK tests cover current and legacy catalogs, query admission, busy calls,
+  deadlines, cancellation, the input-line cap, and every output schema.
+
+### Fixed
+
+- Live conformance validates current protocol result discriminators before
+  checking the shared catalog and tool payloads.
+
 ## 0.7.1 — 2026-09-06
 
 ### Added

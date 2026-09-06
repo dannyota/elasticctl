@@ -210,6 +210,11 @@ elkctl cases comment <case_id> --message "Confirmed benign, closing." --yes
 
 ## MCP clients
 
+Client checks passed with Claude Code 2.1.263 and Codex CLI 0.153.4 on the
+local lab. Both negotiated protocol `2025-11-25`; the three-flavor harness
+also proves current protocol `2026-07-28`. See the
+[0.7.2 findings](docs/conformance/v0.7.2/findings.md) for the tested calls.
+
 Launch the MCP server with an operator-selected
 profile and space:
 

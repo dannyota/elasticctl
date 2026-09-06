@@ -1253,7 +1253,8 @@ explicit capability skip; every other required baseline route fails closed.
 Fleet setup runs once through the one-shot transport before the baseline only
 when `FleetPolicies` meets its verified floor. The setup response must confirm
 initialization before the runner passes its private setup marker to every
-Fleet-feature child. After probe validation, the runner clears a previous target report
+child whose contract requires `FleetPolicies`. After probe validation, the
+runner clears a previous target report
 before Fleet setup, so a setup failure cannot leave stale success evidence.
 Gated Fleet baseline
 reads retain only `elasticctl-live-` policy ids and names, and require both
@@ -1405,6 +1406,22 @@ default-data-view, and triage baselines also passed. The self-managed leg
 removed its containers and volumes. The [findings](../conformance/v0.6.2/findings.md)
 record the measured scope and the older closed-alert residue allowance.
 
+The 0.7.2 measured matrix adds `mcp_reads_existing_verticals`; all eleven
+contracts pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.6.0 | 11 pass | Verified | [report](../conformance/v0.7.2/serverless-9.6.0.json) |
+| Elastic Cloud Hosted | 9.5.2 | 11 pass | Verified | [report](../conformance/v0.7.2/ech-9.5.2.json) |
+| Self-managed | 9.5.1 | 11 pass | Verified | [report](../conformance/v0.7.2/traditional-9.5.1.json) |
+
+Every MCP leg exercised twenty default tools on current protocol `2026-07-28`
+and both opt-in query tools on legacy `2025-11-25`. All baseline, marker,
+Fleet inventory, and default-data-view audits passed. Independent teardown
+checks found zero lab containers and volumes. The
+[findings](../conformance/v0.7.2/findings.md) record the two product clients,
+the corrected harness failure, and evidence limits.
+
 ## 9. Local lab
 
 Serverless is the primary development target, so no local stack is needed day
@@ -1517,7 +1534,8 @@ The 0.7 read-only MCP capability area is described in
 [0.7.0](../plans/v0.7.0.md), [0.7.1](../plans/v0.7.1.md), and
 [0.7.2](../plans/v0.7.2.md). The 0.7.0 implementation, live proof, and evidence
 review are complete. The 0.7.1 implementation, live proof, and final evidence
-review completed on 2026-09-06. The 0.7.2 scope remains planned.
+review completed on 2026-09-06. The 0.7.2 implementation, live proof, gates,
+and final evidence review completed on 2026-09-06.
 None grants release or publication approval.
 
 The temporary trial-deployment window changes execution order, not capability
