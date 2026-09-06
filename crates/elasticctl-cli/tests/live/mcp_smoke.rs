@@ -57,6 +57,134 @@ fn current_request_builder_adds_metadata_to_tool_requests_but_legacy_omits_it() 
     }
 }
 
+fn mcp_subprocess_config(dir: &Path, endpoint: &str) -> PathBuf {
+    let config = dir.join("mcp-subprocess.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "current = \"smoke\"\n\n[profiles.smoke]\nkibana_url = \"{endpoint}\"\nes_url = \"{endpoint}\"\napi_key = \"essu_placeholder\"\nspace = \"default\"\nverify = true\ntimeout_secs = 5\n"
+        ),
+    )
+    .expect("write MCP subprocess config");
+    config
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
+    let config = mcp_subprocess_config(dir.path(), &server.uri());
+    let mut current = McpChild::spawn(&config, false).expect("start current MCP child");
+    let mut legacy = McpChild::spawn(&config, true).expect("start legacy MCP child");
+
+    let discovery = current
+        .request("server/discover", json!({}))
+        .expect("current discovery response");
+    assert_eq!(
+        discovery.pointer("/result/supportedVersions"),
+        Some(&json!(["2026-07-28", "2025-11-25"])),
+        "current discovery advertises the supported protocols"
+    );
+    let current_catalog = current
+        .request("tools/list", json!({}))
+        .expect("current catalog response");
+    validate_catalog(&current_catalog, false).expect("current catalog");
+    initialize_child(&mut legacy, true).expect("legacy initialization and catalog");
+
+    for child in [&mut current, &mut legacy] {
+        let invalid = child
+            .request(
+                "tools/call",
+                json!({"name": "rules_list", "arguments": {"limit": 0}}),
+            )
+            .expect("local invalid-argument response");
+        let result = invalid["result"]
+            .as_object()
+            .expect("tool response result object");
+        assert_exact_keys(
+            result,
+            &["content", "structuredContent", "isError"],
+            "invalid-argument result",
+        )
+        .expect("normalized invalid-argument result fields");
+        assert_eq!(result.get("isError"), Some(&Value::Bool(true)));
+        assert_eq!(
+            invalid.pointer("/result/structuredContent/error/code"),
+            Some(&Value::String("invalid_argument".to_string()))
+        );
+    }
+
+    current.shutdown().expect("shutdown current MCP child");
+    legacy.shutdown().expect("shutdown legacy MCP child");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server requests")
+            .is_empty(),
+        "schema validation must reject both calls before transport access"
+    );
+}
+
+#[test]
+fn protocol_result_discriminator_normalization_rejects_invalid_shapes_without_leaking_values() {
+    let sentinel = "mcp-result-discriminator-sentinel";
+    let mut current = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"resultType": "complete", "tools": required_catalog(), "nextCursor": null},
+    });
+    normalize_protocol_result(&mut current, McpProtocolPath::Current)
+        .expect("current complete result is normalized");
+    assert!(current["result"].get("resultType").is_none());
+    validate_catalog(&current, false).expect("normalized current catalog");
+
+    let mut legacy = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"tools": required_catalog(), "nextCursor": null},
+    });
+    normalize_protocol_result(&mut legacy, McpProtocolPath::Legacy)
+        .expect("legacy result without a discriminator is accepted");
+    validate_catalog(&legacy, false).expect("legacy catalog");
+
+    for result_type in [
+        Value::Null,
+        Value::Bool(true),
+        Value::String(sentinel.to_string()),
+    ] {
+        let mut response = json!({"result": {"resultType": result_type}});
+        let error = normalize_protocol_result(&mut response, McpProtocolPath::Current)
+            .expect_err("invalid current discriminator is rejected");
+        assert_eq!(error, "MCP current result discriminator was invalid.");
+        assert!(!error.contains(sentinel));
+    }
+    let mut missing = json!({"result": {}});
+    assert_eq!(
+        normalize_protocol_result(&mut missing, McpProtocolPath::Current)
+            .expect_err("missing current discriminator is rejected"),
+        "MCP current result discriminator was missing."
+    );
+    let mut legacy_with_discriminator = json!({"result": {"resultType": sentinel}});
+    let error = normalize_protocol_result(&mut legacy_with_discriminator, McpProtocolPath::Legacy)
+        .expect_err("legacy discriminator is rejected");
+    assert_eq!(error, "MCP legacy result discriminator was present.");
+    assert!(!error.contains(sentinel));
+
+    let mut protocol_error = json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601}});
+    let original_protocol_error = protocol_error.clone();
+    normalize_protocol_result(&mut protocol_error, McpProtocolPath::Current)
+        .expect("JSON-RPC errors remain unchanged");
+    assert_eq!(protocol_error, original_protocol_error);
+
+    let mut current_not_found = not_found_response(None);
+    current_not_found["result"]["resultType"] = json!("complete");
+    normalize_protocol_result(&mut current_not_found, McpProtocolPath::Current)
+        .expect("current tool error is normalized");
+    normalized_not_found_content(&current_not_found, 1, "test", None)
+        .expect("existing not-found validator accepts normalized result");
+}
+
 #[test]
 fn bounded_frame_reader_accepts_the_exact_limit_without_retaining_the_newline() {
     let mut source = std::io::Cursor::new([vec![b'x'; MAX_FRAME_BYTES], vec![b'\n']].concat());
@@ -2234,7 +2362,9 @@ impl McpChild {
                 return Err("MCP child response reader stopped unexpectedly.".to_string());
             }
         };
-        parse_response_frame(&frame)
+        let mut response = parse_response_frame(&frame)?;
+        normalize_protocol_result(&mut response, self.protocol_path)?;
+        Ok(response)
     }
 
     fn shutdown(&mut self) -> TestResult {
@@ -2336,6 +2466,23 @@ fn read_bounded_frame<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, &'s
 
 fn parse_response_frame(frame: &[u8]) -> TestResult<Value> {
     serde_json::from_slice(frame).map_err(|_| "MCP child response was not valid JSON.".to_string())
+}
+
+fn normalize_protocol_result(response: &mut Value, protocol_path: McpProtocolPath) -> TestResult {
+    let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    match protocol_path {
+        McpProtocolPath::Current => match result.remove("resultType") {
+            Some(Value::String(discriminator)) if discriminator == "complete" => Ok(()),
+            Some(_) => Err("MCP current result discriminator was invalid.".to_string()),
+            None => Err("MCP current result discriminator was missing.".to_string()),
+        },
+        McpProtocolPath::Legacy if result.contains_key("resultType") => {
+            Err("MCP legacy result discriminator was present.".to_string())
+        }
+        McpProtocolPath::Legacy => Ok(()),
+    }
 }
 
 fn required_catalog() -> Vec<Value> {

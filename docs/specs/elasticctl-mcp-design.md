@@ -89,6 +89,11 @@ a later current request without initialization is rejected before tool work.
 Such a client must initialize or reconnect. The SDK still owns parsing,
 legacy negotiation, cancellation routing, and protocol result fields.
 
+Current protocol result objects include `resultType: "complete"`. Legacy
+results omit that field. Live validation checks the selected protocol
+before checking the tool result; the discriminator is not part of
+`structuredContent`.
+
 Advertise tools only. Return the fixed catalog in lexical name order, in one
 page, with no next cursor. Catalog discovery makes no Elastic requests and
 does not require a credential. The catalog is fixed for a process and its
