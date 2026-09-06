@@ -1822,7 +1822,7 @@ fn validate_esql_rows(content: &Value) -> TestResult {
     if columns.len() != 2 {
         return Err("MCP search_esql columns differed from the requested projection.".to_string());
     }
-    for (column, (name, kind)) in columns.iter().zip([("seq", "long"), ("marker", "keyword")]) {
+    for (column, (name, kind)) in columns.iter().zip([("seq", "long"), ("marker", "text")]) {
         let column = column
             .as_object()
             .ok_or_else(|| "MCP search_esql column was not an object.".to_string())?;
@@ -1867,7 +1867,7 @@ fn validate_esql_empty(content: &Value) -> TestResult {
     if columns.len() != 2 || data.get("is_partial") != Some(&Value::Bool(false)) {
         return Err("MCP search_esql empty query changed its projection.".to_string());
     }
-    for (column, (name, kind)) in columns.iter().zip([("seq", "long"), ("marker", "keyword")]) {
+    for (column, (name, kind)) in columns.iter().zip([("seq", "long"), ("marker", "text")]) {
         let column = column
             .as_object()
             .ok_or_else(|| "MCP search_esql column was not an object.".to_string())?;
@@ -3216,10 +3216,10 @@ fn validate_new_inspection_validator_rejections() -> TestResult {
 }
 fn validate_new_query_validator_samples() -> TestResult {
     validate_esql_rows(
-        &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
+        &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
     )?;
     validate_esql_empty(
-        &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[],"is_partial":false},"page":sample_query_page(0,false)}),
+        &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[],"is_partial":false},"page":sample_query_page(0,false)}),
     )?;
     validate_dsl_hits(
         &json!({"data":{"hits":[{"id":"1","index":"index","score":null,"source":{"seq":1,"marker":LIVE_TAG}},{"id":"2","index":"index","score":1.0,"source":{"seq":2,"marker":LIVE_TAG}}]},"page":sample_query_page(2,true)}),
@@ -3230,33 +3230,39 @@ fn validate_new_query_validator_samples() -> TestResult {
 fn validate_new_query_validator_rejections() -> TestResult {
     let cases = [
         (
+            "esql old marker keyword type",
+            validate_esql_rows(
+                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
+            ),
+        ),
+        (
             "esql unknown data key",
             validate_esql_rows(
-                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false,"secret_sentinel":true},"page":sample_query_page(2,true)}),
+                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false,"secret_sentinel":true},"page":sample_query_page(2,true)}),
             ),
         ),
         (
             "esql missing column type",
             validate_esql_rows(
-                &json!({"data":{"columns":[{"name":"seq"},{"name":"marker","type":"keyword"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
+                &json!({"data":{"columns":[{"name":"seq"},{"name":"marker","type":"text"}],"values":[[1,LIVE_TAG],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
             ),
         ),
         (
             "esql wrong row width",
             validate_esql_rows(
-                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[[1,LIVE_TAG,"extra"],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
+                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[[1,LIVE_TAG,"extra"],[2,LIVE_TAG]],"is_partial":false},"page":sample_query_page(2,true)}),
             ),
         ),
         (
             "esql empty mismatched page",
             validate_esql_empty(
-                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[],"is_partial":false},"page":sample_query_page(1,false)}),
+                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[],"is_partial":false},"page":sample_query_page(1,false)}),
             ),
         ),
         (
             "esql empty unknown key",
             validate_esql_empty(
-                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"keyword"}],"values":[],"is_partial":false,"secret_sentinel":true},"page":sample_query_page(0,false)}),
+                &json!({"data":{"columns":[{"name":"seq","type":"long"},{"name":"marker","type":"text"}],"values":[],"is_partial":false,"secret_sentinel":true},"page":sample_query_page(0,false)}),
             ),
         ),
         (
