@@ -182,6 +182,31 @@ fn query_projection_validators_reject_malformed_rows_hits_and_empty_page_mismatc
 }
 
 #[test]
+fn esql_column_type_diagnostic_allowlists_public_labels() {
+    let valid = json!({"name":"seq","type":"long"});
+    let valid = valid.as_object().expect("sample is an object");
+    validate_esql_column_type(valid, "seq", "long").expect("expected type is accepted");
+
+    let known = json!({"name":"seq","type":"integer"});
+    let known = known.as_object().expect("sample is an object");
+    assert_eq!(
+        validate_esql_column_type(known, "seq", "long").expect_err("known mismatch rejects"),
+        "MCP search_esql column type mismatch: expected seq=long, actual integer."
+    );
+
+    let sentinel = "esql-type-private-sentinel";
+    let unknown = json!({"name":"seq","type":sentinel});
+    let unknown = unknown.as_object().expect("sample is an object");
+    let error = validate_esql_column_type(unknown, "seq", "long")
+        .expect_err("unknown type rejects without exposure");
+    assert_eq!(
+        error,
+        "MCP search_esql column type mismatch: expected seq=long, actual other."
+    );
+    assert!(!error.contains(sentinel));
+}
+
+#[test]
 fn normalized_not_found_tool_errors_have_the_only_safe_error_shape() {
     validate_new_not_found_error_samples().expect("normalized not-found is accepted");
     validate_new_not_found_error_rejections()
@@ -1803,7 +1828,7 @@ fn validate_esql_rows(content: &Value) -> TestResult {
             .ok_or_else(|| "MCP search_esql column was not an object.".to_string())?;
         assert_exact_keys(column, &["name", "type"], "search_esql column")?;
         require_matching_string(column, "name", name, "search_esql column")?;
-        require_matching_string(column, "type", kind, "search_esql column")?;
+        validate_esql_column_type(column, name, kind)?;
     }
     if data.get("is_partial") != Some(&Value::Bool(false)) {
         return Err("MCP search_esql did not preserve a complete result.".to_string());
@@ -1848,12 +1873,45 @@ fn validate_esql_empty(content: &Value) -> TestResult {
             .ok_or_else(|| "MCP search_esql column was not an object.".to_string())?;
         assert_exact_keys(column, &["name", "type"], "search_esql column")?;
         require_matching_string(column, "name", name, "search_esql column")?;
-        require_matching_string(column, "type", kind, "search_esql column")?;
+        validate_esql_column_type(column, name, kind)?;
     }
     if !map_array_field(data, "values", "search_esql data")?.is_empty() {
         return Err("MCP search_esql empty query returned rows.".to_string());
     };
     validate_query_page(content, 2, 0, false)
+}
+
+fn validate_esql_column_type(
+    column: &serde_json::Map<String, Value>,
+    expected_name: &'static str,
+    expected_type: &'static str,
+) -> TestResult {
+    if column.get("type").and_then(Value::as_str) == Some(expected_type) {
+        return Ok(());
+    }
+    let actual = match column.get("type").and_then(Value::as_str) {
+        Some("boolean") => "boolean",
+        Some("byte") => "byte",
+        Some("short") => "short",
+        Some("integer") => "integer",
+        Some("long") => "long",
+        Some("unsigned_long") => "unsigned_long",
+        Some("half_float") => "half_float",
+        Some("float") => "float",
+        Some("double") => "double",
+        Some("keyword") => "keyword",
+        Some("text") => "text",
+        Some("date") => "date",
+        Some("datetime") => "datetime",
+        Some("ip") => "ip",
+        Some("version") => "version",
+        Some("geo_point") => "geo_point",
+        Some(_) => "other",
+        None => "invalid",
+    };
+    Err(format!(
+        "MCP search_esql column type mismatch: expected {expected_name}={expected_type}, actual {actual}."
+    ))
 }
 fn validate_dsl_hits(content: &Value, index: &str) -> TestResult {
     let data = object_field(content, "data", "search_dsl")?;
