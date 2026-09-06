@@ -2,6 +2,8 @@
 
 #[path = "fleet/cleanup.rs"]
 mod cleanup;
+#[path = "fleet/fixture.rs"]
+pub(super) mod fixture;
 
 use super::*;
 use cleanup::FleetCleanup;
