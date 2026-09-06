@@ -1757,7 +1757,7 @@ fn validate_empty_list(content: &Value, key: &'static str) -> TestResult {
     assert_exact_keys(data, &[key], "empty list data")?;
     let rows = map_array_field(data, key, "list result")?;
     if !rows.is_empty() {
-        return Err("MCP empty list contained rows.".to_string());
+        return Err(format!("MCP {key} empty list contained rows."));
     };
     validate_page_rows(content, 10, 0, false)
 }
