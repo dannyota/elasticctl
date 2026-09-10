@@ -22,7 +22,7 @@ url = "=2.5.8"
 
 [dev-dependencies]
 elasticctl-api-test-support.workspace = true
-jsonschema = { version = "=0.37.3", default-features = false }
+jsonschema = { version = "=0.55.0", default-features = false }
 rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-io"] }
 tokio = { version = "1.53.1", features = ["full", "test-util"] }
 wiremock = "0.6.5"
