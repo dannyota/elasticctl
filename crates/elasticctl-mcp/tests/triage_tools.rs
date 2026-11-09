@@ -231,7 +231,7 @@ fn assert_page_schema(root: &Value, schema: &Value) {
         root,
         page,
         &["has_more", "limit", "returned", "total", "truncated"],
-        &["limit", "returned", "truncated"],
+        &["limit", "returned", "total", "has_more", "truncated"],
     );
     assert_scalar(root, &page["properties"]["limit"], "integer", false);
     assert_scalar(root, &page["properties"]["returned"], "integer", false);
@@ -343,7 +343,7 @@ async fn triage_catalog_exposes_the_four_read_only_inspection_tools() {
             output,
             root_branch(output, &["target", "data", "page"]),
             &["target", "data", "page"],
-            &["target", "data"],
+            &["target", "data", "page"],
         );
         assert_schema_object(
             output,
@@ -383,7 +383,7 @@ async fn triage_catalog_exposes_the_four_read_only_inspection_tools() {
             output,
             error,
             &["code", "http_status", "kind", "message"],
-            &["code", "kind", "message"],
+            &["code", "http_status", "kind", "message"],
         );
         for field in ["code", "kind", "message"] {
             assert_scalar(output, &error["properties"][field], "string", false);

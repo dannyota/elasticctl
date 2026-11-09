@@ -330,23 +330,21 @@ async fn query_catalog_input_schemas_are_closed_and_bounded() {
 }
 
 #[tokio::test]
-async fn query_catalog_output_schemas_match_the_typed_query_projections() {
+async fn catalog_output_schemas_check_all_envelopes_and_query_projections() {
     let mut harness = Harness::start(target(), query_options());
     harness.send_json(json!({"jsonrpc":"2.0","id":63,"method":"tools/list","params":{"_meta":current_metadata()}})).await;
     let reply = harness.receive_json().await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    for name in ["search_dsl", "search_esql"] {
-        let schema = &tools
-            .iter()
-            .find(|tool| tool["name"] == name)
-            .expect("query tool")["outputSchema"];
+    assert_eq!(tools.len(), 22);
+    for tool in tools {
+        let schema = &tool["outputSchema"];
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["anyOf"].as_array().map(Vec::len), Some(2));
         let success = object(
             schema,
             success_schema(schema),
             &["data", "page", "target"],
-            &["data", "target"],
+            &["data", "page", "target"],
         );
         let target = object(
             schema,
@@ -362,7 +360,7 @@ async fn query_catalog_output_schemas_match_the_typed_query_projections() {
             schema,
             object_branch(schema, &success["properties"]["page"]),
             &["has_more", "limit", "returned", "total", "truncated"],
-            &["limit", "returned", "truncated"],
+            &["limit", "returned", "total", "has_more", "truncated"],
         );
         nullable(schema, &page["properties"]["limit"], "integer", false);
         nullable(schema, &page["properties"]["returned"], "integer", false);
@@ -395,13 +393,26 @@ async fn query_catalog_output_schemas_match_the_typed_query_projections() {
             schema,
             &failure["properties"]["error"],
             &["code", "http_status", "kind", "message"],
-            &["code", "kind", "message"],
+            &["code", "http_status", "kind", "message"],
         );
         for field in ["code", "kind", "message"] {
             nullable(schema, &error["properties"][field], "string", false);
         }
         nullable(schema, &error["properties"]["http_status"], "integer", true);
     }
+
+    let stack = &tools
+        .iter()
+        .find(|tool| tool["name"] == "stack_info")
+        .expect("stack tool")["outputSchema"];
+    let stack_data = object(
+        stack,
+        &success_schema(stack)["properties"]["data"],
+        &["version", "flavor", "license", "spaces"],
+        &["version", "flavor", "license", "spaces"],
+    );
+    nullable(stack, &stack_data["properties"]["license"], "string", true);
+    nullable(stack, &stack_data["properties"]["spaces"], "array", true);
 
     let esql = &tools
         .iter()
@@ -453,7 +464,7 @@ async fn query_catalog_output_schemas_match_the_typed_query_projections() {
         dsl,
         &hits["items"],
         &["id", "index", "score", "source"],
-        &["source"],
+        &["id", "index", "score", "source"],
     );
     nullable(dsl, &hit["properties"]["id"], "string", true);
     nullable(dsl, &hit["properties"]["index"], "string", true);

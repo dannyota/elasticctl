@@ -210,7 +210,7 @@ fn assert_failure_schema(schema: &Value, structured: &Value) {
         schema,
         error,
         &["kind", "http_status", "code", "message"],
-        &["kind", "code", "message"],
+        &["kind", "http_status", "code", "message"],
     );
     for key in ["kind", "code", "message"] {
         assert!(schema_allows_type(
@@ -238,7 +238,7 @@ fn assert_page_schema(schema: &Value, page: &Value) {
         schema,
         page,
         &["limit", "returned", "total", "has_more", "truncated"],
-        &["limit", "returned", "truncated"],
+        &["limit", "returned", "total", "has_more", "truncated"],
     );
     for key in ["limit", "returned"] {
         assert!(schema_allows_type(
@@ -289,7 +289,7 @@ fn assert_success_schema(
         schema,
         success,
         &["target", "data", "page"],
-        &["target", "data"],
+        &["target", "data", "page"],
     );
     let target = property_schema(schema, success, "target");
     assert_schema_object(

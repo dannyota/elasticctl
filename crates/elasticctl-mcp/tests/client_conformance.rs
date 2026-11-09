@@ -455,7 +455,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
         legacy_write_server,
     ));
     let legacy_info =
-        rmcp::model::ClientInfo::default().with_protocol_version(ProtocolVersion::V_2025_11_25);
+        rmcp::model::ClientConfig::default().with_protocol_version(ProtocolVersion::V_2025_11_25);
     let legacy = legacy_info
         .serve_with_lifecycle(
             AsyncRwTransport::<RoleClient, _, _>::new_client(legacy_read, legacy_write),

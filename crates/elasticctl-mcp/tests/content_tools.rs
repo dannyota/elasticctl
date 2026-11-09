@@ -1017,7 +1017,7 @@ async fn content_output_schemas_match_the_declared_projections() {
             schema,
             success_schema(schema),
             &["data", "page", "target"],
-            &["data", "target"],
+            &["data", "page", "target"],
         );
         let page = object_branch(schema, &success["properties"]["page"]);
         assert!(allows(schema, &success["properties"]["page"], "null"));
@@ -1025,7 +1025,7 @@ async fn content_output_schemas_match_the_declared_projections() {
             schema,
             page,
             &["has_more", "limit", "returned", "total", "truncated"],
-            &["limit", "returned", "truncated"],
+            &["limit", "returned", "total", "has_more", "truncated"],
         );
         nullable(schema, &page["properties"]["limit"], "integer", false);
         nullable(schema, &page["properties"]["returned"], "integer", false);
@@ -1067,7 +1067,7 @@ async fn content_output_schemas_match_the_declared_projections() {
             schema,
             &failure["properties"]["error"],
             &["code", "http_status", "kind", "message"],
-            &["code", "kind", "message"],
+            &["code", "http_status", "kind", "message"],
         );
         for field in ["code", "kind", "message"] {
             nullable(schema, &error["properties"][field], "string", false);

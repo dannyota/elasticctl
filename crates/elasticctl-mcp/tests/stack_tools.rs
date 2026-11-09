@@ -264,7 +264,7 @@ fn assert_success_schema(
         schema,
         success,
         &["target", "data", "page"],
-        &["target", "data"],
+        &["target", "data", "page"],
     );
     let target = property_schema(schema, success, "target");
     assert_schema_object(
@@ -308,7 +308,7 @@ fn assert_failure_schema(schema: &Value, structured: &Value) {
         schema,
         error,
         &["kind", "http_status", "code", "message"],
-        &["kind", "code", "message"],
+        &["kind", "http_status", "code", "message"],
     );
     for property in ["kind", "code", "message"] {
         assert_property_type(schema, error, property, "string");
@@ -455,7 +455,7 @@ async fn stack_info_projects_recorded_data_and_only_uses_its_route_allowlist() {
         &output_schema,
         &structured,
         &["version", "flavor", "license", "spaces"],
-        &["version", "flavor"],
+        &["version", "flavor", "license", "spaces"],
     );
     let info_schema = property_schema(
         &output_schema,
