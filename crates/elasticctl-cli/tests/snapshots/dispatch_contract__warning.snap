@@ -1,0 +1,16 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_contract.rs
+expression: "capture(&[\"config\", \"list\", \"--json\"], true, true).await"
+---
+{
+  "args": [
+    "config",
+    "list",
+    "--json"
+  ],
+  "code": 0,
+  "stdout": "[\n  {\n    \"name\": \"default\",\n    \"current\": true,\n    \"kibana_url\": \"HOST\",\n    \"space\": \"default\"\n  }\n]\n",
+  "stderr": "{\"warning\":{\"kind\":\"insecure_config_permissions\",\"message\":\"config file ROOT/config.toml is readable by group or other (mode 644); should be 0600\"}}\n",
+  "requests": [],
+  "out": null
+}
