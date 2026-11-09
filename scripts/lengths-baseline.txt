@@ -1,7 +1,6 @@
 # Ratchet: exact origin/master counts at 0fbde52ec9f2f58dadb27d43b72cef5e74f5c623.
 # Never add entries or raise caps; lower caps when files shrink.
 # Remove entries at the limit or when paths disappear.
-602 CHANGELOG.md
 1035 crates/elasticctl-api/src/dashboards_ops.rs
 1317 crates/elasticctl-api/src/data_views_ops.rs
 929 crates/elasticctl-api/src/exceptions.rs
@@ -15,10 +14,5 @@
 1016 crates/elasticctl-cli/src/report_file.rs
 835 crates/elasticctl-core/src/transport.rs
 949 crates/elasticctl-mcp/src/server.rs
-730 docs/specs/elasticctl-content-design.md
-1815 docs/specs/elasticctl-design.md
-1023 docs/specs/elasticctl-fleet-design.md
-513 docs/specs/elasticctl-mcp-design.md
-458 docs/specs/elasticctl-triage-design.md
 922 xtask/src/conformance.rs
 9668 xtask/src/main.rs
