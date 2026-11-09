@@ -37,7 +37,7 @@ jobs:
       - uses: taiki-e/install-action@f13d8e15c52b25c79b608d399cc802adc73d83da # v2.62.30
         with:
           tool: cargo-nextest@0.9.114
-      - run: cargo nextest run --locked --workspace
+      - run: cargo nextest run --locked --no-fail-fast --workspace
       - run: cargo test --locked --workspace --doc
       - run: ./scripts/check-packages.sh
 
@@ -59,7 +59,7 @@ jobs:
       - uses: taiki-e/install-action@f13d8e15c52b25c79b608d399cc802adc73d83da # v2.62.30
         with:
           tool: cargo-nextest@0.9.114
-      - run: cargo nextest run --locked --workspace
+      - run: cargo nextest run --locked --no-fail-fast --workspace
       - run: cargo test --locked --workspace --doc
 
   declared-rust:
@@ -106,7 +106,7 @@ jobs:
       - uses: taiki-e/install-action@f13d8e15c52b25c79b608d399cc802adc73d83da # v2.62.30
         with:
           tool: cargo-nextest@0.9.114
-      - run: cargo nextest run --locked -p elasticctl-api -p elasticctl -E 'package(=elasticctl) | (package(=elasticctl-api) & (binary(=state) | test(transaction)))'
+      - run: cargo nextest run --locked --no-fail-fast -p elasticctl-api -p elasticctl -E 'package(=elasticctl) | (package(=elasticctl-api) & (binary(=state) | test(transaction)))'
 
   # Check advisories, licences, duplicate versions, and unvetted sources from
   # deny.toml.
