@@ -1443,31 +1443,50 @@ the corrected harness failure, and evidence limits.
 
 ## 9. Local lab
 
-Serverless is the primary development target, so no local stack is needed day
-to day. The `lab/` podman stack records self-managed fixtures. This prevents
-v0.1 from shipping a Serverless-only tool under a three-flavor label.
+The on-demand `lab/` Docker Compose v2 (or Podman Compose) stack runs
+Elasticsearch and Kibana 9.5.1 for self-managed recording and traditional
+conformance. Ports 9200 and 5601 bind only to 127.0.0.1; Elasticsearch keeps
+its 2-GiB heap. Images are tag-pinned, not digest-pinned.
 
-`lab/compose.yaml` runs Elasticsearch and Kibana 9.5.1, single node, security
-enabled, roughly 3 GB for the twenty minutes it is up.
+Compose requires `ELASTIC_PASSWORD` and `KIBANA_SYSTEM_PASSWORD` without
+fallbacks. `lab/up.sh` generates missing passwords randomly and atomically
+writes gitignored `lab/.env` at mode 0600. Existing values are reused;
+caller environment values take precedence. Passwords must match
+`^[A-Za-z0-9._~-]{16,128}$`; invalid values fail before writing or invoking
+Compose. Values are written unquoted. Compose config and startup diagnostics
+are captured and replaced with fixed errors. An exclusive `mkdir lab/.up.lock`
+covers preparation through key persistence and fails fast if held; EXIT, INT,
+and TERM release it. Treat `lab/.env` as Compose data; never print or source it.
 
-Two required settings:
+`lab/up.sh` waits for readiness, resets the `kibana_system` password, starts
+a 30-day trial when needed, bootstraps the signals index, and mints an API key.
+An active trial, platinum, or enterprise license skips trial activation. A 403
+from activation triggers a license re-read and succeeds only if it now qualifies.
+Other trial and signals failures are fatal. It writes `ELASTICCTL_API_KEY`,
+`ELASTICCTL_KIBANA_URL`, and `ELASTICCTL_ES_URL` to `lab/.env`, printing only
+`wrote lab/.env` instead of credentials. Kibana uses the `UPPER_SNAKE`
+encryption settings so the alerting framework can persist rule API keys.
 
-- Kibana needs `xpack.encryptedSavedObjects.encryptionKey` set to 32 or more
-  characters. Without it the alerting framework cannot persist rule API keys
-  and **every rule creation fails**, with an error that never mentions
-  encryption.
-- The detection engine needs its signals index bootstrapped through
-  `POST /api/detection_engine/index` before rules will run.
+`lab/seed.sh` installs the prebuilt pack. It and the matrix read
+`ELASTIC_PASSWORD` from the environment, then `lab/.env`, and fail naming the
+variable if absent. The matrix mints its own key and activates a user profile.
+Recording uses `ELASTICCTL_USERNAME=elastic` and
+`ELASTICCTL_PASSWORD="$ELASTIC_PASSWORD"` after loading the lab password.
+`lab/down.sh` removes containers, volumes, and orphans using
+`--env-file /dev/null` and harmless interpolation placeholders only for teardown.
 
-Scripts: `lab/up.sh` (compose up, wait for green, set the `kibana_system`
-password, bootstrap the signals index, start a 30-day trial license, mint an
-API key, print a ready-to-paste `config init`), `lab/seed.sh` (provisions the
-complete Elastic prebuilt pack for local rule-source tests; it does not install
-sample events), `lab/down.sh`.
-
-Lab certificates are self-signed, so profiles carry a `verify` field. Setting
-`verify = false` prints a warning on every request. It cannot quietly become a
-production habit.
+`.github/workflows/live-lab.yml` runs only the traditional conformance matrix
+on a disposable Ubuntu runner without repository secrets. Concurrency groups use
+workflow and ref; only pull requests cancel earlier runs. Two per-run random
+passwords are masked before export. Tracing and target-cache saving are off.
+The job has a 25-minute timeout; work receives SIGINT by minute 22, followed
+by bounded escalation. An independent always-run step tears down Compose with
+`--env-file /dev/null` and harmless interpolation placeholders.
+Hard termination cannot guarantee teardown. The artifact contains only the
+schema-allowlisted public JSON report; exactly eleven named contracts must
+pass. Private logs, configs, captures, and environment files are never uploaded.
+Cold pulls, package downloads, and alert polling make runner timing unverified;
+measure the workflow before making it required CI.
 
 ## 10. Distribution
 

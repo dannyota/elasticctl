@@ -23,6 +23,7 @@ tests/fixtures/**/*.unscrubbed.json
 lab/data/
 lab/certs/
 lab/.env
+lab/.up.lock/
 
 # Tooling
 .mcp.json
