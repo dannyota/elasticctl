@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.3 — 2026-11-09
+
+### Security
+
+- Update rustls to 0.23.46, rustls-webpki to 0.103.16, and webpki-root-certs
+  to 1.0.11 for RUSTSEC-2026-0285, 0346, 0348, 0349, 0382, and 0383, and tokio
+  to 1.54.1 for RUSTSEC-2026-0386. Every TLS connection to Kibana and
+  Elasticsearch goes through rustls.
+- RUSTSEC-2026-0457, 0461, and 0462 affect rmcp's OAuth client and Streamable
+  HTTP transports. elasticctl serves MCP over stdio only and enables neither,
+  so rmcp stays at 3.2.0 until its upgrade ships with an MCP contract update.
+
+### Changed
+
+- CI pins every third-party GitHub Action to a commit SHA.
+
 ## 0.7.2 — 2026-09-07
 
 ### Verified
