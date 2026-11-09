@@ -30,13 +30,16 @@ if [[ -n "$base_ref" ]]; then
     exit 1
   }
   base_baseline=''
+  base_has_baseline=0
   if [[ -n $(git ls-tree "$base_commit" -- "$BASELINE") ]]; then
+    base_has_baseline=1
     base_baseline=$(git show "$base_commit:$BASELINE")
   else
     # The change that introduces the gate has no base baseline to compare.
     printf 'check-lengths: %s has no baseline; skipping base comparison\n' "$base_ref"
   fi
-  [[ -n "$base_baseline" ]] && while read -r cap file; do
+  # `|| [[ -n $cap ]]` also reads a final line without a newline.
+  ((base_has_baseline)) && while read -r cap file || [[ -n "$cap" ]]; do
     [[ -n "$cap" ]] || continue
     base_cap=$(cap_for "$file" <<<"$base_baseline")
     if [[ -z "$base_cap" ]]; then
@@ -103,7 +106,7 @@ while IFS= read -r -d '' file; do
   fi
 done < <(git ls-files -z -- '*.rs' '*.md')
 
-while read -r cap file; do
+while read -r cap file || [[ -n "$cap" ]]; do
   [[ -n "$cap" ]] || continue
   if [[ ! -f "$file" ]] || ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
     printf '%s: 0 lines (cap %s), stale baseline path (missing or untracked)\n' "$file" "$cap"

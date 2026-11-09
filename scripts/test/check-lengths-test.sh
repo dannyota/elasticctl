@@ -185,4 +185,15 @@ printf '701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
 expect 'introducing a baseline is allowed' 0 $'check-lengths: HEAD has no baseline; skipping base comparison\ncheck-lengths: ok (Rust <= 700, Markdown <= 400 lines)' --base-ref HEAD
 expect 'invalid base ref' 1 'check-lengths: invalid base ref: nonexistent-ref' --base-ref nonexistent-ref
 
+fresh_repo
+lines_file src/main.rs 700
+: >"$REPO/scripts/lengths-baseline.txt"
+git -C "$REPO" add scripts/lengths-baseline.txt
+git -C "$REPO" -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -qm empty-baseline
+lines_file src/main.rs 701
+printf '701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'entry added to an empty base baseline' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
+printf '701 src/main.rs' >"$REPO/scripts/lengths-baseline.txt"
+expect 'unterminated added entry' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
+
 printf 'check-lengths-test: passed (%s cases)\n' "$cases"
