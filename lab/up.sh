@@ -71,12 +71,36 @@ fi
 set -euo pipefail
 cd "$(dirname "$0")"
 umask 077
-if ! mkdir .up.lock 2>/dev/null; then
-  echo "lab startup lock is held (lab/.up.lock); another up.sh may be running" >&2
-  exit 1
-fi
+# The lock records its owner's PID so a lock left by a killed up.sh (SIGKILL
+# skips the EXIT trap) can be reclaimed. A lock without a PID file is treated as
+# held for five minutes, covering the instant between mkdir and the PID write.
+acquire_lock() {
+  if mkdir .up.lock 2>/dev/null; then
+    echo "$$" > .up.lock/pid
+    return 0
+  fi
+  local owner
+  owner=$(cat .up.lock/pid 2>/dev/null || true)
+  if [[ "$owner" =~ ^[0-9]+$ ]]; then
+    if kill -0 "$owner" 2>/dev/null; then
+      echo "lab startup lock is held by running process $owner (lab/.up.lock)" >&2
+      return 1
+    fi
+  elif [[ -z "$(find .up.lock -maxdepth 0 -mmin +5 2>/dev/null)" ]]; then
+    echo "lab startup lock is held (lab/.up.lock); another up.sh may be starting" >&2
+    return 1
+  fi
+  echo "reclaiming stale lab startup lock (lab/.up.lock)" >&2
+  rm -rf -- .up.lock
+  if ! mkdir .up.lock 2>/dev/null; then
+    echo "lab startup lock is held (lab/.up.lock); another up.sh may be running" >&2
+    return 1
+  fi
+  echo "$$" > .up.lock/pid
+}
+acquire_lock || exit 1
 cleanup() {
-  rmdir .up.lock
+  rm -rf -- .up.lock
 }
 trap cleanup EXIT
 trap 'exit 130' INT
