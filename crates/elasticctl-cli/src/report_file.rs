@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
 const JOURNAL: &str = "journal.ndjson";
 const ORIGINAL: &str = "original.json";
@@ -17,8 +19,7 @@ const LOCK_SUFFIX: &str = ".elasticctl-report.lock";
 /// held from preflight through publication so another push cannot mistake its
 /// transaction for a crashed predecessor.
 pub(crate) struct PreparedReport {
-    target: PathBuf,
-    transaction_dir: PathBuf,
+    paths: ReportPaths,
     staged_path: PathBuf,
     backup_path: PathBuf,
     _lock_file: File,
@@ -126,8 +127,8 @@ impl PreparedReport {
         publish_report_with(self, report, &FsFileOps)
     }
 
-    pub(crate) fn path(&self) -> &Path {
-        &self.target
+    pub(crate) fn requested_path(&self) -> &Path {
+        &self.paths.requested
     }
 }
 
@@ -136,12 +137,16 @@ fn prepare_report_with(
     report: &ChangeReport,
     ops: &dyn FileOps,
 ) -> Result<PreparedReport> {
-    let (parent, transaction_dir, lock_path) = report_paths(path)?;
-    let lock_file = acquire_lock(path, &lock_path)?;
+    let paths = report_paths(path)?;
+    let parent = &paths.parent;
+    let transaction_dir = &paths.transaction_dir;
+    let requested = &paths.requested;
+    let path = &paths.target;
+    let lock_file = acquire_lock(requested, &paths.lock_path)?;
 
-    recover_report_locked(path, &transaction_dir, &parent, ops)?;
-    let existed_before = target_is_regular_file(path)?;
-    if path_exists(&transaction_dir, "checking report transaction")? {
+    recover_report_locked(&paths, ops)?;
+    let existed_before = target_is_regular_file(path, requested)?;
+    if path_exists(transaction_dir, "checking report transaction")? {
         return Err(Error::new(
             ErrorKind::Conflict,
             format!(
@@ -154,28 +159,24 @@ fn prepare_report_with(
     let staged_path = transaction_dir.join("staged.json");
     let backup_path = transaction_dir.join("backup.json");
     let result = (|| {
-        create_transaction_dir(&transaction_dir, &parent, ops)?;
+        create_transaction_dir(transaction_dir, parent, ops)?;
         let bytes = serialize_report(report)?;
         write(
             ops,
             &staged_path,
             &bytes,
             false,
-            path,
+            requested,
             "staging change report",
         )?;
-        sync_file(ops, &staged_path, path, "syncing staged change report")?;
-        sync_dir(
-            ops,
-            &transaction_dir,
-            "syncing report transaction directory",
-        )?;
+        sync_file(ops, &staged_path, requested, "syncing staged change report")?;
+        sync_dir(ops, transaction_dir, "syncing report transaction directory")?;
 
         let record = PreparedRecord {
             existed_before,
             phase: Phase::Prepared,
         };
-        let journal = journal_path(&transaction_dir);
+        let journal = journal_path(transaction_dir);
         let bytes = serde_json::to_vec(&record)
             .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report journal: {e}")))?;
         write(
@@ -183,26 +184,21 @@ fn prepare_report_with(
             &journal,
             &with_newline(bytes),
             false,
-            path,
+            requested,
             "writing prepared report journal",
         )?;
-        sync_file(ops, &journal, path, "syncing prepared report journal")?;
-        sync_dir(
-            ops,
-            &transaction_dir,
-            "syncing report transaction directory",
-        )
+        sync_file(ops, &journal, requested, "syncing prepared report journal")?;
+        sync_dir(ops, transaction_dir, "syncing report transaction directory")
     })();
 
     match result {
         Ok(()) => Ok(PreparedReport {
-            target: path.to_path_buf(),
-            transaction_dir,
+            paths,
             staged_path,
             backup_path,
             _lock_file: lock_file,
         }),
-        Err(error) => finish_failed_preparation(path, &transaction_dir, &parent, ops, error),
+        Err(error) => finish_failed_preparation(&paths, ops, error),
     }
 }
 
@@ -211,14 +207,19 @@ fn publish_report_with(
     report: &ChangeReport,
     ops: &dyn FileOps,
 ) -> Result<()> {
-    let parent = report_parent(&prepared.target)?;
+    let paths = &prepared.paths;
+    paths.recheck_parent()?;
+    let parent = &paths.parent;
+    let target = &paths.target;
+    let requested = &paths.requested;
+    let transaction_dir = &paths.transaction_dir;
     let result = (|| {
-        let journal = read_journal(&prepared.transaction_dir)?.ok_or_else(|| {
+        let journal = read_journal(transaction_dir)?.ok_or_else(|| {
             Error::new(
                 ErrorKind::Error,
                 format!(
                     "report journal {} has no prepared record",
-                    journal_path(&prepared.transaction_dir).display()
+                    journal_path(transaction_dir).display()
                 ),
             )
         })?;
@@ -227,23 +228,23 @@ fn publish_report_with(
                 ErrorKind::Error,
                 format!(
                     "report transaction {} is not ready to publish",
-                    prepared.transaction_dir.display()
+                    transaction_dir.display()
                 ),
             ));
         }
-        let exists_now = target_is_regular_file(&prepared.target)?;
+        let exists_now = target_is_regular_file(target, requested)?;
         if exists_now != journal.existed_before {
             return Err(Error::new(
                 ErrorKind::Conflict,
                 format!(
                     "report target {} changed after preflight",
-                    prepared.target.display()
+                    requested.display()
                 ),
             ));
         }
         require_regular_file(
             &prepared.staged_path,
-            &prepared.target,
+            requested,
             "reading staged change report",
         )?;
         if path_exists(&prepared.backup_path, "checking report backup")? {
@@ -251,7 +252,7 @@ fn publish_report_with(
                 ErrorKind::Conflict,
                 format!(
                     "report transaction {} already has a backup",
-                    prepared.transaction_dir.display()
+                    transaction_dir.display()
                 ),
             ));
         }
@@ -262,199 +263,174 @@ fn publish_report_with(
             &prepared.staged_path,
             &bytes,
             false,
-            &prepared.target,
+            requested,
             "restaging change report",
         )?;
         sync_file(
             ops,
             &prepared.staged_path,
-            &prepared.target,
+            requested,
             "syncing restaged change report",
         )?;
-        sync_dir(
-            ops,
-            &prepared.transaction_dir,
-            "syncing report transaction directory",
-        )?;
+        sync_dir(ops, transaction_dir, "syncing report transaction directory")?;
 
         if journal.existed_before {
-            snapshot_original(&prepared.target, &prepared.transaction_dir, ops)?;
+            snapshot_original(paths, ops)?;
         }
-        append_phase(
-            &prepared.transaction_dir,
-            Phase::BackingUp,
-            &prepared.target,
-            ops,
-        )?;
+        append_phase(transaction_dir, Phase::BackingUp, requested, ops)?;
         if journal.existed_before {
             rename(
                 ops,
-                &prepared.target,
+                target,
                 &prepared.backup_path,
-                &prepared.target,
+                requested,
                 "backing up change report",
             )?;
-            sync_dir(ops, &parent, "syncing report directory after backup")?;
+            sync_dir(ops, parent, "syncing report directory after backup")?;
             sync_dir(
                 ops,
-                &prepared.transaction_dir,
+                transaction_dir,
                 "syncing report transaction directory after backup",
             )?;
         }
-        append_phase(
-            &prepared.transaction_dir,
-            Phase::BackedUp,
-            &prepared.target,
-            ops,
-        )?;
+        append_phase(transaction_dir, Phase::BackedUp, requested, ops)?;
 
-        append_phase(
-            &prepared.transaction_dir,
-            Phase::Installing,
-            &prepared.target,
-            ops,
-        )?;
-        if target_is_regular_file(&prepared.target)? {
+        append_phase(transaction_dir, Phase::Installing, requested, ops)?;
+        if target_is_regular_file(target, requested)? {
             return Err(Error::new(
                 ErrorKind::Conflict,
                 format!(
                     "report target {} appeared during publication",
-                    prepared.target.display()
+                    requested.display()
                 ),
             ));
         }
         rename(
             ops,
             &prepared.staged_path,
-            &prepared.target,
-            &prepared.target,
+            target,
+            requested,
             "installing change report",
         )?;
-        sync_dir(ops, &parent, "syncing report directory after installation")?;
+        sync_dir(ops, parent, "syncing report directory after installation")?;
         sync_dir(
             ops,
-            &prepared.transaction_dir,
+            transaction_dir,
             "syncing report transaction directory after installation",
         )?;
-        append_phase(
-            &prepared.transaction_dir,
-            Phase::Installed,
-            &prepared.target,
-            ops,
-        )?;
+        append_phase(transaction_dir, Phase::Installed, requested, ops)?;
 
         // Removing this directory discards the only rollback evidence. From
         // this explicit boundary forward the installed report is committed.
-        remove_transaction(&prepared.target, &prepared.transaction_dir, &parent, ops)
+        remove_transaction(requested, transaction_dir, parent, ops)
     })();
 
     match result {
         Ok(()) => Ok(()),
-        Err(error) => finish_failed_publication(
-            &prepared.target,
-            &prepared.transaction_dir,
-            &parent,
-            ops,
-            error,
-        ),
+        Err(error) => finish_failed_publication(paths, ops, error),
     }
 }
 
 #[cfg(test)]
 fn recover_report(path: &Path) -> Result<()> {
-    let (parent, transaction_dir, lock_path) = report_paths(path)?;
-    let _lock_file = acquire_lock(path, &lock_path)?;
-    recover_report_locked(path, &transaction_dir, &parent, &FsFileOps)
+    let paths = report_paths(path)?;
+    let _lock_file = acquire_lock(&paths.requested, &paths.lock_path)?;
+    recover_report_locked(&paths, &FsFileOps)
 }
 
-fn recover_report_locked(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
-    ops: &dyn FileOps,
-) -> Result<()> {
+fn recover_report_locked(paths: &ReportPaths, ops: &dyn FileOps) -> Result<()> {
+    paths.recheck_parent()?;
+    let requested = &paths.requested;
+    let transaction_dir = &paths.transaction_dir;
+    let parent = &paths.parent;
     if !path_exists(transaction_dir, "checking report transaction")? {
         return Ok(());
     }
     require_directory(
         transaction_dir,
-        path,
+        requested,
         "reading report transaction directory",
     )?;
     let Some(journal) = read_journal(transaction_dir)? else {
         // No synced Prepared record authorizes no target rename. This is only
         // transaction-owned staging data, so removing it cannot touch a report.
-        return remove_transaction(path, transaction_dir, parent, ops);
+        return remove_transaction(requested, transaction_dir, parent, ops);
     };
 
     if journal.existed_before {
-        recover_existing_target(path, transaction_dir, parent, ops, journal.phase)?;
+        recover_existing_target(paths, ops, journal.phase)?;
     } else {
-        recover_absent_target(path, transaction_dir, parent, ops, journal.phase)?;
+        recover_absent_target(paths, ops, journal.phase)?;
     }
-    remove_transaction(path, transaction_dir, parent, ops)
+    remove_transaction(requested, transaction_dir, parent, ops)
 }
 
-fn recover_existing_target(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
-    ops: &dyn FileOps,
-    phase: Phase,
-) -> Result<()> {
+fn recover_existing_target(paths: &ReportPaths, ops: &dyn FileOps, phase: Phase) -> Result<()> {
+    let path = &paths.target;
+    let transaction_dir = &paths.transaction_dir;
+    let parent = &paths.parent;
+    let requested = &paths.requested;
     let backup = transaction_dir.join("backup.json");
     let backup_exists = path_exists(&backup, "checking report backup")?;
     match (phase, backup_exists) {
-        (Phase::Restored, false) => target_matches_original(path, transaction_dir),
+        (Phase::Restored, false) => target_matches_original(paths),
         (Phase::Restored, true) => Err(Error::new(
             ErrorKind::Error,
             format!(
                 "report transaction {} says {} was restored, but its backup remains",
                 transaction_dir.display(),
-                path.display()
+                requested.display()
             ),
         )),
         (Phase::Restoring, false) => {
-            target_matches_original(path, transaction_dir)?;
-            finish_restoration(path, transaction_dir, parent, ops)
+            target_matches_original(paths)?;
+            finish_restoration(paths, ops)
         }
         (Phase::Prepared, true) => Err(Error::new(
             ErrorKind::Error,
             format!(
                 "report transaction {} has a backup before recording BackingUp for {}",
                 transaction_dir.display(),
-                path.display()
+                requested.display()
             ),
         )),
         (_, true) => {
-            require_regular_file(&backup, path, "reading report backup")?;
-            read_original(path, transaction_dir)?;
+            require_regular_file(&backup, requested, "reading report backup")?;
+            read_original(paths)?;
             if phase != Phase::Restoring {
-                append_phase(transaction_dir, Phase::Restoring, path, ops)?;
+                append_phase(transaction_dir, Phase::Restoring, requested, ops)?;
             }
-            match target_metadata(path)? {
+            match target_metadata(path, requested)? {
                 Some(metadata) if metadata.file_type().is_file() => {
                     remove_file(
                         ops,
                         path,
-                        path,
+                        requested,
                         "removing replacement report during rollback",
                     )?;
                     sync_dir(ops, parent, "syncing report directory during rollback")?;
                 }
-                Some(_) => return non_regular_target(path),
+                Some(_) => return non_regular_target(requested),
                 None => {}
             }
-            rename(ops, &backup, path, path, "restoring previous change report")?;
-            finish_restoration(path, transaction_dir, parent, ops)
+            rename(
+                ops,
+                &backup,
+                path,
+                requested,
+                "restoring previous change report",
+            )?;
+            finish_restoration(paths, ops)
         }
-        (Phase::Prepared | Phase::BackingUp, false) if target_is_regular_file(path)? => Ok(()),
+        (Phase::Prepared | Phase::BackingUp, false) if target_is_regular_file(path, requested)? => {
+            Ok(())
+        }
         (_, false) => Err(Error::new(
             ErrorKind::Error,
             format!(
                 "report transaction {} lost the backup needed to recover {}",
                 transaction_dir.display(),
-                path.display()
+                requested.display()
             ),
         )),
     }
@@ -464,13 +440,11 @@ fn recover_existing_target(
 /// from the rename: if either directory sync or the final journal append
 /// fails, `Restoring` plus a regular target proves the retry must complete
 /// these steps rather than looking for a backup that has already moved.
-fn finish_restoration(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
-    ops: &dyn FileOps,
-) -> Result<()> {
-    target_matches_original(path, transaction_dir)?;
+fn finish_restoration(paths: &ReportPaths, ops: &dyn FileOps) -> Result<()> {
+    let transaction_dir = &paths.transaction_dir;
+    let parent = &paths.parent;
+    let requested = &paths.requested;
+    target_matches_original(paths)?;
     sync_dir(
         ops,
         parent,
@@ -481,16 +455,14 @@ fn finish_restoration(
         transaction_dir,
         "syncing report transaction directory after rollback restoration",
     )?;
-    append_phase(transaction_dir, Phase::Restored, path, ops)
+    append_phase(transaction_dir, Phase::Restored, requested, ops)
 }
 
-fn recover_absent_target(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
-    ops: &dyn FileOps,
-    phase: Phase,
-) -> Result<()> {
+fn recover_absent_target(paths: &ReportPaths, ops: &dyn FileOps, phase: Phase) -> Result<()> {
+    let path = &paths.target;
+    let requested = &paths.requested;
+    let transaction_dir = &paths.transaction_dir;
+    let parent = &paths.parent;
     if matches!(phase, Phase::Restoring | Phase::Restored) {
         return Err(Error::new(
             ErrorKind::Error,
@@ -504,19 +476,19 @@ fn recover_absent_target(
     if matches!(phase, Phase::Installing | Phase::Installed)
         && !path_exists(&staged, "checking staged change report")?
     {
-        match target_metadata(path)? {
+        match target_metadata(path, requested)? {
             Some(metadata) if metadata.file_type().is_file() => {
                 // The missing staged side plus the durable Installing record
                 // proves this target came from this transaction.
                 remove_file(
                     ops,
                     path,
-                    path,
+                    requested,
                     "removing newly installed change report during rollback",
                 )?;
                 sync_dir(ops, parent, "syncing report directory during rollback")?;
             }
-            Some(_) => return non_regular_target(path),
+            Some(_) => return non_regular_target(requested),
             None => {}
         }
     }
@@ -620,7 +592,10 @@ fn is_valid_transition(from: Phase, to: Phase) -> bool {
 /// Copy the target immediately before its backup rename. The artifact is only
 /// used by recovery after that backup has disappeared, when its bytes are the
 /// sole unambiguous proof that the regular target is the original report.
-fn snapshot_original(path: &Path, transaction_dir: &Path, ops: &dyn FileOps) -> Result<()> {
+fn snapshot_original(paths: &ReportPaths, ops: &dyn FileOps) -> Result<()> {
+    let path = &paths.target;
+    let transaction_dir = &paths.transaction_dir;
+    let requested = &paths.requested;
     let original = original_path(transaction_dir);
     if path_exists(&original, "checking original change report")? {
         return Err(Error::new(
@@ -631,18 +606,18 @@ fn snapshot_original(path: &Path, transaction_dir: &Path, ops: &dyn FileOps) -> 
             ),
         ));
     }
-    require_regular_file(path, path, "reading original change report")?;
-    let bytes =
-        fs::read(path).map_err(|e| filesystem_error("reading original change report", path, e))?;
+    require_regular_file(path, requested, "reading original change report")?;
+    let bytes = fs::read(path)
+        .map_err(|e| filesystem_error("reading original change report", requested, e))?;
     write(
         ops,
         &original,
         &bytes,
         false,
-        path,
+        requested,
         "snapshotting original change report",
     )?;
-    sync_file(ops, &original, path, "syncing original change report")?;
+    sync_file(ops, &original, requested, "syncing original change report")?;
     sync_dir(
         ops,
         transaction_dir,
@@ -650,11 +625,14 @@ fn snapshot_original(path: &Path, transaction_dir: &Path, ops: &dyn FileOps) -> 
     )
 }
 
-fn target_matches_original(path: &Path, transaction_dir: &Path) -> Result<()> {
-    let original = read_original(path, transaction_dir)?;
-    require_regular_file(path, path, "reading restored change report")?;
-    let target =
-        fs::read(path).map_err(|e| filesystem_error("reading restored change report", path, e))?;
+fn target_matches_original(paths: &ReportPaths) -> Result<()> {
+    let path = &paths.target;
+    let transaction_dir = &paths.transaction_dir;
+    let requested = &paths.requested;
+    let original = read_original(paths)?;
+    require_regular_file(path, requested, "reading restored change report")?;
+    let target = fs::read(path)
+        .map_err(|e| filesystem_error("reading restored change report", requested, e))?;
     if target == original {
         Ok(())
     } else {
@@ -663,27 +641,27 @@ fn target_matches_original(path: &Path, transaction_dir: &Path) -> Result<()> {
             format!(
                 "report transaction {} found target {} that does not match its original report artifact",
                 transaction_dir.display(),
-                path.display()
+                requested.display()
             ),
         ))
     }
 }
 
-fn read_original(path: &Path, transaction_dir: &Path) -> Result<Vec<u8>> {
+fn read_original(paths: &ReportPaths) -> Result<Vec<u8>> {
+    let transaction_dir = &paths.transaction_dir;
+    let requested = &paths.requested;
     let original = original_path(transaction_dir);
-    require_regular_file(&original, path, "reading original change report")?;
+    require_regular_file(&original, requested, "reading original change report")?;
     fs::read(&original)
         .map_err(|e| filesystem_error("reading original change report", &original, e))
 }
 
 fn finish_failed_preparation<T>(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
+    paths: &ReportPaths,
     ops: &dyn FileOps,
     original: Error,
 ) -> Result<T> {
-    match recover_report_locked(path, transaction_dir, parent, ops) {
+    match recover_report_locked(paths, ops) {
         Ok(()) => Err(original),
         Err(recovery) => Err(Error::new(
             ErrorKind::Error,
@@ -693,13 +671,11 @@ fn finish_failed_preparation<T>(
 }
 
 fn finish_failed_publication(
-    path: &Path,
-    transaction_dir: &Path,
-    parent: &Path,
+    paths: &ReportPaths,
     ops: &dyn FileOps,
     original: Error,
 ) -> Result<()> {
-    match recover_report_locked(path, transaction_dir, parent, ops) {
+    match recover_report_locked(paths, ops) {
         Ok(()) => Err(original),
         Err(recovery) => Err(Error::new(
             ErrorKind::Error,
@@ -708,9 +684,34 @@ fn finish_failed_publication(
     }
 }
 
-fn report_paths(path: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    let parent = report_parent(path)?;
-    let name = path
+/// Resolve once, then carry this identity while the sibling lock is held.
+struct ReportPaths {
+    requested: PathBuf,
+    target: PathBuf,
+    parent: PathBuf,
+    transaction_dir: PathBuf,
+    lock_path: PathBuf,
+}
+
+impl ReportPaths {
+    fn recheck_parent(&self) -> Result<()> {
+        require_directory(&self.parent, &self.requested, "checking report parent")
+    }
+}
+
+fn report_paths(requested: &Path) -> Result<ReportPaths> {
+    #[cfg(windows)]
+    if matches!(requested.components().next(), Some(Component::Prefix(_))) && !requested.has_root()
+    {
+        return Err(Error::new(
+            ErrorKind::Error,
+            format!(
+                "drive-relative report path {} is ambiguous; use an absolute drive path",
+                requested.display()
+            ),
+        ));
+    }
+    let name = requested
         .file_name()
         .filter(|name| !name.is_empty())
         .ok_or_else(|| {
@@ -718,22 +719,32 @@ fn report_paths(path: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
                 ErrorKind::Error,
                 format!(
                     "report destination {} has no final component",
-                    path.display()
+                    requested.display()
                 ),
             )
         })?;
-    Ok((
-        parent.clone(),
-        parent.join(hidden_sibling_name(name, TRANSACTION_SUFFIX)),
-        parent.join(hidden_sibling_name(name, LOCK_SUFFIX)),
-    ))
+    let parent = requested
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent)
+        .map_err(|e| filesystem_error("resolving report parent for", requested, e))?;
+    let paths = ReportPaths {
+        requested: requested.to_path_buf(),
+        target: parent.join(name),
+        transaction_dir: parent.join(hidden_sibling_name(name, TRANSACTION_SUFFIX)),
+        lock_path: parent.join(hidden_sibling_name(name, LOCK_SUFFIX)),
+        parent,
+    };
+    paths.recheck_parent()?;
+    Ok(paths)
 }
 
 #[cfg(test)]
 fn transaction_dir(path: &Path) -> PathBuf {
     report_paths(path)
         .expect("test paths have a valid report destination")
-        .1
+        .transaction_dir
 }
 
 fn hidden_sibling_name(name: &std::ffi::OsStr, suffix: &str) -> OsString {
@@ -741,72 +752,6 @@ fn hidden_sibling_name(name: &std::ffi::OsStr, suffix: &str) -> OsString {
     sibling.push(name);
     sibling.push(suffix);
     sibling
-}
-
-fn report_parent(path: &Path) -> Result<PathBuf> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    require_directory_chain(path, parent)
-}
-
-fn require_directory_chain(target: &Path, parent: &Path) -> Result<PathBuf> {
-    let absolute = if parent.is_absolute() {
-        parent.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| filesystem_error("reading current directory", target, e))?
-            .join(parent)
-    };
-    let mut current = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                current.pop();
-            }
-            Component::Normal(component) => {
-                current.push(component);
-                match metadata(&current, "reading report parent")? {
-                    Some(found) if found.file_type().is_dir() => {}
-                    Some(found) if found.file_type().is_symlink() => {
-                        return Err(Error::new(
-                            ErrorKind::Error,
-                            format!(
-                                "report destination {} has a symlinked parent {}",
-                                target.display(),
-                                current.display()
-                            ),
-                        ));
-                    }
-                    Some(_) => {
-                        return Err(Error::new(
-                            ErrorKind::Error,
-                            format!(
-                                "report destination {} has a non-directory parent {}",
-                                target.display(),
-                                current.display()
-                            ),
-                        ));
-                    }
-                    None => {
-                        return Err(Error::new(
-                            ErrorKind::Error,
-                            format!(
-                                "report destination {} has a missing parent {}",
-                                target.display(),
-                                current.display()
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    Ok(parent.to_path_buf())
 }
 
 fn acquire_lock(target: &Path, lock_path: &Path) -> Result<File> {
@@ -852,16 +797,25 @@ fn acquire_lock(target: &Path, lock_path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-fn target_is_regular_file(path: &Path) -> Result<bool> {
-    match target_metadata(path)? {
+fn target_is_regular_file(path: &Path, requested: &Path) -> Result<bool> {
+    match target_metadata(path, requested)? {
         Some(metadata) if metadata.file_type().is_file() => Ok(true),
-        Some(_) => non_regular_target(path),
+        Some(_) => non_regular_target(requested),
         None => Ok(false),
     }
 }
 
-fn target_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
-    metadata(path, "reading report destination")
+fn target_metadata(path: &Path, requested: &Path) -> Result<Option<fs::Metadata>> {
+    metadata(path, "reading report destination").map_err(|error| {
+        Error::new(
+            error.kind,
+            format!(
+                "report destination {}: {}",
+                requested.display(),
+                error.message
+            ),
+        )
+    })
 }
 
 fn require_regular_file(path: &Path, target: &Path, action: &str) -> Result<()> {
@@ -1240,7 +1194,7 @@ mod tests {
             fs::read(&prepared.staged_path).unwrap(),
             serialized(&dry_run)
         );
-        assert!(prepared.transaction_dir.join(JOURNAL).is_file());
+        assert!(prepared.paths.transaction_dir.join(JOURNAL).is_file());
         drop(prepared);
         recover_report(&target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
@@ -1364,11 +1318,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("report.json");
         seed_report_transaction(&target, true, Phase::Installed, true, true);
-        let (parent, transaction, lock_path) = report_paths(&target).unwrap();
-        let lock = acquire_lock(&target, &lock_path).unwrap();
+        let paths = report_paths(&target).unwrap();
+        let lock = acquire_lock(&target, &paths.lock_path).unwrap();
         let ops = FailingFileOps::once("sync_dir", 3);
 
-        assert!(recover_report_locked(&target, &transaction, &parent, &ops).is_err());
+        assert!(recover_report_locked(&paths, &ops).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"{\"previous\":true}");
         drop(lock);
 
@@ -1391,11 +1345,12 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let target = dir.path().join("report.json");
             seed_report_transaction(&target, true, Phase::Installed, true, true);
-            let (parent, transaction, lock_path) = report_paths(&target).unwrap();
-            let lock = acquire_lock(&target, &lock_path).unwrap();
+            let paths = report_paths(&target).unwrap();
+            let transaction = &paths.transaction_dir;
+            let lock = acquire_lock(&target, &paths.lock_path).unwrap();
             let ops = FailingFileOps::once(operation, fail_at);
 
-            assert!(recover_report_locked(&target, &transaction, &parent, &ops).is_err());
+            assert!(recover_report_locked(&paths, &ops).is_err());
             assert!(transaction.exists(), "{operation} call {fail_at}");
             drop(lock);
 
@@ -1519,6 +1474,8 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(same_target.kind, elasticctl_core::ErrorKind::Conflict);
+        let resolved = report_paths(&first_target).unwrap().target;
+        assert_eq!(preparation_error(&resolved).kind, ErrorKind::Conflict);
         let other = prepare_report(&second_target, &report(false)).unwrap();
         drop(other);
         drop(prepared);
@@ -1545,27 +1502,299 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn preparation_refuses_symlink_parents_and_non_regular_targets() {
+    fn preparation_accepts_symlink_parents() {
         use std::os::unix::fs::symlink;
-
         let dir = tempfile::tempdir().unwrap();
         let outside = dir.path().join("outside");
         fs::create_dir(&outside).unwrap();
-        let linked_parent = dir.path().join("linked-parent");
-        symlink(&outside, &linked_parent).unwrap();
-        let parent_error = match prepare_report(&linked_parent.join("report.json"), &report(false))
-        {
-            Ok(_) => panic!("symlinked report parent was accepted"),
-            Err(error) => error,
-        };
-        assert_eq!(parent_error.kind, elasticctl_core::ErrorKind::Error);
+        let alias = dir.path().join("alias");
+        symlink(&outside, &alias).unwrap();
+        let prepared = prepare_report(&alias.join("report.json"), &report(false)).unwrap();
+        assert_eq!(
+            preparation_error(&outside.join("report.json")).kind,
+            ErrorKind::Conflict
+        );
+        prepared.publish(&report(true)).unwrap();
+        assert_eq!(
+            fs::read(outside.join("report.json")).unwrap(),
+            serialized(&report(true))
+        );
+    }
 
+    #[cfg(unix)]
+    #[test]
+    fn preparation_refuses_dangling_final_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("report.json");
         symlink("missing-report", &target).unwrap();
-        let target_error = match prepare_report(&target, &report(false)) {
-            Ok(_) => panic!("non-regular report target was accepted"),
+        assert_eq!(preparation_error(&target).kind, ErrorKind::Error);
+    }
+
+    fn preparation_error(target: &Path) -> Error {
+        match prepare_report(target, &report(false)) {
+            Ok(_) => panic!("unexpectedly accepted {}", target.display()),
             Err(error) => error,
-        };
-        assert_eq!(target_error.kind, elasticctl_core::ErrorKind::Error);
+        }
+    }
+
+    #[test]
+    fn preparation_refuses_directories_missing_parents_and_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        for target in [
+            dir.path().to_path_buf(),
+            dir.path().join("missing/report.json"),
+        ] {
+            let error = preparation_error(&target);
+            assert!(error.message.contains(&target.display().to_string()));
+        }
+        fs::write(dir.path().join("file"), b"file").unwrap();
+        assert!(report_paths(&dir.path().join("file/report.json")).is_err());
+        assert!(report_paths(Path::new("")).is_err());
+        #[cfg(unix)]
+        assert!(report_paths(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn relative_and_absolute_paths_share_identity_and_lock() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let absolute = dir.path().join("report.json");
+        let relative = absolute.strip_prefix(&cwd).unwrap();
+        let prepared = prepare_report(relative, &report(false)).unwrap();
+        assert_eq!(prepared.requested_path(), relative);
+        assert_eq!(
+            prepared.paths.target,
+            report_paths(&absolute).unwrap().target
+        );
+        assert_eq!(preparation_error(&absolute).kind, ErrorKind::Conflict);
+        prepared.publish(&report(true)).unwrap();
+        assert_eq!(fs::read(absolute).unwrap(), serialized(&report(true)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_aliases_share_lock_and_transaction_identity() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join("nested")).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&real, &alias).unwrap();
+        let target = real.join("nested/report.json");
+        let requested = alias.join("nested/report.json");
+        let prepared = prepare_report(&requested, &report(false)).unwrap();
+        assert_eq!(preparation_error(&target).kind, ErrorKind::Conflict);
+        assert_eq!(
+            recover_report(&target).unwrap_err().kind,
+            ErrorKind::Conflict
+        );
+        assert_eq!(transaction_dir(&requested), transaction_dir(&target));
+        prepared.publish(&report(true)).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), serialized(&report(true)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_retargeting_cannot_redirect_publication() {
+        use std::os::unix::fs::symlink;
+        for existed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("original");
+            let other = dir.path().join("other");
+            fs::create_dir(&original).unwrap();
+            fs::create_dir(&other).unwrap();
+            if existed {
+                fs::write(original.join("report.json"), b"old").unwrap();
+            }
+            fs::write(other.join("report.json"), b"untouched").unwrap();
+            let alias = dir.path().join("alias");
+            symlink(&original, &alias).unwrap();
+            let prepared = prepare_report(&alias.join("report.json"), &report(false)).unwrap();
+            fs::remove_file(&alias).unwrap();
+            symlink(&other, &alias).unwrap();
+            prepared.publish(&report(true)).unwrap();
+            assert_eq!(
+                fs::read(original.join("report.json")).unwrap(),
+                serialized(&report(true))
+            );
+            assert_eq!(fs::read(other.join("report.json")).unwrap(), b"untouched");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_publication_recovers_through_another_alias() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let other = dir.path().join("other");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(&other).unwrap();
+        fs::write(real.join("report.json"), b"old").unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        symlink(&real, &first).unwrap();
+        symlink(&real, &second).unwrap();
+        let prepared = prepare_report(&first.join("report.json"), &report(false)).unwrap();
+        fs::remove_file(&first).unwrap();
+        symlink(&other, &first).unwrap();
+        let ops = FailingFileOps::at("rename", &[2, 3]);
+        assert!(publish_report_with(prepared, &report(true), &ops).is_err());
+        assert!(transaction_dir(&second.join("report.json")).exists());
+        recover_report(&second.join("report.json")).unwrap();
+        recover_report(&second.join("report.json")).unwrap();
+        assert_eq!(fs::read(real.join("report.json")).unwrap(), b"old");
+        assert!(!other.join("report.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_parent_dot_dot_uses_filesystem_semantics() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("real/nested");
+        fs::create_dir_all(&nested).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&nested, &alias).unwrap();
+        prepare_report(&alias.join("../report.json"), &report(false))
+            .unwrap()
+            .publish(&report(true))
+            .unwrap();
+        assert!(dir.path().join("real/report.json").is_file());
+        assert!(!dir.path().join("report.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_symlinks_locks_and_parent_loops_are_refused() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let alias = dir.path().join("alias");
+        symlink(&real, &alias).unwrap();
+        fs::write(real.join("original"), b"untouched").unwrap();
+        let target = alias.join("report.json");
+        symlink("original", real.join("report.json")).unwrap();
+        assert!(
+            preparation_error(&target)
+                .message
+                .contains(&target.display().to_string())
+        );
+        fs::remove_file(real.join("report.json")).unwrap();
+        fs::remove_file(report_paths(&target).unwrap().lock_path).unwrap();
+        symlink(
+            "original",
+            real.join(hidden_sibling_name(
+                std::ffi::OsStr::new("report.json"),
+                LOCK_SUFFIX,
+            )),
+        )
+        .unwrap();
+        assert!(
+            preparation_error(&target)
+                .message
+                .contains("symlinked lock")
+        );
+        let looping = dir.path().join("loop");
+        symlink("loop", &looping).unwrap();
+        assert!(report_paths(&looping.join("report.json")).is_err());
+        assert_eq!(fs::read(real.join("original")).unwrap(), b"untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stored_parent_is_rechecked_before_publication_and_recovery() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("parent");
+        let moved = dir.path().join("moved");
+        let other = dir.path().join("other");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&other).unwrap();
+        let prepared = prepare_report(&parent.join("report.json"), &report(false)).unwrap();
+        let paths = report_paths(&parent.join("report.json")).unwrap();
+        fs::rename(&parent, &moved).unwrap();
+        symlink(&other, &parent).unwrap();
+        assert!(prepared.publish(&report(true)).is_err());
+        assert!(recover_report_locked(&paths, &FsFileOps).is_err());
+        assert!(!other.join("report.json").exists());
+        fs::remove_file(&parent).unwrap();
+        fs::rename(&moved, &parent).unwrap();
+        recover_report(&parent.join("report.json")).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_and_tmp_backed_tempdirs_publish_without_normalizing_inputs() {
+        for dir in [
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir_in("/tmp").unwrap(),
+        ] {
+            let target = dir.path().join("report.json");
+            prepare_report(&target, &report(false))
+                .unwrap()
+                .publish(&report(true))
+                .unwrap();
+            assert_eq!(fs::read(&target).unwrap(), serialized(&report(true)));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_relative_and_root_paths_are_rejected_before_io() {
+        for target in [
+            r"C:report.json",
+            r"C:",
+            r"C:\",
+            r"\",
+            r"\\unreachable\share\",
+            r"\\?\C:\",
+        ] {
+            assert!(report_paths(Path::new(target)).is_err(), "{target}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_extended_length_paths_preserve_parent_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.json");
+        let paths = report_paths(&target).unwrap();
+        assert!(
+            paths
+                .parent
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(r"\\?\")
+        );
+        let extended = paths.target.clone();
+        let prepared = prepare_report(&target, &report(false)).unwrap();
+        assert_eq!(preparation_error(&extended).kind, ErrorKind::Conflict);
+        prepared.publish(&report(true)).unwrap();
+        assert_eq!(fs::read(extended).unwrap(), serialized(&report(true)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_aliases_share_identity_when_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let alias = dir.path().join("alias");
+        if let Err(error) = std::os::windows::fs::symlink_dir(&real, &alias) {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("creating directory alias: {error}");
+        }
+        let prepared = prepare_report(&alias.join("report.json"), &report(false)).unwrap();
+        assert_eq!(
+            preparation_error(&real.join("report.json")).kind,
+            ErrorKind::Conflict
+        );
+        prepared.publish(&report(true)).unwrap();
+        assert!(real.join("report.json").is_file());
     }
 }
