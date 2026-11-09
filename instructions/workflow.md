@@ -2,19 +2,55 @@
 
 ## Roles and review
 
-Design first: the brief is its product. Follow any user-wide model assignments for the current
-provider; otherwise choose available models by the roles below. Set each dispatch's model
-explicitly.
+Design first: the brief is its product. Claude orchestrates: it writes briefs, makes the open
+design decisions, reruns every check itself, commits (signed), pushes, opens the pull request,
+and merges only after CI is green and the reviewer's verdict is MERGE or its findings are fixed.
+Codex does the design, implementation, and review:
 
-- Assign design and complex analysis to the planning role, routine implementation to the
-  implementation role, and transcription or single-file mechanical fixes to the support role.
-- Mutation paths, credential handling, and release workflows need independent adversarial
-  review. Ordinary code needs its tests, the gates, and independent code review.
-- Agents assigned design or review must not implement the same slice; state that restriction in
-  each brief.
+|Role|Codex flags|Duty|
+|-|-|-|
+|Astra|`--model gpt-6-astra --effort high`, no `--write` (read-only)|Designs non-trivial work first; reviews every diff|
+|Sol|`--model gpt-6.1-sol --effort high --write`|Implements and writes the tests; never commits|
+
+Without Codex, keep the same separation with available models: an agent assigned design or
+review must not implement the same slice, and each brief says so. Mutation paths, credential
+handling, and release workflows always get an independent adversarial review.
 
 Plans live in tracked `docs/plans/vX.Y.Z.md` files that the spec links. Mark a step done only
 with its evidence.
+
+## Codex jobs
+
+`C=~/.claude/plugins/cache/openai-codex/codex/<version>/scripts/codex-companion.mjs`
+
+- Start: `node $C task --background [--write] --model <m> --effort high -C <worktree> --prompt-file <file>`.
+- Run `status <id>`, `result <id>`, and `cancel <id>` from the directory passed to `-C`;
+  elsewhere they print "No job found".
+- To wait, poll only the job line `- <id> | <state> | ...` with `awk -F' [|] ' '{print $2}'`.
+  Stop on any state other than running or queued, and on empty output. Never grep the whole
+  output for "completed": progress lines contain "Command completed".
+- The Codex sandbox cannot write outside its worktree and may have no network. Rerun anything
+  that needs the network, a live stack, or another toolchain yourself.
+
+## Flow
+
+1. One worktree per task under `.worktrees/` (git-ignored). Sol runs there.
+2. Astra design brief: the goal, the constraints (contracts and what must not change), "cite
+   file:line for every hook", and a word cap.
+3. Sol brief: Astra's design plus numbered decisions where it was open ("decision wins over
+   design"), test requirements, "run the full gate set", "report files changed, results, and
+   deviations", and "Do NOT commit".
+4. Verify yourself: run the full gates, read the risky parts of the diff, then commit.
+5. Astra review brief: the commit SHA, decisions that overrode its design, bugs already known,
+   and a checklist that includes regressions in existing behavior. Ask for file:line, severity,
+   a failure scenario, a fix, and a MERGE, MERGE-WITH-FIXES, or BLOCK verdict.
+6. Paste the findings verbatim into a new Sol brief and repeat from step 4 until MERGE.
+7. If new facts arrive while Sol runs, cancel it and start a new job with the full brief, telling
+   it to review its own uncommitted partial changes.
+
+Tests drive the real library code paths with only the network faked, and every mock copies a
+real recorded response ([testing](testing.md)). Mocks pass reviews that a live server fails, so
+verify against a live stack before a release.
 
 ## Parallel work
 
