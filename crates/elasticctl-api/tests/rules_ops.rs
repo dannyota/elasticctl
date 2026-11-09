@@ -5,7 +5,7 @@ use elasticctl_api::{codec, rules_ops};
 use elasticctl_api_test_support::MockStack;
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn mock_stack_with_one_rule() -> MockStack {
@@ -316,4 +316,36 @@ async fn plan_import_skip_existing_keeps_only_dependencies_of_uploaded_rules() {
         stack.write_requests().await.is_empty(),
         "planning must not upload the surviving bundle"
     );
+}
+
+/// A rule read through an escaped selector is read again by its stored
+/// `rule_id`, because Kibana's KQL lookup decodes escapes.
+#[tokio::test]
+async fn get_one_rereads_a_rule_whose_rule_id_differs_from_the_selector() {
+    let server = MockServer::start().await;
+    for (query, name) in [(r"r\\n", "Escaped lookup"), (r"r\n", "Stored rule")] {
+        Mock::given(method("GET"))
+            .and(path("/api/detection_engine/rules"))
+            .and(query_param("rule_id", query))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"rule_id": r"r\n", "name": name})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let transport = Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .unwrap();
+
+    let rule = rules_ops::get_one(&transport, r"r\\n").await.unwrap();
+    assert_eq!(rule.name(), "Stored rule");
 }

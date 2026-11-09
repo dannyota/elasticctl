@@ -79,13 +79,17 @@ pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
     }
 }
 
-/// Resolve a selector like [`to_rule_id`] and return the stored rule too. A
-/// `rule_id` selector reads the rule once; a name reads the match after `_find`.
+/// Resolve a selector like [`to_rule_id`] and return the stored rule too.
+///
+/// Reuse the first read only when it echoes the selector. Kibana matches
+/// `rule_id` through KQL, which decodes escapes, so `r\\n` can return the rule
+/// stored as `r\n`; that rule must be read again by its own `rule_id`.
 pub async fn to_rule(t: &Transport, selector: &str) -> Result<(String, Rule)> {
-    if let Some(rule) = get_if_exists(t, selector).await? {
-        return Ok((rule.rule_id()?.to_string(), rule));
-    }
-    let rule_id = by_name(t, selector).await?;
+    let rule_id = match get_if_exists(t, selector).await? {
+        Some(rule) if rule.rule_id()? == selector => return Ok((selector.to_string(), rule)),
+        Some(rule) => rule.rule_id()?.to_string(),
+        None => by_name(t, selector).await?,
+    };
     let rule = rules::get(t, &rule_id).await?;
     Ok((rule_id, rule))
 }
