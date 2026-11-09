@@ -1,0 +1,239 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "rules",
+      "export",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected ndjson or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "exceptions",
+      "export",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected ndjson or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "data-views",
+      "export",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected json or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "export",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected json or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "agent-policies",
+      "export",
+      "--all-custom",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected json or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "export",
+      "--all-custom",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected json or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "state",
+      "pull",
+      "--dir",
+      "ROOT/pull",
+      "--format-file",
+      "invalid"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"unknown format-file 'invalid'; expected ndjson or yaml\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "rules",
+      "enable"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"Name at least one rule to enable\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "rules",
+      "disable"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"Name at least one rule to disable\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "rules",
+      "delete"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"Name at least one rule to delete\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "exceptions",
+      "delete"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"Name at least one exception list to delete\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "delete"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"Name at least one dashboard to delete\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "rules",
+      "list",
+      "--enabled",
+      "--disabled"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"--enabled and --disabled are mutually exclusive\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "data-views",
+      "import",
+      "--path",
+      "ROOT/rule.ndjson"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"parsing JSON data view sequence: invalid type: map, expected a sequence at line 1 column 0\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "import",
+      "--path",
+      "ROOT/rule.ndjson"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"parsing JSON dashboard sequence: invalid type: map, expected a sequence at line 1 column 0\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "bundle",
+      "import",
+      "--path",
+      "ROOT/rule.ndjson"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "agent-policies",
+      "import",
+      "--path",
+      "ROOT/rule.ndjson"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"parsing JSON agent policy sequence: invalid type: map, expected a sequence at line 1 column 0\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "import",
+      "--path",
+      "ROOT/rule.ndjson"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"error\",\"message\":\"parsing JSON integration policy sequence: invalid type: map, expected a sequence at line 1 column 0\"}}\n",
+    "requests": [],
+    "out": null
+  }
+]

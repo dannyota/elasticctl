@@ -1,0 +1,305 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "config",
+      "list",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "name     current  kibana_url          space    \ndefault  true     HOST  default  \n"
+  },
+  {
+    "args": [
+      "config",
+      "list",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "json"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "[\n  {\n    \"name\": \"default\",\n    \"current\": true,\n    \"kibana_url\": \"HOST\",\n    \"space\": \"default\"\n  }\n]\n"
+  },
+  {
+    "args": [
+      "config",
+      "list",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "jsonl"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "{\"name\":\"default\",\"current\":true,\"kibana_url\":\"HOST\",\"space\":\"default\"}\n"
+  },
+  {
+    "args": [
+      "config",
+      "list",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "yaml"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "- name: default\n  current: true\n  kibana_url: HOST\n  space: default\n"
+  },
+  {
+    "args": [
+      "config",
+      "list",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "csv"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "name,current,kibana_url,space\ndefault,true,HOST,default\n"
+  },
+  {
+    "args": [
+      "rules",
+      "validate",
+      "--path",
+      "ROOT/rule.ndjson",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [],
+    "out": "{\n  \"valid\": true,\n  \"count\": 1,\n  \"rules\": [\n    {\n      \"rule_id\": \"elasticctl-fixture-probe\",\n      \"name\": \"elasticctl fixture probe\",\n      \"type\": \"query\",\n      \"defaults_applied\": []\n    }\n  ]\n}\n"
+  },
+  {
+    "args": [
+      "rules",
+      "export",
+      "--format",
+      "yaml"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "rules",
+      "export",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "exceptions",
+      "export",
+      "--format",
+      "csv"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "data-views",
+      "export",
+      "--format",
+      "yaml"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "export",
+      "--format",
+      "csv"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "bundle",
+      "export",
+      "--format",
+      "yaml"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "bundle",
+      "export",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "agent-policies",
+      "export",
+      "--all-custom",
+      "--format",
+      "csv"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "export",
+      "--all-custom",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "search",
+      "esql",
+      "FROM_logs",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "search",
+      "dsl",
+      "{}",
+      "--index",
+      "logs-*",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "alerts",
+      "list",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "cases",
+      "list",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "alerts",
+      "get",
+      "probe",
+      "--json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  },
+  {
+    "args": [
+      "cases",
+      "get",
+      "probe",
+      "--json"
+    ],
+    "code": 1,
+    "stdout": "",
+    "stderr": "{\"error\":{\"kind\":\"not_found\",\"message\":\"Profile 'missing' not found\"}}\n",
+    "requests": [],
+    "out": null
+  }
+]
