@@ -10,5 +10,4 @@
 812 crates/elasticctl-api/src/state/transaction.rs
 910 crates/elasticctl-cli/src/cli.rs
 1015 crates/elasticctl-cli/src/main.rs
-1016 crates/elasticctl-cli/src/report_file.rs
 922 xtask/src/conformance.rs
