@@ -1,0 +1,101 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "dashboards",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"id\": \"elasticctl-sample-dashboard\",\n    \"title\": \"elasticctl sample dashboard\",\n    \"description\": \"elasticctl-sample\",\n    \"tags\": []\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/dashboards",
+        "query": "page=1&per_page=1000",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "get",
+      "elasticctl-sample-dashboard",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"id\": \"elasticctl-sample-dashboard\",\n  \"data\": {\n    \"description\": \"elasticctl-sample\",\n    \"options\": {\n      \"auto_apply_filters\": true,\n      \"hide_panel_borders\": false,\n      \"hide_panel_titles\": false,\n      \"sync_colors\": false,\n      \"sync_cursor\": true,\n      \"sync_tooltips\": false,\n      \"use_margins\": true\n    },\n    \"tags\": [],\n    \"title\": \"elasticctl sample dashboard\",\n    \"filters\": [],\n    \"panels\": [\n      {\n        \"grid\": {\n          \"x\": 0,\n          \"y\": 0,\n          \"w\": 12,\n          \"h\": 8\n        },\n        \"config\": {\n          \"title\": \"Sample count\",\n          \"data_source\": {\n            \"type\": \"data_view_reference\",\n            \"ref_id\": \"elasticctl-sample-data-view\"\n          },\n          \"type\": \"metric\",\n          \"sampling\": 1,\n          \"ignore_global_filters\": false,\n          \"metrics\": [\n            {\n              \"type\": \"primary\",\n              \"operation\": \"count\",\n              \"empty_as_null\": false,\n              \"color\": {\n                \"type\": \"auto\"\n              }\n            }\n          ],\n          \"styling\": {\n            \"density\": \"default\",\n            \"primary\": {\n              \"position\": \"bottom\",\n              \"labels\": {\n                \"alignment\": \"left\"\n              },\n              \"value\": {\n                \"sizing\": \"auto\",\n                \"alignment\": \"right\"\n              }\n            }\n          }\n        },\n        \"id\": \"elasticctl-fixture-dashboard-panel-1\",\n        \"type\": \"vis\"\n      }\n    ],\n    \"pinned_panels\": []\n  },\n  \"meta\": {\n    \"managed\": false\n  },\n  \"warnings\": []\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/dashboards/elasticctl-sample-dashboard",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/dashboards/elasticctl-sample-dashboard",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "dashboards",
+      "bundle",
+      "export",
+      "elasticctl-sample-dashboard",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"exported\": 1,\n  \"path\": \"ROOT/out\",\n  \"failed\": []\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/dashboards/elasticctl-sample-dashboard",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "POST",
+        "path": "/api/saved_objects/_export",
+        "query": null,
+        "body": "{\"objects\":[{\"type\":\"dashboard\",\"id\":\"elasticctl-sample-dashboard\"}],\"includeReferencesDeep\":true,\"excludeExportDetails\":false}"
+      }
+    ],
+    "out": "{\"attributes\":{\"allowHidden\":false,\"allowNoIndex\":true,\"fieldAttrs\":\"{}\",\"fieldFormatMap\":\"{}\",\"fields\":\"[]\",\"name\":\"elasticctl sample dashboard data view\",\"runtimeFieldMap\":\"{}\",\"sourceFilters\":\"[]\",\"title\":\"elasticctl-sample-dashboard-data-view-*\"},\"id\":\"elasticctl-sample-data-view\",\"managed\":false,\"references\":[],\"type\":\"index-pattern\",\"typeMigrationVersion\":\"8.0.0\"}\n{\"attributes\":{\"description\":\"elasticctl-sample updated\",\"kibanaSavedObjectMeta\":{\"searchSourceJSON\":\"{}\"},\"optionsJSON\":\"{\\\"autoApplyFilters\\\":true,\\\"hidePanelBorders\\\":false,\\\"hidePanelTitles\\\":false,\\\"syncColors\\\":false,\\\"syncCursor\\\":true,\\\"syncTooltips\\\":false,\\\"useMargins\\\":true}\",\"panelsJSON\":\"[{\\\"type\\\":\\\"vis\\\",\\\"embeddableConfig\\\":{\\\"title\\\":\\\"Sample count\\\",\\\"attributes\\\":{\\\"visualizationType\\\":\\\"lnsMetric\\\",\\\"title\\\":\\\"\\\",\\\"references\\\":[{\\\"type\\\":\\\"index-pattern\\\",\\\"id\\\":\\\"elasticctl-sample-data-view\\\",\\\"name\\\":\\\"indexpattern-datasource-layer-layer_0\\\"}],\\\"version\\\":2,\\\"state\\\":{\\\"datasourceStates\\\":{\\\"formBased\\\":{\\\"layers\\\":{\\\"layer_0\\\":{\\\"sampling\\\":1,\\\"ignoreGlobalFilters\\\":false,\\\"columns\\\":{\\\"metric_accessor_metric\\\":{\\\"operationType\\\":\\\"count\\\",\\\"sourceField\\\":\\\"___records___\\\",\\\"dataType\\\":\\\"number\\\",\\\"isBucketed\\\":false,\\\"label\\\":\\\"\\\",\\\"customLabel\\\":false,\\\"params\\\":{\\\"emptyAsNull\\\":false}}},\\\"columnOrder\\\":[\\\"metric_accessor_metric\\\"]}}}},\\\"internalReferences\\\":[],\\\"visualization\\\":{\\\"layerId\\\":\\\"layer_0\\\",\\\"layerType\\\":\\\"data\\\",\\\"metricAccessor\\\":\\\"metric_accessor_metric\\\",\\\"showBar\\\":false,\\\"density\\\":\\\"default\\\"},\\\"adHocDataViews\\\":{},\\\"query\\\":{\\\"language\\\":\\\"kuery\\\",\\\"query\\\":\\\"\\\"},\\\"filters\\\":[]}}},\\\"panelIndex\\\":\\\"elasticctl-fixture-dashboard-panel-1\\\",\\\"gridData\\\":{\\\"x\\\":0,\\\"y\\\":0,\\\"w\\\":12,\\\"h\\\":8,\\\"i\\\":\\\"elasticctl-fixture-dashboard-panel-1\\\"}}]\",\"timeRestore\":false,\"title\":\"elasticctl sample dashboard\"},\"id\":\"elasticctl-sample-dashboard\",\"managed\":false,\"references\":[{\"id\":\"elasticctl-sample-data-view\",\"name\":\"elasticctl-fixture-dashboard-panel-1:indexpattern-datasource-layer-layer_0\",\"type\":\"index-pattern\"}],\"type\":\"dashboard\",\"typeMigrationVersion\":\"10.3.0\"}\n{\"excludedObjects\":[],\"excludedObjectsCount\":0,\"exportedCount\":2,\"missingRefCount\":0,\"missingReferences\":[]}\n",
+    "pulled_rule": null
+  }
+]

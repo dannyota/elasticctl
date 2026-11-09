@@ -1,0 +1,83 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "exceptions",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"list_id\": \"elasticctl-sample-exceptions\",\n    \"name\": \"elasticctl sample exceptions\",\n    \"type\": \"detection\",\n    \"namespace_type\": \"single\",\n    \"tags\": [\n      \"elasticctl\",\n      \"fixture\"\n    ]\n  },\n  {\n    \"list_id\": \"elasticctl-sample-exceptions\",\n    \"name\": \"elasticctl sample exceptions\",\n    \"type\": \"detection\",\n    \"namespace_type\": \"single\",\n    \"tags\": [\n      \"elasticctl\",\n      \"fixture\"\n    ]\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists/_find",
+        "query": "page=1&per_page=10000&namespace_type=single",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists/_find",
+        "query": "page=1&per_page=10000&namespace_type=agnostic",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "exceptions",
+      "get",
+      "elasticctl-sample-exceptions",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"list\": {\n    \"list_id\": \"elasticctl-sample-exceptions\",\n    \"type\": \"detection\",\n    \"name\": \"elasticctl sample exceptions\",\n    \"description\": \"Recorded by cargo xtask record. Safe to delete.\",\n    \"immutable\": false,\n    \"namespace_type\": \"single\",\n    \"os_types\": [],\n    \"tags\": [\n      \"elasticctl\",\n      \"fixture\"\n    ],\n    \"version\": 1,\n    \"_version\": \"REDACTED\",\n    \"tie_breaker_id\": \"REDACTED\",\n    \"created_by\": \"REDACTED\",\n    \"updated_by\": \"REDACTED\"\n  },\n  \"items\": [\n    {\n      \"item_id\": \"elasticctl-sample-exception-item\",\n      \"list_id\": \"elasticctl-sample-exceptions\",\n      \"type\": \"simple\",\n      \"name\": \"elasticctl sample exception item\",\n      \"description\": \"Recorded by cargo xtask record. Safe to delete.\",\n      \"entries\": [\n        {\n          \"type\": \"match\",\n          \"field\": \"process.name\",\n          \"value\": \"elasticctl-sample.exe\",\n          \"operator\": \"included\"\n        }\n      ],\n      \"namespace_type\": \"single\",\n      \"os_types\": [],\n      \"tags\": [\n        \"elasticctl\",\n        \"fixture\"\n      ],\n      \"comments\": [],\n      \"_version\": \"REDACTED\",\n      \"tie_breaker_id\": \"REDACTED\",\n      \"created_by\": \"REDACTED\",\n      \"updated_by\": \"REDACTED\"\n    }\n  ]\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists",
+        "query": "list_id=elasticctl-sample-exceptions&namespace_type=single",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists",
+        "query": "list_id=elasticctl-sample-exceptions&namespace_type=agnostic",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists",
+        "query": "list_id=elasticctl-sample-exceptions&namespace_type=single",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/exception_lists/items/_find",
+        "query": "list_id=elasticctl-sample-exceptions&namespace_type=single&page=1&per_page=10000",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

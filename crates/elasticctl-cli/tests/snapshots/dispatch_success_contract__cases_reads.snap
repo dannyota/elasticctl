@@ -1,0 +1,49 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "cases",
+      "list",
+      "--status",
+      "open",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"id\": \"elasticctl-fixture-case\",\n    \"title\": \"elasticctl sample case\",\n    \"status\": \"open\",\n    \"severity\": \"low\",\n    \"tags\": [\n      \"elasticctl-sample\"\n    ],\n    \"comments\": 0,\n    \"created_at\": \"2026-01-01T00:00:00.000Z\"\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/_find",
+        "query": "page=1&perPage=100&sortField=createdAt&sortOrder=desc&status=open",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "cases",
+      "get",
+      "elasticctl-fixture-case",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"id\": \"elasticctl-fixture-case\",\n  \"version\": \"WzAsMV0=\",\n  \"title\": \"elasticctl sample case\",\n  \"status\": \"open\",\n  \"severity\": \"low\",\n  \"tags\": [\n    \"elasticctl-sample\"\n  ],\n  \"description\": \"elasticctl sample case\",\n  \"assignees\": [\n    {\n      \"uid\": \"u_REDACTED_1\",\n      \"username\": \"REDACTED\",\n      \"full_name\": null,\n      \"email\": null\n    }\n  ],\n  \"created_at\": \"2026-01-01T00:00:00.000Z\",\n  \"totalComment\": 0,\n  \"owner\": \"securitySolution\",\n  \"category\": null,\n  \"customFields\": [],\n  \"observables\": [],\n  \"connector\": {\n    \"id\": \"none\",\n    \"type\": \".none\",\n    \"fields\": null,\n    \"name\": \"none\"\n  },\n  \"settings\": {\n    \"syncAlerts\": false,\n    \"extractObservables\": false\n  },\n  \"closed_at\": null,\n  \"closed_by\": null,\n  \"created_by\": {\n    \"username\": \"REDACTED\",\n    \"full_name\": null,\n    \"email\": null,\n    \"profile_uid\": \"REDACTED\"\n  },\n  \"updated_by\": null,\n  \"total_observables\": 0,\n  \"external_service\": null,\n  \"totalAlerts\": 0,\n  \"totalEvents\": 0\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/elasticctl-fixture-case",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

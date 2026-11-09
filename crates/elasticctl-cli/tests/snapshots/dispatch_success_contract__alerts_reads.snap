@@ -1,0 +1,47 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "alerts",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"kibana.alert.rule.name\": \"elasticctl sample alert probe\",\n    \"kibana.alert.workflow_status\": \"open\"\n  },\n  {\n    \"kibana.alert.rule.name\": \"elasticctl sample alert probe\",\n    \"kibana.alert.workflow_status\": \"open\"\n  },\n  {\n    \"kibana.alert.rule.name\": \"elasticctl sample alert probe\",\n    \"kibana.alert.workflow_status\": \"open\"\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/search",
+        "query": null,
+        "body": "{\"query\":{\"match_all\":{}},\"sort\":[{\"@timestamp\":{\"order\":\"desc\"}},{\"kibana.alert.uuid\":{\"order\":\"asc\"}}],\"size\":101,\"track_total_hits\":true}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "alerts",
+      "get",
+      "elasticctl-fixture-alert-1",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"kibana.alert.rule.name\": \"elasticctl sample alert probe\",\n  \"kibana.alert.workflow_status\": \"open\",\n  \"_id\": \"elasticctl-fixture-alert-1\"\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/search",
+        "query": null,
+        "body": "{\"query\":{\"ids\":{\"values\":[\"elasticctl-fixture-alert-1\"]}},\"size\":1}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

@@ -1,0 +1,53 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "data-views",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"id\": \"elasticctl-sample-data-view-source\",\n    \"name\": \"elasticctl sample source view\",\n    \"title\": \"elasticctl-sample-data-view-*\",\n    \"time_field_name\": \"@timestamp\"\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/data_views",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "data-views",
+      "get",
+      "elasticctl-sample-data-view-source",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"id\": \"elasticctl-sample-data-view-source\",\n  \"fields\": {\n    \"elasticctl.legacy\": {\n      \"count\": 0,\n      \"script\": \"return 1;\",\n      \"name\": \"elasticctl.legacy\",\n      \"type\": \"number\",\n      \"scripted\": true,\n      \"searchable\": true,\n      \"aggregatable\": true,\n      \"readFromDocValues\": false,\n      \"format\": {\n        \"id\": \"number\"\n      }\n    }\n  },\n  \"title\": \"elasticctl-sample-data-view-*\",\n  \"timeFieldName\": \"@timestamp\",\n  \"sourceFilters\": [\n    {\n      \"value\": \"elasticctl.private.*\"\n    }\n  ],\n  \"fieldFormats\": {\n    \"bytes\": {\n      \"id\": \"bytes\"\n    }\n  },\n  \"runtimeFieldMap\": {\n    \"elasticctl.runtime\": {\n      \"type\": \"keyword\",\n      \"script\": {\n        \"source\": \"emit('elasticctl-sample');\"\n      }\n    }\n  },\n  \"fieldAttrs\": {\n    \"host.name\": {\n      \"customLabel\": \"elasticctl sample host\"\n    }\n  },\n  \"allowNoIndex\": true,\n  \"name\": \"elasticctl sample source view\",\n  \"allowHidden\": true\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/data_views",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/data_views/data_view/elasticctl-sample-data-view-source",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

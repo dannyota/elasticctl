@@ -1,0 +1,52 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "search",
+      "esql",
+      "FROM logs-* | WHERE seq > 1 | LIMIT 2",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"marker\": \"elasticctl-sample\",\n    \"marker.keyword\": \"elasticctl-sample\",\n    \"message\": \"elasticctl sample search document 1\",\n    \"message.keyword\": \"elasticctl sample search document 1\",\n    \"seq\": 1\n  },\n  {\n    \"marker\": \"elasticctl-sample\",\n    \"marker.keyword\": \"elasticctl-sample\",\n    \"message\": \"elasticctl sample search document 2\",\n    \"message.keyword\": \"elasticctl sample search document 2\",\n    \"seq\": 2\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/_query",
+        "query": null,
+        "body": "{\"query\":\"FROM logs-* | WHERE seq > 1 | LIMIT 2\"}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "search",
+      "dsl",
+      "{\"query\":{\"term\":{\"marker\":\"elasticctl-sample\"}}}",
+      "--index",
+      "logs-*",
+      "--limit",
+      "2",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"seq\": 1,\n    \"message\": \"elasticctl sample search document 1\",\n    \"marker\": \"elasticctl-sample\"\n  },\n  {\n    \"seq\": 2,\n    \"message\": \"elasticctl sample search document 2\",\n    \"marker\": \"elasticctl-sample\"\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/logs-*/_search",
+        "query": null,
+        "body": "{\"query\":{\"term\":{\"marker\":\"elasticctl-sample\"}}}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]
