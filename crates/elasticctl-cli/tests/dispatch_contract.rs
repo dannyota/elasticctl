@@ -147,6 +147,10 @@ async fn capture(args: &[&str], invalid_config: bool, warning: bool) -> Value {
             .replace(dir.path().to_str().unwrap(), "ROOT")
             .replace(&uri, "HOST")
             .replace(uri.trim_start_matches("http://"), "HOST")
+            .replace(
+                concat!("\"", env!("CARGO_PKG_VERSION"), "\""),
+                "\"VERSION\"",
+            )
     };
     json!({"args": args, "code": out.status.code(), "stdout": normalize(&out.stdout),
         "stderr": normalize(&out.stderr), "requests": requests,

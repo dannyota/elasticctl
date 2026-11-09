@@ -196,6 +196,10 @@ async fn capture(args: &[&str]) -> Value {
         out.push_str(rest);
         out.replace(&uri, "HOST")
             .replace(uri.trim_start_matches("http://"), "HOST")
+            .replace(
+                concat!("\"", env!("CARGO_PKG_VERSION"), "\""),
+                "\"VERSION\"",
+            )
     };
     let requests: Vec<_> = server.received_requests().await.unwrap().iter().map(|r| {
         json!({"method": r.method.as_str(), "path": r.url.path(), "query": r.url.query(), "body": normalize(&r.body)})
