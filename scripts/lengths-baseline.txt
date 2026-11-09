@@ -5,7 +5,6 @@
 1317 crates/elasticctl-api/src/data_views_ops.rs
 929 crates/elasticctl-api/src/exceptions.rs
 1477 crates/elasticctl-api/src/fleet/agent_policy_ops.rs
-3664 crates/elasticctl-api/src/fleet/integration_policy_ops.rs
 767 crates/elasticctl-api/src/rules.rs
 721 crates/elasticctl-api/src/state/push.rs
 812 crates/elasticctl-api/src/state/transaction.rs
