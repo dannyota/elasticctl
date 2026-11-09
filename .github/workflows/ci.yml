@@ -18,11 +18,24 @@ env:
 
 jobs:
   lengths:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - run: bash scripts/test/check-lengths-test.sh
-      - run: bash scripts/check-lengths.sh
+      - name: Check file lengths
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            bash scripts/check-lengths.sh --base-ref "origin/$BASE_REF"
+          else
+            bash scripts/check-lengths.sh
+          fi
 
   test:
     runs-on: ubuntu-latest

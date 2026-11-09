@@ -1,17 +1,18 @@
 # File size and splits
 
 `scripts/check-lengths.sh` caps Rust at 700 non-test lines and Markdown at 400
-lines. Rust files under any `tests/` directory and files named `tests.rs` are
-exempt. A Rust file counts only lines before the first `#[cfg(test)]` whose
-next line opens an inline module. Markdown under `docs/plans/`,
-`docs/conformance/`, and `docs/reviews/` is historical evidence and is never
-edited. Generated files are exempt only when one of their first five lines
-contains `@generated`, or both `Code generated` and `DO NOT EDIT`.
+lines. Rust files under any `tests/` directory are exempt. Exclude a top-level
+`#[cfg(test)]` directly followed by `mod <name> {` (including public modules),
+through the next closing line starting with `}` at column 0. Count code before
+and after each module; empty `{}` modules end on their opening line. Markdown under `docs/plans/`, `docs/conformance/`, and
+`docs/reviews/` is historical evidence and is never edited.
 
 `scripts/lengths-baseline.txt` caps existing oversized files at their measured
-counts. Do not add entries or raise caps. Lower a cap when its file shrinks;
+counts exactly. Do not add entries or raise caps. Lower a cap when its file shrinks;
 remove the entry when the file reaches the limit. Missing or untracked paths
-must be removed.
+must be removed. `--base-ref <ref>` rejects entries absent from that ref and caps
+above that ref's caps. A ref without a baseline (the change that introduces
+the gate) skips the comparison.
 
 These limits are final; do not ratchet them lower. Clear the baseline instead:
 split one listed file below its limit per PR, by concern, and remove its entry

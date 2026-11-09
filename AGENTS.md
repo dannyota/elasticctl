@@ -76,8 +76,10 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
 
 ## Git and GitHub
 
-- Run `gh` and `git push` as `dannyota`: prefix them with `GH_TOKEN=$(gh auth token -u dannyota)`.
-  This machine's active `gh` account may be a different one. Never run `gh auth switch`.
+- Run `gh` as `dannyota`: prefix it with `GH_TOKEN=$(gh auth token -u dannyota)`. The keychain
+  credential helper holds a different account, so push with
+  `GH_TOKEN=$(gh auth token -u dannyota) git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`.
+  Never run `gh auth switch` or change git config.
 - Commit or push only when asked, and branch from `master` first.
 - Commits are signed with the configured identity. Use Conventional Commits (`fix(deps): ...`,
   `docs(spec): ...`, `ci: ...`, `chore: release X.Y.Z`); history before 2026-11-09 uses plain

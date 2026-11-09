@@ -1227,7 +1227,7 @@ Package-content checks inspect every publishable crate: `elasticctl-core`,
 integration tests or the private test-support crate. Fixture checks scan for
 credentials and project identity. Separate jobs run full-history gitleaks
 (findings fail CI) and actionlint over all workflows. CodeQL analyzes Rust and
-Actions with `build-mode: none` on master pushes, pull requests, and weekly. The `lengths` job runs the checker tests and enforces Rust and Markdown limits with a shrinking baseline.
+Actions with `build-mode: none` on master pushes, pull requests, and weekly. The `lengths` job tests Linux and macOS; Rust excludes only top-level inline test module blocks and `tests/` paths. Baseline caps equal current counts; PRs reject entries added or raised against the target branch.
 
 Release canaries run weekly, on manual dispatch, and on pull requests changing
 `dist-workspace.toml` or `.github/workflows/release.yml`. They run `dist plan`,

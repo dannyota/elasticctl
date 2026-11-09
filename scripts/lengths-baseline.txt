@@ -6,7 +6,7 @@
 1317 crates/elasticctl-api/src/data_views_ops.rs
 929 crates/elasticctl-api/src/exceptions.rs
 1477 crates/elasticctl-api/src/fleet/agent_policy_ops.rs
-3663 crates/elasticctl-api/src/fleet/integration_policy_ops.rs
+3664 crates/elasticctl-api/src/fleet/integration_policy_ops.rs
 767 crates/elasticctl-api/src/rules.rs
 721 crates/elasticctl-api/src/state/push.rs
 812 crates/elasticctl-api/src/state/transaction.rs
@@ -21,4 +21,4 @@
 496 docs/specs/elasticctl-mcp-design.md
 458 docs/specs/elasticctl-triage-design.md
 922 xtask/src/conformance.rs
-9513 xtask/src/main.rs
+9668 xtask/src/main.rs
