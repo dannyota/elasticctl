@@ -8,7 +8,7 @@ use crate::scrub::hosts::scrub_hosts;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub(crate) const SCRUB_FIELDS: &[&str] = &[
+const SCRUB_FIELDS: &[&str] = &[
     "username",
     "full_name",
     "email",
@@ -56,7 +56,7 @@ pub(crate) fn scrub(v: &mut Value) {
 
 /// Match both full keys and their final dot-separated segment. Alert documents
 /// can flatten identity fields such as `kibana.alert.rule.created_by`.
-pub(crate) fn is_sensitive(key: &str) -> bool {
+fn is_sensitive(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     let leaf = lower.rsplit('.').next().unwrap_or(&lower);
     lower.contains("api_key")
@@ -150,7 +150,7 @@ pub(crate) fn strip_pit_token(v: &mut Value) {
 /// operator identity, but these identify the project and must not leave the
 /// fixture. Only their values are redacted; the rest of the view keeps its
 /// shape so the fixture still proves the endpoint's structure.
-pub(crate) const DATA_VIEW_IDENTITY_FIELDS: &[&str] = &["id", "title", "name", "namespaces"];
+const DATA_VIEW_IDENTITY_FIELDS: &[&str] = &["id", "title", "name", "namespaces"];
 
 /// Redact the `_authenticate` response's `metadata` object wholesale.
 ///
@@ -214,7 +214,7 @@ pub(crate) fn scrub_placeholder_values(v: &mut Value, map: &BTreeMap<String, Str
 /// `kibana.alert.*` fields that don't fit the `_at`/`.start`/`.end` suffix
 /// pattern but are still live timestamps on every recorded alert: the
 /// detection time, the rule-execution time, and the intended run time.
-pub(crate) const ALERT_TIMESTAMP_KEYS: &[&str] = &[
+const ALERT_TIMESTAMP_KEYS: &[&str] = &[
     "kibana.alert.last_detected",
     "kibana.alert.original_time",
     "kibana.alert.intended_timestamp",
@@ -226,7 +226,7 @@ pub(crate) const ALERT_TIMESTAMP_KEYS: &[&str] = &[
 /// names in `ALERT_TIMESTAMP_KEYS`. Alert documents flatten `kibana.alert.*`
 /// fields into dotted keys directly on `_source`, not nested objects, so a
 /// suffix match on the key is enough for the fields that follow the pattern.
-pub(crate) fn is_alert_timestamp_key(key: &str) -> bool {
+fn is_alert_timestamp_key(key: &str) -> bool {
     key == "@timestamp"
         || key.ends_with("_at")
         || key.ends_with(".start")
@@ -259,7 +259,7 @@ pub(crate) fn scrub_alert_timestamps(v: &mut Value) {
 /// rewrite in `scrub_placeholder_values` fixes the first; this fixes the
 /// second by replacing the whole value outright, since nothing in elasticctl
 /// decodes `kibana.alert.url`.
-pub(crate) const ALERT_FIXTURE_URL: &str =
+const ALERT_FIXTURE_URL: &str =
     "https://REDACTED.example.invalid/app/security/alerts/redirect/elasticctl-fixture-redacted";
 
 pub(crate) fn scrub_alert_urls(v: &mut Value) {

@@ -12,7 +12,7 @@ use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-pub(crate) async fn require_absent_integration_policy(
+async fn require_absent_integration_policy(
     t: &elasticctl_core::Transport,
     id: &str,
 ) -> elasticctl_core::Result<()> {
@@ -34,7 +34,7 @@ pub(crate) async fn require_absent_integration_policy(
     }
 }
 
-pub(crate) async fn require_absent_integration_policy_parent(
+async fn require_absent_integration_policy_parent(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<()> {
     match t
@@ -66,7 +66,7 @@ pub(crate) async fn require_absent_integration_markers(
 /// Decode an installed-package inventory into memory-only coordinates. Fleet
 /// returns the last-item sort cursor even when the fixed one-page request is
 /// complete, so completeness comes from the total and item count instead.
-pub(crate) fn decode_installed_package_inventory(
+fn decode_installed_package_inventory(
     body: &Value,
 ) -> elasticctl_core::Result<BTreeSet<(String, String)>> {
     let envelope = body
@@ -158,7 +158,7 @@ pub(crate) fn require_matching_inventory(
 
 #[derive(Clone, Debug)]
 pub(crate) struct SystemPackageStatus {
-    pub(crate) registry_version: String,
+    registry_version: String,
     pub(crate) version: String,
     pub(crate) installed: bool,
 }

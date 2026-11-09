@@ -38,7 +38,7 @@ pub(crate) enum AmbiguousMarkerCreateOwnership {
 }
 
 #[cfg(test)]
-pub(crate) async fn claim_ambiguous_marker_integration_create(
+async fn claim_ambiguous_marker_integration_create(
     t: &elasticctl_core::Transport,
     id: &str,
     expected_version: &str,
@@ -124,7 +124,7 @@ pub(crate) async fn claim_ambiguous_marker_integration_parent_create(
 }
 
 #[cfg(test)]
-pub(crate) async fn cleanup_marker_integration(
+async fn cleanup_marker_integration(
     t: &elasticctl_core::Transport,
     id: &str,
     expected_version: &str,
@@ -251,7 +251,7 @@ pub(crate) async fn cleanup_marker_integration_parent(
     }
 }
 
-pub(crate) async fn require_marker_integration_absent(
+async fn require_marker_integration_absent(
     t: &elasticctl_core::Transport,
     id: &str,
     context: &'static str,

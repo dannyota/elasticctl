@@ -67,7 +67,7 @@ pub(crate) fn marker_integration_update_body_with_nonce_and_inputs(
     body
 }
 
-pub(crate) fn sensitive_marker_input_field(name: &str) -> bool {
+fn sensitive_marker_input_field(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     [
         "secret",
@@ -87,7 +87,7 @@ pub(crate) fn sensitive_marker_input_field(name: &str) -> bool {
 /// Inspect only input-map field names and container structure. Values never
 /// participate in this recorder-side backstop; the production export path is
 /// the authority for secret classification.
-pub(crate) fn marker_inputs_have_sensitive_field_names(value: &Value) -> bool {
+fn marker_inputs_have_sensitive_field_names(value: &Value) -> bool {
     match value {
         Value::Object(fields) => fields.iter().any(|(name, value)| {
             sensitive_marker_input_field(name) || marker_inputs_have_sensitive_field_names(value)
@@ -97,7 +97,7 @@ pub(crate) fn marker_inputs_have_sensitive_field_names(value: &Value) -> bool {
     }
 }
 
-pub(crate) fn exported_marker_optional_fields_are_empty(
+fn exported_marker_optional_fields_are_empty(
     spec: &elasticctl_api::fleet::integration_policies::IntegrationPolicySpec,
 ) -> bool {
     spec.vars.as_ref().is_none_or(Map::is_empty)
@@ -109,7 +109,7 @@ pub(crate) fn exported_marker_optional_fields_are_empty(
             .is_none_or(Vec::is_empty)
 }
 
-pub(crate) fn capture_exported_bootstrap_inputs(
+fn capture_exported_bootstrap_inputs(
     spec: elasticctl_api::fleet::integration_policies::IntegrationPolicySpec,
     expected_version: &str,
     nonce: &str,
@@ -166,7 +166,7 @@ pub(crate) async fn export_bootstrap_marker_inputs(
     capture_exported_bootstrap_inputs(spec, expected_version, nonce, bootstrap_item, t.space())
 }
 
-pub(crate) fn decode_exported_bootstrap_marker(
+fn decode_exported_bootstrap_marker(
     exported: elasticctl_api::ops::ExportOutcome,
 ) -> elasticctl_core::Result<elasticctl_api::fleet::integration_policies::IntegrationPolicySpec> {
     let mut specs = elasticctl_api::content_codec::decode_sequence::<

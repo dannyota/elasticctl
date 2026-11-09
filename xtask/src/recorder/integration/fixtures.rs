@@ -31,7 +31,7 @@ use serde_json::{Map, Value, json};
 /// expose every integration in a shared Fleet space, including user-owned
 /// configuration and possible secret references.
 #[cfg(test)]
-pub(crate) fn scope_integration_policy_list_to_marker_with_nonce(
+fn scope_integration_policy_list_to_marker_with_nonce(
     body: &mut Value,
     marker_id: &str,
     expected_version: &str,
@@ -81,7 +81,7 @@ pub(crate) fn scope_integration_policy_list_to_marker_with_nonce_and_inputs(
 }
 
 #[cfg(test)]
-pub(crate) fn scope_integration_policy_list_to_marker(
+fn scope_integration_policy_list_to_marker(
     body: &mut Value,
     marker_id: &str,
     expected_version: &str,
@@ -180,7 +180,7 @@ pub(crate) fn integration_policy_fixture_in_space_with_inputs(
 }
 
 #[cfg(test)]
-pub(crate) fn integration_policy_exchange_fixture(
+fn integration_policy_exchange_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -272,7 +272,7 @@ pub(crate) fn integration_policy_exchange_fixture_in_space_with_inputs(
 /// identity. The allowlist is intentionally smaller than the public Fleet
 /// schema: response-only metadata, active-space references, secrets, and new
 /// unknown fields do not prove this recorder's route contract.
-pub(crate) fn reduce_marker_integration_response_with_inputs(
+fn reduce_marker_integration_response_with_inputs(
     body: &Value,
     active_space: &str,
     nonce: &str,
@@ -328,7 +328,7 @@ pub(crate) fn reduce_marker_integration_response_with_inputs(
     }))
 }
 
-pub(crate) fn marker_integration_request_version<'a>(
+fn marker_integration_request_version<'a>(
     request: &'a Value,
     context: &'static str,
 ) -> elasticctl_core::Result<&'a str> {
@@ -339,7 +339,7 @@ pub(crate) fn marker_integration_request_version<'a>(
         .ok_or_else(|| recording_error(format!("{context} package version must be non-empty")))
 }
 
-pub(crate) fn reduce_marker_integration_create_request_with_inputs(
+fn reduce_marker_integration_create_request_with_inputs(
     request: &Value,
     nonce: &str,
     expected_inputs: &Map<String, Value>,
@@ -357,7 +357,7 @@ pub(crate) fn reduce_marker_integration_create_request_with_inputs(
     Ok(reduced)
 }
 
-pub(crate) fn reduce_marker_integration_update_request_with_inputs(
+fn reduce_marker_integration_update_request_with_inputs(
     request: &Value,
     nonce: &str,
     expected_inputs: &Map<String, Value>,
@@ -375,7 +375,7 @@ pub(crate) fn reduce_marker_integration_update_request_with_inputs(
     Ok(reduced)
 }
 
-pub(crate) fn reduce_marker_parent_create_request(
+fn reduce_marker_parent_create_request(
     request: &Value,
     nonce: &str,
 ) -> elasticctl_core::Result<Value> {
@@ -390,7 +390,7 @@ pub(crate) fn reduce_marker_parent_create_request(
     Ok(reduced)
 }
 
-pub(crate) fn reduce_marker_parent_create_response(
+fn reduce_marker_parent_create_response(
     body: &Value,
     active_space: &str,
     nonce: &str,
@@ -412,7 +412,7 @@ pub(crate) fn reduce_marker_parent_create_response(
     }))
 }
 
-pub(crate) fn reduce_marker_parent_get_response(
+fn reduce_marker_parent_get_response(
     body: &Value,
     active_space: &str,
     nonce: &str,
@@ -438,7 +438,7 @@ pub(crate) fn reduce_marker_parent_get_response(
     }))
 }
 
-pub(crate) fn reduce_marker_integration_list_with_inputs(
+fn reduce_marker_integration_list_with_inputs(
     body: &Value,
     active_space: &str,
     nonce: &str,
@@ -475,7 +475,7 @@ pub(crate) fn reduce_marker_integration_list_with_inputs(
     }))
 }
 
-pub(crate) fn reduce_integration_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_integration_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
     let item = body
         .as_object()
         .filter(|item| item.len() == 1)
@@ -489,7 +489,7 @@ pub(crate) fn reduce_integration_delete_response(body: &Value) -> elasticctl_cor
     Ok(json!({"id": INTEGRATION_POLICY_ID}))
 }
 
-pub(crate) fn reduce_parent_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
+fn reduce_parent_delete_response(body: &Value) -> elasticctl_core::Result<Value> {
     let item = body
         .as_object()
         .filter(|item| item.len() == 2)
@@ -512,7 +512,6 @@ pub(crate) fn reduce_parent_delete_response(body: &Value) -> elasticctl_core::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::integration_policy_error_fixture;
     use crate::recorder::integration::inputs::{
         marker_integration_create_body, marker_integration_create_body_with_nonce,
         marker_integration_parent_create_body_with_nonce, marker_integration_update_body,
@@ -700,36 +699,6 @@ mod tests {
             documents[0], documents[1],
             "different session nonces must reduce to one deterministic fixture"
         );
-    }
-
-    #[test]
-    fn integration_policy_error_fixtures_keep_only_classification_and_a_local_message() {
-        let fixture = integration_policy_error_fixture(
-            "integration_policy_not_found",
-            "test",
-            "9.6.0",
-            elasticctl_core::Error::with_status(
-                elasticctl_core::ErrorKind::NotFound,
-                404,
-                "owner@example.com at https://private.example/opaque-id uses ${secret.ref}",
-            ),
-        );
-
-        assert_eq!(fixture.document["error"]["kind"], "not_found");
-        assert_eq!(fixture.document["error"]["http_status"], 404);
-        assert_eq!(
-            fixture.document["error"]["message"],
-            "Fleet integration-policy recording endpoint returned an error"
-        );
-        let encoded = fixture.document.to_string();
-        for private in [
-            "owner@example.com",
-            "private.example",
-            "opaque-id",
-            "secret.ref",
-        ] {
-            assert!(!encoded.contains(private), "fixture leaked {private}");
-        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::recorder::session::{
 };
 use serde_json::{Value, json};
 
-pub(crate) async fn recorder_get_data_view_default(
+pub(super) async fn recorder_get_data_view_default(
     t: &elasticctl_core::Transport,
     context: &'static str,
 ) -> elasticctl_core::Result<Value> {
@@ -20,7 +20,7 @@ pub(crate) async fn recorder_get_data_view_default(
         .map_err(|error| safe_recording_transport_error(context, error))
 }
 
-pub(crate) async fn recorder_post_data_view_default(
+pub(super) async fn recorder_post_data_view_default(
     t: &elasticctl_core::Transport,
     body: &Value,
     context: &'static str,
@@ -30,7 +30,7 @@ pub(crate) async fn recorder_post_data_view_default(
         .map_err(|error| safe_recording_transport_error(context, error))
 }
 
-pub(crate) fn data_view_spec_from_response(
+pub(super) fn data_view_spec_from_response(
     body: &Value,
     context: &str,
 ) -> elasticctl_core::Result<elasticctl_api::data_views::DataViewSpec> {
@@ -38,7 +38,7 @@ pub(crate) fn data_view_spec_from_response(
         .map_err(|error| recording_error(format!("{context}: {}", error.message)))
 }
 
-pub(crate) fn require_acknowledged(body: &Value, context: &str) -> elasticctl_core::Result<()> {
+pub(super) fn require_acknowledged(body: &Value, context: &str) -> elasticctl_core::Result<()> {
     if matches!(
         body,
         Value::Object(values)
@@ -55,9 +55,7 @@ pub(crate) fn require_acknowledged(body: &Value, context: &str) -> elasticctl_co
 /// Decode the raw default response the recorder puts in a public fixture.
 /// Production canonicalizes the same two no-default values; this separate
 /// strict decoder preserves their raw shape for fixture evidence.
-pub(crate) fn decode_raw_data_view_default(
-    body: &Value,
-) -> elasticctl_core::Result<Option<String>> {
+fn decode_raw_data_view_default(body: &Value) -> elasticctl_core::Result<Option<String>> {
     let Value::Object(values) = body else {
         return Err(recording_error(
             "data-view default GET: expected a one-key object envelope",
@@ -78,7 +76,7 @@ pub(crate) fn decode_raw_data_view_default(
     }
 }
 
-pub(crate) fn require_restored_raw_data_view_default(
+fn require_restored_raw_data_view_default(
     expected_raw: &Value,
     restored_raw: &Value,
     expected_canonical: &Option<String>,
@@ -94,11 +92,11 @@ pub(crate) fn require_restored_raw_data_view_default(
     }
 }
 
-pub(crate) fn data_view_default_restore_request(id: Option<&str>) -> Value {
+fn data_view_default_restore_request(id: Option<&str>) -> Value {
     json!({"data_view_id": id, "force": true})
 }
 
-pub(crate) async fn capture_data_view_default_snapshot(
+pub(super) async fn capture_data_view_default_snapshot(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<(Value, Option<String>)> {
     let raw = recorder_get_data_view_default(t, "reading initial data-view default failed").await?;
@@ -129,7 +127,7 @@ pub(crate) async fn capture_data_view_default_snapshot(
     Ok((raw, original_default))
 }
 
-pub(crate) fn require_data_view_fields_success<'a>(
+pub(super) fn require_data_view_fields_success<'a>(
     body: &'a Value,
     requested_id: &str,
 ) -> elasticctl_core::Result<Option<&'a Value>> {
@@ -159,7 +157,7 @@ pub(crate) fn require_data_view_fields_success<'a>(
     }
 }
 
-pub(crate) fn require_persisted_data_view_metadata(body: &Value) -> elasticctl_core::Result<()> {
+pub(super) fn require_persisted_data_view_metadata(body: &Value) -> elasticctl_core::Result<()> {
     let field_attrs = body
         .pointer("/data_view/fieldAttrs")
         .and_then(Value::as_object)
@@ -187,7 +185,7 @@ pub(crate) fn require_persisted_data_view_metadata(body: &Value) -> elasticctl_c
     Ok(())
 }
 
-pub(crate) fn raw_scripted_field_present(body: &Value) -> bool {
+pub(super) fn raw_scripted_field_present(body: &Value) -> bool {
     body.pointer("/data_view/fields/elasticctl.legacy/scripted")
         .and_then(Value::as_bool)
         == Some(true)
@@ -209,7 +207,7 @@ pub(crate) fn require_empty_or_acknowledged_delete_success(
     }
 }
 
-pub(crate) fn require_pending_data_view_default_state(
+pub(super) fn require_pending_data_view_default_state(
     lease: &PendingDefaultRestore,
     current_raw: &Value,
 ) -> elasticctl_core::Result<()> {
@@ -234,7 +232,7 @@ pub(crate) fn require_pending_data_view_default_state(
     }
 }
 
-pub(crate) fn require_pending_data_view_default_restore_state(
+fn require_pending_data_view_default_restore_state(
     lease: &PendingDefaultRestore,
     current_raw: &Value,
 ) -> elasticctl_core::Result<()> {
@@ -282,7 +280,7 @@ pub(crate) async fn restore_pending_data_view_default(
     Ok((request, response, restored))
 }
 
-pub(crate) async fn record_empty_data_view_self_preview(
+pub(super) async fn record_empty_data_view_self_preview(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<(Value, Value)> {
     let request = json!({"fromId": DATA_VIEW_SOURCE_ID, "toId": DATA_VIEW_SOURCE_ID});
@@ -306,7 +304,7 @@ pub(crate) async fn record_empty_data_view_self_preview(
 /// Claim the validated raw default immediately before creating the fixed
 /// source. Source create may implicitly set that source as default, so this
 /// pending lease and source ownership must exist before the POST can start.
-pub(crate) async fn create_source_with_pending_default_lease(
+pub(super) async fn create_source_with_pending_default_lease(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

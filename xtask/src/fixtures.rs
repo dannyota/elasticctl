@@ -147,7 +147,7 @@ pub(crate) fn error_fixture(
 /// server-provided message into a public fixture. Fleet errors can name a
 /// user, deployment, policy, or secret reference, while the classification
 /// and HTTP status are sufficient route-contract evidence.
-pub(crate) fn integration_policy_error_fixture(
+pub(super) fn integration_policy_error_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -198,4 +198,74 @@ pub(crate) fn write_recording(recording: Recording) -> elasticctl_core::Result<(
         println!("wrote {}", path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_hits_fixture_strips_response_runtime_fields_and_still_uses_the_checked_decoder() {
+        let fixture = preview_exchange_fixture(
+            "rules_preview_hits",
+            "serverless",
+            "9.6.0",
+            json!({"sort": [{"@timestamp": {"order": "desc"}}]}),
+            json!({
+                "took": 7,
+                "_shards": {"total": 3, "successful": 3, "skipped": 0, "failed": 0},
+                "hits": {
+                    "total": {"value": 1, "relation": "eq"},
+                    "hits": [{
+                        "_index": ".preview.alerts-security.alerts-rollover",
+                        "sort": [123],
+                        "_source": {"kibana.alert.rule.uuid": "fixture-preview"}
+                    }]
+                }
+            }),
+        );
+        let response = &fixture.document["response"];
+
+        assert!(response.get("took").is_none());
+        assert!(response.get("_shards").is_none());
+        assert!(response["hits"]["hits"][0].get("_index").is_none());
+        assert!(response["hits"]["hits"][0].get("sort").is_none());
+        assert_eq!(
+            fixture.document["request"]["sort"],
+            json!([{"@timestamp": {"order": "desc"}}]),
+            "the production request sort is evidence, not response runtime state"
+        );
+        elasticctl_api::rules::decode_preview_hits_checked(response)
+            .expect("the scrubbed response must use the checked production decoder");
+    }
+
+    #[test]
+    fn integration_policy_error_fixtures_keep_only_classification_and_a_local_message() {
+        let fixture = integration_policy_error_fixture(
+            "integration_policy_not_found",
+            "test",
+            "9.6.0",
+            elasticctl_core::Error::with_status(
+                elasticctl_core::ErrorKind::NotFound,
+                404,
+                "owner@example.com at https://private.example/opaque-id uses ${secret.ref}",
+            ),
+        );
+
+        assert_eq!(fixture.document["error"]["kind"], "not_found");
+        assert_eq!(fixture.document["error"]["http_status"], 404);
+        assert_eq!(
+            fixture.document["error"]["message"],
+            "Fleet integration-policy recording endpoint returned an error"
+        );
+        let encoded = fixture.document.to_string();
+        for private in [
+            "owner@example.com",
+            "private.example",
+            "opaque-id",
+            "secret.ref",
+        ] {
+            assert!(!encoded.contains(private), "fixture leaked {private}");
+        }
+    }
 }

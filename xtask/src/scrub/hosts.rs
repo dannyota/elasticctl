@@ -7,7 +7,7 @@ use serde_json::Value;
 /// The transport removes userinfo before issuing a request. This helper uses
 /// the same final-`@` rule while preparing the fixture host scrubber, so a
 /// credential cannot survive in a recorded URL value.
-pub(crate) fn recording_host(url: &str) -> Option<String> {
+fn recording_host(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = authority.rsplit('@').next().unwrap_or("");
@@ -30,11 +30,11 @@ pub(crate) fn recording_hosts() -> Vec<String> {
     .collect()
 }
 
-pub(crate) fn is_authority_char(byte: u8) -> bool {
+fn is_authority_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'[' | b']')
 }
 
-pub(crate) fn authority_token_end(bytes: &[u8], start: usize) -> usize {
+fn authority_token_end(bytes: &[u8], start: usize) -> usize {
     let mut index = start;
     let mut in_ipv6 = false;
     while index < bytes.len() {
@@ -68,7 +68,7 @@ pub(crate) fn authority_token_end(bytes: &[u8], start: usize) -> usize {
     index
 }
 
-pub(crate) fn replace_bounded_authority(value: &str, authority: &str) -> String {
+fn replace_bounded_authority(value: &str, authority: &str) -> String {
     if authority.is_empty() {
         return value.to_string();
     }
@@ -100,7 +100,7 @@ pub(crate) fn replace_bounded_authority(value: &str, authority: &str) -> String 
     scrubbed
 }
 
-pub(crate) fn default_port_host(authority: &str, default_port: u16) -> Option<&str> {
+fn default_port_host(authority: &str, default_port: u16) -> Option<&str> {
     authority.rsplit_once(':').and_then(|(host, port)| {
         (!host.is_empty() && port.parse::<u16>().ok() == Some(default_port)).then_some(host)
     })
@@ -111,7 +111,7 @@ pub(crate) fn default_port_host(authority: &str, default_port: u16) -> Option<&s
 /// Fixture values can contain the configured host with credentials that were
 /// never part of the transport URL. Removing only the host would leave those
 /// credentials in the public fixture.
-pub(crate) fn strip_url_userinfo(value: &str) -> String {
+fn strip_url_userinfo(value: &str) -> String {
     let mut scrubbed = String::with_capacity(value.len());
     let mut remaining = value;
 
@@ -140,7 +140,7 @@ pub(crate) fn strip_url_userinfo(value: &str) -> String {
 /// `http://host:80` likewise loses `:80`. Do not derive a bare-host match for
 /// non-default ports: `host:9243` and `host` can identify different
 /// deployments.
-pub(crate) fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> String {
+fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> String {
     let mut scrubbed = String::new();
     let mut remaining = value;
 

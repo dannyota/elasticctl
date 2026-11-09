@@ -13,7 +13,7 @@ use serde_json::json;
 /// Record the search probe: a marker-scoped scratch index seeded with three
 /// documents, the ES|QL and Query DSL exchanges over them, then the Kibana
 /// data-view and default-index lookups. The index is deleted by `cleanup`.
-pub(crate) async fn record_search(
+pub(super) async fn record_search(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

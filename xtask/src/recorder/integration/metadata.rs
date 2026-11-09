@@ -4,19 +4,19 @@ use crate::diagnostics::recording_error;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) type MetadataVariables = BTreeMap<String, bool>;
+type MetadataVariables = BTreeMap<String, bool>;
 
-pub(crate) struct ReducedMetadataInput {
-    pub(crate) key: String,
-    pub(crate) vars: MetadataVariables,
-    pub(crate) streams: BTreeMap<String, MetadataVariables>,
+struct ReducedMetadataInput {
+    key: String,
+    vars: MetadataVariables,
+    streams: BTreeMap<String, MetadataVariables>,
 }
 
-pub(crate) struct ReducedMetadataTemplate {
-    pub(crate) name: String,
-    pub(crate) data_streams: Option<Vec<String>>,
-    pub(crate) selected_datasets: BTreeSet<String>,
-    pub(crate) inputs: BTreeMap<String, ReducedMetadataInput>,
+struct ReducedMetadataTemplate {
+    name: String,
+    data_streams: Option<Vec<String>>,
+    selected_datasets: BTreeSet<String>,
+    inputs: BTreeMap<String, ReducedMetadataInput>,
 }
 
 /// The package registry exposes a broad, deployment-specific document. The
@@ -299,7 +299,7 @@ pub(crate) fn metadata_nonempty_string(
         .ok_or_else(|| recording_error(format!("{context} {field} must be a non-empty string")))
 }
 
-pub(crate) fn reduce_metadata_variables(
+fn reduce_metadata_variables(
     value: Option<&Value>,
     context: &str,
 ) -> elasticctl_core::Result<MetadataVariables> {
@@ -332,7 +332,7 @@ pub(crate) fn reduce_metadata_variables(
     Ok(reduced)
 }
 
-pub(crate) fn metadata_variables_value(vars: &MetadataVariables) -> Value {
+fn metadata_variables_value(vars: &MetadataVariables) -> Value {
     Value::Array(
         vars.iter()
             .map(|(name, secret)| json!({"name": name, "secret": secret}))
@@ -340,7 +340,7 @@ pub(crate) fn metadata_variables_value(vars: &MetadataVariables) -> Value {
     )
 }
 
-pub(crate) fn reduce_metadata_data_streams(
+fn reduce_metadata_data_streams(
     value: Option<&Value>,
 ) -> elasticctl_core::Result<BTreeMap<String, BTreeMap<String, MetadataVariables>>> {
     let data_streams = match value {
@@ -392,7 +392,7 @@ pub(crate) fn reduce_metadata_data_streams(
     Ok(reduced)
 }
 
-pub(crate) fn reduce_metadata_template_data_streams(
+fn reduce_metadata_template_data_streams(
     value: Option<&Value>,
     datasets: &BTreeMap<String, BTreeMap<String, MetadataVariables>>,
     package_name: &str,

@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 /// source id. That source is deliberately swapped away by the 0.5.0 contract;
 /// this fixed companion view makes the dashboard bundle independently
 /// portable, while still leaving a zero-residue data-view result.
-pub(crate) async fn record_dashboards(
+pub(super) async fn record_dashboards(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

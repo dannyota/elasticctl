@@ -14,13 +14,13 @@ pub(crate) const PREVIEW_PROBE_INDEX: &str = "elasticctl-sample-fixture";
 
 /// Base name for the preview probe. Append a per-run suffix because preview
 /// alerts are never deleted; the fallback must not match a stale alert.
-pub(crate) const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
+const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
 
 /// Fixed instead of "now": the probe document falls inside this window, so the
 /// recording is reproducible and needs no date arithmetic.
-pub(crate) const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
+pub(super) const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
 
-pub(crate) const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
+const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
 
 /// Scratch index queried by the search probe. Like `PREVIEW_PROBE_INDEX`, it
 /// avoids the `logs-` prefix; each document carries the `elasticctl-sample`
@@ -87,7 +87,7 @@ pub(crate) const PREVIEW_HITS_RESPONSE_VOLATILE_FIELDS: &[&str] =
     &["took", "timed_out", "_shards", "_index", "_score", "sort"];
 
 /// Return a per-run suffix so a re-record cannot match leftover preview alerts.
-pub(crate) fn run_token() -> String {
+fn run_token() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos().to_string())
@@ -96,12 +96,12 @@ pub(crate) fn run_token() -> String {
 
 /// Request and response that found preview hits. Keep them separate from the
 /// fixture write so the caller can clean up first.
-pub(crate) struct PreviewHitsExchange {
-    pub(crate) request: Value,
-    pub(crate) response: Value,
+pub(super) struct PreviewHitsExchange {
+    pub(super) request: Value,
+    pub(super) response: Value,
 }
 
-pub(crate) async fn record_preview_hits(
+pub(super) async fn record_preview_hits(
     session: &mut RecordingSession<'_>,
     space: &str,
 ) -> elasticctl_core::Result<PreviewHitsExchange> {
@@ -226,46 +226,4 @@ pub(crate) async fn record_preview_hits(
          ({uuid_attempts} search(es)) and kibana.alert.rule.name (1 search) \
          both returned zero hits"
     )))
-}
-
-#[cfg(test)]
-mod tests {
-
-    use crate::fixtures::preview_exchange_fixture;
-    use serde_json::json;
-
-    #[test]
-    fn preview_hits_fixture_strips_response_runtime_fields_and_still_uses_the_checked_decoder() {
-        let fixture = preview_exchange_fixture(
-            "rules_preview_hits",
-            "serverless",
-            "9.6.0",
-            json!({"sort": [{"@timestamp": {"order": "desc"}}]}),
-            json!({
-                "took": 7,
-                "_shards": {"total": 3, "successful": 3, "skipped": 0, "failed": 0},
-                "hits": {
-                    "total": {"value": 1, "relation": "eq"},
-                    "hits": [{
-                        "_index": ".preview.alerts-security.alerts-rollover",
-                        "sort": [123],
-                        "_source": {"kibana.alert.rule.uuid": "fixture-preview"}
-                    }]
-                }
-            }),
-        );
-        let response = &fixture.document["response"];
-
-        assert!(response.get("took").is_none());
-        assert!(response.get("_shards").is_none());
-        assert!(response["hits"]["hits"][0].get("_index").is_none());
-        assert!(response["hits"]["hits"][0].get("sort").is_none());
-        assert_eq!(
-            fixture.document["request"]["sort"],
-            json!([{"@timestamp": {"order": "desc"}}]),
-            "the production request sort is evidence, not response runtime state"
-        );
-        elasticctl_api::rules::decode_preview_hits_checked(response)
-            .expect("the scrubbed response must use the checked production decoder");
-    }
 }

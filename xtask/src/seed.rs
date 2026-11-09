@@ -42,7 +42,7 @@ pub(crate) enum PrebuiltConvergenceError {
 }
 
 impl PrebuiltConvergenceError {
-    pub(crate) fn public_summary(&self) -> String {
+    fn public_summary(&self) -> String {
         let (class, attempt, status) = match self {
             Self::Put { attempt, error } => ("put", *attempt, error.http_status),
             Self::Get { attempt, error } => ("get", *attempt, error.http_status),
@@ -72,7 +72,7 @@ impl PrebuiltConvergenceError {
     }
 }
 
-pub(crate) const PREBUILT_CONVERGENCE_ATTEMPTS: usize = 5;
+const PREBUILT_CONVERGENCE_ATTEMPTS: usize = 5;
 
 pub(crate) async fn converge_prebuilt_rules(
     transport: &elasticctl_core::Transport,
@@ -119,7 +119,7 @@ pub(crate) fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Res
     })
 }
 
-pub(crate) async fn seed() {
+pub(super) async fn seed() {
     // A prepackaged install can exceed the normal 60-second timeout on a fresh
     // stack. Use a higher default while keeping `ELASTICCTL_TIMEOUT` as an
     // override.

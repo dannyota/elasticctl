@@ -4,7 +4,7 @@ pub(crate) fn recording_error(message: impl Into<String>) -> elasticctl_core::Er
     elasticctl_core::Error::new(elasticctl_core::ErrorKind::Error, message)
 }
 
-pub(crate) const RECORD_TRACE_LABELS: &[&str] = &[
+const RECORD_TRACE_LABELS: &[&str] = &[
     "bootstrap",
     "prebuilt",
     "prebuilt-status-before",
@@ -174,7 +174,7 @@ pub(crate) const RECORD_TRACE_LABELS: &[&str] = &[
     "fleet-integration-policy-cleanup",
 ];
 
-pub(crate) fn record_trace_label_is_safe(label: &str) -> bool {
+fn record_trace_label_is_safe(label: &str) -> bool {
     !label.is_empty()
         && label
             .bytes()

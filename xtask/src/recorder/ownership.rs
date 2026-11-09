@@ -9,7 +9,7 @@ use crate::recorder::preview::{PREVIEW_PROBE_INDEX, SEARCH_MARKER, SEARCH_PROBE_
 use elasticctl_core::urlencode;
 use serde_json::Value;
 
-pub(crate) fn has_marker_tags(value: &Value) -> bool {
+fn has_marker_tags(value: &Value) -> bool {
     let tags = value.get("tags").and_then(Value::as_array);
     MARKER_TAGS.iter().all(|tag| {
         tags.is_some_and(|tags| tags.iter().any(|candidate| candidate.as_str() == Some(tag)))

@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 /// The `_find` filter that names every marker case: the fixed title AND the
 /// fixed tag together, matching `owns_case`'s AND semantics.
-pub(crate) fn case_marker_filter() -> elasticctl_api::cases_ops::CaseFilter {
+fn case_marker_filter() -> elasticctl_api::cases_ops::CaseFilter {
     elasticctl_api::cases_ops::CaseFilter {
         search: Some(CASE_TITLE.to_string()),
         tag: Some(CASE_TAG.to_string()),
@@ -23,7 +23,7 @@ pub(crate) fn case_marker_filter() -> elasticctl_api::cases_ops::CaseFilter {
     }
 }
 
-pub(crate) async fn find_marker_cases(
+async fn find_marker_cases(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<(Vec<elasticctl_api::cases::Case>, u64)> {
     let query = elasticctl_api::cases_ops::find_query(
@@ -34,9 +34,7 @@ pub(crate) async fn find_marker_cases(
     elasticctl_api::cases::find_page(t, &query).await
 }
 
-pub(crate) async fn require_no_marker_cases(
-    t: &elasticctl_core::Transport,
-) -> elasticctl_core::Result<()> {
+async fn require_no_marker_cases(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
     let (cases, total) = find_marker_cases(t).await?;
     if total > 0 || !cases.is_empty() {
         return Err(recording_error(format!(
@@ -79,7 +77,7 @@ pub(crate) async fn sweep_delete_marker_cases(
 /// so this step's own fixture and every later one scrub consistently.
 /// Comment ids are discovered, not assumed: whatever shape the live
 /// `comments` array actually carries is what gets a placeholder.
-pub(crate) fn register_case_extras(
+fn register_case_extras(
     value: &Value,
     case_map: &mut BTreeMap<String, String>,
     next_comment: &mut usize,
@@ -135,7 +133,7 @@ pub(crate) fn register_case_extras(
 /// alerts probe's still-open marker alert — then delete it and prove zero
 /// residue. Runs between `record_alerts_probe` and `close_and_clean_alerts`
 /// so that alert is still open when the attach exchange needs it.
-pub(crate) async fn record_cases(
+pub(super) async fn record_cases(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

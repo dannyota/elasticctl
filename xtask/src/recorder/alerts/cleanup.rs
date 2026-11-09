@@ -12,13 +12,13 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// The query filter that names every alert the probe rule produced.
-pub(crate) fn alert_probe_filter() -> Value {
+fn alert_probe_filter() -> Value {
     json!({"term": {"kibana.alert.rule.rule_id": ALERT_RULE_ID}})
 }
 
 /// Every alert the probe rule produced that has not been closed. Closed
 /// residue from an earlier run is the accepted deviation (spec section 9).
-pub(crate) fn alert_probe_open_filter() -> Value {
+pub(super) fn alert_probe_open_filter() -> Value {
     json!({
         "bool": {
             "filter": [alert_probe_filter()],
@@ -27,7 +27,7 @@ pub(crate) fn alert_probe_open_filter() -> Value {
     })
 }
 
-pub(crate) async fn require_no_open_marker_alerts(
+pub(super) async fn require_no_open_marker_alerts(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<()> {
     let body = json!({"query": alert_probe_open_filter(), "size": 0, "track_total_hits": true});
@@ -90,9 +90,7 @@ pub(crate) async fn sweep_close_marker_alerts(
 /// outcome. A recording can close marker alerts from an earlier interrupted
 /// run, so the successful server counters are cumulative; the fixture records
 /// one representative conflict-free update and removes untyped runtime state.
-pub(crate) fn canonicalize_close_by_query_outcome(
-    response: &mut Value,
-) -> elasticctl_core::Result<()> {
+fn canonicalize_close_by_query_outcome(response: &mut Value) -> elasticctl_core::Result<()> {
     let outcome = elasticctl_api::alerts::decode_outcome(response)
         .map_err(|_| recording_error("close-by-query response failed strict outcome decoding"))?;
     if outcome.updated == 0

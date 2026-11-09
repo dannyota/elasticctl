@@ -41,7 +41,7 @@ pub(crate) struct AlertsProbe {
 /// `record_alerts_probe` + `close_and_clean_alerts`) so `record_session` can
 /// run `record_cases` between the two; every pre-write ownership claim and
 /// marker check below is unchanged from the single-function version.
-pub(crate) async fn record_alerts_probe(
+pub(super) async fn record_alerts_probe(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

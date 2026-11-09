@@ -7,7 +7,7 @@ use crate::recorder::markers::{
 };
 use serde_json::Value;
 
-pub(crate) async fn require_absent_data_view(
+pub(super) async fn require_absent_data_view(
     t: &elasticctl_core::Transport,
     id: &str,
 ) -> elasticctl_core::Result<()> {
@@ -20,7 +20,7 @@ pub(crate) async fn require_absent_data_view(
     }
 }
 
-pub(crate) async fn require_absent_data_view_index(
+pub(super) async fn require_absent_data_view_index(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<()> {
     match t.get_absolute_es(&format!("/{DATA_VIEW_INDEX}")).await {
@@ -52,7 +52,7 @@ pub(crate) fn owns_data_view_index(value: &Value) -> bool {
 /// Remove server-owned data-view details while preserving the portable
 /// configuration and any legacy scripted entry. Mapped fields are generated
 /// cache data and must not turn a fixture into a snapshot of a deployment.
-pub(crate) fn scrub_data_view(value: &mut Value) {
+fn scrub_data_view(value: &mut Value) {
     let Some(view) = value.get_mut("data_view").and_then(Value::as_object_mut) else {
         return;
     };
@@ -72,7 +72,7 @@ pub(crate) fn scrub_data_view(value: &mut Value) {
     }
 }
 
-pub(crate) fn scrub_data_view_default(value: &mut Value) {
+fn scrub_data_view_default(value: &mut Value) {
     if let Some(Value::String(id)) = value.get_mut("data_view_id")
         && !id.is_empty()
         && id != DATA_VIEW_SOURCE_ID
@@ -93,7 +93,7 @@ pub(crate) fn data_view_fixture(
     response_fixture(name, flavor, version, body, None)
 }
 
-pub(crate) fn data_view_exchange_fixture(
+pub(super) fn data_view_exchange_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,

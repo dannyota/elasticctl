@@ -1,6 +1,6 @@
 //! Session ownership and pending restoration.
 
-pub(crate) mod cleanup;
+mod cleanup;
 
 use crate::recorder::integration::proofs::MarkerIntegrationInputs;
 use serde_json::{Map, Value};

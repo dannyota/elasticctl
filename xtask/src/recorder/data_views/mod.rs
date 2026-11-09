@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 /// Record the full marker-scoped data-view lifecycle. Responses remain in
 /// memory until the source, replacement, backing index, and original default
 /// have all been restored or deleted.
-pub(crate) async fn record_data_views(
+pub(super) async fn record_data_views(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

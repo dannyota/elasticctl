@@ -15,7 +15,7 @@ use crate::recorder::markers::{
 use elasticctl_core::urlencode;
 use serde_json::{Map, Value};
 
-pub(crate) fn integration_response_item(
+fn integration_response_item(
     value: &Value,
 ) -> elasticctl_core::Result<&serde_json::Map<String, Value>> {
     value
@@ -24,7 +24,7 @@ pub(crate) fn integration_response_item(
         .ok_or_else(|| recording_error("integration policy response must contain an item object"))
 }
 
-pub(crate) fn is_optional_false(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+fn is_optional_false(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
     fields.iter().all(|field| {
         matches!(
             item.get(*field),
@@ -33,16 +33,13 @@ pub(crate) fn is_optional_false(item: &serde_json::Map<String, Value>, fields: &
     })
 }
 
-pub(crate) fn is_optional_null(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
+fn is_optional_null(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
     fields
         .iter()
         .all(|field| matches!(item.get(*field), None | Some(Value::Null)))
 }
 
-pub(crate) fn is_optional_empty_object(
-    item: &serde_json::Map<String, Value>,
-    fields: &[&str],
-) -> bool {
+fn is_optional_empty_object(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
     fields.iter().all(|field| match item.get(*field) {
         None | Some(Value::Null) => true,
         Some(Value::Object(values)) => values.is_empty(),
@@ -50,10 +47,7 @@ pub(crate) fn is_optional_empty_object(
     })
 }
 
-pub(crate) fn is_optional_empty_array(
-    item: &serde_json::Map<String, Value>,
-    fields: &[&str],
-) -> bool {
+fn is_optional_empty_array(item: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
     fields.iter().all(|field| match item.get(*field) {
         None | Some(Value::Null) => true,
         Some(Value::Array(values)) => values.is_empty(),
@@ -61,7 +55,7 @@ pub(crate) fn is_optional_empty_array(
     })
 }
 
-pub(crate) fn is_optional_empty_string(item: &serde_json::Map<String, Value>, field: &str) -> bool {
+fn is_optional_empty_string(item: &serde_json::Map<String, Value>, field: &str) -> bool {
     match item.get(field) {
         None | Some(Value::Null) => true,
         Some(Value::String(value)) => value.is_empty(),
@@ -69,7 +63,7 @@ pub(crate) fn is_optional_empty_string(item: &serde_json::Map<String, Value>, fi
     }
 }
 
-pub(crate) fn normalized_active_space(active_space: &str) -> &str {
+fn normalized_active_space(active_space: &str) -> &str {
     if active_space.is_empty() {
         "default"
     } else {
@@ -77,7 +71,7 @@ pub(crate) fn normalized_active_space(active_space: &str) -> &str {
     }
 }
 
-pub(crate) fn has_only_active_spaces(
+fn has_only_active_spaces(
     item: &serde_json::Map<String, Value>,
     fields: &[&str],
     active_space: &str,
@@ -92,7 +86,7 @@ pub(crate) fn has_only_active_spaces(
     })
 }
 
-pub(crate) fn marker_integration_package_matches(
+fn marker_integration_package_matches(
     item: &serde_json::Map<String, Value>,
     expected_version: &str,
 ) -> bool {
@@ -130,7 +124,7 @@ pub(crate) struct IntegrationFixtureContext<'a> {
     pub(crate) expected_inputs: &'a Map<String, Value>,
 }
 
-pub(crate) fn marker_integration_inputs_match(
+fn marker_integration_inputs_match(
     item: &Map<String, Value>,
     expected: MarkerIntegrationInputs<'_>,
 ) -> bool {
@@ -327,7 +321,7 @@ pub(crate) fn validate_marker_integration_parent_for_delete_with_nonce<'a>(
 }
 
 #[cfg(test)]
-pub(crate) fn require_marker_integration_response_with_nonce(
+fn require_marker_integration_response_with_nonce(
     body: &Value,
     expected_version: &str,
     active_space: &str,
@@ -504,7 +498,7 @@ pub(crate) async fn reread_marker_parent_before_mutation_with_nonce(
 }
 
 #[cfg(test)]
-pub(crate) fn require_marker_integration_response(
+fn require_marker_integration_response(
     body: &Value,
     expected_version: &str,
     active_space: &str,
@@ -521,7 +515,7 @@ pub(crate) fn require_marker_integration_response(
 }
 
 #[cfg(test)]
-pub(crate) fn require_parent_attachments(
+fn require_parent_attachments(
     body: &Value,
     expected: &[&str],
     active_space: &str,

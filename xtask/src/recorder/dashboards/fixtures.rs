@@ -12,7 +12,7 @@ use crate::scrub::{scrub, strip_volatile};
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
-pub(crate) async fn require_absent_dashboard(
+pub(super) async fn require_absent_dashboard(
     t: &elasticctl_core::Transport,
     id: &str,
 ) -> elasticctl_core::Result<()> {
@@ -28,7 +28,7 @@ pub(crate) async fn require_absent_dashboard(
     }
 }
 
-pub(crate) async fn require_absent_dashboard_data_view(
+pub(super) async fn require_absent_dashboard_data_view(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<()> {
     match elasticctl_api::data_views::get(t, DASHBOARD_DATA_VIEW_ID).await {
@@ -43,7 +43,7 @@ pub(crate) async fn require_absent_dashboard_data_view(
     }
 }
 
-pub(crate) fn dashboard_data() -> Value {
+pub(super) fn dashboard_data() -> Value {
     json!({
         "title": DASHBOARD_TITLE,
         "description": DASHBOARD_MARKER,
@@ -63,7 +63,7 @@ pub(crate) fn dashboard_data() -> Value {
     })
 }
 
-pub(crate) fn dashboard_spec(id: &str, data: Value) -> elasticctl_core::Result<Value> {
+pub(super) fn dashboard_spec(id: &str, data: Value) -> elasticctl_core::Result<Value> {
     let spec = json!({"id": id, "data": data});
     elasticctl_api::dashboards::DashboardSpec::try_from(spec.clone()).map_err(|error| {
         recording_error(format!("building marker dashboard {id}: {}", error.message))
@@ -71,7 +71,7 @@ pub(crate) fn dashboard_spec(id: &str, data: Value) -> elasticctl_core::Result<V
     Ok(spec)
 }
 
-pub(crate) fn require_dashboard_response(
+pub(super) fn require_dashboard_response(
     body: &Value,
     id: &str,
     description: &str,
@@ -94,7 +94,7 @@ pub(crate) fn require_dashboard_response(
     Ok(())
 }
 
-pub(crate) fn require_dashboard_search_response(body: &Value) -> elasticctl_core::Result<()> {
+pub(super) fn require_dashboard_search_response(body: &Value) -> elasticctl_core::Result<()> {
     let data = body
         .get("data")
         .and_then(Value::as_array)
@@ -148,7 +148,7 @@ pub(crate) fn owns_recorded_data_view(value: &serde_json::Map<String, Value>, id
                 && value.get("name").and_then(Value::as_str) == Some(DASHBOARD_DATA_VIEW_NAME)))
 }
 
-pub(crate) fn require_saved_objects_import(
+pub(super) fn require_saved_objects_import(
     body: &Value,
     expected_success: bool,
     context: &str,
@@ -202,7 +202,7 @@ pub(crate) fn require_saved_objects_import(
 /// direct panel `id`, as JSON inside Saved Objects `panelsJSON`, and inside
 /// the associated Saved Objects reference name. Collect only panel ids so the
 /// caller-selected root dashboard and data-view ids remain untouched.
-pub(crate) fn scrub_dashboard_panel_ids(value: &mut Value) {
+fn scrub_dashboard_panel_ids(value: &mut Value) {
     fn is_canonical_uuid(value: &str) -> bool {
         value.len() == 36
             && value.bytes().enumerate().all(|(index, byte)| {
@@ -355,12 +355,12 @@ pub(crate) fn scrub_dashboard_panel_ids(value: &mut Value) {
     rewrite_panel_ids(value, &replacements);
 }
 
-pub(crate) fn scrub_dashboard(value: &mut Value) {
+fn scrub_dashboard(value: &mut Value) {
     strip_volatile(value, DASHBOARD_VOLATILE_FIELDS);
     scrub_dashboard_panel_ids(value);
 }
 
-pub(crate) fn dashboard_fixture(
+pub(super) fn dashboard_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -370,7 +370,7 @@ pub(crate) fn dashboard_fixture(
     response_fixture(name, flavor, version, body, None)
 }
 
-pub(crate) fn dashboard_exchange_fixture(
+pub(super) fn dashboard_exchange_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -382,7 +382,7 @@ pub(crate) fn dashboard_exchange_fixture(
     exchange_fixture(name, flavor, version, request, body)
 }
 
-pub(crate) fn scrub_dashboard_bundle_ndjson(text: &str, hosts: &[String]) -> String {
+pub(super) fn scrub_dashboard_bundle_ndjson(text: &str, hosts: &[String]) -> String {
     let mut out = String::new();
     for line in text.lines() {
         let line = line.trim();

@@ -8,7 +8,7 @@ use crate::recorder::ownership::{
 use crate::recorder::session::RecordingSession;
 use serde_json::{Value, json};
 
-pub(crate) async fn create_marked_list(
+pub(super) async fn create_marked_list(
     session: &mut RecordingSession<'_>,
 ) -> elasticctl_core::Result<Value> {
     require_absent_list(session.transport).await?;
@@ -33,7 +33,7 @@ pub(crate) async fn create_marked_list(
     Ok(created)
 }
 
-pub(crate) async fn create_marked_item(
+pub(super) async fn create_marked_item(
     session: &mut RecordingSession<'_>,
 ) -> elasticctl_core::Result<Value> {
     require_absent_item(session.transport).await?;
@@ -65,7 +65,7 @@ pub(crate) async fn create_marked_item(
     Ok(created)
 }
 
-pub(crate) async fn create_marked_rule(
+pub(super) async fn create_marked_rule(
     session: &mut RecordingSession<'_>,
     list_server_id: &str,
 ) -> elasticctl_core::Result<(Value, Value)> {

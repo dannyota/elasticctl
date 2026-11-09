@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 /// re-record of the same object is byte-identical. `version` is an opaque
 /// per-write concurrency token and is removed outright. `space_ids` keeps
 /// only `"default"`, since a fixture must never name another live space.
-pub(crate) fn scrub_agent_policy(value: &mut Value) {
+fn scrub_agent_policy(value: &mut Value) {
     match value {
         Value::Object(map) => {
             map.remove("version");
@@ -49,7 +49,7 @@ pub(crate) fn scrub_agent_policy(value: &mut Value) {
     }
 }
 
-pub(crate) fn agent_policy_fixture(
+fn agent_policy_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -59,7 +59,7 @@ pub(crate) fn agent_policy_fixture(
     response_fixture(name, flavor, version, body, None)
 }
 
-pub(crate) fn agent_policy_exchange_fixture(
+fn agent_policy_exchange_fixture(
     name: &'static str,
     flavor: &str,
     version: &str,
@@ -83,7 +83,7 @@ pub(crate) fn agent_policy_exchange_fixture(
 /// this returns only the reduced item, never the envelope, and returns
 /// `None` rather than silently publishing an unreduced body when `item` is
 /// missing or not an object. The caller must refuse to record on `None`.
-pub(crate) fn reduce_package_status_item(body: &Value) -> Option<Value> {
+fn reduce_package_status_item(body: &Value) -> Option<Value> {
     let item = body.get("item")?.as_object()?;
     let installed_version = item
         .get("installationInfo")
@@ -107,7 +107,7 @@ pub(crate) fn reduce_package_status_item(body: &Value) -> Option<Value> {
 /// policy on the deployment never enters a public fixture. Returns the kept
 /// count so the caller can refuse to record a response that never held the
 /// marker.
-pub(crate) fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize {
+fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize {
     let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
         return 0;
     };
@@ -127,7 +127,7 @@ pub(crate) fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &st
 /// with `unenroll_timeout` omitted, to measure whether the update route
 /// merges or replaces — then delete it. `cleanup` removes both policies by
 /// name if a step above returns early.
-pub(crate) async fn record_agent_policies(
+pub(super) async fn record_agent_policies(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
     flavor: &str,

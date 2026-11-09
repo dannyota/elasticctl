@@ -1,6 +1,6 @@
 //! Recording orchestration and command entry.
 
-pub(crate) mod agent_policies;
+mod agent_policies;
 pub(crate) mod alerts;
 pub(crate) mod cases;
 pub(crate) mod dashboards;
@@ -9,8 +9,8 @@ pub(crate) mod integration;
 pub(crate) mod markers;
 pub(crate) mod ownership;
 pub(crate) mod preview;
-pub(crate) mod rules;
-pub(crate) mod search;
+mod rules;
+mod search;
 pub(crate) mod session;
 
 use crate::diagnostics::{record_trace, recording_error};
@@ -41,9 +41,7 @@ use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-pub(crate) async fn record_session(
-    session: &mut RecordingSession<'_>,
-) -> elasticctl_core::Result<Recording> {
+async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::Result<Recording> {
     record_trace("bootstrap");
     let responded = session.transport.get_with_headers("/api/status").await?;
     let mut status = responded.body.clone();
@@ -436,7 +434,7 @@ pub(crate) async fn record_session(
     Ok(recording)
 }
 
-pub(crate) async fn record() {
+pub(super) async fn record() {
     if let Err(error) = activate_traditional_recorder_profile().await {
         // The activation preflight returns only named local-input errors or a
         // fixed transport-safe context, never server text or credential data.
@@ -1844,7 +1842,7 @@ pub(crate) mod test_support {
         RootItem,
     }
 
-    pub(crate) fn ambiguous_create_response(
+    fn ambiguous_create_response(
         outcome: AmbiguousCreateOutcome,
         root_item: Value,
     ) -> ResponseTemplate {
@@ -1931,7 +1929,7 @@ pub(crate) mod test_support {
     }
 
     #[cfg(any())]
-    pub(crate) async fn mount_primary_create_ambiguous_winner_legacy(
+    async fn mount_primary_create_ambiguous_winner_legacy(
         server: &MockServer,
         outcome: AmbiguousCreateOutcome,
         winner_nonce: &str,

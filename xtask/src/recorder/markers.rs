@@ -150,15 +150,15 @@ pub(crate) const INTEGRATION_POLICY_PARENT_INACTIVITY_TIMEOUT: u64 = 1_209_600;
 pub(crate) const INSTALLED_PACKAGE_INVENTORY_PATH: &str =
     "/api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc";
 
-pub(crate) const INTEGRATION_RECORDING_NONCE_PREFIX: &str = " [elasticctl-recorder-nonce=";
+const INTEGRATION_RECORDING_NONCE_PREFIX: &str = " [elasticctl-recorder-nonce=";
 
-pub(crate) const INTEGRATION_RECORDING_NONCE_SUFFIX: &str = "]";
+const INTEGRATION_RECORDING_NONCE_SUFFIX: &str = "]";
 
 #[cfg(test)]
 pub(crate) const TEST_INTEGRATION_RECORDING_NONCE: &str = "test-integration-recording-nonce";
 
 #[cfg(not(test))]
-pub(crate) static INTEGRATION_RECORDING_NONCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static INTEGRATION_RECORDING_NONCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Return a nonce that identifies one recorder session's live marker objects.
 /// It stays in memory and is never sent to output or public fixtures.

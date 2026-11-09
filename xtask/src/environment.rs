@@ -27,12 +27,12 @@ pub(crate) fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::
 /// The only recorder flavor that starts headless needs a profile activation
 /// before the later alert-assignment probe can resolve an assignee. Keep the
 /// decision pure so tests never race on process environment variables.
-pub(crate) struct TraditionalRecorderLogin<'a> {
-    pub(crate) username: &'a str,
-    pub(crate) password: &'a str,
+struct TraditionalRecorderLogin<'a> {
+    username: &'a str,
+    password: &'a str,
 }
 
-pub(crate) fn traditional_recorder_login_inputs<'a>(
+fn traditional_recorder_login_inputs<'a>(
     flavor: Option<&str>,
     username: Option<&'a str>,
     password: Option<&'a str>,
