@@ -1,0 +1,55 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
+---
+{
+  "dry_run": {
+    "args": [
+      "alerts",
+      "open",
+      "elasticctl-fixture-alert-1",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": false,\n  \"total\": 1\n}\n",
+    "stderr": "[DRY RUN] Open 1 alert (profile: default @ HOST, space: default)\n  elasticctl-fixture-alert-1  elasticctl sample alert probe  already open\nPass --yes to apply.\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/search",
+        "query": null,
+        "body": "{\"query\":{\"ids\":{\"values\":[\"elasticctl-fixture-alert-1\"]}},\"size\":1,\"_source\":[\"kibana.alert.rule.name\",\"kibana.alert.workflow_status\"]}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  "apply": {
+    "args": [
+      "alerts",
+      "open",
+      "elasticctl-fixture-alert-1",
+      "--json",
+      "--yes"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": true,\n  \"status\": \"open\",\n  \"total\": 1,\n  \"updated\": 1,\n  \"version_conflicts\": 0,\n  \"noops\": 0,\n  \"failed\": 0,\n  \"failures\": []\n}\n",
+    "stderr": "Applying: Open 1 alert (profile: default @ HOST, space: default)\n  elasticctl-fixture-alert-1  elasticctl sample alert probe  already open\n",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/search",
+        "query": null,
+        "body": "{\"query\":{\"ids\":{\"values\":[\"elasticctl-fixture-alert-1\"]}},\"size\":1,\"_source\":[\"kibana.alert.rule.name\",\"kibana.alert.workflow_status\"]}"
+      },
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/status",
+        "query": null,
+        "body": "{\"signal_ids\":[\"elasticctl-fixture-alert-1\"],\"status\":\"open\"}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+}

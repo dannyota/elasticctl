@@ -1,0 +1,55 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
+---
+{
+  "dry_run": {
+    "args": [
+      "cases",
+      "close",
+      "elasticctl-fixture-case",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": false,\n  \"total\": 1\n}\n",
+    "stderr": "[DRY RUN] Close 1 case (profile: default @ HOST, space: default)\n  elasticctl-fixture-case  elasticctl sample case  open -> closed\nPass --yes to apply.\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/elasticctl-fixture-case",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  "apply": {
+    "args": [
+      "cases",
+      "close",
+      "elasticctl-fixture-case",
+      "--json",
+      "--yes"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": true,\n  \"total\": 1,\n  \"updated\": 1,\n  \"failed\": 0,\n  \"failures\": []\n}\n",
+    "stderr": "Applying: Close 1 case (profile: default @ HOST, space: default)\n  elasticctl-fixture-case  elasticctl sample case  open -> closed\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/elasticctl-fixture-case",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/cases",
+        "query": null,
+        "body": "{\"cases\":[{\"id\":\"elasticctl-fixture-case\",\"version\":\"WzAsMV0=\",\"status\":\"closed\"}]}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+}

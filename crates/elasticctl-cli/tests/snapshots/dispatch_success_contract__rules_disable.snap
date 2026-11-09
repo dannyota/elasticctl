@@ -1,0 +1,67 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
+---
+{
+  "dry_run": {
+    "args": [
+      "rules",
+      "disable",
+      "elasticctl-fixture-probe",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": false,\n  \"total\": 1\n}\n",
+    "stderr": "[DRY RUN] Disable 1 rule(s) (profile: default @ HOST, space: default)\n  elasticctl-fixture-probe  elasticctl fixture probe  disabled -> disabled\nPass --yes to apply.\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  "apply": {
+    "args": [
+      "rules",
+      "disable",
+      "elasticctl-fixture-probe",
+      "--json",
+      "--yes"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": true,\n  \"succeeded\": 1,\n  \"failed\": 0,\n  \"skipped\": 0,\n  \"total\": 1\n}\n",
+    "stderr": "Applying: Disable 1 rule(s) (profile: default @ HOST, space: default)\n  elasticctl-fixture-probe  elasticctl fixture probe  disabled -> disabled\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      },
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/rules/_bulk_action",
+        "query": null,
+        "body": "{\"action\":\"disable\",\"query\":\"alert.attributes.params.ruleId: \\\"elasticctl-fixture-probe\\\"\"}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+}

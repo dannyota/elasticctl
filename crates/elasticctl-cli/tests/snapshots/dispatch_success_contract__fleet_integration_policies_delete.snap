@@ -1,0 +1,129 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
+---
+{
+  "dry_run": {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "delete",
+      "elasticctl-sample-integration-policy",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": false,\n  \"total\": 1\n}\n",
+    "stderr": "[DRY RUN] Delete 1 integration policy(ies) (profile: default @ HOST, space: default)\n  elasticctl-sample-integration-policy  elasticctl-sample-integration-policy  parents elasticctl-sample-integration-policy-parent (elasticctl-sample-integration-policy-parent) agents 0  agents 0\n  affected agents 0\n  warning  Fleet can change after the final recheck and before the write\nPass --yes to apply.\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/package_policies/elasticctl-sample-integration-policy",
+        "query": "format=simplified",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system/2.23.4",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  "apply": {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "delete",
+      "elasticctl-sample-integration-policy",
+      "--json",
+      "--yes"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": true,\n  \"deleted\": [\n    {\n      \"id\": \"elasticctl-sample-integration-policy\"\n    }\n  ],\n  \"failed\": [],\n  \"total\": 1,\n  \"affected_agents\": 0\n}\n",
+    "stderr": "Applying: Delete 1 integration policy(ies) (profile: default @ HOST, space: default)\n  elasticctl-sample-integration-policy  elasticctl-sample-integration-policy  parents elasticctl-sample-integration-policy-parent (elasticctl-sample-integration-policy-parent) agents 0  agents 0\n  affected agents 0\n  warning  Fleet can change after the final recheck and before the write\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/package_policies/elasticctl-sample-integration-policy",
+        "query": "format=simplified",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system/2.23.4",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/package_policies/elasticctl-sample-integration-policy",
+        "query": "format=simplified",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/epm/packages/system/2.23.4",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/fleet/package_policies/elasticctl-sample-integration-policy",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+}

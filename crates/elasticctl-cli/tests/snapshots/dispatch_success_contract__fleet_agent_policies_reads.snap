@@ -1,0 +1,61 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "fleet",
+      "agent-policies",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"id\": \"elasticctl-sample-agent-policy\",\n    \"name\": \"elasticctl-sample-agent-policy\",\n    \"namespace\": \"default\",\n    \"description\": \"elasticctl sample agent policy\",\n    \"agents\": 0\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies",
+        "query": "page=1&perPage=1000&sortField=created_at&sortOrder=asc",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "fleet",
+      "agent-policies",
+      "get",
+      "elasticctl-sample-agent-policy",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"id\": \"elasticctl-sample-agent-policy\",\n  \"name\": \"elasticctl-sample-agent-policy\",\n  \"namespace\": \"default\",\n  \"description\": \"elasticctl sample agent policy\",\n  \"agents\": 0,\n  \"status\": \"active\",\n  \"attached_integrations\": [],\n  \"blocked_by\": []\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies/elasticctl-sample-agent-policy",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

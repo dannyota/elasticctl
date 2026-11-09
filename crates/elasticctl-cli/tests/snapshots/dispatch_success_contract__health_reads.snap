@@ -1,0 +1,94 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "config",
+      "test",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"profile\": \"default\",\n  \"kibana_url\": \"HOST\",\n  \"reachable\": true,\n  \"flavor\": \"self-managed\",\n  \"version\": \"9.5.1\"\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "doctor",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"checks\": [\n    {\n      \"check\": \"config\",\n      \"status\": \"ok\",\n      \"message\": \"profile 'default'\"\n    },\n    {\n      \"check\": \"connectivity\",\n      \"status\": \"ok\",\n      \"message\": \"HOST\"\n    },\n    {\n      \"check\": \"flavor\",\n      \"status\": \"ok\",\n      \"message\": \"self-managed 9.5.1\"\n    },\n    {\n      \"check\": \"auth\",\n      \"status\": \"ok\",\n      \"message\": \"REDACTED via _es_api_key\"\n    },\n    {\n      \"check\": \"key_scope\",\n      \"status\": \"ok\",\n      \"message\": \"project-scoped Elasticsearch API key\"\n    },\n    {\n      \"check\": \"rules_access\",\n      \"status\": \"ok\",\n      \"message\": \"1 rules visible\"\n    },\n    {\n      \"check\": \"value_list_index\",\n      \"status\": \"ok\",\n      \"message\": \"value-list data streams are bootstrapped\"\n    }\n  ],\n  \"ok\": true\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/_security/_authenticate",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules/_find",
+        "query": "page=1&per_page=1",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/lists/index",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "info",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"elasticctl_version\": \"0.7.3\",\n  \"profile\": \"default\",\n  \"kibana_url\": \"HOST\",\n  \"space\": \"default\",\n  \"spaces\": [\n    \"default\"\n  ],\n  \"flavor\": \"self-managed\",\n  \"stack_version\": \"9.5.1\",\n  \"license_tier\": \"trial\"\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/spaces/space",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/_license",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

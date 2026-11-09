@@ -1,0 +1,67 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"id\": \"elasticctl-sample-integration-policy\",\n    \"name\": \"elasticctl-sample-integration-policy\",\n    \"namespace\": \"default\",\n    \"description\": \"elasticctl sample integration policy\",\n    \"policy_ids\": [\n      \"elasticctl-sample-integration-policy-parent\"\n    ],\n    \"package\": {\n      \"name\": \"system\",\n      \"version\": \"2.23.4\"\n    }\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/package_policies",
+        "query": "page=1&perPage=1000&sortField=created_at&sortOrder=asc&format=simplified",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "fleet",
+      "integration-policies",
+      "get",
+      "elasticctl-sample-integration-policy",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"id\": \"elasticctl-sample-integration-policy\",\n  \"name\": \"elasticctl-sample-integration-policy\",\n  \"namespace\": \"default\",\n  \"description\": \"elasticctl sample integration policy\",\n  \"policy_ids\": [\n    \"elasticctl-sample-integration-policy-parent\"\n  ],\n  \"package\": {\n    \"name\": \"system\",\n    \"version\": \"2.23.4\"\n  },\n  \"affected_agents\": 0,\n  \"blocked_by\": []\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/status",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/package_policies/elasticctl-sample-integration-policy",
+        "query": "format=simplified",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+]

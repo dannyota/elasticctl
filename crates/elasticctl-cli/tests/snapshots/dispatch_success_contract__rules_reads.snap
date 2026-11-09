@@ -1,0 +1,75 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "rules",
+      "list",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "[\n  {\n    \"rule_id\": \"elasticctl-fixture-probe\",\n    \"name\": \"elasticctl fixture probe\",\n    \"type\": \"query\",\n    \"enabled\": false,\n    \"severity\": \"low\",\n    \"risk_score\": 21,\n    \"tags\": [\n      \"elasticctl\",\n      \"fixture\"\n    ]\n  }\n]\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules/_find",
+        "query": "page=1&per_page=10000",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "rules",
+      "get",
+      "elasticctl-fixture-probe",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"actions\": [],\n  \"author\": [],\n  \"description\": \"Recorded by cargo xtask record. Safe to delete.\",\n  \"enabled\": false,\n  \"exceptions_list\": [\n    {\n      \"list_id\": \"elasticctl-sample-exceptions\",\n      \"namespace_type\": \"single\",\n      \"type\": \"detection\"\n    }\n  ],\n  \"false_positives\": [],\n  \"from\": \"now-6m\",\n  \"immutable\": false,\n  \"index\": [\n    \"logs-*\"\n  ],\n  \"interval\": \"5m\",\n  \"language\": \"kuery\",\n  \"max_signals\": 100,\n  \"name\": \"elasticctl fixture probe\",\n  \"output_index\": \"\",\n  \"query\": \"*:*\",\n  \"references\": [],\n  \"related_integrations\": [],\n  \"required_fields\": [],\n  \"risk_score\": 21,\n  \"risk_score_mapping\": [],\n  \"rule_id\": \"elasticctl-fixture-probe\",\n  \"rule_source\": {\n    \"type\": \"internal\"\n  },\n  \"setup\": \"\",\n  \"severity\": \"low\",\n  \"severity_mapping\": [],\n  \"tags\": [\n    \"elasticctl\",\n    \"fixture\"\n  ],\n  \"threat\": [],\n  \"to\": \"now\",\n  \"type\": \"query\"\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/detection_engine/rules",
+        "query": "rule_id=elasticctl-fixture-probe",
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "rules",
+      "export",
+      "--out",
+      "ROOT/out",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"exported\": 1,\n  \"path\": \"ROOT/out\",\n  \"failed\": []\n}\n",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/rules/_export",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": "{\"actions\":[],\"author\":[],\"description\":\"Recorded by cargo xtask record. Safe to delete.\",\"enabled\":false,\"exceptions_list\":[{\"list_id\":\"elasticctl-sample-exceptions\",\"namespace_type\":\"single\",\"type\":\"detection\"}],\"false_positives\":[],\"from\":\"now-6m\",\"immutable\":false,\"index\":[\"logs-*\"],\"interval\":\"5m\",\"language\":\"kuery\",\"max_signals\":100,\"name\":\"elasticctl fixture probe\",\"output_index\":\"\",\"query\":\"*:*\",\"references\":[],\"related_integrations\":[],\"required_fields\":[],\"risk_score\":21,\"risk_score_mapping\":[],\"rule_id\":\"elasticctl-fixture-probe\",\"rule_source\":{\"type\":\"internal\"},\"setup\":\"\",\"severity\":\"low\",\"severity_mapping\":[],\"tags\":[\"elasticctl\",\"fixture\"],\"threat\":[],\"to\":\"now\",\"type\":\"query\"}\n{\"_version\":\"REDACTED\",\"created_by\":\"REDACTED\",\"description\":\"Recorded by cargo xtask record. Safe to delete.\",\"immutable\":false,\"list_id\":\"elasticctl-sample-exceptions\",\"name\":\"elasticctl sample exceptions\",\"namespace_type\":\"single\",\"os_types\":[],\"tags\":[\"elasticctl\",\"fixture\"],\"tie_breaker_id\":\"REDACTED\",\"type\":\"detection\",\"updated_by\":\"REDACTED\",\"version\":1}\n{\"_version\":\"REDACTED\",\"comments\":[],\"created_by\":\"REDACTED\",\"description\":\"Recorded by cargo xtask record. Safe to delete.\",\"entries\":[{\"type\":\"match\",\"field\":\"process.name\",\"value\":\"elasticctl-sample.exe\",\"operator\":\"included\"}],\"item_id\":\"elasticctl-sample-exception-item\",\"list_id\":\"elasticctl-sample-exceptions\",\"name\":\"elasticctl sample exception item\",\"namespace_type\":\"single\",\"os_types\":[],\"tags\":[\"elasticctl\",\"fixture\"],\"tie_breaker_id\":\"REDACTED\",\"type\":\"simple\",\"updated_by\":\"REDACTED\"}\n",
+    "pulled_rule": null
+  }
+]

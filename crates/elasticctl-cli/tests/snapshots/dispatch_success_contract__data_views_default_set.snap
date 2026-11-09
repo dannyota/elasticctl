@@ -1,0 +1,75 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
+---
+{
+  "dry_run": {
+    "args": [
+      "data-views",
+      "default",
+      "set",
+      "elasticctl-sample-data-view-source",
+      "--json"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": false,\n  \"data_view_id\": \"elasticctl-sample-data-view-source\"\n}\n",
+    "stderr": "[DRY RUN] Set default data view to elasticctl-sample-data-view-source (elasticctl sample source view) (profile: default @ HOST, space: default)\n  none  default -> elasticctl-sample-data-view-source\nPass --yes to apply.\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/data_views",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/data_views/default",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  },
+  "apply": {
+    "args": [
+      "data-views",
+      "default",
+      "set",
+      "elasticctl-sample-data-view-source",
+      "--json",
+      "--yes"
+    ],
+    "code": 0,
+    "stdout": "{\n  \"applied\": true,\n  \"data_view_id\": \"elasticctl-sample-data-view-source\"\n}\n",
+    "stderr": "Applying: Set default data view to elasticctl-sample-data-view-source (elasticctl sample source view) (profile: default @ HOST, space: default)\n  none  default -> elasticctl-sample-data-view-source\n",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/data_views",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/data_views/default",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/api/data_views/default",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "POST",
+        "path": "/api/data_views/default",
+        "query": null,
+        "body": "{\"data_view_id\":\"elasticctl-sample-data-view-source\",\"force\":true}"
+      }
+    ],
+    "out": null,
+    "pulled_rule": null
+  }
+}
