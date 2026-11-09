@@ -214,7 +214,9 @@ async fn capture(args: &[&str]) -> Value {
     let output = dir.path().join("out");
     if args.contains(&"--out") {
         assert!(output.is_file(), "missing output file: {args:?}, {out:?}");
-        assert!(!fs::read(&output).unwrap().is_empty());
+        if !args.windows(2).any(|pair| pair == ["--limit", "0"]) {
+            assert!(!fs::read(&output).unwrap().is_empty());
+        }
         if args.starts_with(&["dashboards", "bundle", "export"]) {
             assert_eq!(
                 fs::read_to_string(&output).unwrap(),
@@ -618,6 +620,7 @@ async fn bulk_out() {
             ],
             &["alerts", "list", "--limit", "2", "--out", "ROOT/out"],
             &["cases", "list", "--out", "ROOT/out"],
+            &["cases", "list", "--limit", "0", "--out", "ROOT/out"],
         ],
     )
     .await;
