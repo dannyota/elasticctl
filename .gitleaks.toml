@@ -1,0 +1,11 @@
+# gitleaks configuration for the CI `gitleaks` job (full history, redacted).
+# Extends the default rules; each allowlist entry names one known, non-secret
+# value and why it is safe.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fixed password of the disposable local podman lab (lab/compose.yaml). It is reachable only on localhost and guards no real data."
+regexTarget = "match"
+regexes = ['''elastic:elasticctl-lab''']

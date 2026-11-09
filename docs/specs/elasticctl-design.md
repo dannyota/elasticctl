@@ -1210,16 +1210,31 @@ never committed here.
 
 CI runs on pushes to `master`, pull requests, the weekly schedule, and manual
 dispatch. Every Cargo command that resolves or builds dependencies uses the
-committed lockfile. The stable job runs formatting, Clippy, workspace tests,
-and package-content checks. Package-content checks inspect every publishable
-crate — `elasticctl-core`, `elasticctl-api`, `elasticctl-mcp`, and `elasticctl` — and fail if any
-packages its integration tests or the private test-support crate. A separate
-job reads
-`workspace.package.rust-version` from `Cargo.toml` and checks every workspace
-target with that exact toolchain. Windows runs the API state and transaction
-regressions plus the full `elasticctl` package test suite, including raw export
-and report-file paths. The fixture-leak job scans recorded exchanges for
-credentials and project identity.
+committed lockfile. Linux runs formatting, Clippy, full workspace nextest tests,
+separate doctests, and package-content checks. macOS 15 runs the full workspace
+nextest suite and doctests with the pinned `rust-toolchain.toml` compiler.
+Windows runs one nextest selection: all `elasticctl` package tests plus API
+state integration and transaction tests, including raw export and report-file
+regressions. Local `cargo test` remains supported.
+CI disables dev/test debug information and saves Rust caches only on `master`.
+The primary compiler is read from `rust-toolchain.toml` and verified with
+`rustc --version`. A separate job reads `workspace.package.rust-version` and
+checks every workspace target with that exact compiler only when it differs
+from the primary compiler.
+
+Package-content checks inspect every publishable crate: `elasticctl-core`,
+`elasticctl-api`, `elasticctl-mcp`, and `elasticctl`. They fail if any packages
+integration tests or the private test-support crate. Fixture checks scan for
+credentials and project identity. Separate jobs run full-history gitleaks
+(findings fail CI) and actionlint over all workflows. CodeQL analyzes Rust and
+Actions with `build-mode: none` on master pushes, pull requests, and weekly.
+
+Release canaries run weekly, on manual dispatch, and on pull requests changing
+`dist-workspace.toml` or `.github/workflows/release.yml`. They run `dist plan`,
+assert all seven configured targets are planned, build local/global artifacts,
+and upload workflow artifacts. Only tag **pushes** may run `host --steps=create`,
+`host`, or `announce`; all other events skip publishing, including manual
+dispatch on a tag. Repository permission stays read-only except for `host`.
 
 Before a version tag, the exact `master` commit must pass CI and the manually
 dispatched release-preflight workflow. Preflight runs
