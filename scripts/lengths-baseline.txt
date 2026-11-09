@@ -3,4 +3,3 @@
 # Remove entries at the limit or when paths disappear.
 721 crates/elasticctl-api/src/state/push.rs
 812 crates/elasticctl-api/src/state/transaction.rs
-1015 crates/elasticctl-cli/src/main.rs
