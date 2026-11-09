@@ -94,8 +94,7 @@ fn is_unselected_source_query(filter: &RuleFilter) -> bool {
 
 /// Resolve a selector and fetch the rule, canonicalized so output is stable.
 pub async fn get_one(t: &Transport, selector: &str) -> Result<Rule> {
-    let rule_id = selection::to_rule_id(t, selector).await?;
-    let rule = rules::get(t, &rule_id).await?;
+    let (_, rule) = selection::to_rule(t, selector).await?;
     Ok(normalize::canonical(&rule))
 }
 
@@ -157,9 +156,7 @@ pub fn validate(path: &Path) -> Result<ValidateReport> {
 async fn resolve_targets(t: &Transport, selectors: &[String]) -> Result<Vec<(String, Rule)>> {
     let mut out = Vec::with_capacity(selectors.len());
     for s in selectors {
-        let rule_id = selection::to_rule_id(t, s).await?;
-        let rule = rules::get(t, &rule_id).await?;
-        out.push((rule_id, rule));
+        out.push(selection::to_rule(t, s).await?);
     }
     Ok(out)
 }
@@ -550,8 +547,7 @@ pub async fn preview_rule(
             )
         })?
     } else {
-        let rule_id = selection::to_rule_id(t, source).await?;
-        rules::get(t, &rule_id).await?
+        selection::to_rule(t, source).await?.1
     };
 
     // The API requires an explicit end of the window it simulates over.

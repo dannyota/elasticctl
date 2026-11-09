@@ -73,12 +73,32 @@ pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<Str
 /// Name lookup uses one server-filtered `_find`. Walking 2,066 rules took 8.8
 /// seconds only to report no match.
 pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
-    match rules::get(t, selector).await {
-        Ok(r) => return Ok(r.rule_id()?.to_string()),
-        Err(e) if e.kind != ErrorKind::NotFound => return Err(e),
-        Err(_) => {}
+    match get_if_exists(t, selector).await? {
+        Some(rule) => Ok(rule.rule_id()?.to_string()),
+        None => by_name(t, selector).await,
     }
+}
 
+/// Resolve a selector like [`to_rule_id`] and return the stored rule too. A
+/// `rule_id` selector reads the rule once; a name reads the match after `_find`.
+pub async fn to_rule(t: &Transport, selector: &str) -> Result<(String, Rule)> {
+    if let Some(rule) = get_if_exists(t, selector).await? {
+        return Ok((rule.rule_id()?.to_string(), rule));
+    }
+    let rule_id = by_name(t, selector).await?;
+    let rule = rules::get(t, &rule_id).await?;
+    Ok((rule_id, rule))
+}
+
+async fn get_if_exists(t: &Transport, rule_id: &str) -> Result<Option<Rule>> {
+    match rules::get(t, rule_id).await {
+        Ok(rule) => Ok(Some(rule)),
+        Err(e) if e.kind == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+async fn by_name(t: &Transport, selector: &str) -> Result<String> {
     let filter = RuleFilter {
         name: Some(selector.to_string()),
         ..Default::default()

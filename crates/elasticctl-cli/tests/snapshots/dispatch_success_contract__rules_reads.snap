@@ -39,12 +39,6 @@ expression: results
         "path": "/api/detection_engine/rules",
         "query": "rule_id=elasticctl-fixture-probe",
         "body": ""
-      },
-      {
-        "method": "GET",
-        "path": "/api/detection_engine/rules",
-        "query": "rule_id=elasticctl-fixture-probe",
-        "body": ""
       }
     ],
     "out": null,

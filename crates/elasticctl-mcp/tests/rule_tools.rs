@@ -811,10 +811,7 @@ async fn rules_get_projects_only_safe_fields_and_matches_current_and_legacy_data
     let current_requests = stack.requests().await;
     assert_eq!(
         request_paths(&current_requests),
-        vec![
-            ("GET".to_string(), "/api/detection_engine/rules".to_string()),
-            ("GET".to_string(), "/api/detection_engine/rules".to_string()),
-        ]
+        vec![("GET".to_string(), "/api/detection_engine/rules".to_string())]
     );
     assert!(current_requests.iter().all(|request| {
         request.query.get("rule_id") == Some(&selector.to_string())

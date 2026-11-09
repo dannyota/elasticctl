@@ -340,26 +340,23 @@ async fn dispatch_request_order_and_guard_contract() {
                 .unwrap()
                 .contains("/api/detection_engine/rules?")
         );
-        // Current behavior: the rule is read twice (selection, then preview)
-        // before any apply.
-        assert_eq!(requests.len(), if apply { 3 } else { 2 }, "{result}");
-        assert_eq!(requests[1]["method"], "GET");
-        assert_eq!(requests[1]["url"], requests[0]["url"]);
+        // A rule_id selector reads the rule once; the preview reuses it.
+        assert_eq!(requests.len(), if apply { 2 } else { 1 }, "{result}");
         let stderr = result["stderr"].as_str().unwrap();
         for target in ["profile: default", "HOST", "space: default"] {
             assert!(stderr.contains(target), "{result}");
         }
         assert!(stderr.starts_with(if apply { "Applying:" } else { "[DRY RUN]" }));
         if apply {
-            assert_eq!(requests[2]["method"], "POST");
+            assert_eq!(requests[1]["method"], "POST");
             assert!(
-                requests[2]["url"]
+                requests[1]["url"]
                     .as_str()
                     .unwrap()
                     .ends_with("/api/detection_engine/rules/_bulk_action"),
                 "{result}"
             );
-            let body: Value = serde_json::from_str(requests[2]["body"].as_str().unwrap()).unwrap();
+            let body: Value = serde_json::from_str(requests[1]["body"].as_str().unwrap()).unwrap();
             assert_eq!(
                 body,
                 json!({"action": "disable", "query": "alert.attributes.params.ruleId: \"elasticctl-fixture-probe\""})
