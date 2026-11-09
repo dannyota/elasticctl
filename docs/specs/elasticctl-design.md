@@ -514,6 +514,10 @@ has no safe sibling lock and is refused with `ErrorKind::Error`; its message
 contains `filesystem root has no safe sibling lock`. This applies to Unix `/`,
 Windows drive roots, and UNC share roots.
 
+### 5.0.1 Report path identity and locking
+
+Before locking or recovery, `state push --report FILE` canonicalizes FILE’s existing immediate parent, following existing symlink aliases, then appends its final filename. It never creates parents or canonicalizes the final target. The resolved destination determines the sibling lock, transaction directory, journal, and every filesystem operation through preparation, publication, rollback, and recovery. Requested spelling is retained only for messages. Final symlinks, non-regular targets, and symlinked locks are refused. Alias spellings share one lock and transaction identity. Canonicalization does not provide atomic protection against concurrent replacement of canonical ancestors.
+
 ### 5.1 Server-applied defaults
 
 Creating a rule with 13 fields returns 36. The server adds 16 defaults and 7

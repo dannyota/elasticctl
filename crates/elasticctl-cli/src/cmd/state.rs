@@ -84,7 +84,7 @@ pub async fn push(
     // The final typed report is committed on both paths. A dry run remains
     // reviewable before approval; an apply records its remote outcomes.
     if let Some(prepared) = prepared_report {
-        let path = prepared.path().to_path_buf();
+        let path = prepared.requested_path().to_path_buf();
         prepared.publish(&plan.report).map_err(|error| {
             report_file::report_publication_error(plan.report.applied, &path, error)
         })?;
