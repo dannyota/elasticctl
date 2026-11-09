@@ -31,12 +31,12 @@ credentials, or identifying data. Trial end dates live with the owner, not in th
 
 ## Live testing
 
-Serverless is the primary target. Live testing against the trial stacks is always permitted:
+Serverless is the primary target; nothing needs to run locally day to day. Live testing against the trial stacks is always permitted:
 probe them read-only or run a marker-scoped mutation without asking first. The marker and
 baseline rules still apply.
 
-- The Serverless project holds Elastic prebuilt rules for scale testing; `cargo xtask seed`
-  installs them on a target that reports none. They are read-only ground truth: never mutate an
+- The Serverless project holds Elastic prebuilt rules for scale testing. `cargo xtask seed`
+  installs or updates the prebuilt pack until its status reports current. They are read-only ground truth: never mutate an
   untagged rule.
 - Every object a live test creates carries the `elasticctl-sample` marker: a `rule_id` prefix and
   tag for rules, and `*elasticctl-sample*` in index names. Every remote mutation targets explicit

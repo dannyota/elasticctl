@@ -21,8 +21,9 @@ if it is easy to get wrong, here.
 - Rule export includes volatile `id`, `created_at`, `created_by`, `updated_at`, `updated_by`,
   `version`, `revision`, and `execution_summary`. Normalize them away on `pull` or every diff is
   false drift.
-- A real self-managed stack reports `version.build_flavor: "traditional"`, not `"default"`. Only
-  `"serverless"` is matched exactly; everything else falls through to hostname detection.
+- Kibana on a real self-managed or Hosted stack reports `version.build_flavor: "traditional"`,
+  not `"default"`. Only `"serverless"` is matched exactly; everything else falls through to
+  hostname detection.
 - `rules/preview` returns `{preview_id, invocations, errors, warnings}` and **no hit count**.
   Four hits and zero hits are byte-identical responses. Query the preview alerts index separately
   with `preview_id`. The only in-band hit signal is the `max_signals` warning at 100+.

@@ -24,7 +24,8 @@ description written afterwards.
 
 ## Tests and gates
 
-CI runs all three. Run them before opening a pull request.
+CI runs these and the extra gates in `instructions/testing.md`. Run them before
+opening a pull request.
 
 ```bash
 cargo test --jobs 2 -- --test-threads=4

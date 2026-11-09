@@ -2,7 +2,8 @@
 
 ## Gates
 
-CI runs these on every pull request; run them before opening one.
+CI runs all but the last on every pull request; the publish dry run is the manual
+`release-preflight.yml` workflow. Run them before opening a pull request.
 
 ```bash
 cargo test --locked --workspace                   # unit + fixture, offline, no stack needed
@@ -21,20 +22,20 @@ cargo xtask record                                # re-record fixtures from a li
 cargo xtask conformance-matrix --report-dir <path> # all three live conformance legs, concurrently
 ```
 
-On the development laptop, follow the limits in `CONTRIBUTING.md`: `--jobs 2` for builds,
-`--test-threads=4` for tests, and one build-heavy command at a time. Pass them per command. Do
+On the development laptop, append the limits from `CONTRIBUTING.md` to these commands: `--jobs 2`
+for builds, `--test-threads=4` for tests, and one build-heavy command at a time. Pass them per command. Do
 not commit `RUST_TEST_THREADS` or job limits to `.cargo/config.toml`; CI uses runner defaults.
 
 ## Fixtures
 
-Before re-recording, read this section and `xtask/src/main.rs`.
+Before re-recording, read this section, "Sample data", and `xtask/src/main.rs`.
 
 Fixtures are recorded from real traffic, never hand-written. They are tagged with flavor and
 stack version, and live in `tests/fixtures/<flavor>-<version>/`. Do not hand-edit a fixture to
 make a test pass; re-record it.
 
 The directory is named for the *deployment* flavor, not the reported flavor. Hosted and
-self-managed both report `build_flavor: "traditional"`. Recording a Hosted stack without
+self-managed Kibana both report `build_flavor: "traditional"`. Recording a Hosted stack without
 `ELASTICCTL_FIXTURE_FLAVOR=ech` overwrites `traditional-9.5.1`.
 
 Fixtures are public, so scope every recording request to the probe rule. An unscoped `_find` or
