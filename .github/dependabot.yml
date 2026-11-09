@@ -1,19 +1,38 @@
 version: 2
 updates:
-  # Keep the dependency tree close enough to upgrade without a separate project.
-  # The audit job handles security advisories on its own weekly schedule.
+  # One grouped pull request per ecosystem each week. Merge it when green; fix a
+  # breaking bump on its branch. The scheduled CI audit job catches advisories
+  # between these runs. A 7-day cooldown skips releases too new to trust.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Ho_Chi_Minh
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
-      # Group routine patch and minor bumps into one PR to avoid noise.
-      minor-and-patch:
-        update-types: ["minor", "patch"]
+      cargo:
+        patterns: ["*"]
+    # rmcp 3.9 changes MCP tool output schemas, so it moves with a spec
+    # update instead of a routine bump. Remove this once that change lands.
+    ignore:
+      - dependency-name: rmcp
 
-  # Check pinned action versions before they become release-path failures.
+  # Actions are pinned by commit SHA with a version comment; Dependabot moves
+  # the SHA and the comment together.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+      time: "09:30"
+      timezone: Asia/Ho_Chi_Minh
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
