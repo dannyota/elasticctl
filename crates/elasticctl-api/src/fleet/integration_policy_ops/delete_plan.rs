@@ -14,12 +14,11 @@ pub struct IntegrationPolicyDeletePlan {
     pub preview: MutationPlan,
     pub total: usize,
     pub(super) host: String,
-    pub(super) host_snapshot: String,
+    host_snapshot: String,
     pub(super) space: String,
-    pub(super) space_snapshot: String,
+    space_snapshot: String,
     pub(super) parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
-    pub(super) parent_snapshots_snapshot:
-        BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
+    parent_snapshots_snapshot: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
     pub(super) targets: Vec<IntegrationPolicyDeleteTarget>,
 }
 
@@ -39,17 +38,17 @@ impl fmt::Debug for IntegrationPolicyDeletePlan {
 #[derive(Clone, PartialEq)]
 pub(super) struct IntegrationPolicyDeleteTarget {
     pub(super) id: String,
-    pub(super) name: String,
+    name: String,
     pub(super) item: Map<String, Value>,
-    pub(super) item_snapshot: Map<String, Value>,
-    pub(super) spec: IntegrationPolicySpec,
-    pub(super) spec_snapshot: IntegrationPolicySpec,
+    item_snapshot: Map<String, Value>,
+    spec: IntegrationPolicySpec,
+    spec_snapshot: IntegrationPolicySpec,
     pub(super) parents: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
     pub(super) package: IntegrationPackageSpec,
     pub(super) dependency: PackageDependencySnapshot,
-    pub(super) dependency_snapshot: PackageDependencySnapshot,
+    dependency_snapshot: PackageDependencySnapshot,
     pub(super) metadata: Map<String, Value>,
-    pub(super) metadata_snapshot: Map<String, Value>,
+    metadata_snapshot: Map<String, Value>,
 }
 
 /// Plan safe, stable-id integration-policy deletion without issuing a
