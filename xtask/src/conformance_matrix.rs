@@ -280,20 +280,50 @@ fn private_failure(workspace: &Path, flavor: &str, name: &str, detail: impl AsRe
     )
 }
 
-/// Mint a fresh Elasticsearch API key against the lab's bootstrap user.
-///
-/// `lab/up.sh` mints its own key and prints it for a human to paste into
-/// `elasticctl config init`, but reading it back here would mean parsing
-/// script stdout, which the design brief for this command forbids. Minting a
-/// second, independent key sidesteps that parse entirely.
+/// Resolve the lab bootstrap password without executing dotenv contents.
+fn traditional_password_from(environment: Option<String>, dotenv: &str) -> Result<String, String> {
+    let value = environment.or_else(|| {
+        dotenv.lines().rev().find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            if name.trim() != "ELASTIC_PASSWORD" {
+                return None;
+            }
+            let value = value.trim();
+            Some(
+                value
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+                    .map(|value| value.replace("\\'", "'"))
+                    .unwrap_or_else(|| value.to_string()),
+            )
+        })
+    });
+    value.filter(|value| !value.is_empty()).ok_or_else(|| {
+        "ELASTIC_PASSWORD is required in the environment or lab/.env; run lab/up.sh".to_string()
+    })
+}
+
+fn traditional_password(workspace: &Path) -> Result<String, String> {
+    let environment = std::env::var("ELASTIC_PASSWORD").ok();
+    if environment.is_some() {
+        return traditional_password_from(environment, "");
+    }
+    let dotenv = match std::fs::read_to_string(workspace.join("lab/.env")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err("cannot read ELASTIC_PASSWORD from lab/.env".to_string()),
+    };
+    traditional_password_from(None, &dotenv)
+}
+
+/// Mint an independent key; lab/up.sh stores its human-use key in lab/.env.
 async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
     let mut profile = elasticctl_core::Profile {
         kibana_url: "http://localhost:5601".to_string(),
         es_url: Some("http://localhost:9200".to_string()),
         api_key: None,
         username: Some("elastic".to_string()),
-        // lab/compose.yaml sets ELASTIC_PASSWORD to this value.
-        password: Some("elasticctl-lab".to_string()),
+        password: Some(traditional_password(workspace)?),
         space: "default".to_string(),
         verify: true,
         timeout_secs: 30,
@@ -323,7 +353,12 @@ async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
         })?;
     response["encoded"]
         .as_str()
-        .map(str::to_string)
+        .map(|key| {
+            if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+                println!("::add-mask::{key}");
+            }
+            key.to_string()
+        })
         .ok_or_else(|| {
             private_failure(
                 workspace,
@@ -385,12 +420,7 @@ fn private_log_path(workspace: &Path, flavor: &str, name: &str) -> PathBuf {
         .join(format!("{name}.log"))
 }
 
-/// Redact any line containing `ELASTICCTL_API_KEY=` from captured script
-/// output before it reaches a log file. `lab/up.sh` prints the key it mints
-/// in its final summary block; this runner mints its own key independently
-/// (see `mint_traditional_api_key`) and must not let the lab's
-/// superuser-derived key leak into a file either, even one meant to be read
-/// in the clear otherwise.
+/// Keep defensive assignment redaction for captured lab output.
 fn redact_lab_output(bytes: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(bytes);
     text.lines()
@@ -435,9 +465,7 @@ fn write_private_log(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Run `lab/up.sh` or `lab/down.sh` to completion without ever printing its
-/// output live. `up.sh` prints a plaintext API key and the target URLs in its
-/// final summary block, and the brief for this command forbids printing any
-/// env value, not only the key this runner mints itself. Redacted output
+/// output live. Script output may contain private details. Redacted output
 /// goes to a private log instead, the same pattern `conformance` uses to keep
 /// contract detail out of its public one-liners. `kill_on_drop` gives the
 /// script's immediate process a chance to die if this call is ever aborted
@@ -495,17 +523,20 @@ async fn run_traditional_boot_and_leg(
     // session ever logging in, so without this the triage contract's
     // assign/unassign step finds no profile to resolve on this leg alone
     // (design spec `elasticctl-triage-design.md` section 10).
-    // lab/compose.yaml sets ELASTIC_PASSWORD to this value.
-    crate::activation::activate_profile("http://localhost:5601", "elastic", "elasticctl-lab")
-        .await
-        .map_err(|error| {
-            private_failure(
-                &workspace,
-                "traditional",
-                "lab-activate",
-                error.message.as_bytes(),
-            )
-        })?;
+    crate::activation::activate_profile(
+        "http://localhost:5601",
+        "elastic",
+        &traditional_password(&workspace)?,
+    )
+    .await
+    .map_err(|error| {
+        private_failure(
+            &workspace,
+            "traditional",
+            "lab-activate",
+            error.message.as_bytes(),
+        )
+    })?;
 
     let mut command = spawn_conformance_child(&exe, "traditional", &report_dir);
     command
@@ -747,24 +778,46 @@ mod tests {
     }
 
     #[test]
-    fn redacts_the_api_key_line_lab_up_sh_actually_prints() {
-        // Read the real script rather than a hand-written fixture, so a
-        // heredoc reword in `lab/up.sh` breaks this test instead of leaving
-        // the redaction silently pointed at a string nothing prints anymore.
-        let up_script = std::fs::read_to_string(workspace_root().join("lab").join("up.sh"))
-            .expect("lab/up.sh is readable");
+    fn resolves_password_precedence_and_literal_dotenv_without_execution() {
+        // Derive test values at runtime; no password literals in source.
+        let generated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let override_value = format!("{generated}{}", std::process::id());
+        let dotenv = format!("# ignored\nELASTIC_PASSWORD='{generated}'\n");
+        assert!(traditional_password_from(None, &dotenv).unwrap() == generated);
         assert!(
-            up_script.contains("ELASTICCTL_API_KEY="),
-            "lab/up.sh no longer prints ELASTICCTL_API_KEY=; update the redaction target to match"
+            traditional_password_from(Some(override_value.clone()), &dotenv).unwrap()
+                == override_value
         );
+        assert!(traditional_password_from(Some(String::new()), &dotenv).is_err());
+        for contents in ["", "# ELASTIC_PASSWORD=", "ELASTIC_PASSWORD=''"] {
+            assert!(
+                traditional_password_from(None, contents)
+                    .unwrap_err()
+                    .contains("ELASTIC_PASSWORD")
+            );
+        }
+        let escaped = format!("{generated}\\'{generated}");
+        let dotenv = format!("ELASTIC_PASSWORD='{escaped}'");
+        assert!(traditional_password_from(None, &dotenv).unwrap() == escaped.replace("\\'", "'"));
+    }
 
-        let redacted = redact_lab_output(up_script.as_bytes());
-        let text = String::from_utf8(redacted).unwrap();
-        assert!(!text.contains("ELASTICCTL_API_KEY="));
-        assert!(text.contains("[redacted line containing ELASTICCTL_API_KEY]"));
-        // Neighboring lines survive: only the key line is blanked.
-        assert!(text.contains("ELASTICCTL_KIBANA_URL="));
-        assert!(text.contains("Waiting for Kibana..."));
+    #[test]
+    fn redacts_api_key_assignments_defensively() {
+        let input = format!(
+            "ELASTICCTL_API_KEY={}\nready",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let redacted = String::from_utf8(redact_lab_output(input.as_bytes())).unwrap();
+        assert!(!redacted.contains("ELASTICCTL_API_KEY="));
+        assert!(redacted.contains("[redacted line containing ELASTICCTL_API_KEY]"));
+        assert!(redacted.contains("ready"));
     }
 
     #[test]

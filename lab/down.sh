@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +x
 set -euo pipefail
 cd "$(dirname "$0")"
 if docker compose version >/dev/null 2>&1; then
@@ -6,4 +7,4 @@ if docker compose version >/dev/null 2>&1; then
 else
   COMPOSE="podman compose"
 fi
-$COMPOSE down -v
+$COMPOSE down -v --remove-orphans
