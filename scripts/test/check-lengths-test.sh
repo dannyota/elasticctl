@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# Exercise the checker against tracked files in disposable repositories.
+set -euo pipefail
+
+ROOT=$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/elasticctl-check-lengths.XXXXXX")
+trap 'rm -rf -- "$WORK"' EXIT
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+REPO=$WORK/repo
+cases=0
+
+fail() { printf 'check-lengths-test: %s\n' "$*" >&2; exit 1; }
+
+fresh_repo() {
+  rm -rf -- "$REPO"
+  mkdir -p "$REPO/scripts"
+  cp "$ROOT/scripts/check-lengths.sh" "$REPO/scripts/"
+  : >"$REPO/scripts/lengths-baseline.txt"
+  git init -q "$REPO"
+}
+
+lines_file() {
+  local path=$1 lines=$2 header_line=${3:-0} header=${4:-'// fixture header'}
+  mkdir -p "$(dirname "$REPO/$path")"
+  awk -v n="$lines" -v h="$header_line" -v text="$header" '
+    BEGIN { for (i = 1; i <= n; i++) print (i == h ? text : "line " i) }
+  ' >"$REPO/$path"
+  git -C "$REPO" add -- "$path"
+}
+
+expect() {
+  local label=$1 expected=$2 message=${3:-} status=0 output
+  if (($# >= 3)); then shift 3; else shift "$#"; fi
+  output=$(bash "$REPO/scripts/check-lengths.sh" "$@" 2>&1) || status=$?
+  ((status == expected)) || fail "$label: expected exit $expected, got $status: $output"
+  if [[ -n "$message" ]]; then
+    [[ "$output" == "$message" ]] || fail "$label: unexpected output: $output"
+  else
+    [[ "$output" == 'check-lengths: ok '* ]] || fail "$label: missing summary: $output"
+    [[ "$output" != *$'\n'* ]] || fail "$label: extra output: $output"
+  fi
+  cases=$((cases + 1))
+}
+
+fresh_repo
+lines_file src/main.rs 700
+expect 'Rust at limit' 0
+lines_file src/main.rs 701
+expect 'Rust over limit' 1 'src/main.rs: 701 lines (limit 700)'
+
+for visibility in '' 'pub ' 'pub(crate) '; do
+  fresh_repo
+  lines_file src/main.rs 700
+  printf '#[cfg(test)]\n%smod checks {\n' "$visibility" >>"$REPO/src/main.rs"
+  awk 'BEGIN { for (i = 0; i < 800; i++) print "// test"; print "}" }' >>"$REPO/src/main.rs"
+  expect "inline test module: $visibility" 0
+  lines_file src/main.rs 701
+  printf '#[cfg(test)]\n%smod checks {\n}\n' "$visibility" >>"$REPO/src/main.rs"
+  expect "production over limit: $visibility" 1 'src/main.rs: 701 lines (limit 700)'
+done
+
+fresh_repo
+printf '#[cfg(test)]\nmod checks {\n}\n' >"$REPO/src-placeholder"
+lines_file src/main.rs 701
+cat "$REPO/src-placeholder" "$REPO/src/main.rs" >"$REPO/combined"
+mv "$REPO/combined" "$REPO/src/main.rs"
+expect 'hidden module at top' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 701
+{ printf '#[cfg(test)]\nmod checks {}\n'; cat "$REPO/src/main.rs"; } >"$REPO/combined"
+mv "$REPO/combined" "$REPO/src/main.rs"
+expect 'empty inline module at top' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 350
+printf '#[cfg(test)]\nmod checks {\n    fn nested() {\n    }\n}\n' >>"$REPO/src/main.rs"
+awk 'BEGIN { for (i = 1; i <= 351; i++) print "// production" }' >>"$REPO/src/main.rs"
+expect 'production before and after module' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 697
+printf '#[cfg(test)]\nfn test_helper() {}\n// production\n// production\n' >>"$REPO/src/main.rs"
+expect 'test attribute on one item' 1 'src/main.rs: 701 lines (limit 700)'
+printf '#[cfg(test)]\nmod checks {\n}\n' >>"$REPO/src/main.rs"
+expect 'first qualifying module after single item' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 698
+printf '#[cfg(test)]\n#[path="checks.rs"]\nmod checks;\n' >>"$REPO/src/main.rs"
+expect 'out of line test module counts' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 700
+printf '#[cfg(test)]\n' >>"$REPO/src/main.rs"
+expect 'trailing test attribute counts' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file src/main.rs 700
+printf '#[cfg(test)]\nmod checks {\n}\n' >>"$REPO/src/main.rs"
+awk '{ printf "%s\r\n", $0 }' "$REPO/src/main.rs" >"$REPO/crlf"
+mv "$REPO/crlf" "$REPO/src/main.rs"
+expect 'CRLF test module' 0
+printf '// production\r\n' >>"$REPO/src/main.rs"
+expect 'CRLF production after module' 1 'src/main.rs: 701 lines (limit 700)'
+
+fresh_repo
+lines_file tests/integration.rs 900
+lines_file crates/example/tests/nested/fixture.rs 900
+expect 'Rust test paths' 0
+lines_file src/contests/main.rs 701
+expect 'similar directory name checked' 1 'src/contests/main.rs: 701 lines (limit 700)'
+
+for path in src/tests.rs tests.rs; do
+  fresh_repo
+  lines_file "$path" 701
+  expect 'tests.rs counts as production' 1 "$path: 701 lines (limit 700)"
+done
+
+fresh_repo
+lines_file docs/page.md 400
+expect 'Markdown at limit' 0
+lines_file docs/page.md 401
+expect 'Markdown over limit' 1 'docs/page.md: 401 lines (limit 400)'
+
+fresh_repo
+for directory in plans conformance reviews; do
+  lines_file "docs/$directory/nested/evidence.md" 900
+done
+expect 'historical evidence' 0
+lines_file docs/plans-extra/page.md 401
+expect 'similar docs directory checked' 1 'docs/plans-extra/page.md: 401 lines (limit 400)'
+
+fresh_repo
+lines_file 'src/large file.rs' 750
+printf '# Ratchet caps\n\n750 src/large file.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'baseline equal' 0
+lines_file 'src/large file.rs' 751
+expect 'baseline grew' 1 'src/large file.rs: 751 lines (cap 750)'
+lines_file 'src/large file.rs' 749
+expect 'baseline shrank without lowering cap' 1 'src/large file.rs: 749 lines (cap 750), lower its cap to 749'
+for count in 700 699; do
+  lines_file 'src/large file.rs' "$count"
+  expect 'baseline at or under limit' 1 "src/large file.rs: $count lines (limit 700 | cap 750), remove baseline entry"
+done
+rm "$REPO/src/large file.rs"
+expect 'baseline missing tracked file' 1 'src/large file.rs: 0 lines (cap 750), stale baseline path (missing or untracked)'
+git -C "$REPO" rm --cached -q -- 'src/large file.rs'
+expect 'baseline absent untracked file' 1 'src/large file.rs: 0 lines (cap 750), stale baseline path (missing or untracked)'
+lines_file 'src/large file.rs' 750
+git -C "$REPO" rm --cached -q -- 'src/large file.rs'
+expect 'baseline existing untracked file' 1 'src/large file.rs: 0 lines (cap 750), stale baseline path (missing or untracked)'
+
+fresh_repo
+lines_file docs/large.md 450
+printf '450 docs/large.md\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'Markdown baseline equal' 0
+lines_file docs/large.md 451
+expect 'Markdown baseline grew' 1 'docs/large.md: 451 lines (cap 450)'
+lines_file docs/large.md 400
+expect 'Markdown baseline removable' 1 'docs/large.md: 400 lines (limit 400 | cap 450), remove baseline entry'
+
+fresh_repo
+lines_file 'src/large file.rs' 750
+printf '750 src/large file.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+git -C "$REPO" add scripts/lengths-baseline.txt
+git -C "$REPO" -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -qm baseline
+expect 'baseline unchanged from ref' 0 '' --base-ref HEAD
+lines_file 'src/large file.rs' 751
+printf '751 src/large file.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'raised baseline cap' 1 'src/large file.rs: cap 751 exceeds base cap 750' --base-ref HEAD
+lines_file 'src/large file.rs' 749
+printf '749 src/large file.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'lower baseline cap' 0 '' --base-ref HEAD
+lines_file src/added.rs 701
+printf '701 src/added.rs\n' >>"$REPO/scripts/lengths-baseline.txt"
+expect 'added baseline entry' 1 'src/added.rs: baseline entry absent from base ref' --base-ref HEAD
+
+fresh_repo
+lines_file src/main.rs 700
+git -C "$REPO" -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -qm initial
+expect 'base without baseline skips comparison' 0 $'check-lengths: HEAD has no baseline; skipping base comparison\ncheck-lengths: ok (Rust <= 700, Markdown <= 400 lines)' --base-ref HEAD
+lines_file src/main.rs 701
+printf '701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'introducing a baseline is allowed' 0 $'check-lengths: HEAD has no baseline; skipping base comparison\ncheck-lengths: ok (Rust <= 700, Markdown <= 400 lines)' --base-ref HEAD
+expect 'invalid base ref' 1 'check-lengths: invalid base ref: nonexistent-ref' --base-ref nonexistent-ref
+
+fresh_repo
+lines_file src/main.rs 700
+: >"$REPO/scripts/lengths-baseline.txt"
+git -C "$REPO" add scripts/lengths-baseline.txt
+git -C "$REPO" -c user.name=Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -qm empty-baseline
+lines_file src/main.rs 701
+printf '701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'entry added to an empty base baseline' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
+printf '701 src/main.rs' >"$REPO/scripts/lengths-baseline.txt"
+expect 'unterminated added entry' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
+printf '701 src/main.rs\n701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'duplicate baseline path' 1 'scripts/lengths-baseline.txt: duplicate baseline path: src/main.rs'
+printf 'many src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'malformed baseline row' 1 'scripts/lengths-baseline.txt: malformed baseline row: many src/main.rs'
+
+printf 'check-lengths-test: passed (%s cases)\n' "$cases"

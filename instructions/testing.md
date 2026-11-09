@@ -7,6 +7,7 @@ CI runs all but the last on every pull request; the publish dry run is the manua
 
 ```bash
 cargo test --locked --workspace                   # unit + fixture, offline, no stack needed
+bash scripts/test/check-lengths-test.sh && bash scripts/check-lengths.sh
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo deny check advisories bans licenses sources
