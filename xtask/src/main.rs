@@ -1022,6 +1022,41 @@ mod tests {
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
 
+    // Hash each request line followed immediately by its raw body, without separators.
+    fn request_sequence_and_body_digest(requests: &[wiremock::Request]) -> (Vec<String>, u64) {
+        let mut digest = 0xcbf29ce484222325_u64;
+        let lines = requests
+            .iter()
+            .map(|request| {
+                let mut line = format!("{} {}", request.method, request.url.path());
+                if let Some(query) = request.url.query().filter(|query| !query.is_empty()) {
+                    line.push('?');
+                    line.push_str(query);
+                }
+                for byte in line.as_bytes().iter().chain(&request.body) {
+                    digest ^= u64::from(*byte);
+                    digest = digest.wrapping_mul(0x100000001b3);
+                }
+                line
+            })
+            .collect();
+        (lines, digest)
+    }
+
+    // Hash file names and the writer's pretty JSON bytes in buffered order.
+    fn buffered_fixture_digest(recording: &Recording) -> u64 {
+        let mut digest = 0xcbf29ce484222325_u64;
+        for fixture in &recording.fixtures {
+            let name = format!("{}.json", fixture.name);
+            let encoded = serde_json::to_string_pretty(&fixture.document).expect("fixture JSON");
+            for byte in name.as_bytes().iter().chain(encoded.as_bytes()) {
+                digest ^= u64::from(*byte);
+                digest = digest.wrapping_mul(0x100000001b3);
+            }
+        }
+        digest
+    }
+
     #[tokio::test]
     async fn integration_recorder_bootstraps_materialized_inputs_before_public_recording() {
         let server = MockServer::start().await;
@@ -1375,6 +1410,71 @@ mod tests {
         );
         assert_eq!(primary_posts[0]["inputs"], json!({}));
         assert_eq!(primary_posts[1]["inputs"], Value::Object(inputs));
+
+        const MATERIALIZED_INPUTS_LINES: &[&str] = &[
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "POST /api/fleet/agent_policies?sys_monitoring=false",
+            "GET /api/fleet/epm/packages/system/2.0.0",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/status",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/system/2.0.0",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies?page=1&perPage=1000&sortField=created_at&sortOrder=asc&format=simplified",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "PUT /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "POST /api/fleet/agent_policies/delete",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        ];
+        const MATERIALIZED_INPUTS_BODY_DIGEST: u64 = 16607917844578840776;
+        const MATERIALIZED_INPUTS_FIXTURE_DIGEST: u64 = 12733467333436562836;
+        let (lines, body_digest) = request_sequence_and_body_digest(&requests);
+        assert_eq!(
+            lines, MATERIALIZED_INPUTS_LINES,
+            "complete materialized lifecycle requests"
+        );
+        assert_eq!(
+            body_digest, MATERIALIZED_INPUTS_BODY_DIGEST,
+            "materialized lifecycle request bytes"
+        );
+        assert_eq!(
+            buffered_fixture_digest(&recording),
+            MATERIALIZED_INPUTS_FIXTURE_DIGEST,
+            "materialized lifecycle fixture bytes"
+        );
     }
 
     #[tokio::test]
@@ -1488,6 +1588,134 @@ mod tests {
                     .count(),
                 1,
                 "{failure:?} cleanup deletes exactly the owned bootstrap marker once"
+            );
+
+            const BOOTSTRAP_EXPORT_TRANSPORT_LINES: &[&str] = &[
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies?sys_monitoring=false",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "POST /api/fleet/package_policies?format=simplified",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/status",
+                "GET /api/status",
+                "GET /api/status",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies/delete",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            ];
+            const BOOTSTRAP_EXPORT_SECRET_LINES: &[&str] = &[
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies?sys_monitoring=false",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "POST /api/fleet/package_policies?format=simplified",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/status",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies/delete",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            ];
+            const BOOTSTRAP_EXPORT_SENSITIVE_NAME_LINES: &[&str] = &[
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies?sys_monitoring=false",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "POST /api/fleet/package_policies?format=simplified",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/status",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies/delete",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            ];
+            const BOOTSTRAP_EXPORT_CHANGED_INPUTS_LINES: &[&str] = &[
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies?sys_monitoring=false",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "POST /api/fleet/package_policies?format=simplified",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/status",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/system",
+                "GET /api/fleet/epm/packages/system/2.0.0",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "POST /api/fleet/agent_policies/delete",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+                "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+                "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+                "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            ];
+            let expected_lines = match failure {
+                BootstrapExportFailure::Transport => BOOTSTRAP_EXPORT_TRANSPORT_LINES,
+                BootstrapExportFailure::Secret => BOOTSTRAP_EXPORT_SECRET_LINES,
+                BootstrapExportFailure::SensitiveName => BOOTSTRAP_EXPORT_SENSITIVE_NAME_LINES,
+                BootstrapExportFailure::ChangedNormalizedInputs => {
+                    BOOTSTRAP_EXPORT_CHANGED_INPUTS_LINES
+                }
+            };
+            let (lines, _) = request_sequence_and_body_digest(&requests);
+            assert_eq!(
+                lines, expected_lines,
+                "{failure:?} complete bootstrap export failure requests"
             );
         }
     }
@@ -1763,6 +1991,16 @@ mod tests {
             requests
                 .iter()
                 .all(|request| { !matches!(request.method.as_str(), "POST" | "PUT" | "DELETE") })
+        );
+
+        const ABSENT_SYSTEM_PACKAGE_LINES: &[&str] = &[
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/epm/packages/system",
+        ];
+        let (lines, _) = request_sequence_and_body_digest(&requests);
+        assert_eq!(
+            lines, ABSENT_SYSTEM_PACKAGE_LINES,
+            "complete absent package preflight requests"
         );
     }
 
@@ -3101,5 +3339,64 @@ mod tests {
             !(request.method.as_str() == "DELETE"
                 && request.url.path().starts_with("/api/fleet/epm/packages/"))
         }));
+
+        const INTEGRATION_BEFORE_PARENT_LINES: &[&str] = &[
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "POST /api/fleet/agent_policies?sys_monitoring=false",
+            "GET /api/fleet/epm/packages/system/2.0.0",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/status",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/system/2.0.0",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies?page=1&perPage=1000&sortField=created_at&sortOrder=asc&format=simplified",
+            "GET /api/fleet/epm/packages/system",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "POST /api/fleet/package_policies?format=simplified",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "PUT /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "DELETE /api/fleet/package_policies/elasticctl-sample-integration-policy",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "POST /api/fleet/agent_policies/delete",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+            "GET /api/fleet/epm/packages/installed?perPage=1000&sortOrder=asc",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy?format=simplified",
+            "GET /api/fleet/package_policies/elasticctl-sample-integration-policy-dup?format=simplified",
+            "GET /api/fleet/agent_policies/elasticctl-sample-integration-policy-parent",
+        ];
+        const INTEGRATION_BEFORE_PARENT_BODY_DIGEST: u64 = 16607917844578840776;
+        let (lines, body_digest) = request_sequence_and_body_digest(&requests);
+        assert_eq!(
+            lines, INTEGRATION_BEFORE_PARENT_LINES,
+            "complete integration deletion lifecycle requests"
+        );
+        assert_eq!(
+            body_digest, INTEGRATION_BEFORE_PARENT_BODY_DIGEST,
+            "integration deletion lifecycle request bytes"
+        );
     }
 }
