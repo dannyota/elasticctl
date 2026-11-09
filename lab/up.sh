@@ -7,6 +7,7 @@ lab_env() {
   python3 - "$@" <<'PYTHON'
 import os
 from pathlib import Path
+import re
 import secrets
 import sys
 import tempfile
@@ -38,16 +39,24 @@ for name in names:
     value = os.environ.get(name, values.get(name))
     if value is None and operation == "prepare":
         value = secrets.token_hex(32)
+    if operation == "prepare" and not re.fullmatch(r"[A-Za-z0-9._~-]{16,128}", value or ""):
+        sys.exit(f"{name} must match ^[A-Za-z0-9._~-]{{16,128}}$")
     if not value or "\n" in value or "\r" in value:
         sys.exit(f"{name} must be a nonempty single-line value")
     values[name] = value
+
+# Keep every persisted value safe for unquoted Compose interpolation.
+if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or
+       not re.fullmatch(r"[A-Za-z0-9._~:/+=@-]+", value)
+       for name, value in values.items()):
+    sys.exit("lab/.env contains unsupported characters")
 
 # mkstemp creates mode 0600 before any bytes are written; replace is atomic.
 fd, temporary = tempfile.mkstemp(prefix=".env.", dir=".")
 try:
     with os.fdopen(fd, "w") as output:
         for name, value in values.items():
-            output.write(name + "='" + value.replace("'", "\\'") + "'\n")
+            output.write(name + "=" + value + "\n")
     os.replace(temporary, path)
 finally:
     if os.path.exists(temporary):
@@ -62,6 +71,16 @@ fi
 set -euo pipefail
 cd "$(dirname "$0")"
 umask 077
+if ! mkdir .up.lock 2>/dev/null; then
+  echo "lab startup lock is held (lab/.up.lock); another up.sh may be running" >&2
+  exit 1
+fi
+cleanup() {
+  rmdir .up.lock
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 lab_env prepare
 ELASTIC_PASSWORD=$(lab_env read ELASTIC_PASSWORD)
 KIBANA_SYSTEM_PASSWORD=$(lab_env read KIBANA_SYSTEM_PASSWORD)
@@ -83,7 +102,17 @@ fi
 echo "compose provider: $COMPOSE"
 export COMPOSE
 
-$COMPOSE up -d
+if ! compose_diagnostics=$($COMPOSE config --quiet 2>&1); then
+  echo "Compose configuration failed; diagnostics suppressed to protect credentials" >&2
+  exit 1
+fi
+# shellcheck disable=SC2034 # Capture and discard credential-bearing diagnostics.
+if ! compose_diagnostics=$($COMPOSE up -d 2>&1); then
+  echo "Compose startup failed; diagnostics suppressed to protect credentials" >&2
+  exit 1
+fi
+
+unset compose_diagnostics
 
 echo "Waiting for Elasticsearch..."
 es_ready=0
@@ -118,8 +147,43 @@ if [ "$kb_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Enable Platinum-only features for 30 days.
-curl -sf -u "$AUTH" -X POST "$ES/_license/start_trial?acknowledge=true" >/dev/null
+# Reuse qualifying licenses, including an already activated trial.
+qualifying_license() {
+  local response
+  response=$(curl -sf -u "$AUTH" "$ES/_license") || return 2
+  printf '%s' "$response" | python3 -c '
+import json,sys
+try:
+    license = json.load(sys.stdin)["license"]
+    if not isinstance(license, dict):
+        sys.exit(2)
+except (ValueError, KeyError, TypeError):
+    sys.exit(2)
+sys.exit(0 if license.get("status") == "active" and
+         license.get("type") in ("trial", "platinum", "enterprise") else 1)
+'
+}
+# A failed read is fatal, rather than permission to start a trial.
+license_status=0
+qualifying_license || license_status=$?
+if [ "$license_status" -ne 0 ]; then
+  if [ "$license_status" -ne 1 ]; then
+    echo "Could not read the lab license" >&2
+    exit 1
+  fi
+  trial_status=$(curl -s -u "$AUTH" -X POST \
+    "$ES/_license/start_trial?acknowledge=true" -o /dev/null -w '%{http_code}')
+  case "$trial_status" in
+    200) ;;
+    403)
+      if ! qualifying_license; then
+        echo "Trial activation denied and no active qualifying license found" >&2
+        exit 1
+      fi
+      ;;
+    *) echo "Trial activation failed" >&2; exit 1 ;;
+  esac
+fi
 
 # Create the signals index before running detection rules.
 curl -sf -u "$AUTH" -X POST "$KB/api/detection_engine/index" \

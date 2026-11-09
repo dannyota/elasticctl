@@ -7,4 +7,5 @@ if docker compose version >/dev/null 2>&1; then
 else
   COMPOSE="podman compose"
 fi
-$COMPOSE down -v --remove-orphans
+ELASTIC_PASSWORD=unused KIBANA_SYSTEM_PASSWORD=unused \
+  $COMPOSE --env-file /dev/null down -v --remove-orphans

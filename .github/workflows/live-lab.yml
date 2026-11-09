@@ -21,6 +21,10 @@ on:
     - cron: '17 3 * * 0'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -116,8 +120,9 @@ jobs:
         timeout-minutes: 2
         shell: bash
         run: |
-          timeout --signal=INT --kill-after=15s 90s \
-            docker compose -f lab/compose.yaml down -v --remove-orphans
+          ELASTIC_PASSWORD=unused KIBANA_SYSTEM_PASSWORD=unused \
+            timeout --signal=INT --kill-after=15s 90s \
+            docker compose --env-file /dev/null -f lab/compose.yaml down -v --remove-orphans
 
       - name: Upload public report
         if: ${{ !cancelled() && steps.report.outputs.valid == 'true' }}
