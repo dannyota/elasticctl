@@ -15,6 +15,10 @@
 ### Changed
 
 - CI pins every third-party GitHub Action to a commit SHA.
+- Release builds for Apple Silicon run on `macos-15`; GitHub retired the
+  `macos-14` runner.
+- Routine dependency updates, including reqwest 0.13.5, clap 4.6.7, and
+  serde_json 1.0.154.
 
 ## 0.7.2 — 2026-09-07
 
