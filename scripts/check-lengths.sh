@@ -20,9 +20,20 @@ fi
 cap_for() {
   awk -v path="$1" '
     /^[[:space:]]*#/ { next }
-    { n = $1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == path) print n }
+    { n = $1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == path) { print n; exit } }
   '
 }
+
+# Reject malformed rows and duplicate paths before any comparison: a second
+# row for one path would otherwise turn a cap check into an arithmetic error.
+if ! awk '
+  /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+  !/^[0-9]+ [^ ]/ { printf "%s: malformed baseline row: %s\n", FILENAME, $0; bad = 1; next }
+  { path = $0; sub(/^[0-9]+ /, "", path); if (seen[path]++) { printf "%s: duplicate baseline path: %s\n", FILENAME, path; bad = 1 } }
+  END { exit bad }
+' "$BASELINE"; then
+  exit 1
+fi
 
 if [[ -n "$base_ref" ]]; then
   base_commit=$(git rev-parse --verify --end-of-options "$base_ref^{commit}" 2>/dev/null) || {

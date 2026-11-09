@@ -195,5 +195,9 @@ printf '701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
 expect 'entry added to an empty base baseline' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
 printf '701 src/main.rs' >"$REPO/scripts/lengths-baseline.txt"
 expect 'unterminated added entry' 1 'src/main.rs: baseline entry absent from base ref' --base-ref HEAD
+printf '701 src/main.rs\n701 src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'duplicate baseline path' 1 'scripts/lengths-baseline.txt: duplicate baseline path: src/main.rs'
+printf 'many src/main.rs\n' >"$REPO/scripts/lengths-baseline.txt"
+expect 'malformed baseline row' 1 'scripts/lengths-baseline.txt: malformed baseline row: many src/main.rs'
 
 printf 'check-lengths-test: passed (%s cases)\n' "$cases"

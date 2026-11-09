@@ -14,6 +14,10 @@ must be removed. `--base-ref <ref>` rejects entries absent from that ref and cap
 above that ref's caps. A ref without a baseline (the change that introduces
 the gate) skips the comparison.
 
+The gate is a lexical check, not a parser: text that only looks like a test
+module, such as one inside a raw string, can hide code from it. Review rejects
+any change that games the count.
+
 These limits are final; do not ratchet them lower. Clear the baseline instead:
 split one listed file below its limit per PR, by concern, and remove its entry
 in the same PR.
