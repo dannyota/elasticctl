@@ -1,0 +1,8 @@
+//! Integration recording modules.
+
+pub(crate) mod cleanup;
+pub(crate) mod fixtures;
+pub(crate) mod inputs;
+pub(crate) mod inventory;
+pub(crate) mod metadata;
+pub(crate) mod proofs;
