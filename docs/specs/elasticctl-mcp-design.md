@@ -65,7 +65,7 @@ the general API library still contains mutation functions for CLI callers.
 
 ## 3. Protocol and dependencies
 
-Use `rmcp = "=3.2.0"`, `default-features = false`, with `server`, `macros`,
+Use `rmcp = "=3.9.0"`, `default-features = false`, with `server`, `macros`,
 and `transport-io`. Use the SDK's re-exported `schemars` for schemas. Keep
 the locked dependency graph and Rust 2024 / Rust 1.97.1 workspace floor.
 
@@ -94,6 +94,9 @@ Current protocol result objects include `resultType: "complete"`. Legacy
 results omit that field. Live validation checks the selected protocol
 before checking the tool result; the discriminator is not part of
 `structuredContent`.
+Current tools/list results include `ttlMs: 0` and `cacheScope: "private"`;
+legacy tools/list results omit these hints. Protocol fields stay outside
+`structuredContent`.
 
 Advertise tools only. Return the fixed catalog in lexical name order, in one
 page, with no next cursor. Catalog discovery makes no Elastic requests and
@@ -118,7 +121,8 @@ failure alternatives. Current MCP permits broader output schemas, but the
 requires an object root. Both lifecycle paths use the same compatible catalog;
 this declaration does not wrap or change the result envelope.
 
-The SDK owns protocol-specific fields, including the current `resultType`.
+The SDK owns protocol-specific fields, including the current `resultType`,
+`ttlMs`, and `cacheScope`.
 An application must not assume that the current and legacy wire envelopes
 are byte-identical. Their tool data and catalog must agree.
 
@@ -331,6 +335,17 @@ Successful structured content has this shape:
   "page": null
 }
 ```
+
+Output schemas describe serialization. Always-written nullable fields are required;
+fields omitted when absent stay optional. Input schemas keep their existing requirements.
+The complete required sets are:
+
+- Success envelope: `data`, `page`, `target`.
+- PageInfo: `limit`, `returned`, `total`, `has_more`, `truncated`.
+- ToolError: `kind`, `http_status`, `code`, `message`.
+- Failure envelope: `target`, `error`; target: `profile`, `host`, `space`.
+- `stack_info.data`: `version`, `flavor`, `license`, `spaces`.
+- `search_dsl.data.hits[]`: `id`, `index`, `score`, `source`.
 
 Each tool defines its own typed `data` schema. List results, exception items,
 and query rows carry `page` with `limit`, `returned`, nullable exact `total`,

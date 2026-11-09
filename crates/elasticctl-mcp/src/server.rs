@@ -12,7 +12,7 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResponse, ClientJsonRpcMessage, ClientRequest, GetMeta,
         Implementation, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-        ListToolsResult, ProtocolVersion, ServerCapabilities, ServerInfo,
+        ListToolsResult, ProtocolVersion, ServerCapabilities, ServerConfig,
     },
     service::{RequestContext, RxJsonRpcMessage},
     transport::Transport as McpTransport,
@@ -526,7 +526,7 @@ where
         self.inner.handle_notification(notification, context).await
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         self.inner.get_info()
     }
 
@@ -599,7 +599,7 @@ where
         self.inner.handle_notification(notification, context).await
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         self.inner.get_info()
     }
 
@@ -802,8 +802,8 @@ fn project_success(
 }
 
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         info.protocol_version = ProtocolVersion::V_2025_11_25;
         info.server_info = Implementation::new("elasticctl", env!("CARGO_PKG_VERSION"));
         info

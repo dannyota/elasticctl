@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Upgrade rmcp to 3.9.0 for RUSTSEC-2026-0457, 0461, and 0462.
+
+### Changed
+
+- Always-written nullable fields are now required in tool output schemas.
+  Payloads are unchanged; clients that generate types from `outputSchema` may
+  see optional fields become required-nullable.
+- Current tools/list results carry `ttlMs` and `cacheScope`.
+
 ## 0.7.3 — 2026-11-09
 
 ### Security

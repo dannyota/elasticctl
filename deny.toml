@@ -10,15 +10,6 @@
 # transitive crate is a signal, but not a reason to block a release.
 yanked = "deny"
 unmaintained = "workspace"
-# Each ignore names an rmcp advisory in a feature elasticctl does not enable
-# (it uses only server, macros, schemars, and stdio transport-io; client is a
-# dev-only test dependency). Remove them with the rmcp 3.9 upgrade, which
-# changes MCP output schemas and needs its own spec update.
-ignore = [
-    { id = "RUSTSEC-2026-0457", reason = "rmcp OAuth client SSRF; the auth feature is not enabled" },
-    { id = "RUSTSEC-2026-0461", reason = "rmcp Streamable HTTP server tool cache; elasticctl serves MCP over stdio only" },
-    { id = "RUSTSEC-2026-0462", reason = "rmcp Streamable HTTP client body buffering; no streamable-http client feature is enabled" },
-]
 
 [licenses]
 # The binary is Apache-2.0. Allow the permissive licenses used by this Rust

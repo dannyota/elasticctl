@@ -278,7 +278,7 @@ fn assert_success_envelope(schema: &Value, data_fields: &[&str], data_required: 
         schema,
         success,
         &["data", "page", "target"],
-        &["data", "target"],
+        &["data", "page", "target"],
     );
     let target = resolved(schema, &success["properties"]["target"]);
     assert_schema_object(
@@ -295,7 +295,7 @@ fn assert_success_envelope(schema: &Value, data_fields: &[&str], data_required: 
         schema,
         page,
         &["has_more", "limit", "returned", "total", "truncated"],
-        &["limit", "returned", "truncated"],
+        &["limit", "returned", "total", "has_more", "truncated"],
     );
     for (field, kind) in [
         ("limit", "integer"),
@@ -516,7 +516,7 @@ async fn exception_catalog_has_closed_inputs_and_typed_safe_outputs() {
             schema,
             error,
             &["code", "http_status", "kind", "message"],
-            &["kind", "code", "message"],
+            &["kind", "http_status", "code", "message"],
         );
         for field in ["kind", "code", "message"] {
             assert!(allows_type(schema, &error["properties"][field], "string"));
