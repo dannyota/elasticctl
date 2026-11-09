@@ -24,7 +24,8 @@ description written afterwards.
 
 ## Tests and gates
 
-CI runs these and the extra gates in `instructions/testing.md`. Run them before
+CI runs workspace nextest tests and separate doctests on Linux/macOS, Windows
+regressions, and the extra gates in `instructions/testing.md`. Run them before
 opening a pull request.
 
 ```bash

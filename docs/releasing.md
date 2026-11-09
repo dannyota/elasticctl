@@ -49,9 +49,10 @@ support are not published. See the
    It repeats the crate ownership check before obtaining a short-lived
    crates.io Trusted Publishing token and submitting the workspace.
 
-CI in step 4 runs formatting, locked Clippy, locked workspace tests,
-package-content and fixture-leak checks. Preflight in step 5 verifies the
-workspace packages without uploading them. Both must pass for the exact
+CI in step 4 runs formatting, locked Clippy, locked workspace nextest tests
+and separate doctests on Linux and macOS, Windows regression tests,
+package-content, fixture-leak, gitleaks, actionlint, and CodeQL checks.
+Preflight in step 5 verifies the workspace packages without uploading them. Both must pass for the exact
 release commit before tagging.
 
 For local checks when needed, cap builds at two jobs and tests at four threads.
@@ -143,6 +144,16 @@ Cross-platform artifacts are built by
 [`cargo-dist`](https://opensource.axo.dev/cargo-dist/); the matrix runs in CI.
 Prefer the release workflow for builds. If a local host build is needed, use
 `CARGO_BUILD_JOBS=2 dist build --artifacts=host`.
+
+## Release canary
+
+`release.yml` runs Sundays at 04:23 UTC, on manual dispatch, and on pull requests
+changing `dist-workspace.toml` or `.github/workflows/release.yml`. It runs
+`dist plan`, asserts all seven configured targets are planned, builds local and
+global artifacts, and uploads them as workflow artifacts. `pr-run-mode = "upload"`
+enables these builds. `host` and `announce` must show **skipped** on every
+canary, including manual dispatch on a tag. Only a tag push publishes.
+A canary does not replace release preflight or authorize crates.io publishing.
 
 ## Do not write a credential-shaped URL in the changelog
 

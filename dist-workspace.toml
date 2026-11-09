@@ -3,17 +3,18 @@ members = ["cargo:."]
 
 # Configuration for `dist`.
 #
-# NOTE: .github/workflows/release.yml adds manual edits to generator output:
-# workflow `contents: read`, `write` only for `host`, and no `pull_request`
-# trigger. `allow-dirty = ["ci"]` makes dist skip CI mode, preserving those
-# edits. An explicit `dist generate --mode=ci` fails instead of overwriting
-# them. To regenerate the workflow, remove `allow-dirty` first, then reapply
-# the permission edits.
+# NOTE: .github/workflows/release.yml has manual generator edits: read-only
+# permissions except host, weekly/manual/path-filtered PR canaries, tag-push-only
+# publishing/host/announce gates, a seven-target matrix assertion, and SHA pins.
+# allow-dirty = ["ci"] preserves them; explicit CI generation fails instead of
+# overwriting. Remove allow-dirty to regenerate, then reapply all these edits.
 [dist]
 # Preferred dist version for CI (Cargo.toml SemVer syntax).
 cargo-dist-version = "0.32.0"
 # CI backend to generate.
 ci = "github"
+# Build and upload artifacts on canaries without publishing a release.
+pr-run-mode = "upload"
 # Allow the hand-edited release.yml to differ from generator output.
 allow-dirty = ["ci"]
 # Installers to generate for each app.

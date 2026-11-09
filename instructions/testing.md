@@ -14,6 +14,12 @@ cargo deny check advisories bans licenses sources
 cargo publish --workspace --dry-run --locked      # release preflight, no upload
 ```
 
+CI uses pinned cargo-nextest for the full workspace on Linux and macOS, then
+runs `cargo test --locked --workspace --doc` separately. Windows uses one
+nextest filter covering API state integration, transaction tests, and every
+`elasticctl` package test. `cargo test` remains a valid local command.
+CI also runs full-history gitleaks, actionlint, and Rust/Actions CodeQL.
+
 Live and recording commands need `.env`; see [live stacks](live-stacks.md) first.
 
 ```bash
