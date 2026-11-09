@@ -6,6 +6,7 @@
 useDefault = true
 
 [[allowlists]]
-description = "Fixed password of the disposable local podman lab (lab/compose.yaml). It is reachable only on localhost and guards no real data."
+description = "Fixed password of the disposable local podman lab (lab/compose.yaml). It is reachable only on localhost and guards no real data. Anchored so a longer password or another user still fails."
+targetRules = ["curl-auth-user"]
 regexTarget = "match"
-regexes = ['''elastic:elasticctl-lab''']
+regexes = ['''-u ['"]?elastic:elasticctl-lab['"]?\s*$''']
