@@ -110,6 +110,12 @@ Maintainers only: [`docs/releasing.md`](docs/releasing.md).
 
 ## Agents
 
-Agent instructions live in the tracked `AGENTS.md`; `CLAUDE.md` imports it.
-Repository-local ignore exceptions keep both files tracked despite global ignore
-defaults. Durable project rules belong in this file or the design spec.
+Agent instructions live in the tracked `AGENTS.md`, which maps topic rules in
+`instructions/`; `CLAUDE.md` imports it. Repository-local ignore exceptions
+keep both files tracked despite global ignore defaults. Durable project rules
+belong in this file or the design spec.
+
+## Commits
+
+Use Conventional Commits (`fix(deps): ...`, `docs(spec): ...`, `ci: ...`,
+`chore: release X.Y.Z`) and sign them. Messages describe the change only.
