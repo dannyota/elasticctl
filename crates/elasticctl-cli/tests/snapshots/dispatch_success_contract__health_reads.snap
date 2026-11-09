@@ -66,7 +66,7 @@ expression: results
       "--json"
     ],
     "code": 0,
-    "stdout": "{\n  \"elasticctl_version\": \"0.7.3\",\n  \"profile\": \"default\",\n  \"kibana_url\": \"HOST\",\n  \"space\": \"default\",\n  \"spaces\": [\n    \"default\"\n  ],\n  \"flavor\": \"self-managed\",\n  \"stack_version\": \"9.5.1\",\n  \"license_tier\": \"trial\"\n}\n",
+    "stdout": "{\n  \"elasticctl_version\": \"VERSION\",\n  \"profile\": \"default\",\n  \"kibana_url\": \"HOST\",\n  \"space\": \"default\",\n  \"spaces\": [\n    \"default\"\n  ],\n  \"flavor\": \"self-managed\",\n  \"stack_version\": \"9.5.1\",\n  \"license_tier\": \"trial\"\n}\n",
     "stderr": "",
     "requests": [
       {
