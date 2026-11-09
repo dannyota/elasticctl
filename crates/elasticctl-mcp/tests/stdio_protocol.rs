@@ -560,9 +560,10 @@ async fn public_startup_validation_checks_every_resolved_url_and_timeout_boundar
 #[tokio::test]
 async fn malformed_frames_are_rejected_and_the_next_valid_request_is_served() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let timeout = options().call_timeout;
     let (mut input, server_input) = tokio::io::duplex(16_384);
     let (server_output, output) = tokio::io::duplex(1_048_576);
-    let task = tokio::spawn(elasticctl_mcp::serve_io(
+    let mut task = tokio::spawn(elasticctl_mcp::serve_io(
         target(),
         options(),
         server_input,
@@ -576,7 +577,13 @@ async fn malformed_frames_are_rejected_and_the_next_valid_request_is_served() {
         .await
         .unwrap();
     let mut line = String::new();
-    output.read_line(&mut line).await.unwrap();
+    tokio::time::timeout(timeout, output.read_line(&mut line))
+        .await
+        .unwrap_or_else(|_| {
+            task.abort();
+            panic!("timed out waiting for malformed-frame rejection");
+        })
+        .unwrap();
     let rejected: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(rejected["error"]["code"], -32600);
     assert_eq!(rejected["error"]["message"], "Invalid MCP request");
@@ -586,10 +593,23 @@ async fn malformed_frames_are_rejected_and_the_next_valid_request_is_served() {
         .await
         .unwrap();
     line.clear();
-    output.read_line(&mut line).await.unwrap();
+    tokio::time::timeout(timeout, output.read_line(&mut line))
+        .await
+        .unwrap_or_else(|_| {
+            task.abort();
+            panic!("timed out waiting for the next valid request's response");
+        })
+        .unwrap();
     let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(reply["id"], 91);
     assert_eq!(reply["result"]["tools"].as_array().unwrap().len(), 20);
     drop(input);
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(timeout, &mut task)
+        .await
+        .unwrap_or_else(|_| {
+            task.abort();
+            panic!("timed out waiting for server shutdown after EOF");
+        })
+        .unwrap()
+        .unwrap();
 }

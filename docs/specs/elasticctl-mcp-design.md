@@ -338,7 +338,9 @@ Successful structured content has this shape:
 
 Output schemas describe serialization. Always-written nullable fields are required;
 fields omitted when absent stay optional. Input schemas keep their existing requirements.
-The complete required sets are:
+The following lists the required fields for the shared envelopes and supporting
+objects, plus the two tool projections whose required fields changed. Other tool
+projections retain their own required sets.
 
 - Success envelope: `data`, `page`, `target`.
 - PageInfo: `limit`, `returned`, `total`, `has_more`, `truncated`.
