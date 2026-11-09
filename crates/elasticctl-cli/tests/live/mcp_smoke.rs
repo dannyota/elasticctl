@@ -88,7 +88,7 @@ async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
     let current_catalog = current
         .request("tools/list", json!({}))
         .expect("current catalog response");
-    validate_catalog(&current_catalog, false).expect("current catalog");
+    validate_catalog(&current_catalog, false, McpProtocolPath::Current).expect("current catalog");
     initialize_child(&mut legacy, true).expect("legacy initialization and catalog");
 
     for child in [&mut current, &mut legacy] {
@@ -132,12 +132,13 @@ fn protocol_result_discriminator_normalization_rejects_invalid_shapes_without_le
     let mut current = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": {"resultType": "complete", "tools": required_catalog(), "nextCursor": null},
+        "result": {"resultType": "complete", "tools": required_catalog(), "nextCursor": null, "ttlMs": 0, "cacheScope": "private"},
     });
     normalize_protocol_result(&mut current, McpProtocolPath::Current)
         .expect("current complete result is normalized");
     assert!(current["result"].get("resultType").is_none());
-    validate_catalog(&current, false).expect("normalized current catalog");
+    validate_catalog(&current, false, McpProtocolPath::Current)
+        .expect("normalized current catalog");
 
     let mut legacy = json!({
         "jsonrpc": "2.0",
@@ -146,7 +147,7 @@ fn protocol_result_discriminator_normalization_rejects_invalid_shapes_without_le
     });
     normalize_protocol_result(&mut legacy, McpProtocolPath::Legacy)
         .expect("legacy result without a discriminator is accepted");
-    validate_catalog(&legacy, false).expect("legacy catalog");
+    validate_catalog(&legacy, false, McpProtocolPath::Legacy).expect("legacy catalog");
 
     for result_type in [
         Value::Null,
@@ -256,8 +257,8 @@ fn tools_list_rejects_a_nonempty_next_cursor() {
         },
     });
 
-    let error =
-        validate_catalog(&catalog, false).expect_err("additional catalog pages are rejected");
+    let error = validate_catalog(&catalog, false, McpProtocolPath::Legacy)
+        .expect_err("additional catalog pages are rejected");
 
     assert_eq!(
         error,
@@ -275,7 +276,7 @@ fn default_catalog_rejects_opt_in_query_tools() {
     tools.insert(19, json!({"name": "search_esql"}));
     let catalog = json!({"result": {"tools": tools, "nextCursor": null}});
 
-    let error = validate_catalog(&catalog, false)
+    let error = validate_catalog(&catalog, false, McpProtocolPath::Legacy)
         .expect_err("the default catalog must exclude opt-in query tools");
 
     assert_eq!(
@@ -293,7 +294,7 @@ fn query_catalog_requires_both_opt_in_query_tools_in_order() {
     tools.insert(19, json!({"name": "search_esql"}));
     let catalog = json!({"result": {"tools": tools, "nextCursor": null}});
 
-    validate_catalog(&catalog, true)
+    validate_catalog(&catalog, true, McpProtocolPath::Legacy)
         .expect("the query-enabled catalog must contain the exact 22 tools");
 }
 
@@ -1176,7 +1177,7 @@ fn exercise_protocol(
     }
 
     let catalog = child.request("tools/list", json!({}))?;
-    validate_catalog(&catalog, false)?;
+    validate_catalog(&catalog, false, child.protocol_path)?;
     child.method_not_found("search_esql")?;
     child.method_not_found("search_dsl")?;
 
@@ -1263,7 +1264,7 @@ fn initialize_child(child: &mut McpChild, allow_query_tools: bool) -> TestResult
     }
     child.notify("notifications/initialized", json!({}))?;
     let catalog = child.request("tools/list", json!({}))?;
-    validate_catalog(&catalog, allow_query_tools)
+    validate_catalog(&catalog, allow_query_tools, child.protocol_path)
 }
 
 #[allow(clippy::too_many_arguments)] // Each live assertion receives only the identity it owns.
@@ -2513,12 +2514,35 @@ fn required_catalog() -> Vec<Value> {
     .collect()
 }
 
-fn validate_catalog(catalog: &Value, allow_query_tools: bool) -> TestResult {
+fn validate_catalog(
+    catalog: &Value,
+    allow_query_tools: bool,
+    protocol_path: McpProtocolPath,
+) -> TestResult {
     let result = catalog
         .get("result")
         .and_then(Value::as_object)
         .ok_or_else(|| "MCP tools/list response has no tool catalog.".to_string())?;
-    assert_allowed_keys(result, &["tools", "nextCursor"], "tools/list response")?;
+    assert_allowed_keys(
+        result,
+        &["tools", "nextCursor", "ttlMs", "cacheScope"],
+        "tools/list response",
+    )?;
+    match protocol_path {
+        McpProtocolPath::Current => {
+            if result.get("ttlMs") != Some(&json!(0)) {
+                return Err("MCP current catalog ttlMs must be zero.".to_string());
+            }
+            if result.get("cacheScope") != Some(&json!("private")) {
+                return Err("MCP current catalog cacheScope must be private.".to_string());
+            }
+        }
+        McpProtocolPath::Legacy => {
+            if result.contains_key("ttlMs") || result.contains_key("cacheScope") {
+                return Err("MCP legacy catalog included cache hints.".to_string());
+            }
+        }
+    }
     if result
         .get("nextCursor")
         .is_some_and(|cursor| !cursor.is_null())
@@ -3537,4 +3561,32 @@ fn validate_new_not_found_error_rejections() -> TestResult {
         }
     }
     Ok(())
+}
+
+#[test]
+fn catalog_cache_hints_follow_the_protocol() {
+    let legacy = json!({"result": {"tools": required_catalog(), "nextCursor": null}});
+    let mut current = legacy.clone();
+    current["result"]["ttlMs"] = json!(0);
+    current["result"]["cacheScope"] = json!("private");
+    validate_catalog(&legacy, false, McpProtocolPath::Legacy).unwrap();
+    validate_catalog(&current, false, McpProtocolPath::Current).unwrap();
+    for (key, invalid) in [("ttlMs", json!(1)), ("cacheScope", json!("public"))] {
+        let mut missing = current.clone();
+        missing["result"].as_object_mut().unwrap().remove(key);
+        assert!(validate_catalog(&missing, false, McpProtocolPath::Current).is_err());
+        let mut wrong = current.clone();
+        wrong["result"][key] = invalid;
+        assert!(validate_catalog(&wrong, false, McpProtocolPath::Current).is_err());
+        let mut forbidden = legacy.clone();
+        forbidden["result"][key] = current["result"][key].clone();
+        assert!(validate_catalog(&forbidden, false, McpProtocolPath::Legacy).is_err());
+    }
+    for (mut catalog, protocol) in [
+        (current, McpProtocolPath::Current),
+        (legacy, McpProtocolPath::Legacy),
+    ] {
+        catalog["result"]["_meta"] = json!({});
+        assert!(validate_catalog(&catalog, false, protocol).is_err());
+    }
 }

@@ -16,10 +16,6 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
-    # rmcp 3.9 changes MCP tool output schemas, so it moves with a spec
-    # update instead of a routine bump. Remove this once that change lands.
-    ignore:
-      - dependency-name: rmcp
 
   # Actions are pinned by commit SHA with a version comment; Dependabot moves
   # the SHA and the comment together.

@@ -48,11 +48,20 @@ baseline rules still apply.
 
 ## Lab
 
-The `lab/` podman stack is an on-demand session (~3 GB, ~20 minutes) used only to record
-self-managed fixtures and run the traditional conformance leg. Do not assume it is running.
+The on-demand `lab/` stack supports Docker Compose v2 first, then Podman Compose.
+It records self-managed fixtures and runs traditional conformance; do not assume it is running.
 
-- `podman compose` delegates to `docker-compose`; `podman-compose` is not installed.
-- Kibana's entrypoint maps only `UPPER_SNAKE` environment variable names. The dotted
-  `xpack.encryptedSavedObjects.encryptionKey` form is silently ignored, so every rule creation
-  fails.
-- `lab/up.sh` prints a disposable API key. Pass it only to the process that needs it.
+- `lab/up.sh` generates missing `ELASTIC_PASSWORD` and `KIBANA_SYSTEM_PASSWORD`
+  and atomically stores them in gitignored `lab/.env` at mode 0600. Existing
+  values are reused; caller environment values win. Keep values single-line.
+- `lab/up.sh` writes its API key and localhost URLs to `lab/.env`; it prints only
+  `wrote lab/.env`. Treat it as Compose data; never print or source it.
+- `lab/seed.sh` and the matrix read `ELASTIC_PASSWORD` from the environment first,
+  then `lab/.env`. Recording needs `ELASTICCTL_USERNAME=elastic` and
+  `ELASTICCTL_PASSWORD="$ELASTIC_PASSWORD"` after loading the lab password.
+- Trial-license and signals-index bootstrap failures stop startup. Kibana needs
+  the `UPPER_SNAKE` encryption settings; dotted names are ignored by its entrypoint.
+- Ports bind to 127.0.0.1. `lab/down.sh` removes volumes and orphans.
+- `live-lab.yml` runs the traditional matrix with per-run masked passwords, no
+  repository secrets, and only a validated public report artifact. Private logs
+  and `lab/.env` stay on the disposable runner. Runner timings remain unverified.

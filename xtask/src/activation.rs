@@ -156,7 +156,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        activate_profile(&server.uri(), "elastic", "elasticctl-lab")
+        activate_profile(&server.uri(), "elastic", "test-password")
             .await
             .expect("activation with a non-empty users_find must succeed");
     }
@@ -180,7 +180,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let error = activate_profile(&server.uri(), "elastic", "elasticctl-lab")
+        let error = activate_profile(&server.uri(), "elastic", "test-password")
             .await
             .expect_err("an empty users_find after a 200 login must be an error");
         assert!(
@@ -214,7 +214,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        activate_profile(&server.uri(), "elastic", "elasticctl-lab")
+        activate_profile(&server.uri(), "elastic", "test-password")
             .await
             .expect("activation must use the provider name login_state advertises");
     }
@@ -239,7 +239,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let error = activate_profile(&server.uri(), "elastic", "elasticctl-lab")
+        let error = activate_profile(&server.uri(), "elastic", "test-password")
             .await
             .expect_err("a stack with no basic provider must fail at provider resolution");
         assert!(

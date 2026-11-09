@@ -386,7 +386,7 @@ async fn fleet_catalog_declares_closed_inputs_safe_outputs_and_common_envelopes(
             output,
             success,
             &["target", "data", "page"],
-            &["target", "data"],
+            &["target", "data", "page"],
         );
         let target = object_schema(
             output,
@@ -423,7 +423,7 @@ async fn fleet_catalog_declares_closed_inputs_safe_outputs_and_common_envelopes(
             output,
             &failure["properties"]["error"],
             &["code", "http_status", "kind", "message"],
-            &["code", "kind", "message"],
+            &["code", "http_status", "kind", "message"],
         );
         for field in ["code", "kind", "message"] {
             nullable(output, &error["properties"][field], "string", false);
@@ -495,7 +495,7 @@ async fn fleet_catalog_declares_closed_inputs_safe_outputs_and_common_envelopes(
             output,
             &success["properties"]["page"],
             &["limit", "returned", "total", "has_more", "truncated"],
-            &["limit", "returned", "truncated"],
+            &["limit", "returned", "total", "has_more", "truncated"],
         );
         nullable(output, &page["properties"]["limit"], "integer", false);
         nullable(output, &page["properties"]["returned"], "integer", false);
