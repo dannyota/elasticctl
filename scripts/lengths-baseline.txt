@@ -8,4 +8,3 @@
 721 crates/elasticctl-api/src/state/push.rs
 812 crates/elasticctl-api/src/state/transaction.rs
 1015 crates/elasticctl-cli/src/main.rs
-922 xtask/src/conformance.rs
