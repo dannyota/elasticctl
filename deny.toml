@@ -29,6 +29,9 @@ allow = [
     # files must be published. We vendor and modify nothing, so allow it here
     # instead of widening the list.
     "MPL-2.0",
+    # foldhash 0.2.0 is reached through hashbrown 0.17 -> indexmap (h2,
+    # serde_yaml_ng, schemars). Zlib is a permissive license.
+    "Zlib",
 ]
 confidence-threshold = 0.9
 
