@@ -31,6 +31,7 @@ spec first and in the same commit as any behavior change.
 |Doing|Read first|
 |-|-|
 |Planning, briefing, implementing, or reviewing|[`instructions/workflow.md`](instructions/workflow.md)|
+|Writing or splitting Rust and Markdown|[`instructions/rust.md`](instructions/rust.md)|
 |Running tests, recording fixtures, or using sample data|[`instructions/testing.md`](instructions/testing.md)|
 |Touching live stacks, `.env`, credentials, or the lab|[`instructions/live-stacks.md`](instructions/live-stacks.md)|
 |Changing transport, an API call, or the response model|[`instructions/elastic-api.md`](instructions/elastic-api.md)|
