@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.4 — 2026-11-10
+
 ### Security
 
 - Upgrade rmcp to 3.9.0 for RUSTSEC-2026-0457, 0461, and 0462.
@@ -13,6 +15,15 @@
   see optional fields become required-nullable.
 - Current `tools/list` results carry `ttlMs: 0` and `cacheScope: "private"`;
   legacy results omit both fields.
+- CI tests on macOS and runs the self-managed conformance matrix against a
+  throwaway 9.5.1 lab on every pull request.
+
+### Fixed
+
+- `state push --report` accepts a path whose parent is a symlink, such as
+  `/tmp` on macOS. It resolves the existing parent once, as `state pull`
+  does, and still refuses final symlinks, symlinked locks, and missing
+  parents.
 
 ## 0.7.3 — 2026-11-09
 
