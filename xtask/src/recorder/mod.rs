@@ -19,13 +19,13 @@ use crate::fixtures::{
     Recording, error_fixture, preview_exchange_fixture, preview_fixture, response_fixture,
     rule_exchange_fixture, rule_fixture, write_recording,
 };
-use crate::record_integration_policies;
 use crate::recorder::agent_policies::record_agent_policies;
 use crate::recorder::alerts::cleanup::close_and_clean_alerts;
 use crate::recorder::alerts::record_alerts_probe;
 use crate::recorder::cases::record_cases;
 use crate::recorder::dashboards::record_dashboards;
 use crate::recorder::data_views::record_data_views;
+use crate::recorder::integration::record_integration_policies;
 use crate::recorder::markers::{ITEM_ID, LIST_ID, NAMESPACE_TYPE, RULE_ID};
 use crate::recorder::preview::{PREVIEW_TIMEFRAME_END, record_preview_hits};
 use crate::recorder::rules::{create_marked_item, create_marked_list, create_marked_rule};
