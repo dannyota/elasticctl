@@ -1,10 +1,12 @@
 //! Async columnar ES|QL exchange, as `search esql --out` sends it.
 
-use crate::diagnostics::recording_error;
+use crate::diagnostics::{
+    recording_error, safe_recording_error_summary, safe_recording_transport_error,
+};
 use crate::fixtures::{RecordedFixture, exchange_fixture, response_fixture};
 use crate::recorder::preview::ESQL_ASYNC_VOLATILE_FIELDS;
+use crate::recorder::session::RecordingSession;
 use crate::scrub::strip_volatile;
-use elasticctl_core::Transport;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -29,6 +31,10 @@ fn start_body(query: &str) -> Value {
     json!({"query": query, "wait_for_completion_timeout": "1ms", "columnar": true})
 }
 
+fn async_path(id: &str) -> String {
+    format!("/_query/async/{id}")
+}
+
 /// Replace the top-level async id, when present, with the fixed placeholder.
 fn redact_async_id(value: &mut Value) {
     if let Some(id) = value.get_mut("id") {
@@ -37,17 +43,37 @@ fn redact_async_id(value: &mut Value) {
 }
 
 /// Drop per-run counters and timestamps and pin the async id. `is_running`
-/// and `is_partial` stay: they decide whether the client polls.
+/// and `is_partial` stay: they decide whether a client polls.
 fn scrub_async(mut body: Value) -> Value {
     strip_volatile(&mut body, ESQL_ASYNC_VOLATILE_FIELDS);
     redact_async_id(&mut body);
     body
 }
 
+/// Delete one stored async result. Session ownership of the id ends only when
+/// the delete succeeds or the result is already gone.
+async fn delete_owned(
+    session: &mut RecordingSession<'_>,
+    id: &str,
+) -> elasticctl_core::Result<Value> {
+    let result = session.transport.delete_absolute_es(&async_path(id)).await;
+    let released = match &result {
+        Ok(_) => true,
+        Err(error) => error.kind == elasticctl_core::ErrorKind::NotFound,
+    };
+    if released {
+        session.ownership.esql_async_ids.retain(|owned| owned != id);
+    }
+    result.map_err(|error| {
+        safe_recording_transport_error("deleting async ES|QL result failed", error)
+    })
+}
+
 /// Record the start, the completed poll, and the delete of one async columnar
-/// ES|QL query. The async result is deleted on every path that obtained an id.
+/// ES|QL query. Every id a start returns is owned by the session until its
+/// delete succeeds, so session cleanup retries any delete that fails here.
 pub(super) async fn record_esql_async(
-    t: &Transport,
+    session: &mut RecordingSession<'_>,
     query: &str,
     flavor: &str,
     version: &str,
@@ -56,24 +82,30 @@ pub(super) async fn record_esql_async(
     let request = start_body(query);
     let mut started = None;
     for _ in 0..START_ATTEMPTS {
-        let start = t.post_absolute_es("/_query/async", &request).await?;
+        let start = session
+            .transport
+            .post_absolute_es("/_query/async", &request)
+            .await
+            .map_err(|error| {
+                safe_recording_transport_error("starting async ES|QL query failed", error)
+            })?;
         let Some(id) = start.get("id").and_then(Value::as_str).map(str::to_owned) else {
             continue;
         };
+        session.ownership.esql_async_ids.push(id.clone());
         if start.get("is_running").and_then(Value::as_bool) == Some(true) {
             started = Some((id, start));
             break;
         }
         // A completed query that still returned an id is stored; remove it.
-        t.delete_absolute_es(&format!("/_query/async/{id}")).await?;
+        delete_owned(session, &id).await?;
     }
     let (id, start) = started.ok_or_else(|| {
         recording_error("async ES|QL query finished inside its wait on every start attempt")
     })?;
-    let path = format!("/_query/async/{id}");
 
-    let polled = poll(t, &path, interval).await;
-    let deleted = t.delete_absolute_es(&path).await;
+    let polled = poll(session.transport, &async_path(&id), interval).await;
+    let deleted = delete_owned(session, &id).await;
     let complete = polled?;
     let deleted = deleted?;
 
@@ -96,9 +128,15 @@ pub(super) async fn record_esql_async(
     ])
 }
 
-async fn poll(t: &Transport, path: &str, interval: Duration) -> elasticctl_core::Result<Value> {
+async fn poll(
+    t: &elasticctl_core::Transport,
+    path: &str,
+    interval: Duration,
+) -> elasticctl_core::Result<Value> {
     for _ in 0..MAX_POLLS {
-        let response = t.get_absolute_es(path).await?;
+        let response = t.get_absolute_es(path).await.map_err(|error| {
+            safe_recording_transport_error("polling async ES|QL query failed", error)
+        })?;
         if response.get("is_running").and_then(Value::as_bool) == Some(false) {
             return Ok(response);
         }
@@ -109,12 +147,31 @@ async fn poll(t: &Transport, path: &str, interval: Duration) -> elasticctl_core:
     )))
 }
 
+impl RecordingSession<'_> {
+    /// Delete every async ES|QL result the recording still owns. Failures keep
+    /// ownership and report only the error class and status.
+    pub(crate) async fn cleanup_esql_async(&mut self, errors: &mut Vec<String>) {
+        for id in self.ownership.esql_async_ids.clone() {
+            if let Err(error) = delete_owned(self, &id).await
+                && error.kind != elasticctl_core::ErrorKind::NotFound
+            {
+                errors.push(format!(
+                    "deleting async ES|QL result: {}",
+                    safe_recording_error_summary(&error)
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recorder::session::CleanupOwnership;
     use crate::recorder::test_support::mock_transport;
+    use std::sync::Mutex;
     use wiremock::matchers::{body_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     const QUERY: &str = "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2";
 
@@ -129,50 +186,109 @@ mod tests {
             "columns": [{"name": "seq", "type": "long"}], "values": [[1, 2]]})
     }
 
+    fn inline() -> Value {
+        json!({"is_running": false, "columns": [], "values": []})
+    }
+
+    fn sequence(responses: Vec<ResponseTemplate>) -> impl Fn(&Request) -> ResponseTemplate {
+        let responses = Mutex::new(responses.into_iter());
+        move |_: &Request| {
+            let next = responses.lock().expect("responses").next();
+            next.expect("unexpected request")
+        }
+    }
+
+    fn ok(body: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    fn failure(status: u16) -> ResponseTemplate {
+        // A body naming a private host, the async id, and an identity must
+        // never reach a recorder error.
+        ResponseTemplate::new(status).set_body_json(json!({"error": {
+            "reason": "a1 on private.example.internal for operator@example.internal"
+        }}))
+    }
+
     async fn mount_start(server: &MockServer, responses: Vec<Value>) {
-        let responses = std::sync::Mutex::new(responses.into_iter());
         Mock::given(method("POST"))
             .and(path("/_query/async"))
             .and(body_json(start_body(QUERY)))
-            .respond_with(move |_: &wiremock::Request| {
-                let next = responses.lock().expect("responses").next();
-                ResponseTemplate::new(200).set_body_json(next.expect("unexpected start"))
-            })
+            .respond_with(sequence(responses.into_iter().map(ok).collect()))
             .mount(server)
             .await;
     }
 
-    async fn mount_delete(server: &MockServer, id: &str, times: u64) {
-        Mock::given(method("DELETE"))
-            .and(path(format!("/_query/async/{id}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"acknowledged": true})))
-            .expect(times)
+    async fn mount_poll(server: &MockServer, id: &str, responses: Vec<ResponseTemplate>) {
+        Mock::given(method("GET"))
+            .and(path(async_path(id)))
+            .respond_with(sequence(responses))
             .mount(server)
             .await;
+    }
+
+    async fn mount_delete(server: &MockServer, id: &str, responses: Vec<ResponseTemplate>) {
+        Mock::given(method("DELETE"))
+            .and(path(async_path(id)))
+            .respond_with(sequence(responses))
+            .mount(server)
+            .await;
+    }
+
+    fn acknowledged() -> ResponseTemplate {
+        ok(json!({"acknowledged": true}))
+    }
+
+    async fn requests(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.url.path()))
+            .collect()
+    }
+
+    async fn record(
+        server: &MockServer,
+    ) -> (elasticctl_core::Result<Vec<RecordedFixture>>, Vec<String>) {
+        let t = mock_transport(server);
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        let result =
+            record_esql_async(&mut session, QUERY, "serverless", "9.7.0", Duration::ZERO).await;
+        (result, session.ownership.esql_async_ids)
+    }
+
+    fn assert_private_text_absent(error: &elasticctl_core::Error, server: &MockServer) {
+        for private in ["a1", "private.example.internal", "operator@", &server.uri()] {
+            assert!(!error.message.contains(private), "{}", error.message);
+        }
     }
 
     #[tokio::test]
     async fn records_the_running_branch_and_deletes_the_query() {
         let server = MockServer::start().await;
-        let inline = json!({"is_running": false, "columns": [], "values": []});
-        mount_start(&server, vec![inline, running("a1")]).await;
-        let polls = std::sync::Mutex::new(vec![running("a1"), complete()].into_iter());
-        Mock::given(method("GET"))
-            .and(path("/_query/async/a1"))
-            .respond_with(move |_: &wiremock::Request| {
-                let next = polls.lock().expect("polls").next();
-                ResponseTemplate::new(200).set_body_json(next.expect("unexpected poll"))
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-        mount_delete(&server, "a1", 1).await;
+        mount_start(&server, vec![inline(), running("a1")]).await;
+        mount_poll(&server, "a1", vec![ok(running("a1")), ok(complete())]).await;
+        mount_delete(&server, "a1", vec![acknowledged()]).await;
 
-        let t = mock_transport(&server);
-        let fixtures = record_esql_async(&t, QUERY, "traditional", "9.5.1", Duration::ZERO)
-            .await
-            .expect("recorded");
+        let (fixtures, owned) = record(&server).await;
+        let fixtures = fixtures.expect("recorded");
 
+        assert!(owned.is_empty());
+        assert_eq!(
+            requests(&server).await,
+            [
+                "POST /_query/async",
+                "POST /_query/async",
+                "GET /_query/async/a1",
+                "GET /_query/async/a1",
+                "DELETE /_query/async/a1",
+            ]
+        );
         let names: Vec<_> = fixtures.iter().map(|f| f.name).collect();
         assert_eq!(
             names,
@@ -201,47 +317,168 @@ mod tests {
         let mut stored = complete();
         stored["id"] = json!("done");
         mount_start(&server, vec![stored, running("a1")]).await;
-        Mock::given(method("GET"))
-            .and(path("/_query/async/a1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(complete()))
-            .mount(&server)
-            .await;
-        mount_delete(&server, "done", 1).await;
-        mount_delete(&server, "a1", 1).await;
+        mount_poll(&server, "a1", vec![ok(complete())]).await;
+        mount_delete(&server, "done", vec![acknowledged()]).await;
+        mount_delete(&server, "a1", vec![acknowledged()]).await;
 
-        let t = mock_transport(&server);
-        record_esql_async(&t, QUERY, "traditional", "9.5.1", Duration::ZERO)
-            .await
-            .expect("recorded");
+        let (result, owned) = record(&server).await;
+
+        result.expect("recorded");
+        assert!(owned.is_empty());
+        assert_eq!(
+            requests(&server).await,
+            [
+                "POST /_query/async",
+                "DELETE /_query/async/done",
+                "POST /_query/async",
+                "GET /_query/async/a1",
+                "DELETE /_query/async/a1",
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn a_failed_poll_still_deletes_the_query() {
+    async fn every_completed_start_is_deleted_and_the_recording_fails() {
         let server = MockServer::start().await;
-        mount_start(&server, vec![running("a1")]).await;
-        Mock::given(method("GET"))
-            .and(path("/_query/async/a1"))
-            .respond_with(ResponseTemplate::new(500).set_body_json(json!({"error": "boom"})))
-            .mount(&server)
-            .await;
-        mount_delete(&server, "a1", 1).await;
+        let starts = (0..START_ATTEMPTS)
+            .map(|n| {
+                let mut stored = complete();
+                stored["id"] = json!(format!("done{n}"));
+                stored
+            })
+            .collect();
+        mount_start(&server, starts).await;
+        for n in 0..START_ATTEMPTS {
+            mount_delete(&server, &format!("done{n}"), vec![acknowledged()]).await;
+        }
 
-        let t = mock_transport(&server);
-        let result = record_esql_async(&t, QUERY, "traditional", "9.5.1", Duration::ZERO).await;
-        assert!(result.is_err());
+        let (result, owned) = record(&server).await;
+
+        let error = result.err().expect("no running start");
+        assert!(error.message.contains("every start attempt"));
+        assert!(owned.is_empty());
+        let deletes = requests(&server)
+            .await
+            .into_iter()
+            .filter(|r| r.starts_with("DELETE"))
+            .count();
+        assert_eq!(deletes, START_ATTEMPTS);
     }
 
     #[tokio::test]
     async fn every_inline_start_is_an_error() {
         let server = MockServer::start().await;
-        let inline = json!({"is_running": false, "columns": [], "values": []});
-        mount_start(&server, vec![inline; START_ATTEMPTS]).await;
+        mount_start(&server, vec![inline(); START_ATTEMPTS]).await;
+
+        let (result, owned) = record(&server).await;
+
+        let error = result.err().expect("no running start");
+        assert!(error.message.contains("every start attempt"));
+        assert!(owned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_poll_still_deletes_the_query_and_hides_server_text() {
+        let server = MockServer::start().await;
+        mount_start(&server, vec![running("a1")]).await;
+        mount_poll(&server, "a1", vec![failure(400)]).await;
+        mount_delete(&server, "a1", vec![acknowledged()]).await;
+
+        let (result, owned) = record(&server).await;
+
+        let error = result.err().expect("poll failure");
+        assert_private_text_absent(&error, &server);
+        assert!(owned.is_empty());
+        assert_eq!(
+            requests(&server).await.last().map(String::as_str),
+            Some("DELETE /_query/async/a1")
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_polls_still_delete_the_query() {
+        let server = MockServer::start().await;
+        mount_start(&server, vec![running("a1")]).await;
+        mount_poll(&server, "a1", vec![ok(running("a1")); MAX_POLLS]).await;
+        mount_delete(&server, "a1", vec![acknowledged()]).await;
+
+        let (result, owned) = record(&server).await;
+
+        let error = result.err().expect("poll budget exhausted");
+        assert!(error.message.contains("still running"));
+        assert!(owned.is_empty());
+        let reqs = requests(&server).await;
+        assert_eq!(
+            reqs.iter().filter(|r| r.starts_with("GET")).count(),
+            MAX_POLLS
+        );
+        assert_eq!(
+            reqs.last().map(String::as_str),
+            Some("DELETE /_query/async/a1")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_stays_owned_until_session_cleanup_removes_it() {
+        let server = MockServer::start().await;
+        mount_start(&server, vec![running("a1")]).await;
+        mount_poll(&server, "a1", vec![ok(complete())]).await;
+        mount_delete(&server, "a1", vec![failure(400), acknowledged()]).await;
 
         let t = mock_transport(&server);
-        let error = record_esql_async(&t, QUERY, "traditional", "9.5.1", Duration::ZERO)
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        let error = record_esql_async(&mut session, QUERY, "serverless", "9.7.0", Duration::ZERO)
             .await
             .err()
-            .expect("no running start");
-        assert!(error.message.contains("every start attempt"));
+            .expect("delete failure");
+        assert_private_text_absent(&error, &server);
+        assert_eq!(session.ownership.esql_async_ids, ["a1"]);
+
+        let mut errors = Vec::new();
+        session.cleanup_esql_async(&mut errors).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(session.ownership.esql_async_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_cleanup_delete_keeps_ownership_and_reports_only_its_class() {
+        let server = MockServer::start().await;
+        mount_delete(&server, "a1", vec![failure(400)]).await;
+        let t = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        session.ownership.esql_async_ids.push("a1".into());
+
+        let mut errors = Vec::new();
+        session.cleanup_esql_async(&mut errors).await;
+
+        assert_eq!(session.ownership.esql_async_ids, ["a1"]);
+        assert_eq!(errors.len(), 1);
+        for private in ["a1", "private.example.internal", "operator@"] {
+            assert!(!errors[0].contains(private), "{}", errors[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_already_gone_result_releases_ownership_in_cleanup() {
+        let server = MockServer::start().await;
+        mount_delete(&server, "a1", vec![failure(404)]).await;
+        let t = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        session.ownership.esql_async_ids.push("a1".into());
+
+        let mut errors = Vec::new();
+        session.cleanup_esql_async(&mut errors).await;
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(session.ownership.esql_async_ids.is_empty());
     }
 }

@@ -127,6 +127,9 @@ pub(crate) struct CleanupOwnership {
     pub(crate) dashboard: bool,
     pub(crate) dashboard_loss: bool,
     pub(crate) dashboard_data_view: bool,
+    /// Async ES|QL ids returned to this session's starts. Each stays owned
+    /// until its delete succeeds or the result is already gone.
+    pub(crate) esql_async_ids: Vec<String>,
 }
 
 #[derive(Default)]

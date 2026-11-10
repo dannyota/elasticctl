@@ -155,8 +155,10 @@ is not cleanup-owned.
 The ES|QL exchanges include one async columnar query sent with the exact
 `search esql --out` body: its start, its completed poll, and its delete. A
 start that completes inside the 1 ms wait has no poll to record, so the
-recorder deletes any stored result and retries. It deletes the async result on
-every path that obtained an id.
+recorder deletes any stored result and retries. Every returned id stays owned
+by the recording session until its delete succeeds or the result is already
+gone, so session cleanup retries a failed delete. Errors on this path carry
+only a static context, the error class, and the HTTP status.
 
 Volatile fields are normalized away before a fixture is written, the same rule
 that strips `execution_summary` from rule exports:

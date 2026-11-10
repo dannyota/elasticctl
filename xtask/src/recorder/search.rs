@@ -59,7 +59,7 @@ pub(super) async fn record_search(
     ));
     recording
         .fixtures
-        .extend(record_esql_async(t, &esql_query, flavor, version, POLL_INTERVAL).await?);
+        .extend(record_esql_async(session, &esql_query, flavor, version, POLL_INTERVAL).await?);
 
     let mut pit_open = t
         .post_absolute_es(
