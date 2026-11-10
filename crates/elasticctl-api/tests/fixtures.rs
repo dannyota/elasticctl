@@ -164,7 +164,24 @@ fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-fn fixture_sets() -> Vec<PathBuf> {
+/// The twelve exchanges `cargo xtask record-compose` writes (tasks design
+/// section 12.2).
+const COMPOSE_FIXTURES: [&str; 12] = [
+    "cases_by_alert.json",
+    "cases_by_alert_none.json",
+    "exception_items_count.json",
+    "package_not_installed.json",
+    "resolve_index_match.json",
+    "resolve_index_no_match.json",
+    "resolve_index_not_found.json",
+    "rule_get_executed.json",
+    "rule_get_failed_execution.json",
+    "rules_find_by_technique.json",
+    "rules_find_sorted_page.json",
+    "signals_search_rule_activity.json",
+];
+
+fn all_fixture_sets() -> Vec<PathBuf> {
     let mut sets = Vec::new();
     for entry in fs::read_dir(fixtures_root()).expect("fixtures root") {
         let path = entry.expect("fixtures entry").path();
@@ -174,6 +191,56 @@ fn fixture_sets() -> Vec<PathBuf> {
     }
     sets.sort();
     sets
+}
+
+/// Full recorded sets. A set without `status.json` holds only the compose
+/// exchanges, which `compose_only_sets_hold_exactly_the_compose_exchanges`
+/// checks.
+fn fixture_sets() -> Vec<PathBuf> {
+    all_fixture_sets()
+        .into_iter()
+        .filter(|set| set.join("status.json").is_file())
+        .collect()
+}
+
+#[test]
+fn compose_only_sets_hold_exactly_the_compose_exchanges() {
+    let sets: Vec<PathBuf> = all_fixture_sets()
+        .into_iter()
+        .filter(|set| !set.join("status.json").is_file())
+        .collect();
+    for set in &sets {
+        let name = set.file_name().and_then(|n| n.to_str()).expect("set name");
+        let (flavor, version) = name.split_once('-').expect("<flavor>-<version>");
+        let mut files: Vec<String> = fs::read_dir(set)
+            .expect("fixture set")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .into_string()
+                    .expect("utf-8")
+            })
+            .collect();
+        files.sort();
+        assert_eq!(files, COMPOSE_FIXTURES, "{name}");
+        for file in &files {
+            let value: Value =
+                serde_json::from_str(&fs::read_to_string(set.join(file)).expect("read"))
+                    .unwrap_or_else(|e| panic!("{name}/{file} is not valid JSON: {e}"));
+            assert_eq!(value["flavor"], flavor, "{name}/{file}");
+            assert_eq!(value["version"], version, "{name}/{file}");
+            assert!(value["operation"].is_string(), "{name}/{file}");
+        }
+    }
+    // A full set recorded with the compose step carries the same exchanges.
+    for set in fixture_sets() {
+        if set.join("rule_get_executed.json").is_file() {
+            for file in COMPOSE_FIXTURES {
+                assert!(set.join(file).is_file(), "{} lacks {file}", set.display());
+            }
+        }
+    }
 }
 
 fn nontraditional_default_restore_request_is_correlated(
