@@ -75,8 +75,13 @@ fn redact_backing_index_date(name: &str) -> Option<String> {
             }
         });
     let is_generation = !generation.is_empty() && generation.bytes().all(|b| b.is_ascii_digit());
-    (!stream.is_empty() && is_date && is_generation)
-        .then(|| format!(".ds-{stream}-REDACTED-{generation}"))
+    // Index names are lowercase and carry no delimiter or whitespace, so a
+    // comma-joined list or prose never matches as one name.
+    let is_stream = !stream.is_empty()
+        && stream.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-' | b'+')
+        });
+    (is_stream && is_date && is_generation).then(|| format!(".ds-{stream}-REDACTED-{generation}"))
 }
 
 /// Match both full keys and their final dot-separated segment. Alert documents
@@ -340,7 +345,11 @@ mod tests {
                 ".ds-no-date-000001",
                 ".ds-x-2026.11.09-",
                 ".ds--2026.11.09-000001",
-                "logs-2026.11.09-000001"
+                "logs-2026.11.09-000001",
+                ".ds-a-2026.11.09-000001,.ds-b-2026.11.10-000002",
+                ".ds-a b-2026.11.09-000001",
+                ".ds-Upper-2026.11.09-000001",
+                "https://host.invalid/.ds-a-2026.11.09-000001"
             ]
         });
 
@@ -356,7 +365,11 @@ mod tests {
                     ".ds-no-date-000001",
                     ".ds-x-2026.11.09-",
                     ".ds--2026.11.09-000001",
-                    "logs-2026.11.09-000001"
+                    "logs-2026.11.09-000001",
+                    ".ds-a-2026.11.09-000001,.ds-b-2026.11.10-000002",
+                    ".ds-a b-2026.11.09-000001",
+                    ".ds-Upper-2026.11.09-000001",
+                    "https://host.invalid/.ds-a-2026.11.09-000001"
                 ]
             })
         );
