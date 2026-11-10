@@ -680,15 +680,15 @@ async fn exception_catalog_has_closed_inputs_and_typed_safe_outputs() {
 #[tokio::test]
 async fn recorded_exception_responses_project_through_current_and_legacy_protocols() {
     let find: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/serverless-9.6.0/exception_lists_find.json"
+        "../../../tests/fixtures/serverless-9.7.0/exception_lists_find.json"
     ))
     .expect("recorded list fixture");
     let container: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/serverless-9.6.0/exception_list_get.json"
+        "../../../tests/fixtures/serverless-9.7.0/exception_list_get.json"
     ))
     .expect("recorded container fixture");
     let items: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/serverless-9.6.0/exception_list_items_find.json"
+        "../../../tests/fixtures/serverless-9.7.0/exception_list_items_find.json"
     ))
     .expect("recorded item fixture");
     let server = stack().await;

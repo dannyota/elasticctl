@@ -175,62 +175,62 @@ fn assert_static_unknown_tool(error: rmcp::service::ServiceError) {
 
 fn fixture(name: &str) -> Value {
     let source = match name {
-        "status" => include_str!("../../../tests/fixtures/serverless-9.6.0/status.json"),
-        "spaces" => include_str!("../../../tests/fixtures/serverless-9.6.0/spaces.json"),
-        "license" => include_str!("../../../tests/fixtures/serverless-9.6.0/license.json"),
+        "status" => include_str!("../../../tests/fixtures/serverless-9.7.0/status.json"),
+        "spaces" => include_str!("../../../tests/fixtures/serverless-9.7.0/spaces.json"),
+        "license" => include_str!("../../../tests/fixtures/serverless-9.7.0/license.json"),
         "authenticate" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/authenticate.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/authenticate.json")
         }
         "signals_search" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/signals_search.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/signals_search.json")
         }
-        "cases_find" => include_str!("../../../tests/fixtures/serverless-9.6.0/cases_find.json"),
-        "case_get" => include_str!("../../../tests/fixtures/serverless-9.6.0/case_get.json"),
+        "cases_find" => include_str!("../../../tests/fixtures/serverless-9.7.0/cases_find.json"),
+        "case_get" => include_str!("../../../tests/fixtures/serverless-9.7.0/case_get.json"),
         "data_views_list" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/data_views_list.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/data_views_list.json")
         }
         "data_view_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/data_view_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/data_view_get.json")
         }
         "data_view_default_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/data_view_default_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/data_view_default_get.json")
         }
         "dashboard_search" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/dashboard_search.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/dashboard_search.json")
         }
         "dashboard_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/dashboard_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/dashboard_get.json")
         }
         "agent_policies_list" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/agent_policies_list.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/agent_policies_list.json")
         }
         "agent_policy_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/agent_policy_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/agent_policy_get.json")
         }
         "integration_policies_list" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/integration_policies_list.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/integration_policies_list.json")
         }
         "integration_policy_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/integration_policy_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/integration_policy_get.json")
         }
         "integration_policy_parent_get" => include_str!(
-            "../../../tests/fixtures/serverless-9.6.0/integration_policy_parent_get.json"
+            "../../../tests/fixtures/serverless-9.7.0/integration_policy_parent_get.json"
         ),
-        "rules_find" => include_str!("../../../tests/fixtures/serverless-9.6.0/rules_find.json"),
-        "rules_get" => include_str!("../../../tests/fixtures/serverless-9.6.0/rules_get.json"),
+        "rules_find" => include_str!("../../../tests/fixtures/serverless-9.7.0/rules_find.json"),
+        "rules_get" => include_str!("../../../tests/fixtures/serverless-9.7.0/rules_get.json"),
         "prebuilt_status" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/prebuilt_status.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/prebuilt_status.json")
         }
         "exception_lists_find" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/exception_lists_find.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/exception_lists_find.json")
         }
         "exception_list_get" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/exception_list_get.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/exception_list_get.json")
         }
         "exception_list_items_find" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/exception_list_items_find.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/exception_list_items_find.json")
         }
-        "esql_query" => include_str!("../../../tests/fixtures/serverless-9.6.0/esql_query.json"),
+        "esql_query" => include_str!("../../../tests/fixtures/serverless-9.7.0/esql_query.json"),
         _ => panic!("unknown fixture {name}"),
     };
     serde_json::from_str::<Value>(source).expect("fixture parses")["response"].clone()

@@ -45,7 +45,13 @@ if hits=$(grep -rnE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$DIR" 2>/d
   report "an email address in a fixture" "$hits"
 fi
 
+# A data stream backing index name carries its rollover date, which dates the
+# recording stack. The recorder replaces that date with REDACTED.
+if hits=$(grep -rnE '\.ds-[^"]*-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+' "$DIR" 2>/dev/null); then
+  report "a dated backing index name in a fixture" "$hits"
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "fixtures clean: no credential, host, userinfo, or email"
+  echo "fixtures clean: no credential, host, userinfo, email, or backing index date"
 fi
 exit "$fail"

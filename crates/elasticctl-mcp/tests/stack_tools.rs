@@ -17,7 +17,7 @@ fn recorded(name: &str) -> Value {
         "spaces" => include_str!("../../../tests/fixtures/ech-9.5.2/spaces.json"),
         "status" => include_str!("../../../tests/fixtures/ech-9.5.2/status.json"),
         "serverless_status" => {
-            include_str!("../../../tests/fixtures/serverless-9.6.0/status.json")
+            include_str!("../../../tests/fixtures/serverless-9.7.0/status.json")
         }
         _ => panic!("unknown recorded response: {name}"),
     };
@@ -529,7 +529,7 @@ async fn stack_info_preserves_unknown_license_and_spaces_as_null() {
     let reply = call(&mut harness, 3, "stack_info", json!({})).await;
     assert_eq!(reply["result"]["isError"], false);
     let data = &reply["result"]["structuredContent"]["data"];
-    assert_eq!(data["version"], "9.6.0");
+    assert_eq!(data["version"], "9.7.0");
     assert_eq!(data["flavor"], "serverless");
     assert_eq!(data["license"], Value::Null);
     assert_eq!(data["spaces"], Value::Null);

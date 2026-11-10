@@ -1,0 +1,16 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "esql_async_start",
+  "request": {
+    "query": "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2",
+    "wait_for_completion_timeout": "1ms",
+    "columnar": true
+  },
+  "response": {
+    "id": "elasticctl-fixture-esql-async",
+    "is_running": true,
+    "columns": [],
+    "values": []
+  }
+}

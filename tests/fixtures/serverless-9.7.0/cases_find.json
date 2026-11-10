@@ -1,0 +1,68 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "cases_find",
+  "request": {
+    "query": "page=1&perPage=100&sortField=createdAt&sortOrder=desc&tags=elasticctl-sample&search=elasticctl%20sample%20case&searchFields=title&searchFields=description"
+  },
+  "response": {
+    "count_open_cases": 1,
+    "count_in_progress_cases": 0,
+    "count_closed_cases": 0,
+    "cases": [
+      {
+        "status": "open",
+        "owner": "securitySolution",
+        "description": "elasticctl sample case",
+        "tags": [
+          "elasticctl-sample"
+        ],
+        "title": "elasticctl sample case",
+        "connector": {
+          "type": ".none",
+          "fields": null,
+          "name": "none",
+          "id": "none"
+        },
+        "severity": "low",
+        "assignees": [
+          {
+            "uid": "u_REDACTED_1",
+            "username": "REDACTED",
+            "full_name": null,
+            "email": "REDACTED"
+          }
+        ],
+        "category": null,
+        "customFields": [],
+        "settings": {
+          "syncAlerts": false,
+          "extractObservables": true
+        },
+        "observables": [],
+        "closed_at": null,
+        "closed_by": null,
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": {
+          "email": "REDACTED",
+          "full_name": null,
+          "username": "REDACTED",
+          "profile_uid": "REDACTED"
+        },
+        "external_service": null,
+        "updated_at": null,
+        "updated_by": null,
+        "total_observables": 0,
+        "id": "elasticctl-fixture-case",
+        "totalComment": 0,
+        "totalAlerts": 0,
+        "totalEvents": 0,
+        "version": "WzAsMV0=",
+        "comments": []
+      }
+    ],
+    "page": 1,
+    "per_page": 100,
+    "total": 1
+  }
+}

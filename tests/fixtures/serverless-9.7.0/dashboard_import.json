@@ -1,0 +1,33 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "dashboard_import",
+  "request": {
+    "overwrite": true
+  },
+  "response": {
+    "successCount": 2,
+    "success": true,
+    "warnings": [],
+    "successResults": [
+      {
+        "type": "index-pattern",
+        "id": "elasticctl-sample-data-view",
+        "meta": {
+          "title": "elasticctl sample dashboard data view",
+          "icon": "table"
+        },
+        "managed": false
+      },
+      {
+        "type": "dashboard",
+        "id": "elasticctl-sample-dashboard",
+        "meta": {
+          "title": "elasticctl sample dashboard",
+          "icon": "productDashboard"
+        },
+        "managed": false
+      }
+    ]
+  }
+}

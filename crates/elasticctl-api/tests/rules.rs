@@ -1435,7 +1435,7 @@ async fn preview_hits_parses_the_recorded_response() {
     let fixture: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/serverless-9.6.0/rules_preview_hits.json"
+            "/../../tests/fixtures/serverless-9.7.0/rules_preview_hits.json"
         ))
         .expect("rules_preview_hits fixture"),
     )
