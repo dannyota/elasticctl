@@ -90,7 +90,7 @@ and [Rules as Code][state].
 | Alerts and cases | Alert status, tags, and assignees; case create, comment, attach, close, reopen, delete | [Alerts and Cases][triage] |
 | Data views and dashboards | Portable files, the default data view, reference-safe delete, Saved Objects bundles | [Data Views and Dashboards][content] |
 | Fleet | Agent and integration policies as portable files | [Fleet][fleet] |
-| MCP | Twenty read-only inspection tools; two opt-in query tools | [MCP][mcp] |
+| MCP | Twenty-four read-only tools, among them the task tools `alert_context`, `rule_health`, `detection_coverage`, and `rule_readiness`; two opt-in query tools | [MCP][mcp] |
 | Stack | Profiles, `doctor`, and `info` | [Configuration][config] |
 
 ## MCP server
@@ -102,11 +102,17 @@ chosen at startup:
 elkctl --profile analyst --space default mcp serve
 ```
 
-The default catalog has twenty inspection tools for stack diagnostics, rules,
-exception lists, alerts, cases, data views, dashboards, and Fleet policies.
-`--allow-query-tools` adds synchronous ES|QL and Query DSL tools. No tool
-changes the stack, selects local files, or changes the target. See
-[MCP][mcp] for the client stanza, limits, and tested clients.
+The default catalog has twenty-four tools. Four task tools answer questions
+that span several objects: `alert_context` triages one alert, `rule_health`
+checks whether a rule runs and alerts, `detection_coverage` counts rules by
+MITRE ATT&CK technique, tactic, index pattern, or integration, and
+`rule_readiness` checks whether a rule has data and integrations. Twenty
+inspection tools read stack diagnostics, rules, exception lists, alerts,
+cases, data views, dashboards, and Fleet policies; `rules_list` also filters
+by ATT&CK `technique` or `tactic`. `--allow-query-tools` adds synchronous
+ES|QL and Query DSL tools. No tool changes the stack, selects local files, or
+changes the target. See [MCP][mcp] for the client stanza, limits, and tested
+clients.
 
 ## Scripts and AI agents
 

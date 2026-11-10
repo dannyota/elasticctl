@@ -14,8 +14,47 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[path = "live/fleet.rs"]
 mod fleet;
+#[path = "live/mcp_compose.rs"]
+mod mcp_compose;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
+
+/// The twelfth contract stays at this integration-test root because the
+/// conformance controller invokes this exact name.
+#[test]
+#[ignore = "requires a live stack"]
+fn mcp_answers_across_verticals() {
+    if skip_unless_live() {
+        return;
+    }
+    let _serial = serialize_live();
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_live_config(dir.path());
+    let profile = live_profile();
+    let baseline = capture_baseline(&config, &profile).unwrap();
+    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
+    if let Err(error) = assert_clean_baseline(&config, &cleanup, baseline.clone()) {
+        panic_conformance(ConformanceFailureClass::Harness, error);
+    }
+    let mut lease = fleet::fixture::FleetFixtureLease::new(profile, &unique_name("compose-fleet"));
+    let mut run = LiveMcpRun {
+        contract: mcp_compose::run_contract,
+        config: &config,
+        scratch: dir.path(),
+        baseline,
+        cleanup: &mut cleanup,
+        lease: &mut lease,
+    };
+    match run_mcp_steps(&mut run) {
+        Ok(()) => {}
+        Err(McpOutcomeFailure::Cleanup(error) | McpOutcomeFailure::Baseline(error)) => {
+            panic_conformance(ConformanceFailureClass::Cleanup, error)
+        }
+        Err(McpOutcomeFailure::Contract(error)) => {
+            panic_conformance(ConformanceFailureClass::Contract, error)
+        }
+    }
+}
 
 /// The eleventh contract stays at this integration-test root because the
 /// conformance controller invokes this exact name.
@@ -36,6 +75,7 @@ fn mcp_reads_existing_verticals() {
     }
     let mut lease = fleet::fixture::FleetFixtureLease::new(profile, &unique_name("mcp-fleet"));
     let mut run = LiveMcpRun {
+        contract: mcp_smoke::run_contract,
         config: &config,
         scratch: dir.path(),
         baseline,
@@ -135,7 +175,12 @@ fn run_mcp_steps(steps: &mut impl McpRunSteps) -> Result<(), McpOutcomeFailure> 
     classify_mcp_outcome(contract, fleet_cleanup, general_cleanup, baseline_audit)
 }
 
+/// One MCP contract body. Both MCP contracts share the same cleanup steps.
+type McpContract =
+    fn(&Path, &Path, &mut LiveCleanup, &mut fleet::fixture::FleetFixtureLease) -> TestResult;
+
 struct LiveMcpRun<'a> {
+    contract: McpContract,
     config: &'a Path,
     scratch: &'a Path,
     baseline: LiveBaseline,
@@ -145,7 +190,7 @@ struct LiveMcpRun<'a> {
 
 impl McpRunSteps for LiveMcpRun<'_> {
     fn run_contract(&mut self) -> TestResult {
-        mcp_smoke::run_contract(self.config, self.scratch, self.cleanup, self.lease)
+        (self.contract)(self.config, self.scratch, self.cleanup, self.lease)
     }
 
     fn finish_fleet(&mut self) -> TestResult {
@@ -511,6 +556,10 @@ struct LiveCleanup {
     /// `None` means no content mutation can affect the default. `Some(None)`
     /// records an original no-default state.
     default_data_view: Option<Option<String>>,
+    /// Generated rules owned by an exact `rule_id` prefix and count. Each rule
+    /// is `<prefix><n>` for `n` in `1..=count`; cleanup deletes only those
+    /// explicit ids.
+    rule_fills: BTreeSet<(String, usize)>,
     finished: bool,
 }
 
@@ -549,6 +598,7 @@ impl LiveCleanup {
             dashboards: BTreeSet::new(),
             data_views: BTreeSet::new(),
             default_data_view: None,
+            rule_fills: BTreeSet::new(),
             finished: false,
         }
     }
@@ -605,6 +655,15 @@ impl LiveCleanup {
         self.data_views.insert(id.into());
     }
 
+    fn rule_fill(&mut self, prefix: impl Into<String>, count: usize) {
+        self.rule_fills.insert((prefix.into(), count));
+    }
+
+    /// Drop a fill whose deletion the contract has already verified.
+    fn forget_rule_fill(&mut self, prefix: &str, count: usize) {
+        self.rule_fills.remove(&(prefix.to_string(), count));
+    }
+
     fn restore_default_data_view(&mut self, original: Option<String>) {
         match &self.default_data_view {
             None => self.default_data_view = Some(original),
@@ -653,6 +712,24 @@ impl LiveCleanup {
         } else {
             Err(format!("rule delete exited {}", out.status))
         }
+    }
+
+    fn delete_rule_fill(&self, prefix: &str, count: usize) -> TestResult {
+        mcp_compose::fill::delete_rule_fill(&self.profile, prefix, count)
+    }
+
+    /// Delete every registered fill with the shared retry policy. The delete
+    /// step is a parameter so offline tests can fail it on purpose.
+    fn clean_rule_fills(&self, mut delete: impl FnMut(&str, usize) -> TestResult) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (prefix, count) in &self.rule_fills {
+            if let Err(error) =
+                Self::retry(&format!("rule fill {prefix}"), || delete(prefix, *count))
+            {
+                failures.push(error);
+            }
+        }
+        failures
     }
 
     fn delete_list(&self, list_id: &str) -> TestResult {
@@ -949,6 +1026,8 @@ impl LiveCleanup {
                 failures.push(error);
             }
         }
+        failures
+            .extend(self.clean_rule_fills(|prefix, count| self.delete_rule_fill(prefix, count)));
         for list_id in &self.lists {
             if let Err(error) = Self::retry(&format!("exception list {list_id}"), || {
                 self.delete_list(list_id)

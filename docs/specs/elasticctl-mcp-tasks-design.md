@@ -1,9 +1,8 @@
 # elasticctl 0.8 MCP task tools, resources, and prompts
 
-Status: design proposed on 2026-11-10 against `f7c9fe5`, workspace version
-0.7.4, and revised the same day after independent review. No 0.8 code
-exists. 0.8.0 starts from the released 0.7.5, which ships the bounded
-`rules_list` page. Implementation, live proof, release, and
+Status: 0.8.0 implements sections 4 to 7 and 10: the four task tools, the
+`rules_list` threat filters, the verified corpus read, and the server
+instructions. Sections 8 and 9, resources and prompts, are 0.8.1. Release and
 publication each need separate approval. The
 [0.7 MCP design](elasticctl-mcp-design.md) stays in force; this document only
 adds to it. [Research](../plans/v0.8-research.md) records sources, measured

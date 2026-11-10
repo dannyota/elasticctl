@@ -4,6 +4,17 @@
 
 ### Added
 
+- MCP task tools `alert_context`, `rule_health`, `detection_coverage`, and
+  `rule_readiness`, bringing the default catalog to twenty-four tools and to
+  twenty-six with `--allow-query-tools`. Each sends a capped number of
+  requests in a fixed order. `alert_context`, `rule_health`, and
+  `rule_readiness` report a status per part and static finding codes;
+  `detection_coverage` groups at most 4,000 matching rules.
+- MCP `rules_list` takes optional MITRE ATT&CK filters: `technique`, a
+  technique id such as `T1059` or a subtechnique id such as `T1059.001`, and
+  `tactic`, a tactic id such as `TA0002`.
+- The MCP server returns static instructions that point a model to the task
+  tools first and mark result text as data.
 - `elasticctl_core::Transport::put_absolute_es_once`,
   `post_absolute_es_once`, and `delete_absolute_es_once` send an
   Elasticsearch write exactly once, with no retry on any status.
@@ -27,6 +38,9 @@
   route. This covers data views, dashboards, agent and integration policies,
   parent policy ids, package names and versions, and ES|QL async query ids,
   which are also percent-encoded so a returned `/` cannot add a segment.
+- MCP `cases_get`, `data_views_get`, `dashboards_get`,
+  `fleet_agent_policies_get`, and `fleet_integration_policies_get` refuse an
+  id or selector of `.` or `..` with `invalid_argument` and send no request.
 
 ## 0.7.5 — 2026-11-10
 

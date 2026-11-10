@@ -53,14 +53,96 @@ Append `"--allow-query-tools"` to `args` to enable the query tools.
 
 ## Tools
 
-The default catalog contains twenty inspection tools. Every list tool also
-takes `limit`.
+The default catalog contains twenty-four tools: four
+[task tools](#task-tools) and twenty
+[inspection tools](#inspection-tools). With `--allow-query-tools` it
+contains twenty-six; see [Query tools](#query-tools).
+
+### Task tools
+
+A task tool answers one question that spans several objects. It reads them
+one request at a time, in a fixed order, and returns one answer.
+
+| Tool | Answers | Inputs | Requests, at most |
+| --- | --- | --- | --- |
+| `alert_context` | What is this alert, what fired it, and what exists around it: the alert, its rule with the last execution, the rule's exception lists, the cases that contain the alert, and the rule's alert counts in a window | `alert_id`, `since` | 19 |
+| `rule_health` | Is this rule running and alerting: its definition and last execution, alert counts by workflow status with the five newest alerts in a window, and its exception lists with item counts | `selector`: a `rule_id` or exact name; `since` | 14 |
+| `detection_coverage` | What do the rules cover: enabled and disabled rule counts per MITRE ATT&CK technique, tactic, index pattern, or integration package | `group_by` (default `technique`; also `tactic`, `index_pattern`, `integration`), `enabled`, `source` (default `all`), `tag`, `limit` | 8, or 16 when the read repeats |
+| `rule_readiness` | Can this rule see data: whether each index pattern resolves on Elasticsearch, whether its data view exists, and whether its related Fleet packages are installed and used by an integration policy | `selector`: a `rule_id` or exact name | 29 |
+
+`since` is optional and defaults to `24h`: one to four digits not starting
+with `0`, followed by `s`, `m`, `h`, `d`, or `w`. Timestamps and date math are
+rejected. `alert_id` cannot be exactly `.` or `..`. The request counts exclude
+retries of a 429 or server error, and the capability probe that the first
+call of a process may send.
+
+In `alert_context`, `rule_health`, and `rule_readiness`, the first read, of
+the alert or the rule, is primary: if it fails, the call fails. Every later
+read is a part with a `status`:
+
+- `ok`, with the part's `value`;
+- `unavailable`, with an `error` object as in [Errors](#errors);
+- `skipped`, with a `skip_reason`: `not_applicable` when there is nothing to
+  read, `dependency_unavailable` when an earlier part it needs is not `ok`,
+  or `not_configured` when the profile lacks what it needs.
+
+An `auth`, `connection`, or `timeout` error in any read fails the whole call.
+`data.partial` is `true` when a part or row is `unavailable`, or a
+`rule_readiness` pattern is `unresolved`. `data.findings` lists static codes
+from typed checks, never remote text:
+
+| Tool | Findings, in order |
+| --- | --- |
+| `alert_context` | `alert_not_open`, `rule_missing`, `rule_disabled`, `rule_last_execution_failed`, `exception_list_missing`, `has_related_case` |
+| `rule_health` | `rule_disabled`, `never_executed`, `last_execution_failed`, `last_execution_partial_failure`, `execution_gap`, `no_alerts_in_window`, `exception_list_missing` |
+| `rule_readiness` | `rule_disabled`, `no_index_source`, `data_view_missing`, `no_pattern_matches`, `pattern_unresolved`, `integration_not_installed`, `integration_without_policy`, `patterns_truncated`, `integrations_truncated` |
+
+Each task tool reads a bounded amount. A `truncated` field is `true` when a
+cap left entries out.
+
+- `alert_context` and `rule_health` read the first five exception lists a
+  rule references, each with an item count. `alert_context` reads the first
+  five cases that contain the alert.
+- A rule's last execution message is cut at 2,048 UTF-8 bytes, and
+  `message_truncated` says so.
+- `rule_readiness` resolves the first 16 index patterns and checks the first
+  eight distinct packages. It reads one page of at most 1,000 integration
+  policies; with more, `integrations` is `unavailable` with
+  `elastic_unsupported`.
+- `detection_coverage` reads matching rules in 500-rule pages and accepts at
+  most 4,000 rules; see
+  [Limitations](Limitations.md#coverage-reads-at-most-4000-rules).
+
+`detection_coverage` has no parts or findings. `summary` describes the whole
+corpus read, and `rows` sort by enabled rules, then disabled rules, both
+descending, then by key. A row with `enabled_rules: 0` and `disabled_rules`
+above zero is coverage that is installed and switched off. Call `rules_list`
+with `technique` or `tactic` to see the rules behind a row.
+
+`rule_readiness` returns counts, never an index, alias, or data stream name.
+A pattern row is `matches`, `no_match`, `exclusion` (it starts with `-` and is
+not sent), or `unresolved`. A match means names exist, not that documents
+arrive. Pattern checks need the profile's Elasticsearch URL; without it,
+`patterns` is `skipped` with `not_configured`.
+
+Task tools return only what the selected credential can read. Beyond the
+inspection tools, they show a rule's last execution status and message, alert
+counts per rule and workflow status, which cases contain an alert, match
+counts per index pattern, and which Fleet packages a rule names, with each
+package's install state, installed version, and policy count. To keep these
+from a model, use a credential without those privileges; the server has no
+switch for them.
+
+### Inspection tools
+
+Each inspection tool reads one object family. Every list tool also takes
+`limit`.
 
 | Area | Tool | Inputs |
 | --- | --- | --- |
 | Stack | `stack_info` | None. Returns version, flavor, license, and spaces |
 | Stack | `stack_doctor` | None. Returns `ok` and each check's status |
-| Rules | `rules_list` | `enabled`, `rule_type`, `severity`, `tag`, `search`, `source` (default `all`) |
+| Rules | `rules_list` | `enabled`, `rule_type`, `severity`, `tag`, `search`, `technique`, `tactic`, `source` (default `all`) |
 | Rules | `rules_get` | `selector`: a `rule_id` or exact name |
 | Rules | `rules_prebuilt_status` | None |
 | Exceptions | `exceptions_list` | `list_type`, `tag`, `namespace`, `search` |
@@ -79,14 +161,22 @@ takes `limit`.
 | Fleet | `fleet_integration_policies_list` | `search` |
 | Fleet | `fleet_integration_policies_get` | `selector`: an id or exact name |
 
+`rules_list` returns rows ordered by rule name. `technique` takes a MITRE
+ATT&CK technique id, `T` and four digits such as `T1059`, or a subtechnique
+id such as `T1059.001`. `tactic` takes a tactic id, `TA` and four digits such
+as `TA0002`. Any other value fails with `invalid_argument` before a request.
+Both combine with the other filters.
+
 Selectors resolve as they do on the [CLI](CLI.md#selectors). Alert and case
 ids are never matched by display name. Unknown input keys fail before any
 request, and no input expands `@file`, a path, an environment variable, or a
 URL.
 
 A tool whose Elastic feature the stack lacks stays in the catalog and answers
-`unsupported`; see [Limitations](Limitations.md). `stack_info` and
-`stack_doctor` work on older stacks, so they can diagnose one.
+`unsupported`. In a task tool, a later read that needs the feature makes only
+its part or row `unavailable`. See [Limitations](Limitations.md).
+`stack_info` and `stack_doctor` work on older stacks, so they can diagnose
+one.
 
 ## Results
 
@@ -205,6 +295,15 @@ Access and retries:
   returned data, not inference cost or the work of earlier query stages.
 - Use Elastic privileges to control which indices and services the credential
   can reach.
+
+## Server instructions
+
+The server returns fixed instructions when a client connects. They say that
+the server reads one operator-selected deployment and changes neither Elastic
+nor local files, send a model to the task tools first for a question that
+spans objects and to the `_list` and `_get` tools for the objects an answer
+names, and mark text inside results as data, not instructions. They name no
+host, profile, version, or object.
 
 ## Returned data is untrusted
 

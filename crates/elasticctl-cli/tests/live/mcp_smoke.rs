@@ -16,7 +16,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(75);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
 
 #[derive(Clone, Copy)]
-enum McpProtocolPath {
+pub(super) enum McpProtocolPath {
     Current,
     Legacy,
 }
@@ -920,7 +920,7 @@ pub(super) fn run_contract(
     })
 }
 
-trait McpChildHarness {
+pub(super) trait McpChildHarness {
     type Child;
 
     fn spawn(&mut self, allow_query_tools: bool) -> TestResult<Self::Child>;
@@ -928,7 +928,7 @@ trait McpChildHarness {
     fn shutdown(&mut self, child: &mut Self::Child) -> TestResult;
 }
 
-fn run_mcp_children(harness: &mut impl McpChildHarness) -> TestResult {
+pub(super) fn run_mcp_children(harness: &mut impl McpChildHarness) -> TestResult {
     let mut default_child = harness.spawn(false)?;
     let default_protocol = harness.exercise(&mut default_child, false);
     let default_shutdown = harness.shutdown(&mut default_child);
@@ -990,7 +990,7 @@ impl McpChildHarness for LiveMcpChildren<'_> {
     }
 }
 
-fn create_registered_case(
+pub(super) fn create_registered_case(
     cleanup: &mut LiveCleanup,
     title: &str,
     create: impl FnOnce(&LiveCleanup) -> TestResult<Value>,
@@ -1551,7 +1551,7 @@ fn validate_case_get(content: &Value, case_id: &str, title: &str) -> TestResult 
     validate_case_row(case, case_id, Some(title))?;
     require_null_page(content, "cases_get")
 }
-fn validate_case_row(
+pub(super) fn validate_case_row(
     case: &serde_json::Map<String, Value>,
     case_id: &str,
     title: Option<&str>,
@@ -2135,14 +2135,14 @@ fn validate_query_page(
     Ok(())
 }
 
-struct McpChild {
+pub(super) struct McpChild {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     replies: Receiver<Result<Option<Vec<u8>>, &'static str>>,
     stdout_reader: Option<JoinHandle<()>>,
     stderr_reader: Option<JoinHandle<()>>,
     next_id: u64,
-    protocol_path: McpProtocolPath,
+    pub(super) protocol_path: McpProtocolPath,
 }
 
 struct ChildOwner {
@@ -2187,7 +2187,7 @@ impl Drop for ChildOwner {
 }
 
 impl McpChild {
-    fn spawn(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
+    pub(super) fn spawn(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
         let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
         command
             .arg("--config")
@@ -2262,7 +2262,7 @@ impl McpChild {
         Ok(owner.into_child(replies))
     }
 
-    fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+    pub(super) fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(protocol_request(self.protocol_path, id, method, params))?;
@@ -2281,11 +2281,11 @@ impl McpChild {
         Ok(response)
     }
 
-    fn notify(&mut self, method: &'static str, params: Value) -> TestResult {
+    pub(super) fn notify(&mut self, method: &'static str, params: Value) -> TestResult {
         self.send(json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
 
-    fn tool(&mut self, tool: &'static str, arguments: Value) -> TestResult<Value> {
+    pub(super) fn tool(&mut self, tool: &'static str, arguments: Value) -> TestResult<Value> {
         let response = self.request("tools/call", json!({"name": tool, "arguments": arguments}))?;
         successful_tool_content(&response, self.next_id - 1, tool)
     }
@@ -2312,7 +2312,7 @@ impl McpChild {
         }
     }
 
-    fn not_found(
+    pub(super) fn not_found(
         &mut self,
         tool: &'static str,
         arguments: Value,
@@ -2368,7 +2368,7 @@ impl McpChild {
         Ok(response)
     }
 
-    fn shutdown(&mut self) -> TestResult {
+    pub(super) fn shutdown(&mut self) -> TestResult {
         self.stdin.take();
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         loop {
