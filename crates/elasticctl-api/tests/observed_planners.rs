@@ -38,31 +38,67 @@ async fn plan_set_enabled_observed_matches_plan_set_enabled_and_sends_the_same_r
     for set in ["ech-9.5.2", "serverless-9.7.0", "traditional-9.5.1"] {
         let rule = fixture(set, "rules_get");
         let id = rule["rule_id"].as_str().unwrap().to_string();
-        let stack = MockStack::with_rules(vec![rule.clone()]).await;
-        let (plan, seen) = rules_ops::plan_set_enabled_observed(
-            stack.transport(),
-            &[id.clone(), id.clone()],
-            false,
-        )
-        .await
-        .unwrap();
-        let old = rules_ops::plan_set_enabled(stack.transport(), &[id.clone(), id], false)
+        let mut second = rule.clone();
+        second["rule_id"] = json!("second-rule");
+        let ids = vec![id, "second-rule".into()];
+        let stack = MockStack::with_rules(vec![rule.clone(), second.clone()]).await;
+        let (plan, seen) = rules_ops::plan_set_enabled_observed(stack.transport(), &ids, false)
             .await
             .unwrap();
+        let observed: Vec<_> = stack
+            .requests()
+            .await
+            .into_iter()
+            .map(|r| (r.method, r.path, r.query, r.body))
+            .collect();
+        let old_stack = MockStack::with_rules(vec![rule.clone(), second]).await;
+        let old = rules_ops::plan_set_enabled(old_stack.transport(), &ids, false)
+            .await
+            .unwrap();
+        let old_requests: Vec<_> = old_stack
+            .requests()
+            .await
+            .into_iter()
+            .map(|r| (r.method, r.path, r.query, r.body))
+            .collect();
         assert_eq!(plan, old);
         let canonical =
             normalize::canonical(&serde_json::from_value::<Rule>(rule).unwrap()).into_value();
         assert_eq!(seen.0.len(), 2);
         assert_eq!(seen.0[0].state, Some(canonical));
-        let req = stack.requests().await;
-        let split = req.len() / 2;
-        for (a, b) in req[..split].iter().zip(&req[split..]) {
-            assert_eq!(
-                (&a.method, &a.path, &a.query, &a.body),
-                (&b.method, &b.path, &b.query, &b.body)
-            );
-        }
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed, old_requests);
     }
+}
+
+async fn requests(server: &MockServer) -> Vec<(String, String, Option<String>, Vec<u8>)> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| {
+            (
+                r.method.to_string(),
+                r.url.path().to_string(),
+                r.url.query().map(str::to_string),
+                r.body,
+            )
+        })
+        .collect()
+}
+
+async fn case_server(body: &Value, second: &Value) -> MockServer {
+    let server = MockServer::start().await;
+    for case in [body, second] {
+        let id = case["id"].as_str().unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("/api/cases/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(case))
+            .mount(&server)
+            .await;
+    }
+    server
 }
 
 async fn check_case_planner(comment: bool) {
@@ -84,22 +120,21 @@ async fn check_case_planner(comment: bool) {
                 4 => body["settings"]["syncAlerts"] = json!("false"),
                 _ => {}
             }
-            let server = MockServer::start().await;
             let id = body["id"].as_str().unwrap();
-            Mock::given(method("GET"))
-                .and(path(format!("/api/cases/{id}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(&body))
-                .mount(&server)
-                .await;
+            let mut second = body.clone();
+            second["id"] = json!("second-case");
+            let ids = vec![id.to_string(), "second-case".into()];
+            let server = case_server(&body, &second).await;
+            let old_server = case_server(&body, &second).await;
             let t = transport(&server.uri());
+            let old_t = transport(&old_server.uri());
             if !comment {
-                let (plan, seen) =
-                    cases_ops::plan_status_observed(&t, &[id.into()], CaseStatus::Closed)
-                        .await
-                        .unwrap();
+                let (plan, seen) = cases_ops::plan_status_observed(&t, &ids, CaseStatus::Closed)
+                    .await
+                    .unwrap();
                 assert_eq!(
                     plan,
-                    cases_ops::plan_status(&t, &[id.into()], CaseStatus::Closed)
+                    cases_ops::plan_status(&old_t, &ids, CaseStatus::Closed)
                         .await
                         .unwrap()
                 );
@@ -123,17 +158,16 @@ async fn check_case_planner(comment: bool) {
                     .unwrap();
                 assert_eq!(
                     plan,
-                    cases_ops::plan_comment(&t, id, "hello").await.unwrap()
+                    cases_ops::plan_comment(&old_t, id, "hello").await.unwrap()
                 );
                 assert_eq!(
                     seen.0[0].state,
                     Some(json!({ "status": body["status"], "title": body["title"] }))
                 );
             }
-            let req = server.received_requests().await.unwrap();
-            assert!(req.iter().all(|r| r.method.as_str() == "GET"
-                && r.url.path() == format!("/api/cases/{id}")
-                && r.body.is_empty()));
+            let observed = requests(&server).await;
+            assert_eq!(observed.len(), if comment { 1 } else { 2 });
+            assert_eq!(observed, requests(&old_server).await);
         }
     }
 }
@@ -172,20 +206,30 @@ async fn check_alert_planner(tags: bool) {
                 });
             }
             let id = body["hits"]["hits"][0]["_id"].as_str().unwrap().to_string();
-            let ids = vec![id.clone(), id.clone()];
+            let mut second_hit = body["hits"]["hits"][0].clone();
+            second_hit["_id"] = json!("second-alert");
+            body["hits"]["hits"]
+                .as_array_mut()
+                .unwrap()
+                .push(second_hit);
+            let ids = vec![id.clone(), "second-alert".into()];
             let server = MockServer::start().await;
             let expected = json!({
-                "query": { "ids": { "values": [id] } },
-                "size": 1,
+                "query": { "ids": { "values": [id, "second-alert"] } },
+                "size": 2,
                 "_source": ["kibana.alert.rule.name", "kibana.alert.workflow_status"]
             });
-            Mock::given(method("POST"))
-                .and(path("/api/detection_engine/signals/search"))
-                .and(body_json(expected.clone()))
-                .respond_with(ResponseTemplate::new(200).set_body_json(body))
-                .mount(&server)
-                .await;
+            let old_server = MockServer::start().await;
+            for target in [&server, &old_server] {
+                Mock::given(method("POST"))
+                    .and(path("/api/detection_engine/signals/search"))
+                    .and(body_json(expected.clone()))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+                    .mount(target)
+                    .await;
+            }
             let t = transport(&server.uri());
+            let old_t = transport(&old_server.uri());
             if !tags {
                 let (plan, seen) =
                     alerts_ops::plan_status_by_ids_observed(&t, &ids, AlertStatus::Closed, None)
@@ -193,7 +237,7 @@ async fn check_alert_planner(tags: bool) {
                         .unwrap();
                 assert_eq!(
                     plan,
-                    alerts_ops::plan_status_by_ids(&t, &ids, AlertStatus::Closed, None)
+                    alerts_ops::plan_status_by_ids(&old_t, &ids, AlertStatus::Closed, None)
                         .await
                         .unwrap()
                 );
@@ -205,17 +249,15 @@ async fn check_alert_planner(tags: bool) {
                         .unwrap();
                 assert_eq!(
                     plan,
-                    alerts_ops::plan_tags(&t, &ids, vec!["tag".into()], vec![])
+                    alerts_ops::plan_tags(&old_t, &ids, vec!["tag".into()], vec![])
                         .await
                         .unwrap()
                 );
                 assert_eq!(seen.0[0].state, Some(json!({})));
             }
-            let req = server.received_requests().await.unwrap();
-            assert_eq!(req.len(), 2);
-            assert!(req.iter().all(|r| r.method.as_str() == "POST"
-                && r.url.path() == "/api/detection_engine/signals/search"
-                && r.body_json::<Value>().unwrap() == expected));
+            let observed = requests(&server).await;
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed, requests(&old_server).await);
         }
     }
 }
