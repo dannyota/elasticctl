@@ -2,28 +2,27 @@
 //!
 //! An object is touched only while its ownership flag is set. Every delete
 //! re-reads the object first and requires its marker fields, and the server
-//! id when this run learned it. The flag clears only after a later read
-//! finds the object gone; for a create whose answer was lost, only after it
-//! has stayed gone for the whole settle window. Alerts are closed by
-//! explicit id until a complete search finds none open. Failure text is
-//! built only from static context and an error's class and status.
+//! id when this run learned it. The marker index is deleted only while it
+//! reports the UUID this run recorded; one without a recorded UUID is never
+//! deleted. The flag clears only after a later read finds the object gone;
+//! for a create whose answer was lost, only after it has stayed gone for
+//! the whole settle window. Alerts are closed by explicit id until a
+//! complete search finds none open. Failure text is built only from static
+//! context and an error's class and status.
 
 use crate::diagnostics::safe_recording_error_summary;
 use crate::recorder::cases::find_marker_cases;
 use crate::recorder::compose::ComposeSession;
 use crate::recorder::compose::alert_search::{SearchError, open_session_alerts};
-use crate::recorder::compose::provision::{owns_compose_item, owns_missing_rule};
+use crate::recorder::compose::provision::{index_uuid, owns_compose_item, owns_missing_rule};
 use crate::recorder::compose::requests::{
-    ITEMS_FIND_PATH, close_alerts_body, item_path, list_path, rule_get,
+    ITEMS_FIND_PATH, close_alerts_body, index_uuid_path, item_path, list_path, marker_index_path,
+    rule_get,
 };
 use crate::recorder::compose::settle::{Timing, Watch};
 use crate::recorder::compose::{COMPOSE_ITEM_ID, MISSING_RULE_ID};
-use crate::recorder::markers::{
-    ALERT_PROBE_INDEX, ALERT_RULE_ID, ITEM_ID, LIST_ID, NAMESPACE_TYPE,
-};
-use crate::recorder::ownership::{
-    owns_alert_index, owns_alert_rule, owns_case, owns_item, owns_list,
-};
+use crate::recorder::markers::{ALERT_RULE_ID, ITEM_ID, LIST_ID, NAMESPACE_TYPE};
+use crate::recorder::ownership::{owns_alert_rule, owns_case, owns_item, owns_list};
 use elasticctl_core::{Error, ErrorKind, Transport, urlencode};
 use serde_json::Value;
 use std::fmt;
@@ -62,6 +61,12 @@ impl Failure {
         Self(format!("keeping {object}: {reason}"))
     }
 
+    fn unrecorded(object: &'static str) -> Self {
+        Self(format!(
+            "{object} is present without a UUID this run recorded and needs manual recovery"
+        ))
+    }
+
     fn request(stage: &'static str, object: &'static str, error: &Error) -> Self {
         Self(format!(
             "{stage} {object}: {}",
@@ -80,15 +85,11 @@ impl fmt::Display for Failure {
     }
 }
 
-/// One fixed-id object and the reads that prove it this run's, then gone.
+/// One fixed-id Kibana object and the reads that prove it this run's, then
+/// gone.
 struct Target<'a> {
     object: &'static str,
-    read: String,
-    delete: String,
-    /// The read that proves absence. It differs from `read` only for the
-    /// index, whose marker lives in a document.
-    absent: String,
-    elasticsearch: bool,
+    path: String,
     owns: fn(&Value) -> bool,
     /// The server id this run learned, which a re-read must still show.
     id: Option<&'a str>,
@@ -105,21 +106,10 @@ impl Target<'_> {
     ) -> Target<'a> {
         Target {
             object,
-            read: path.clone(),
-            delete: path.clone(),
-            absent: path,
-            elasticsearch: false,
+            path,
             owns,
             id,
             empty: None,
-        }
-    }
-
-    async fn get(&self, t: &Transport, path: &str) -> elasticctl_core::Result<Value> {
-        if self.elasticsearch {
-            t.get_absolute_es(path).await
-        } else {
-            t.get(path).await
         }
     }
 
@@ -132,7 +122,7 @@ impl Target<'_> {
 }
 
 async fn confirm_absent(t: &Transport, target: &Target<'_>) -> Result<(), Failure> {
-    match target.get(t, &target.absent).await {
+    match t.get(&target.path).await {
         Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(Failure::present(target.object)),
         Err(error) => Err(Failure::request(
@@ -146,15 +136,10 @@ async fn confirm_absent(t: &Transport, target: &Target<'_>) -> Result<(), Failur
 /// Remove one owned object. Returns the read taken before the delete, or
 /// `None` when the object was already gone.
 async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Failure> {
-    let current = match target.get(t, &target.read).await {
+    let current = match t.get(&target.path).await {
         Ok(value) if target.matches(&value) => value,
         Ok(_) => return Err(Failure::refused(target.object)),
-        Err(error) if error.kind == ErrorKind::NotFound => {
-            if target.absent != target.read {
-                confirm_absent(t, target).await?;
-            }
-            return Ok(None);
-        }
+        Err(error) if error.kind == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(Failure::request("checking", target.object, &error)),
     };
     if let Some(find) = &target.empty {
@@ -166,12 +151,7 @@ async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Fai
             return Err(Failure::kept(target.object, "it still holds items"));
         }
     }
-    let deleted = if target.elasticsearch {
-        t.delete_absolute_es(&target.delete).await
-    } else {
-        t.delete(&target.delete).await
-    };
-    match deleted {
+    match t.delete(&target.path).await {
         Ok(_) => {}
         Err(error) if error.kind == ErrorKind::NotFound => {}
         Err(error) => return Err(Failure::request("deleting", target.object, &error)),
@@ -260,6 +240,65 @@ async fn reconcile_case(
     let mut watch = Watch::new(timing.settle_window);
     loop {
         let removed = remove_case(t, known).await?;
+        if watch.observe(Instant::now(), removed) {
+            return Ok(());
+        }
+        tokio::time::sleep(timing.settle_interval).await;
+    }
+}
+
+/// The UUID one read of the marker index reports: `None` when the index is absent,
+/// `Some(None)` when an answer does not name exactly the marker index.
+async fn read_index_uuid(
+    t: &Transport,
+    stage: &'static str,
+) -> Result<Option<Option<String>>, Failure> {
+    match t.get_absolute_es(&index_uuid_path()).await {
+        Ok(settings) => Ok(Some(index_uuid(&settings).map(str::to_owned))),
+        Err(error) if error.kind == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Failure::request(stage, INDEX, &error)),
+    }
+}
+
+/// Remove the marker index only while it reports the UUID this run
+/// recorded. An index present without a recorded UUID is never deleted.
+/// Returns whether an index was deleted.
+async fn remove_index(t: &Transport, recorded: Option<&str>) -> Result<bool, Failure> {
+    let Some(current) = read_index_uuid(t, "checking").await? else {
+        return Ok(false);
+    };
+    let Some(recorded) = recorded else {
+        return Err(Failure::unrecorded(INDEX));
+    };
+    if current.as_deref() != Some(recorded) {
+        return Err(Failure::refused(INDEX));
+    }
+    match t.delete_absolute_es_once(&marker_index_path()).await {
+        Ok(_) => {}
+        Err(error) if error.kind == ErrorKind::NotFound => {}
+        Err(error) => return Err(Failure::request("deleting", INDEX, &error)),
+    }
+    match read_index_uuid(t, "verifying the removal of").await? {
+        None => Ok(true),
+        Some(_) => Err(Failure::present(INDEX)),
+    }
+}
+
+/// The index counterpart of `reconcile`. An index whose create answer was
+/// lost has no recorded UUID, so one that appears in the settle window is
+/// left for manual recovery.
+async fn reconcile_index(
+    t: &Transport,
+    recorded: Option<&str>,
+    unresolved: bool,
+    timing: &Timing,
+) -> Result<(), Failure> {
+    if !unresolved {
+        return remove_index(t, recorded).await.map(|_| ());
+    }
+    let mut watch = Watch::new(timing.settle_window);
+    loop {
+        let removed = remove_index(t, recorded).await?;
         if watch.observe(Instant::now(), removed) {
             return Ok(());
         }
@@ -425,17 +464,8 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
     }
 
     if owned.alert_index {
-        let target = Target {
-            object: INDEX,
-            read: format!("/{ALERT_PROBE_INDEX}/_doc/1"),
-            delete: format!("/{ALERT_PROBE_INDEX}"),
-            absent: format!("/{ALERT_PROBE_INDEX}"),
-            elasticsearch: true,
-            owns: owns_alert_index,
-            id: None,
-            empty: None,
-        };
-        match reconcile(t, &target, unresolved.alert_index, timing).await {
+        let recorded = ids.index_uuid.as_deref();
+        match reconcile_index(t, recorded, unresolved.alert_index, timing).await {
             Ok(_) => (owned.alert_index, unresolved.alert_index) = (false, false),
             Err(failure) => failures.push(failure),
         }
@@ -482,7 +512,7 @@ pub(super) fn still_unresolved(compose: &ComposeSession<'_>) -> Vec<&'static str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorder::markers::{ALERT_MARKER_TAG, CASE_TAG, CASE_TITLE};
+    use crate::recorder::markers::{ALERT_MARKER_TAG, ALERT_PROBE_INDEX, CASE_TAG, CASE_TITLE};
     use crate::recorder::test_support::mock_transport;
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param};
@@ -692,16 +722,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_index_without_its_marker_document_is_kept() {
+    async fn an_index_without_a_recorded_uuid_is_never_deleted() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(format!("/{ALERT_PROBE_INDEX}/_doc/1")))
-            .respond_with(not_found())
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path(format!("/{ALERT_PROBE_INDEX}")))
-            .respond_with(ok(json!({})))
+            .and(path(index_uuid_path()))
+            .respond_with(ok(
+                json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": "uuid-1"}}}}),
+            ))
             .mount(&server)
             .await;
         let t = mock_transport(&server);
@@ -710,13 +737,11 @@ mod tests {
 
         let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
-        assert_eq!(failures, [Failure::present(INDEX)]);
+        assert_eq!(failures, [Failure::unrecorded(INDEX)]);
         assert!(compose.session.ownership.alert_index);
-        assert!(
-            requests(&server)
-                .await
-                .iter()
-                .all(|r| r.starts_with("GET "))
+        assert_eq!(
+            requests(&server).await,
+            [format!("GET {}", index_uuid_path())]
         );
     }
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- `elasticctl_core::Transport::put_absolute_es_once`,
+  `post_absolute_es_once`, and `delete_absolute_es_once` send an
+  Elasticsearch write exactly once, with no retry on any status.
+
 ### Changed
 
 - Rule normalization drops the tag `Missing Elastic Cloud API Key`, which

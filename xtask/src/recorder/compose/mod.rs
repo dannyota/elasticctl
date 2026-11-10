@@ -91,6 +91,9 @@ struct ServerIds {
     rule: Option<String>,
     missing_rule: Option<String>,
     case: Option<String>,
+    /// The UUID of the marker index this run created. The index is written
+    /// to and deleted only while it still reports this UUID.
+    index_uuid: Option<String>,
 }
 
 /// The session's ownership flags plus what this run learned. The step and
@@ -448,10 +451,22 @@ mod fake_stack {
     pub(super) const ALERT_INDEX: &str = ".internal.alerts-security.alerts-default-000001";
     pub(super) const PREBUILT_RULES: u64 = 2263;
     pub(super) const SESSION_RULE_UUID: &str = "so-elasticctl-sample-alert-probe";
+    /// The UUID of a marker index another run created.
+    pub(super) const FOREIGN_INDEX_UUID: &str = "uuid-foreign";
 
     #[derive(Default)]
     pub(super) struct State {
+        /// The marker index documents, by id.
         pub(super) index: BTreeMap<String, Value>,
+        /// The marker index UUID while the index exists.
+        pub(super) index_uuid: Option<String>,
+        index_creates: u32,
+        /// Another run's marker index, without document 1, appears right
+        /// after the preflight.
+        pub(super) index_after_preflight: bool,
+        /// Another run's marker index, with a marker document 1, replaces
+        /// this run's index just before cleanup reaches it.
+        pub(super) index_replaced_before_cleanup: bool,
         pub(super) list: Option<Value>,
         pub(super) items: BTreeMap<String, Value>,
         pub(super) rules: BTreeMap<String, Value>,
@@ -519,6 +534,7 @@ mod fake_stack {
     impl State {
         pub(super) fn is_empty(&self) -> bool {
             self.index.is_empty()
+                && self.index_uuid.is_none()
                 && self.list.is_none()
                 && self.items.is_empty()
                 && self.rules.is_empty()
@@ -727,8 +743,12 @@ mod fake_stack {
     }
 
     fn create_label(method: &str, path: &str, body: &Value) -> Option<String> {
+        let marker_create = format!("/{ALERT_PROBE_INDEX}/_create/");
         match (method, path) {
-            ("POST", p) if p == format!("/{ALERT_PROBE_INDEX}/_create/1") => Some("index".into()),
+            ("PUT", p) if p == format!("/{ALERT_PROBE_INDEX}") => Some("index".into()),
+            ("POST", p) if p.starts_with(&marker_create) => {
+                Some(format!("doc:{}", &p[marker_create.len()..]))
+            }
             ("POST", "/api/exception_lists") => Some("list".into()),
             ("POST", "/api/exception_lists/items") => Some(format!(
                 "item:{}",
@@ -769,9 +789,31 @@ mod fake_stack {
             }
             "/api/exception_lists" => Some("list".into()),
             "/api/cases/_find" => Some("case".into()),
-            p if p == format!("/{ALERT_PROBE_INDEX}/_doc/1") => Some("index".into()),
+            p if p == format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid") => Some("index".into()),
             _ => None,
         }
+    }
+
+    /// The Elasticsearch answer to an index create whose name is taken.
+    fn index_exists(uuid: &str) -> ResponseTemplate {
+        let reason = format!("index [{ALERT_PROBE_INDEX}/{uuid}] already exists");
+        let cause = json!({"type": "resource_already_exists_exception", "reason": reason,
+            "index_uuid": uuid, "index": ALERT_PROBE_INDEX});
+        let mut error = cause.clone();
+        error["root_cause"] = json!([cause]);
+        json_response(400, json!({"error": error, "status": 400}))
+    }
+
+    fn index_not_found() -> ResponseTemplate {
+        json_response(
+            404,
+            json!({"error": {"type": "index_not_found_exception",
+                "reason": format!("no such index [{ALERT_PROBE_INDEX}]")}, "status": 404}),
+        )
+    }
+
+    fn foreign_document() -> Value {
+        json!({"marker": ALERT_MARKER_TAG, "owner": "another run"})
     }
 
     fn unavailable() -> ResponseTemplate {
@@ -794,14 +836,15 @@ mod fake_stack {
         let tags = json!(["elasticctl", "fixture", ALERT_MARKER_TAG]);
         match label.split_once(':') {
             None if label == "index" => {
-                state.index.insert(
-                    "1".into(),
-                    json!({"marker": ALERT_MARKER_TAG, "owner": "another run"}),
-                );
+                state.index_uuid = Some(FOREIGN_INDEX_UUID.into());
+                state.index.insert("1".into(), foreign_document());
             }
             None => {
                 state.list = Some(json!({"list_id": LIST_ID, "namespace_type": "single",
                     "tags": tags, "id": "list-foreign"}));
+            }
+            Some(("doc", id)) => {
+                state.index.insert(id.to_string(), foreign_document());
             }
             Some(("item", item_id)) => {
                 state.items.insert(
@@ -821,9 +864,10 @@ mod fake_stack {
 
     pub(super) fn foreign_present(state: &State, label: &str) -> bool {
         match label.split_once(':') {
-            None if label == "index" => state
+            None if label == "index" => state.index_uuid.as_deref() == Some(FOREIGN_INDEX_UUID),
+            Some(("doc", id)) => state
                 .index
-                .get("1")
+                .get(id)
                 .is_some_and(|doc| doc["owner"] == "another run"),
             None => state
                 .list
@@ -875,8 +919,18 @@ mod fake_stack {
         let is = |label: &Option<String>, injected: &Option<String>| {
             label.is_some() && label == injected
         };
+        if state.index_after_preflight
+            && state.index_uuid.is_none()
+            && path == "/api/fleet/epm/packages/system"
+        {
+            state.index_uuid = Some(FOREIGN_INDEX_UUID.into());
+        }
         if is(&created, &state.conflict_on) {
-            plant_foreign(state, created.as_deref().unwrap_or_default());
+            let label = created.unwrap_or_default();
+            plant_foreign(state, &label);
+            if label == "index" {
+                return index_exists(FOREIGN_INDEX_UUID);
+            }
             return json_response(
                 409,
                 json!({"statusCode": 409, "error": "Conflict",
@@ -903,9 +957,20 @@ mod fake_stack {
             );
         }
         let mut response = route(state, &method, &path, &body, request);
+        if state.index_replaced_before_cleanup && deleting.as_deref() == Some("list") {
+            state.index_uuid = Some("uuid-other-run".into());
+            state.index = BTreeMap::from([("1".to_string(), foreign_document())]);
+        }
         if landing && let Some((label, pending)) = state.pending.take() {
             let pending_body: Value = serde_json::from_slice(&pending.body).unwrap_or(Value::Null);
-            let _ = route(state, "POST", pending.url.path(), &pending_body, &pending);
+            let pending_method = pending.method.to_string();
+            let _ = route(
+                state,
+                &pending_method,
+                pending.url.path(),
+                &pending_body,
+                &pending,
+            );
             if Some(&label) == state.retag_after_create.as_ref() {
                 retag(state, &label);
             }
@@ -961,7 +1026,32 @@ mod fake_stack {
                         "rules_not_updated": 0, "rules_custom_installed": 0}),
                 )
             }
+            ("PUT", p) if p == format!("/{ALERT_PROBE_INDEX}") => {
+                if let Some(uuid) = &state.index_uuid {
+                    return index_exists(uuid);
+                }
+                state.index_creates += 1;
+                state.index_uuid = Some(format!("uuid-{}", state.index_creates));
+                json_response(
+                    200,
+                    json!({"acknowledged": true, "shards_acknowledged": true,
+                        "index": ALERT_PROBE_INDEX}),
+                )
+            }
+            ("GET", p) if p == format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid") => {
+                match &state.index_uuid {
+                    Some(uuid) => json_response(
+                        200,
+                        json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": uuid}}}}),
+                    ),
+                    None => index_not_found(),
+                }
+            }
             ("POST", p) if p.starts_with(&marker_create) => {
+                // Elasticsearch creates a missing index on a document write.
+                if state.index_uuid.is_none() {
+                    state.index_uuid = Some("uuid-auto".into());
+                }
                 let id = p[marker_create.len()..].to_string();
                 if state.index.contains_key(&id) {
                     return json_response(
@@ -983,13 +1073,16 @@ mod fake_stack {
                 json_response(200, json!({"_shards": {}}))
             }
             ("GET", p) if p == format!("/{ALERT_PROBE_INDEX}") => {
-                if state.index.is_empty() {
-                    missing()
+                if state.index_uuid.is_none() {
+                    index_not_found()
                 } else {
                     json_response(200, json!({}))
                 }
             }
             ("DELETE", p) if p == format!("/{ALERT_PROBE_INDEX}") => {
+                if state.index_uuid.take().is_none() {
+                    return index_not_found();
+                }
                 state.index.clear();
                 json_response(200, json!({"acknowledged": true}))
             }
@@ -1117,7 +1210,7 @@ mod fake_stack {
             }
             ("GET", "/_resolve/index/%2Aelasticctl-sample%2A") => {
                 let mut indices = Vec::new();
-                if !state.index.is_empty() {
+                if state.index_uuid.is_some() {
                     indices.push(json!({"name": ALERT_PROBE_INDEX, "attributes": ["open"]}));
                 }
                 if inventory_extra(state, "indices") > 0 {
@@ -1540,7 +1633,7 @@ mod tests {
     #[tokio::test]
     async fn every_object_is_claimed_before_the_request_that_creates_it() {
         for (label, owner) in [
-            ("index", "alert_index"),
+            ("doc:1", "alert_index"),
             ("list", "list"),
             ("item:elasticctl-sample-exception-item", "item"),
             ("item:elasticctl-sample-exception-item-2", "compose_item"),
@@ -1596,7 +1689,22 @@ mod tests {
                 .position(|line| line.starts_with(needle))
                 .unwrap_or_else(|| panic!("{needle} not sent"))
         };
-        let first_write = position(&format!("POST /{ALERT_PROBE_INDEX}/_create/1"));
+        let first_write = position(&format!("PUT /{ALERT_PROBE_INDEX}"));
+        let settings = format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid");
+        let documents: Vec<String> = (1..=ALERT_DOCS)
+            .map(|seq| format!("POST /{ALERT_PROBE_INDEX}/_create/{seq}"))
+            .collect();
+        let mut index_writes = vec![
+            format!("PUT /{ALERT_PROBE_INDEX}"),
+            settings.clone(),
+            settings,
+        ];
+        index_writes.extend(documents);
+        assert_eq!(
+            state.log[first_write..first_write + index_writes.len()],
+            index_writes,
+            "the index is created, its UUID read and read again, then written"
+        );
         for preflight in [
             "GET /api/detection_engine/rules/_find?page=1&per_page=1&filter=",
             "GET /api/exception_lists/_find?page=1&per_page=1&namespace_type=single&filter=",
@@ -1636,12 +1744,12 @@ mod tests {
                 "POST /api/cases/case-real-1/comments",
             ]
         );
-        assert!(
-            state
-                .log
-                .iter()
-                .all(|line| !line.starts_with("PUT ") && !line.starts_with("PATCH "))
-        );
+        let replacing: Vec<&String> = state
+            .log
+            .iter()
+            .filter(|line| line.starts_with("PUT ") || line.starts_with("PATCH "))
+            .collect();
+        assert_eq!(replacing, [&format!("PUT /{ALERT_PROBE_INDEX}")]);
         assert!(
             !state
                 .log
@@ -2518,6 +2626,141 @@ mod tests {
         ] {
             let line = format!("GET {}", planned.target());
             assert!(state.log.contains(&line), "{line} not sent");
+        }
+    }
+
+    fn writes_or_deletes_the_index(state: &State) -> bool {
+        state.log.iter().any(|line| {
+            line.starts_with(&format!("POST /{ALERT_PROBE_INDEX}/"))
+                || line == &format!("DELETE /{ALERT_PROBE_INDEX}")
+        })
+    }
+
+    #[tokio::test]
+    async fn an_index_that_appears_after_the_preflight_is_never_written_to_or_deleted() {
+        let (server, state) = fake_stack(|s| s.index_after_preflight = true).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let error = outcome.step_error.expect("refused");
+        assert_eq!(
+            error.message,
+            "refusing to record: index elasticctl-sample-alert-events already exists and is not this run's"
+        );
+        assert!(!outcome.ownership_before_cleanup["alert_index"]);
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert_clean_lines(&outcome.lines);
+        let state = state.lock().expect("state");
+        assert!(
+            foreign_present(&state, "index"),
+            "the foreign index changed"
+        );
+        assert!(
+            state.index.is_empty(),
+            "a document reached the foreign index"
+        );
+        assert!(!writes_or_deletes_the_index(&state), "{:?}", state.log);
+    }
+
+    #[tokio::test]
+    async fn an_index_whose_uuid_changed_before_the_delete_is_kept_and_fails_the_run() {
+        let (server, state) = fake_stack(|s| s.index_replaced_before_cleanup = true).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        assert!(outcome.step_error.is_none());
+        assert_eq!(
+            outcome.failures,
+            [
+                "refusing to delete index elasticctl-sample-alert-events: its marker fields or id do not match"
+            ]
+        );
+        assert!(outcome.ownership_after_cleanup["alert_index"]);
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        let state = state.lock().expect("state");
+        assert_eq!(state.index_uuid.as_deref(), Some("uuid-other-run"));
+        assert!(foreign_present(&state, "doc:1"));
+        assert!(
+            !state.log.contains(&format!("DELETE /{ALERT_PROBE_INDEX}")),
+            "{:?}",
+            state.log
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_marker_document_keeps_the_index_owned_until_cleanup_removes_it() {
+        let (server, state) = fake_stack(|s| s.conflict_on = Some("doc:1".into())).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let error = outcome.step_error.expect("failed write");
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Conflict);
+        assert_eq!(error.message, "writing a marker document failed");
+        assert!(
+            outcome.ownership_before_cleanup["alert_index"],
+            "the conflict released the index"
+        );
+        assert!(!outcome.unresolved_before_cleanup["alert_index"]);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(released(&outcome.ownership_after_cleanup));
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        let state = state.lock().expect("state");
+        assert!(state.is_empty(), "the index survived cleanup");
+        let delete = format!("DELETE /{ALERT_PROBE_INDEX}");
+        let deletes: Vec<usize> = (0..state.log.len())
+            .filter(|n| state.log[*n] == delete)
+            .collect();
+        assert_eq!(deletes.len(), 1, "{:?}", state.log);
+        assert_eq!(
+            state.log[deletes[0] - 1],
+            format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"),
+            "the delete was not preceded by the UUID read"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_index_that_appears_is_left_for_manual_recovery_and_never_deleted() {
+        for configure in [
+            (|s: &mut State| s.unavailable_after_create = Some("index".into())) as fn(&mut State),
+            |s: &mut State| s.late_create = Some("index".into()),
+        ] {
+            let (server, state) = fake_stack(configure).await;
+            let t = mock_transport(&server);
+
+            let outcome = record_with(&t, short_settle(100)).await;
+
+            let error = outcome.step_error.as_ref().expect("failed create");
+            assert_eq!(error.http_status, Some(503));
+            assert!(outcome.ownership_before_cleanup["alert_index"]);
+            assert!(outcome.unresolved_before_cleanup["alert_index"]);
+            assert_eq!(
+                outcome.failures,
+                [
+                    "index elasticctl-sample-alert-events is present without a UUID this run recorded and needs manual recovery"
+                ]
+            );
+            assert!(outcome.ownership_after_cleanup["alert_index"]);
+            assert!(!outcome.succeeded && outcome.written.is_none());
+            assert!(
+                outcome.lines.iter().any(|line| line.starts_with(
+                    "record-compose needs manual recovery: index elasticctl-sample-alert-events "
+                )),
+                "{:?}",
+                outcome.lines
+            );
+            assert_clean_lines(&outcome.lines);
+            let state = state.lock().expect("state");
+            assert!(state.index_uuid.is_some(), "the index did not land");
+            assert!(state.index.is_empty(), "a document was written");
+            assert!(!writes_or_deletes_the_index(&state), "{:?}", state.log);
+            assert_eq!(
+                state.creates.iter().filter(|c| *c == "index").count(),
+                1,
+                "the create was sent twice"
+            );
         }
     }
 

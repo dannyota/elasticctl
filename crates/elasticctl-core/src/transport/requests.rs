@@ -380,11 +380,37 @@ impl Transport {
         self.send_absolute_es(Method::POST, path, Some(body)).await
     }
 
+    /// PUT JSON to Elasticsearch exactly once.
+    ///
+    /// This is for a write whose outcome must not be blurred by a retry, such
+    /// as an index create whose answer decides who owns the index. It uses
+    /// the one-shot client of [`Self::put_once`] and otherwise the request
+    /// construction, response parsing, and error classification of
+    /// [`Self::post_absolute_es`].
+    pub async fn put_absolute_es_once(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::PUT, path, Some(body), 1)
+            .await
+    }
+
+    /// POST JSON to Elasticsearch exactly once. See
+    /// [`Self::put_absolute_es_once`].
+    pub async fn post_absolute_es_once(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::POST, path, Some(body), 1)
+            .await
+    }
+
     /// DELETE from Elasticsearch.
     ///
     /// The fixture recorder uses this to remove its scratch index.
     pub async fn delete_absolute_es(&self, path: &str) -> Result<Value> {
         self.send_absolute_es(Method::DELETE, path, None).await
+    }
+
+    /// DELETE from Elasticsearch exactly once. See
+    /// [`Self::put_absolute_es_once`].
+    pub async fn delete_absolute_es_once(&self, path: &str) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::DELETE, path, None, 1)
+            .await
     }
 
     /// DELETE from Elasticsearch with a JSON body. The PIT close needs one;
@@ -400,12 +426,23 @@ impl Transport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
+        self.send_absolute_es_with(&self.client, method, path, body, self.attempt_limit)
+            .await
+    }
+
+    async fn send_absolute_es_with(
+        &self,
+        client: &Client,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+    ) -> Result<Value> {
         let url = format!("{}{}", self.es_base, path);
         let request_method = method.clone();
         let response = self
-            .send_retrying(method.clone(), &url, self.attempt_limit, || {
-                let mut req = self
-                    .client
+            .send_retrying(method.clone(), &url, attempt_limit, || {
+                let mut req = client
                     .request(request_method.clone(), &url)
                     .header("Authorization", &self.auth_header);
                 if let Some(b) = body {

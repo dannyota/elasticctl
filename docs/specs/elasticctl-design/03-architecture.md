@@ -104,6 +104,11 @@ Does not know about detection rules.
   One-shot sends the request once with redirects, connection pooling, and the
   HTTP client's protocol-level retries disabled; its caller resolves an
   ambiguous outcome with an exact read instead of repeating the mutation.
+  Elasticsearch PUT, POST, and DELETE have the same one-shot form,
+  `put_absolute_es_once`, `post_absolute_es_once`, and
+  `delete_absolute_es_once`, for a write whose
+  outcome must not be blurred by a retry, such as an index create whose answer
+  decides who owns the index.
   JSON, raw-export, multipart-import, and Elasticsearch responses share that
   retry loop and timeout/connection classification. A body-read failure is
   therefore classified the same way as a failure before the response headers.

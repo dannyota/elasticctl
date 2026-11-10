@@ -7,7 +7,9 @@ use crate::recorder::compose::{
     ACTIVITY_SINCE, ACTIVITY_SIZE, MISSING_RULE_ID, SORTED_PAGE_SIZE, SUBTECHNIQUE, TACTIC,
     TECHNIQUE, TECHNIQUE_PAGE_SIZE,
 };
-use crate::recorder::markers::{ALERT_MARKER_TAG, ALERT_RULE_ID, LIST_ID, NAMESPACE_TYPE};
+use crate::recorder::markers::{
+    ALERT_MARKER_TAG, ALERT_PROBE_INDEX, ALERT_RULE_ID, LIST_ID, NAMESPACE_TYPE,
+};
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
@@ -298,6 +300,17 @@ pub(super) fn item_path(item_id: &str) -> String {
 /// id already exists instead of overwriting it.
 pub(super) fn marker_document_path(index: &str, seq: usize) -> String {
     format!("/{index}/_create/{seq}")
+}
+
+/// The marker index create and delete. A `PUT` creates the index only when
+/// the name is free.
+pub(super) fn marker_index_path() -> String {
+    format!("/{ALERT_PROBE_INDEX}")
+}
+
+/// The one setting read that reports the marker index UUID.
+pub(super) fn index_uuid_path() -> String {
+    format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid")
 }
 
 #[cfg(test)]
@@ -625,6 +638,11 @@ mod tests {
         assert_eq!(
             marker_document_path("elasticctl-sample-alert-events", 3),
             "/elasticctl-sample-alert-events/_create/3"
+        );
+        assert_eq!(marker_index_path(), "/elasticctl-sample-alert-events");
+        assert_eq!(
+            index_uuid_path(),
+            "/elasticctl-sample-alert-events/_settings/index.uuid"
         );
         assert_eq!(
             item_path("elasticctl-sample-exception-item-2"),

@@ -8,12 +8,11 @@
 //! interrupt, or a panic, leaves the claim unresolved for cleanup's settle
 //! window.
 //!
-//! Every Kibana create is create-only and sent once. The marker documents
-//! are the exception: the transport's only Elasticsearch write,
-//! `post_absolute_es`, retries a 5xx, so a 409 there can follow this run's
-//! own applied write. The claim is still released on a 409, which leaves
-//! such an index for the baseline audit to report rather than risk deleting
-//! another run's index.
+//! Every create is create-only and sent once, so a retry can never turn this
+//! run's applied write into a conflict. The marker index is created
+//! explicitly and its UUID kept: the index is this run's only while it still
+//! reports that UUID, which is read again before the marker documents are
+//! written and before cleanup deletes it.
 
 use crate::clock::now_rfc3339;
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
@@ -22,7 +21,9 @@ use crate::recorder::compose::cleanup::{
     CASE, COMPOSE_ITEM, INDEX, ITEM, LIST, MISSING_RULE, RULE,
 };
 use crate::recorder::compose::evidence::PrivateLog;
-use crate::recorder::compose::requests::{RULES_PATH, marker_document_path, package_status};
+use crate::recorder::compose::requests::{
+    RULES_PATH, index_uuid_path, marker_document_path, marker_index_path, package_status,
+};
 use crate::recorder::compose::settle::Unresolved;
 use crate::recorder::compose::{
     ALERT_DOCS, COMPOSE_ITEM_ID, COMPOSE_RULE_NAME, ComposeSession, MISSING_INDEX, MISSING_RULE_ID,
@@ -184,10 +185,63 @@ async fn create_once(
     }
 }
 
-/// Index the marker documents with the create-only route, then refresh. The
-/// index is claimed before the first write; an existing document means the
-/// index is not this run's. The claim resolves once every document reports
-/// created.
+/// Whether an index create failed because the marker index name is taken.
+///
+/// Elasticsearch answers 400 `resource_already_exists_exception` with the
+/// reason `index [<name>/<uuid>] already exists`. The transport keeps the
+/// status and that reason, not the type, so the reason must name exactly
+/// the marker index. Any other answer is not a definite "already exists".
+fn index_already_exists(error: &elasticctl_core::Error) -> bool {
+    error.kind == ErrorKind::Http
+        && error.http_status == Some(400)
+        && error
+            .message
+            .strip_prefix(&format!("index [{ALERT_PROBE_INDEX}"))
+            .and_then(|rest| rest.strip_suffix("] already exists"))
+            .is_some_and(|uuid| {
+                uuid.is_empty()
+                    || uuid
+                        .strip_prefix('/')
+                        .is_some_and(|uuid| !uuid.is_empty() && !uuid.contains(['/', ']', ' ']))
+            })
+}
+
+/// The UUID a settings read reports, when the answer names exactly the
+/// marker index and nothing else.
+pub(super) fn index_uuid(settings: &Value) -> Option<&str> {
+    let indices = settings.as_object().filter(|indices| indices.len() == 1)?;
+    indices
+        .get(ALERT_PROBE_INDEX)?
+        .pointer("/settings/index/uuid")?
+        .as_str()
+        .filter(|uuid| !uuid.is_empty())
+}
+
+/// Read the marker index UUID again and require the one this run created.
+/// A missing index or another UUID means the index is not this run's.
+async fn require_own_index(t: &Transport, uuid: &str) -> elasticctl_core::Result<()> {
+    let not_ours = || {
+        recording_error(format!(
+            "refusing to write: {INDEX} is not the one this run created"
+        ))
+    };
+    match t.get_absolute_es(&index_uuid_path()).await {
+        Ok(settings) if index_uuid(&settings) == Some(uuid) => Ok(()),
+        Ok(_) => Err(not_ours()),
+        Err(error) if error.kind == ErrorKind::NotFound => Err(not_ours()),
+        Err(error) => Err(safe_recording_transport_error(
+            "reading the marker index UUID failed",
+            error,
+        )),
+    }
+}
+
+/// Create the marker index, keep its UUID, then index the marker documents
+/// with the create-only route and refresh. The index is claimed before the
+/// create, which is sent once. A definite "already exists" releases the
+/// claim; the claim resolves only once the UUID is read, and any other end
+/// leaves it unresolved. The documents are written only after a second read
+/// still shows that UUID.
 pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl_core::Result<()> {
     let t = compose.session.transport;
     let mut claim = Claim {
@@ -195,14 +249,52 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
         unresolved: &mut compose.unresolved.alert_index,
     };
     claim.take();
+    match t
+        .put_absolute_es_once(&marker_index_path(), &json!({}))
+        .await
+    {
+        Ok(created)
+            if created["acknowledged"].as_bool() == Some(true)
+                && created["index"].as_str() == Some(ALERT_PROBE_INDEX) => {}
+        Ok(_) => {
+            return Err(recording_error(
+                "the marker index create was not acknowledged",
+            ));
+        }
+        Err(error) if index_already_exists(&error) => {
+            claim.release();
+            return Err(conflict(INDEX));
+        }
+        Err(error) => {
+            return Err(safe_recording_transport_error(
+                "creating the marker index failed",
+                error,
+            ));
+        }
+    }
+    let settings = t
+        .get_absolute_es(&index_uuid_path())
+        .await
+        .map_err(|error| {
+            safe_recording_transport_error("reading the marker index UUID failed", error)
+        })?;
+    let uuid = index_uuid(&settings)
+        .ok_or_else(|| recording_error("the marker index settings did not report its UUID"))?
+        .to_owned();
+    compose.ids.index_uuid = Some(uuid.clone());
+    claim.resolve();
+
+    require_own_index(t, &uuid).await?;
     for seq in 1..=ALERT_DOCS {
         let doc = json!({
             "@timestamp": now_rfc3339(),
             "marker": ALERT_MARKER_TAG,
             "message": format!("elasticctl sample compose event {seq}"),
         });
+        // A conflict here fails the step but leaves the index owned: its
+        // UUID proves it this run's, and cleanup removes it by that UUID.
         match t
-            .post_absolute_es(&marker_document_path(ALERT_PROBE_INDEX, seq), &doc)
+            .post_absolute_es_once(&marker_document_path(ALERT_PROBE_INDEX, seq), &doc)
             .await
         {
             Ok(created) if created["result"].as_str() == Some("created") => {}
@@ -210,10 +302,6 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
                 return Err(recording_error(
                     "a marker document write did not report created",
                 ));
-            }
-            Err(error) if error.kind == ErrorKind::Conflict => {
-                claim.release();
-                return Err(conflict(INDEX));
             }
             Err(error) => {
                 return Err(safe_recording_transport_error(
@@ -223,7 +311,6 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
             }
         }
     }
-    claim.resolve();
     let proof = t
         .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
         .await
@@ -707,6 +794,166 @@ mod tests {
         .expect("created");
 
         assert!(owned && !unresolved);
+    }
+
+    fn already_exists(index: &str) -> Value {
+        let reason = format!("index [{index}/AbC-12_xyz] already exists");
+        json!({"error": {"root_cause": [{"type": "resource_already_exists_exception",
+            "reason": reason}], "type": "resource_already_exists_exception",
+            "reason": reason, "index_uuid": "AbC-12_xyz", "index": index}, "status": 400})
+    }
+
+    fn settings(index: &str, uuid: &str) -> ResponseTemplate {
+        ok(json!({(index): {"settings": {"index": {"uuid": uuid}}}}))
+    }
+
+    async fn mount_index_create(server: &MockServer, response: ResponseTemplate) {
+        Mock::given(method("PUT"))
+            .and(path(format!("/{ALERT_PROBE_INDEX}")))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    /// Mount settings answers for the marker index, one per read, in order.
+    async fn mount_uuid_reads(server: &MockServer, answers: Vec<ResponseTemplate>) {
+        for answer in answers {
+            Mock::given(method("GET"))
+                .and(path(format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid")))
+                .respond_with(answer)
+                .up_to_n_times(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn acknowledged() -> ResponseTemplate {
+        ok(json!({"acknowledged": true, "shards_acknowledged": true, "index": ALERT_PROBE_INDEX}))
+    }
+
+    #[tokio::test]
+    async fn an_index_create_answered_already_exists_releases_the_claim_and_sends_no_document() {
+        let server = MockServer::start().await;
+        mount_index_create(
+            &server,
+            ResponseTemplate::new(400).set_body_json(already_exists(ALERT_PROBE_INDEX)),
+        )
+        .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+
+        let error = create_index(&mut compose).await.expect_err("taken");
+
+        assert_eq!(
+            error.message,
+            "refusing to record: index elasticctl-sample-alert-events already exists and is not this run's"
+        );
+        assert!(!compose.session.ownership.alert_index);
+        assert!(!compose.unresolved.alert_index);
+        assert_eq!(compose.ids.index_uuid, None);
+        assert_eq!(
+            requests(&server).await,
+            [format!("PUT /{ALERT_PROBE_INDEX}")]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_index_create_leaves_the_claim_unresolved_after_one_request() {
+        for (status, body) in [
+            (
+                503,
+                json!({"message": "private.example.internal unavailable"}),
+            ),
+            (429, json!({"message": "private.example.internal busy"})),
+            (
+                500,
+                json!({"error": {"type": "x", "reason": "private.example.internal"}, "status": 500}),
+            ),
+            (400, already_exists("elasticctl-sample-alert-events-other")),
+            (
+                400,
+                json!({"error": {"type": "invalid_index_name_exception",
+                "reason": "Invalid index name [elasticctl-sample-alert-events], already exists as alias"},
+                "status": 400}),
+            ),
+            (
+                200,
+                json!({"acknowledged": false, "shards_acknowledged": false,
+                "index": ALERT_PROBE_INDEX}),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            mount_index_create(&server, ResponseTemplate::new(status).set_body_json(body)).await;
+            let t = mock_transport(&server);
+            let mut compose = ComposeSession::new(&t);
+
+            let error = create_index(&mut compose).await.expect_err("ambiguous");
+
+            assert!(compose.session.ownership.alert_index, "{status}");
+            assert!(compose.unresolved.alert_index, "{status}");
+            assert_eq!(compose.ids.index_uuid, None, "{status}");
+            assert!(!error.message.contains("private"), "{}", error.message);
+            assert_eq!(
+                requests(&server).await,
+                [format!("PUT /{ALERT_PROBE_INDEX}")],
+                "{status}: the create is sent exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_uuid_read_that_does_not_prove_the_index_sends_no_document() {
+        let refused = || {
+            ResponseTemplate::new(403).set_body_json(json!({"message": "private.example.internal"}))
+        };
+        let missing = || {
+            ResponseTemplate::new(404).set_body_json(
+                json!({"error": {"type": "index_not_found_exception"}, "status": 404}),
+            )
+        };
+        // The reads after the create, and the UUID this run keeps.
+        for (reads, kept) in [
+            (vec![refused()], None),
+            (vec![settings("other-index", "uuid-1")], None),
+            (
+                vec![
+                    settings(ALERT_PROBE_INDEX, "uuid-1"),
+                    settings(ALERT_PROBE_INDEX, "uuid-2"),
+                ],
+                Some("uuid-1"),
+            ),
+            (
+                vec![settings(ALERT_PROBE_INDEX, "uuid-1"), missing()],
+                Some("uuid-1"),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            mount_index_create(&server, acknowledged()).await;
+            let count = reads.len();
+            mount_uuid_reads(&server, reads).await;
+            let t = mock_transport(&server);
+            let mut compose = ComposeSession::new(&t);
+
+            let error = create_index(&mut compose).await.expect_err("unproven");
+
+            assert!(compose.session.ownership.alert_index);
+            assert_eq!(
+                compose.unresolved.alert_index,
+                kept.is_none(),
+                "only a recorded UUID resolves the claim"
+            );
+            assert_eq!(compose.ids.index_uuid.as_deref(), kept);
+            assert!(!error.message.contains("private"), "{}", error.message);
+            if kept.is_some() {
+                assert_eq!(
+                    error.message,
+                    "refusing to write: index elasticctl-sample-alert-events is not the one this run created"
+                );
+            }
+            let sent = requests(&server).await;
+            assert_eq!(sent.len(), 1 + count, "{sent:?}");
+            assert!(sent.iter().all(|r| !r.starts_with("POST ")), "{sent:?}");
+        }
     }
 
     #[test]
