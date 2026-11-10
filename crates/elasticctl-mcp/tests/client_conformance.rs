@@ -359,7 +359,9 @@ fn success_arguments(name: &str) -> Value {
         "fleet_integration_policies_get" => {
             json!({"selector":"elasticctl-sample-integration-policy"})
         }
-const PLACEHOLDER_TOOLS: [&str; 0] = [];
+        "rules_get" | "rule_health" | "rule_readiness" => {
+            json!({"selector":"elasticctl-fixture-probe"})
+        }
         "exceptions_get" => json!({"list_id":"elasticctl-sample-exceptions","namespace":"single"}),
         "search_esql" => json!({"query":"FROM logs-*"}),
         "search_dsl" => json!({"index":"logs-*","query":{"match_all":{}}}),
@@ -512,10 +514,6 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
         .expect("legacy server cleanly exits");
 }
 
-/// Task tools registered before their implementation. Each answers every
-/// call with an error, so only the router error is checked for them.
-const PLACEHOLDER_TOOLS: [&str; 0] = [];
-
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
     let mock = MockServer::start().await;
@@ -531,18 +529,16 @@ async fn catalog_schema_accepts_each_declared_success_and_router_error() {
     {
         let name = tool["name"].as_str().expect("tool name");
         let schema = &tool["outputSchema"];
-        if !PLACEHOLDER_TOOLS.contains(&name) {
-            let success = raw_call(
-                &mut harness,
-                10 + offset as u64,
-                name,
-                success_arguments(name),
-            )
-            .await;
-            assert_eq!(success["result"]["isError"], false, "{name}");
-            assert_text_copy(&success);
-            assert_schema(schema, structured(&success));
-        }
+        let success = raw_call(
+            &mut harness,
+            10 + offset as u64,
+            name,
+            success_arguments(name),
+        )
+        .await;
+        assert_eq!(success["result"]["isError"], false, "{name}");
+        assert_text_copy(&success);
+        assert_schema(schema, structured(&success));
         let reply = raw_call(
             &mut harness,
             100 + offset as u64,
