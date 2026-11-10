@@ -216,7 +216,7 @@ pub enum Command {
         #[command(subcommand)]
         action: CasesAction,
     },
-    /// Serve read-only Elastic tools over MCP stdio
+    /// Serve Elastic tools over MCP stdio
     Mcp {
         #[command(subcommand)]
         action: McpAction,
@@ -237,6 +237,9 @@ pub enum McpAction {
         /// Enable the synchronous Elasticsearch query tools for this process.
         #[arg(long)]
         allow_query_tools: bool,
+        /// Enable mutation tools for the named classes.
+        #[arg(long, value_name = "CLASSES")]
+        allow_mutations: Vec<String>,
     },
 }
 

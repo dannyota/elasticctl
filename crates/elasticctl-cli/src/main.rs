@@ -45,12 +45,16 @@ async fn main() {
         }
     ) {
         let Command::Mcp {
-            action: McpAction::Serve { allow_query_tools },
+            action:
+                McpAction::Serve {
+                    allow_query_tools,
+                    allow_mutations,
+                },
         } = &args.command
         else {
             unreachable!()
         };
-        cmd::mcp::serve(&args.global, *allow_query_tools).await;
+        cmd::mcp::serve(&args.global, *allow_query_tools, allow_mutations).await;
     }
 
     let result = match &args.command {
