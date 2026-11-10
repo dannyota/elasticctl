@@ -1,0 +1,17 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "rules_preview",
+  "response": {
+    "logs": [
+      {
+        "errors": [],
+        "warnings": [
+          "Unable to find matching indices for rule elasticctl fixture probe. This warning will persist until one of the following occurs: a matching index is created or the rule is disabled."
+        ],
+        "startedAt": "2026-08-12T18:00:00.000Z"
+      }
+    ],
+    "isAborted": false
+  }
+}

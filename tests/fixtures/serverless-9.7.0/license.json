@@ -1,0 +1,16 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "license",
+  "response": {
+    "license": {
+      "status": "active",
+      "type": "enterprise",
+      "max_nodes": null,
+      "max_resource_units": 100000,
+      "issued_to": "Elastic Serverless",
+      "issuer": "Elastic",
+      "start_date_in_millis": 0
+    }
+  }
+}

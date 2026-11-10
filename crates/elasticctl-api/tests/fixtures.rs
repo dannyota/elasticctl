@@ -151,6 +151,15 @@ const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 16] = [
     "integration_policy_parent_delete_not_found.json",
 ];
 
+/// Async columnar ES|QL fixtures added in 0.7.5, recorded by the search probe
+/// with the body `search esql --out` sends. Sets recorded before the probe
+/// gained them carry none; a set never carries only some.
+const V0_7_5_ESQL_ASYNC_FIXTURES: [&str; 3] = [
+    "esql_async_start.json",
+    "esql_async_get.json",
+    "esql_async_delete.json",
+];
+
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
@@ -1650,6 +1659,81 @@ fn search_fixtures_decode_through_the_production_paths() {
             set.display()
         );
     }
+}
+
+#[test]
+fn esql_async_fixtures_decode_to_the_sync_rows() {
+    let mut recorded = 0;
+    for set in fixture_sets() {
+        let present = V0_7_5_ESQL_ASYNC_FIXTURES
+            .iter()
+            .filter(|name| set.join(name).is_file())
+            .count();
+        if present == 0 {
+            continue;
+        }
+        assert_eq!(
+            present,
+            V0_7_5_ESQL_ASYNC_FIXTURES.len(),
+            "{}: the async ES|QL fixtures are recorded together",
+            set.display()
+        );
+        recorded += 1;
+
+        let start = fixture_body(&set.join("esql_async_start.json"));
+        assert_eq!(
+            start["request"]["wait_for_completion_timeout"],
+            "1ms",
+            "{}: the start request matches `search esql --out`",
+            set.display()
+        );
+        assert_eq!(start["request"]["columnar"], true, "{}", set.display());
+        assert_eq!(
+            start["response"]["is_running"],
+            true,
+            "{}: the recorded start must take the polling branch",
+            set.display()
+        );
+        assert_eq!(
+            start["response"]["id"],
+            "elasticctl-fixture-esql-async",
+            "{}: the async id is pinned to its placeholder",
+            set.display()
+        );
+
+        let get = fixture_body(&set.join("esql_async_get.json"));
+        assert_eq!(get["response"]["is_running"], false, "{}", set.display());
+        let columnar = elasticctl_api::search::esql::decode_columnar(&get["response"])
+            .expect("decode esql_async_get response");
+        let sync = elasticctl_api::search::esql::decode(
+            &fixture_body(&set.join("esql_query.json"))["response"],
+        )
+        .expect("decode esql_query response");
+        assert_eq!(
+            columnar.columns,
+            sync.columns,
+            "{}: async and sync columns agree",
+            set.display()
+        );
+        assert_eq!(
+            columnar.values,
+            sync.values,
+            "{}: the transposed async rows equal the sync rows",
+            set.display()
+        );
+
+        let delete = fixture_body(&set.join("esql_async_delete.json"));
+        assert_eq!(
+            delete["response"]["acknowledged"],
+            true,
+            "{}",
+            set.display()
+        );
+    }
+    assert!(
+        recorded > 0,
+        "no fixture set carries the async ES|QL exchange"
+    );
 }
 
 #[test]

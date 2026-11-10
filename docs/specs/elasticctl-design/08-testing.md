@@ -23,7 +23,10 @@ server-provided message or response body.
 A data stream backing index name, `.ds-<stream>-<yyyy.MM.dd>-<generation>`,
 carries the date its stream rolled over, which dates the recording stack. The
 scrub replaces that date with `REDACTED` in every string that is exactly such a
-name and keeps the stream and generation.
+name and keeps the stream and generation. `scripts/check-fixtures.sh` rejects a
+fixture whose backing index name still ends in a date and generation. CI logs
+are public, so it reports every match by file and line and never prints the
+matched text.
 
 Fixture scrubbing treats every configured recording authority as sensitive.
 Matching is ASCII case-insensitive, including exact authorities in plain text.

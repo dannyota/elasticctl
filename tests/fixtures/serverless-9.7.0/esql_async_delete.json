@@ -1,0 +1,8 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "esql_async_delete",
+  "response": {
+    "acknowledged": true
+  }
+}

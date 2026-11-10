@@ -156,6 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/test/check-fixtures-test.sh
       - name: Scan recorded fixtures for identity and credentials
         run: ./scripts/check-fixtures.sh
       - name: Validate public conformance reports

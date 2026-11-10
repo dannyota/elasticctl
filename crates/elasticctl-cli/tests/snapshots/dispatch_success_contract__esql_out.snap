@@ -1,0 +1,76 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "search",
+      "esql",
+      "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/_query/async",
+        "query": null,
+        "body": "{\"query\":\"FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2\",\"wait_for_completion_timeout\":\"1ms\",\"columnar\":true}"
+      },
+      {
+        "method": "GET",
+        "path": "/_query/async/elasticctl-fixture-esql-async",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "DELETE",
+        "path": "/_query/async/elasticctl-fixture-esql-async",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": "{\"marker\":\"elasticctl-sample\",\"marker.keyword\":\"elasticctl-sample\",\"message\":\"elasticctl sample search document 1\",\"message.keyword\":\"elasticctl sample search document 1\",\"seq\":1}\n{\"marker\":\"elasticctl-sample\",\"marker.keyword\":\"elasticctl-sample\",\"message\":\"elasticctl sample search document 2\",\"message.keyword\":\"elasticctl sample search document 2\",\"seq\":2}\n",
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "search",
+      "esql",
+      "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2",
+      "--out",
+      "ROOT/out",
+      "--format",
+      "csv"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/_query/async",
+        "query": null,
+        "body": "{\"query\":\"FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2\",\"wait_for_completion_timeout\":\"1ms\",\"columnar\":true}"
+      },
+      {
+        "method": "GET",
+        "path": "/_query/async/elasticctl-fixture-esql-async",
+        "query": null,
+        "body": ""
+      },
+      {
+        "method": "DELETE",
+        "path": "/_query/async/elasticctl-fixture-esql-async",
+        "query": null,
+        "body": ""
+      }
+    ],
+    "out": "marker,marker.keyword,message,message.keyword,seq\nelasticctl-sample,elasticctl-sample,elasticctl sample search document 1,elasticctl sample search document 1,1\nelasticctl-sample,elasticctl-sample,elasticctl sample search document 2,elasticctl sample search document 2,2\n",
+    "pulled_rule": null
+  }
+]

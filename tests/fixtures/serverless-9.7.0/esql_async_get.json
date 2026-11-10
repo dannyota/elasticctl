@@ -1,0 +1,53 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "esql_async_get",
+  "response": {
+    "is_running": false,
+    "is_partial": false,
+    "columns": [
+      {
+        "name": "marker",
+        "type": "text"
+      },
+      {
+        "name": "marker.keyword",
+        "type": "keyword"
+      },
+      {
+        "name": "message",
+        "type": "text"
+      },
+      {
+        "name": "message.keyword",
+        "type": "keyword"
+      },
+      {
+        "name": "seq",
+        "type": "long"
+      }
+    ],
+    "values": [
+      [
+        "elasticctl-sample",
+        "elasticctl-sample"
+      ],
+      [
+        "elasticctl-sample",
+        "elasticctl-sample"
+      ],
+      [
+        "elasticctl sample search document 1",
+        "elasticctl sample search document 2"
+      ],
+      [
+        "elasticctl sample search document 1",
+        "elasticctl sample search document 2"
+      ],
+      [
+        1,
+        2
+      ]
+    ]
+  }
+}

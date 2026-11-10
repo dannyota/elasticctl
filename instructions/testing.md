@@ -11,7 +11,8 @@ bash scripts/test/check-lengths-test.sh && bash scripts/check-lengths.sh
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo deny check advisories bans licenses sources
-./scripts/check-packages.sh && ./scripts/check-fixtures.sh && ./scripts/check-conformance-reports.sh
+bash scripts/test/check-fixtures-test.sh && ./scripts/check-fixtures.sh
+./scripts/check-packages.sh && ./scripts/check-conformance-reports.sh
 cargo publish --workspace --dry-run --locked      # release preflight, no upload
 ```
 

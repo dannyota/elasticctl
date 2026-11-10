@@ -1,0 +1,22 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "signals_status_query",
+  "request": {
+    "query": {
+      "term": {
+        "kibana.alert.rule.rule_id": "elasticctl-sample-alert-probe"
+      }
+    },
+    "status": "closed",
+    "conflicts": "abort",
+    "reason": "automated_closure"
+  },
+  "response": {
+    "total": 1,
+    "updated": 1,
+    "version_conflicts": 0,
+    "noops": 0,
+    "failures": []
+  }
+}

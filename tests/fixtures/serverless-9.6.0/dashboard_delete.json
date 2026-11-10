@@ -1,6 +1,0 @@
-{
-  "flavor": "serverless",
-  "version": "9.6.0",
-  "operation": "dashboard_delete",
-  "response": null
-}
