@@ -63,10 +63,15 @@ A rule search returns each rule's full definition; one response for 2,263
 rules measured about 19 MB, above the 16 MiB response cap. MCP
 `detection_coverage` therefore reads matching rules in 500-rule pages sorted
 by creation time and checks that no rule is missing or repeated. It accepts
-at most 4,000 matching rules so that the call ends inside the deadline; a
-larger match fails with `unsupported`. Narrow it with `enabled`, `source`, or
-`tag`. If the rules change during two read attempts, the call fails with
-`conflict`; retry it.
+at most 4,000 matching rules; a larger match fails with `unsupported`.
+Narrow it with `enabled`, `source`, or `tag`. If the rules change during the
+read, it reads once more, and a second change fails the call with `conflict`;
+retry it.
+
+Each 500-rule page is about 4.4 MB. Over a slow link, one pass over 4,000
+rules can take more than 20 seconds and a second pass more than 40, past the
+30-second default deadline. Start the server with a longer `--timeout`, up to
+120 seconds, when the matching corpus is near the limit.
 
 ## A rule over a missing index reports partial failure
 
