@@ -16,10 +16,12 @@ DIR=tests/fixtures
 [ -d "$DIR" ] || { echo "no $DIR to scan"; exit 0; }
 
 fail=0
+# CI logs are public, so name each match by file and line and never print the
+# matched text.
 report() {
   echo "LEAK: $1"
   shift
-  printf '  %s\n' "$@"
+  printf '%s\n' "$@" | cut -d: -f1,2 | sed 's/^/  /'
   fail=1
 }
 
@@ -45,9 +47,10 @@ if hits=$(grep -rnE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$DIR" 2>/d
   report "an email address in a fixture" "$hits"
 fi
 
-# A data stream backing index name carries its rollover date, which dates the
-# recording stack. The recorder replaces that date with REDACTED.
-if hits=$(grep -rnE '\.ds-[^"]*-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+' "$DIR" 2>/dev/null); then
+# A data stream backing index name ends in its rollover date and generation,
+# and the date dates the recording stack. The recorder replaces that date with
+# REDACTED. A date earlier in the name belongs to the stream and is not matched.
+if hits=$(grep -rnE '\.ds-[^"]*-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+([^0-9A-Za-z._-]|$)' "$DIR" 2>/dev/null); then
   report "a dated backing index name in a fixture" "$hits"
 fi
 
