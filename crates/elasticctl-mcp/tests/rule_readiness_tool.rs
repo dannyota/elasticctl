@@ -842,3 +842,203 @@ async fn a_deadline_during_the_fifth_pattern_read_returns_no_data_and_frees_the_
     harness.close_input();
     harness.join().await.expect("clean EOF");
 }
+
+/// A large rule stays below the inspection body cap.
+async fn large_package_stack() -> (MockServer, String) {
+    let names = (0..100_000)
+        .map(|i| format!("package_{i:06}"))
+        .collect::<Vec<_>>();
+    let packages = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let body = rule(None, None, &packages);
+    assert!(serde_json::to_vec(&body).unwrap().len() < 16_777_216);
+    let server = router_stack(&body, Duration::ZERO, Duration::from_secs(3)).await;
+    Mock::given(path(POLICIES))
+        .respond_with(ok_json(policies(&[])).set_delay(Duration::from_secs(3)))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    (server, rule_id(&body))
+}
+
+#[tokio::test]
+async fn large_package_scan_cancellation_frees_the_permit_promptly() {
+    let (server, selector) = large_package_stack().await;
+    let mut harness = Harness::start(target(server.uri()), options());
+    let started = std::time::Instant::now();
+    harness
+        .send_json(call_frame(1, json!({"selector": selector})))
+        .await;
+    wait_for(&server, 1, |r| r.url.path() == RULES).await;
+    sleep(Duration::from_millis(100)).await;
+    harness
+        .send_json(json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1, "_meta": current_metadata()},
+        }))
+        .await;
+    assert!(
+        timeout(Duration::from_millis(100), harness.receive_json())
+            .await
+            .is_err()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "package scan blocked cancellation"
+    );
+    assert_four_permits_free(&mut harness, &server, 10).await;
+    assert!(!paths(&server).await.iter().any(|p| p.starts_with(PACKAGES)));
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
+}
+
+#[tokio::test]
+async fn large_package_scan_deadline_frees_the_permit_promptly() {
+    let (server, selector) = large_package_stack().await;
+    let mut opts = options();
+    opts.call_timeout = Duration::from_secs(1);
+    let mut harness = Harness::start(target(server.uri()), opts);
+    let started = std::time::Instant::now();
+    let reply = call(&mut harness, 1, json!({"selector": selector})).await;
+    let structured = &reply["result"]["structuredContent"];
+    assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(structured["error"]["code"], "deadline_exceeded");
+    assert!(structured.get("data").is_none());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "package scan blocked deadline"
+    );
+    assert_four_permits_free(&mut harness, &server, 10).await;
+    assert!(!paths(&server).await.iter().any(|p| p.starts_with(PACKAGES)));
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
+}
+
+/// Fail one read at the socket boundary while keeping all other reads available.
+async fn fatal_stack(
+    failed_path: &'static str,
+    kind: &'static str,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+    String,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests = seen.clone();
+    let body = rule(Some(&["a-*", "b-*"]), None, &["system", "nginx"]);
+    let selector = rule_id(&body);
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let requests = requests.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let route = header
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .split('?')
+                    .next()
+                    .unwrap();
+                assert!(header.starts_with("GET "));
+                requests.lock().unwrap().push(route.to_owned());
+                if route == failed_path {
+                    match kind {
+                        "connection" => return,
+                        "timeout" => {
+                            sleep(Duration::from_secs(2)).await;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                let failed = route == failed_path;
+                let value = if failed {
+                    recording("resolve_index_not_found.json")["error"].clone()
+                } else {
+                    match route {
+                        RULES => body,
+                        STATUS => response("status.json"),
+                        VIEWS => response("data_views_list.json"),
+                        POLICIES => policies(&["system"]),
+                        r if r.starts_with(RESOLVE) => response("resolve_index_no_match.json"),
+                        r if r.starts_with(PACKAGES) => response("package_system.json"),
+                        _ => panic!("unexpected route {route}"),
+                    }
+                };
+                let bytes = serde_json::to_vec(&value).unwrap();
+                let status = if failed { "401 Unauthorized" } else { "200 OK" };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&bytes).await;
+            });
+        }
+    });
+    (uri, seen, task, selector)
+}
+
+#[tokio::test]
+async fn fatal_kinds_at_every_part_return_no_data_or_later_requests() {
+    let plan = [
+        RULES,
+        VIEWS,
+        "/_resolve/index/a-%2A",
+        "/_resolve/index/b-%2A",
+        POLICIES,
+        "/api/fleet/epm/packages/system",
+        "/api/fleet/epm/packages/nginx",
+    ];
+    for failed in [
+        VIEWS,
+        "/_resolve/index/a-%2A",
+        POLICIES,
+        "/api/fleet/epm/packages/system",
+    ] {
+        for (kind, code) in [
+            ("auth", "elastic_auth"),
+            ("connection", "elastic_connection"),
+            ("timeout", "elastic_timeout"),
+        ] {
+            let (uri, seen, task, selector) = fatal_stack(failed, kind).await;
+            let mut resolved = target(uri);
+            resolved.profile.timeout_secs = 1;
+            let mut harness = Harness::start(resolved, options());
+            let reply = call(&mut harness, 1, json!({"selector": selector})).await;
+            let structured = &reply["result"]["structuredContent"];
+            assert_eq!(
+                reply["result"]["isError"], true,
+                "{kind} at {failed}: {reply}"
+            );
+            assert_eq!(structured["error"]["kind"], kind, "{failed}: {reply}");
+            assert_eq!(structured["error"]["code"], code, "{failed}: {reply}");
+            assert!(structured.get("data").is_none());
+            harness.close_input();
+            harness.join().await.expect("clean EOF");
+            let paths = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| *p != STATUS)
+                .cloned()
+                .collect::<Vec<_>>();
+            let end = plan.iter().position(|p| *p == failed).unwrap();
+            assert_eq!(paths, plan[..=end], "{kind} at {failed}");
+            task.abort();
+        }
+    }
+}

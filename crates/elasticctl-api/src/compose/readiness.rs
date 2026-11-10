@@ -14,6 +14,7 @@ use crate::{
 };
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// The longest index pattern sent to Elasticsearch, in UTF-8 bytes.
 pub const PATTERN_BYTES: usize = 1_024;
@@ -317,17 +318,27 @@ fn is_package_name(name: &str) -> bool {
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
-/// The rule's related packages, deduplicated by name in rule order with the
-/// first version kept.
-fn related_packages(rule: &Rule) -> Result<Vec<(String, Option<String>)>> {
+struct RelatedPackages {
+    total: usize,
+    entries: Vec<(String, Option<String>)>,
+}
+
+/// Count distinct packages and keep the first eight in rule order.
+async fn related_packages(rule: &Rule) -> Result<RelatedPackages> {
     let invalid = || Error::new(ErrorKind::Http, "invalid related integrations on the rule");
     let entries = match rule.as_map().get("related_integrations") {
-        None | Some(Value::Null) => return Ok(Vec::new()),
+        None | Some(Value::Null) => {
+            return Ok(RelatedPackages {
+                total: 0,
+                entries: Vec::new(),
+            });
+        }
         Some(Value::Array(entries)) => entries,
         Some(_) => return Err(invalid()),
     };
     let mut packages: Vec<(String, Option<String>)> = Vec::new();
-    for entry in entries {
+    let mut seen = HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
         let package = entry
             .get("package")
             .and_then(Value::as_str)
@@ -337,19 +348,25 @@ fn related_packages(rule: &Rule) -> Result<Vec<(String, Option<String>)>> {
             Some(Value::String(version)) => Some(version.clone()),
             Some(_) => return Err(invalid()),
         };
-        if !packages.iter().any(|(seen, _)| seen == package) {
+        if seen.insert(package) && packages.len() < MAX_PACKAGES {
             packages.push((package.to_owned(), version));
         }
+        if (index + 1) % 1_024 == 0 {
+            tokio::task::yield_now().await;
+        }
     }
-    Ok(packages)
+    Ok(RelatedPackages {
+        total: seen.len(),
+        entries: packages,
+    })
 }
 
 async fn integrations(t: &Transport, rule: &Rule) -> Result<Part<IntegrationFacts>> {
-    let packages = match related_packages(rule) {
+    let packages = match related_packages(rule).await {
         Ok(packages) => packages,
         Err(error) => return Ok(Part::Unavailable(error)),
     };
-    let total = packages.len();
+    let total = packages.total;
     if total == 0 {
         return Ok(Part::Ok(IntegrationFacts {
             total,
@@ -369,7 +386,7 @@ async fn integrations(t: &Transport, rule: &Rule) -> Result<Part<IntegrationFact
         Err(e) => return Ok(Part::Unavailable(e)),
     };
     let mut rows = Vec::new();
-    for (package, version) in packages.into_iter().take(MAX_PACKAGES) {
+    for (package, version) in packages.entries {
         let status = package_use(t, &package, &policies).await?;
         rows.push(PackageRow {
             package,

@@ -1205,3 +1205,125 @@ async fn hostile_patterns_and_packages_stay_under_their_fixed_prefix() {
         }
     }
 }
+
+/// Fail one read at the socket boundary while keeping all other reads available.
+async fn fatal_stack(
+    failed_path: &'static str,
+    kind: &'static str,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+    String,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let requests = seen.clone();
+    let body = rule(
+        Some(&["a-*", "b-*"]),
+        None,
+        &[("system", "1"), ("nginx", "1")],
+    );
+    let selector = rule_id(&body);
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let requests = requests.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    if socket.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let route = header
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .split('?')
+                    .next()
+                    .unwrap();
+                assert!(header.starts_with("GET "));
+                requests.lock().unwrap().push(route.to_owned());
+                if route == failed_path {
+                    match kind {
+                        "connection" => return,
+                        "timeout" => {
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                let failed = route == failed_path;
+                let value = if failed {
+                    recording(SERVERLESS, "resolve_index_not_found.json")["error"].clone()
+                } else {
+                    match route {
+                        RULES => body,
+                        STATUS => response("status.json"),
+                        VIEWS => response("data_views_list.json"),
+                        POLICIES => policies(&["system"], None),
+                        r if r.starts_with(RESOLVE) => response("resolve_index_no_match.json"),
+                        r if r.starts_with(PACKAGES) => response("package_system.json"),
+                        _ => panic!("unexpected route {route}"),
+                    }
+                };
+                let bytes = serde_json::to_vec(&value).unwrap();
+                let status = if failed { "401 Unauthorized" } else { "200 OK" };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&bytes).await;
+            });
+        }
+    });
+    (uri, seen, task, selector)
+}
+
+#[tokio::test]
+async fn connection_and_timeout_at_every_part_stop_the_plan() {
+    let plan = [
+        RULES,
+        VIEWS,
+        "/_resolve/index/a-%2A",
+        "/_resolve/index/b-%2A",
+        POLICIES,
+        "/api/fleet/epm/packages/system",
+        "/api/fleet/epm/packages/nginx",
+    ];
+    for failed in [
+        VIEWS,
+        "/_resolve/index/a-%2A",
+        POLICIES,
+        "/api/fleet/epm/packages/system",
+    ] {
+        for (kind, expected) in [
+            ("connection", ErrorKind::Connection),
+            ("timeout", ErrorKind::Timeout),
+        ] {
+            let (uri, seen, task, selector) = fatal_stack(failed, kind).await;
+            let t = transport(&uri, Some(uri.clone()), 1);
+            let error = rule_readiness(&t, &selector).await.unwrap_err();
+            assert_eq!(error.kind, expected, "{kind} at {failed}");
+            let paths = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| *p != STATUS)
+                .cloned()
+                .collect::<Vec<_>>();
+            let end = plan.iter().position(|p| *p == failed).unwrap();
+            assert_eq!(paths, plan[..=end], "{kind} at {failed}");
+            task.abort();
+        }
+    }
+}
