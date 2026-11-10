@@ -88,6 +88,11 @@ pub fn comparable(rule: &Rule) -> Rule {
     strip_volatile(&mut out);
     strip_exception_ids(&mut out);
     fill_defaults(&mut out);
+    // A rule left with no tags compares equal whether `tags` is empty or
+    // absent, so dropping the server-applied tag never shows as drift.
+    out.as_map_mut()
+        .entry("tags")
+        .or_insert_with(|| Value::Array(Vec::new()));
     let sorted = sort_value(&Value::Object(out.as_map().clone()));
     Rule::from_value(sorted).expect("rule_id survives normalization")
 }
@@ -409,6 +414,20 @@ mod tests {
         assert_eq!(rules[0].rule_id().unwrap(), "a");
         assert_eq!(rules[1].rule_id().unwrap(), "c");
         assert!(rules[2].rule_id().is_err(), "unreadable id sorts last");
+    }
+
+    #[test]
+    fn a_rule_with_only_the_server_tag_compares_equal_to_one_without_tags() {
+        let mut tagged = hand_authored();
+        tagged
+            .as_map_mut()
+            .insert("tags".into(), json!([CLOUD_API_KEY_TAG]));
+        let mut untagged = hand_authored();
+        untagged.as_map_mut().remove("tags");
+        assert_eq!(comparable(&tagged), comparable(&untagged));
+        assert_eq!(comparable(&untagged), comparable(&tagged));
+        // The on-disk form does not invent an empty array.
+        assert!(!canonical(&untagged).as_map().contains_key("tags"));
     }
 
     #[test]
