@@ -13,7 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ServerOptions, ServerState, TargetContext,
+    ServerOptions, ServerState,
     handler::McpServer,
     lifecycle::{
         CurrentLifecycleService, FirstPath, LegacyInitializationGate, ReplayTransport, first_path,
@@ -33,6 +33,7 @@ pub async fn serve_stdio(target: Resolved, options: ServerOptions) -> Result<()>
         tokio::io::stdin(),
         tokio::io::stdout(),
         root,
+        None,
     )
     .await;
     signal.abort();
@@ -74,7 +75,39 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    serve_io_with_root(target, options, input, output, CancellationToken::new()).await
+    serve_io_with_root(
+        target,
+        options,
+        input,
+        output,
+        CancellationToken::new(),
+        None,
+    )
+    .await
+}
+
+/// Serve a routed session with an injected audit writer for integration tests.
+#[doc(hidden)]
+pub async fn serve_io_with_audit<R, W>(
+    target: Resolved,
+    options: ServerOptions,
+    input: R,
+    output: W,
+    writer: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    serve_io_with_root(
+        target,
+        options,
+        input,
+        output,
+        CancellationToken::new(),
+        Some(crate::plan::audit::AuditSink::production(writer)),
+    )
+    .await
 }
 
 async fn serve_io_with_root<R, W>(
@@ -83,12 +116,24 @@ async fn serve_io_with_root<R, W>(
     input: R,
     output: W,
     root: CancellationToken,
+    audit: Option<crate::plan::audit::AuditSink>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let context = validate_target(&target, &options)?;
+    let mut state = ServerState::new(
+        context,
+        target,
+        options.call_timeout,
+        options.allow_query_tools,
+    );
+    state.allow_mutations = options.allow_mutations;
+    if let Some(audit) = audit {
+        state.audit = audit;
+    }
+    let state = Arc::new(state);
     let mut cancel_on_drop = CancelSessionOnDrop::new(root.clone());
     let (complete, waiting) = oneshot::channel();
     thread::Builder::new()
@@ -101,8 +146,7 @@ where
                         .enable_time()
                         .build()
                         .map_err(|_| mcp_runtime_error("MCP session runtime could not start"))?;
-                    let result = runtime
-                        .block_on(serve_session(target, options, input, output, root, context));
+                    let result = runtime.block_on(serve_session(state, input, output, root));
                     runtime.shutdown_background();
                     result
                 })
@@ -149,25 +193,15 @@ fn mcp_runtime_error(message: &'static str) -> Error {
 }
 
 async fn serve_session<R, W>(
-    target: Resolved,
-    options: ServerOptions,
+    state: Arc<ServerState>,
     input: R,
     output: W,
     root: CancellationToken,
-    context: TargetContext,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let mut state = ServerState::new(
-        context,
-        target,
-        options.call_timeout,
-        options.allow_query_tools,
-    );
-    state.allow_mutations = options.allow_mutations;
-    let state = Arc::new(state);
     let mut transport = BoundedIo::with_cancellation(input, output, root.clone());
     let Some(first) = transport.receive().await else {
         return Ok(());

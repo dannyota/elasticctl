@@ -1,6 +1,7 @@
 pub(crate) mod audit;
 pub(crate) mod consent;
 pub(crate) mod hash;
+pub(crate) mod kind;
 pub(crate) mod store;
 pub(crate) mod view;
 

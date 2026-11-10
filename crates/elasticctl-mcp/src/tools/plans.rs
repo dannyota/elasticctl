@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ServerState, ToolFailure, ToolSuccess,
     catalog::ToolId,
-    tools::{AdapterError, AdapterResult, ToolAdapter},
+    tools::{AdapterError, AdapterResult, CallContext, ToolAdapter},
 };
 
 struct PlansAdapter;
@@ -36,13 +36,84 @@ impl ToolAdapter for PlansAdapter {
     }
     fn call<'a>(
         &'a self,
-        _tool: ToolId,
-        _arguments: Option<&'a JsonObject>,
-        _state: &'a ServerState,
-        _cancellation: CancellationToken,
+        tool: ToolId,
+        arguments: Option<&'a JsonObject>,
+        state: &'a ServerState,
+        cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AdapterResult, AdapterError>> + Send + 'a>> {
-        Box::pin(async { Err(unsupported()) })
+        self.call_with_context(tool, arguments, state, cancellation, CallContext::default())
     }
+    fn call_with_context<'a>(
+        &'a self,
+        tool: ToolId,
+        arguments: Option<&'a JsonObject>,
+        state: &'a ServerState,
+        _cancellation: CancellationToken,
+        context: CallContext,
+    ) -> Pin<Box<dyn Future<Output = Result<AdapterResult, AdapterError>> + Send + 'a>> {
+        Box::pin(async move {
+            if tool == ToolId::PlanApply {
+                return Err(unsupported());
+            }
+            let args = arguments.cloned().unwrap_or_default();
+            let id = if tool == ToolId::PlanList {
+                if !args.is_empty() {
+                    return Err(AdapterError::InvalidArgument);
+                }
+                None
+            } else {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Input {
+                    plan_id: String,
+                }
+                let input: Input = serde_json::from_value(Value::Object(args))
+                    .map_err(|_| AdapterError::InvalidArgument)?;
+                crate::server::validate_text("plan_id", &input.plan_id, 1_024)
+                    .map_err(|_| AdapterError::InvalidArgument)?;
+                Some(input.plan_id)
+            };
+            let now = tokio::time::Instant::now();
+            let mut store = state.plans.lock().expect("plan store lock");
+            read(&mut store, &state.audit, tool, id, &context, now)
+        })
+    }
+}
+
+fn read<P: Clone>(
+    store: &mut crate::plan::store::PlanStore<P>,
+    sink: &crate::plan::audit::AuditSink,
+    tool: ToolId,
+    id: Option<String>,
+    context: &CallContext,
+    now: tokio::time::Instant,
+) -> Result<AdapterResult, AdapterError> {
+    use super::mutations::{drain_closed, local_error, output};
+    use crate::plan::{audit, store::PlanState, view};
+    let result = if let Some(id) = id {
+        let before = store.get(&id, now).map(|p| p.state);
+        drain_closed(sink, store, context.protocol.as_str());
+        let result = if tool == ToolId::PlanDiscard {
+            store.discard(&id, now)
+        } else {
+            store.get(&id, now)
+        };
+        result.map(|p| {
+            if tool == ToolId::PlanDiscard && before.as_ref().is_ok_and(|s| *s == PlanState::Open) {
+                sink.emit(&audit::line(
+                    audit::unix_seconds(),
+                    p,
+                    context.protocol.as_str(),
+                    audit::Event::PlanClosed,
+                ));
+            }
+            view::view(p, context.form_elicitation, false, now)
+        })
+    } else {
+        Ok(view::list(&store.list(now), now))
+    };
+    drain_closed(sink, store, context.protocol.as_str());
+    result.map(output).map_err(local_error)
 }
 
 pub(super) fn unsupported() -> AdapterError {
@@ -322,4 +393,74 @@ fn list_schema() -> Value {
         ],
         "additionalProperties": false
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{
+        audit::AuditSink,
+        store::{PlanState, PlanStore, tests::sample},
+    };
+    use tokio::time::{Duration, Instant};
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_and_discard_audit_use_a_collecting_sink() {
+        let now = Instant::now();
+        let mut store = PlanStore::default();
+        let plan = sample(now);
+        let id = plan.id.clone();
+        store.insert(plan, now).unwrap();
+        let (sink, lines) = AuditSink::collecting();
+        let context = CallContext {
+            form_elicitation: true,
+            protocol: crate::tools::CallProtocol::Current,
+        };
+        tokio::time::advance(Duration::from_secs(900)).await;
+        let now = Instant::now();
+        for tool in [ToolId::PlanGet, ToolId::PlanDiscard] {
+            let result = read(&mut store, &sink, tool, Some(id.clone()), &context, now).unwrap();
+            assert_eq!(result.data["plan"]["state"], "expired");
+            assert_eq!(result.data["plan"]["expires_in_secs"], 0);
+            assert_eq!(result.data["plan"]["confirmation"], "elicitation");
+        }
+        assert_eq!(lines.lock().unwrap().len(), 1);
+        let line: Value = serde_json::from_str(&lines.lock().unwrap()[0]).unwrap();
+        assert_eq!(line["audit"]["event"], "plan_closed");
+        assert_eq!(line["audit"]["state"], "expired");
+        let plan = sample(now);
+        let id = plan.id.clone();
+        store.insert(plan, now).unwrap();
+        for _ in 0..2 {
+            read(
+                &mut store,
+                &sink,
+                ToolId::PlanDiscard,
+                Some(id.clone()),
+                &context,
+                now,
+            )
+            .unwrap();
+        }
+        assert_eq!(lines.lock().unwrap().len(), 2);
+        let plan = sample(now);
+        let id = plan.id.clone();
+        store.insert(plan, now).unwrap();
+        store.begin_apply(&id, now).unwrap();
+        let error = read(
+            &mut store,
+            &sink,
+            ToolId::PlanDiscard,
+            Some(id.clone()),
+            &context,
+            now,
+        )
+        .unwrap_err();
+        let AdapterError::Tool(error) = error else {
+            panic!("expected local error")
+        };
+        assert_eq!(error.code, "plan_not_open");
+        assert_eq!(store.get(&id, now).unwrap().state, PlanState::Applying);
+        assert_eq!(lines.lock().unwrap().len(), 2);
+    }
 }
