@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rules get`, `enable`, `disable`, `delete`, `preview`, and MCP `rules_get`
+  read a rule once when selected by its `rule_id`, instead of twice.
+
 ## 0.7.4 — 2026-11-10
 
 ### Security
