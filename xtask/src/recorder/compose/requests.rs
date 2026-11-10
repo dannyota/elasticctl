@@ -4,16 +4,17 @@
 //! recorded exchange can never hold an unscoped `_find` or search.
 
 use crate::recorder::compose::{
-    ACTIVITY_SINCE, ACTIVITY_SIZE, MISSING_RULE_ID, SORTED_PAGE_SIZE, TECHNIQUE,
-    TECHNIQUE_PAGE_SIZE,
+    ACTIVITY_SINCE, ACTIVITY_SIZE, MISSING_RULE_ID, SORTED_PAGE_SIZE, SUBTECHNIQUE, TACTIC,
+    TECHNIQUE, TECHNIQUE_PAGE_SIZE,
 };
-use crate::recorder::markers::{ALERT_RULE_ID, LIST_ID, NAMESPACE_TYPE};
+use crate::recorder::markers::{ALERT_MARKER_TAG, ALERT_RULE_ID, LIST_ID, NAMESPACE_TYPE};
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
 pub(super) const RULES_PATH: &str = "/api/detection_engine/rules";
 pub(super) const RULES_FIND_PATH: &str = "/api/detection_engine/rules/_find";
 pub(super) const ITEMS_FIND_PATH: &str = "/api/exception_lists/items/_find";
+pub(super) const LISTS_FIND_PATH: &str = "/api/exception_lists/_find";
 pub(super) const CASES_BY_ALERT_PATH: &str = "/api/cases/alerts";
 pub(super) const RESOLVE_INDEX_PATH: &str = "/_resolve/index";
 pub(super) const PACKAGES_PATH: &str = "/api/fleet/epm/packages";
@@ -102,15 +103,79 @@ pub(super) fn rules_find_sorted_page() -> Planned {
     )
 }
 
-/// `rules_find_by_technique`: the `rules_list` page shape at its default
-/// limit, with the technique clause.
-pub(super) fn rules_find_by_technique() -> Planned {
+/// The tactic clause `rules_list` builds, ANDed with the marker filter.
+pub(super) fn tactic_filter() -> String {
+    format!(
+        "alert.attributes.params.threat.tactic.id: \"{TACTIC}\" AND {}",
+        marker_rule_filter()
+    )
+}
+
+/// The subtechnique clause `rules_list` builds for a dotted technique id,
+/// ANDed with the marker filter.
+pub(super) fn subtechnique_filter() -> String {
+    format!(
+        "alert.attributes.params.threat.technique.subtechnique.id: \"{SUBTECHNIQUE}\" AND {}",
+        marker_rule_filter()
+    )
+}
+
+/// The `rules_list` page shape at its default limit, with one threat clause.
+fn threat_page(filter: &str) -> Planned {
     Planned::get(
         RULES_FIND_PATH.to_string(),
         Some(format!(
             "page=1&per_page={TECHNIQUE_PAGE_SIZE}&sort_field=name&sort_order=asc&filter={}",
-            urlencode(&technique_filter())
+            urlencode(filter)
         )),
+    )
+}
+
+/// `rules_find_by_technique`: the technique page.
+pub(super) fn rules_find_by_technique() -> Planned {
+    threat_page(&technique_filter())
+}
+
+/// The tactic page, measured in the private log only.
+pub(super) fn rules_find_by_tactic() -> Planned {
+    threat_page(&tactic_filter())
+}
+
+/// The subtechnique page, measured in the private log only.
+pub(super) fn rules_find_by_subtechnique() -> Planned {
+    threat_page(&subtechnique_filter())
+}
+
+/// Count of every rule whose `rule_id` starts with the sample marker or
+/// that carries the sample tag. One row comes back; only `total` is read.
+pub(super) fn marker_rule_inventory() -> String {
+    let filter = format!(
+        "(alert.attributes.params.ruleId: {ALERT_MARKER_TAG}* OR alert.attributes.tags: \"{ALERT_MARKER_TAG}\")"
+    );
+    format!(
+        "{RULES_FIND_PATH}?page=1&per_page=1&filter={}",
+        urlencode(&filter)
+    )
+}
+
+/// Count of every exception list whose `list_id` starts with the sample
+/// marker or that carries the sample tag. Only `total` is read.
+pub(super) fn marker_list_inventory() -> String {
+    let filter = format!(
+        "(exception-list.attributes.list_id: {ALERT_MARKER_TAG}* OR exception-list.attributes.tags: \"{ALERT_MARKER_TAG}\")"
+    );
+    format!(
+        "{LISTS_FIND_PATH}?page=1&per_page=1&namespace_type={NAMESPACE_TYPE}&filter={}",
+        urlencode(&filter)
+    )
+}
+
+/// Every index, alias, and data stream whose name holds the sample marker.
+/// The answer holds names only; only their number is kept.
+pub(super) fn marker_index_inventory() -> String {
+    format!(
+        "{RESOLVE_INDEX_PATH}/{}",
+        urlencode(&format!("*{ALERT_MARKER_TAG}*"))
     )
 }
 
@@ -317,6 +382,50 @@ mod tests {
             format!("alert.attributes.params.threat.technique.id: \"T1059\" AND {MARKER_FILTER}")
         );
         assert_eq!(planned.body, None);
+    }
+
+    #[test]
+    fn tactic_and_subtechnique_pages_and_their_clause_with_the_marker_filter() {
+        for (planned, clause) in [
+            (
+                rules_find_by_tactic(),
+                "alert.attributes.params.threat.tactic.id: \"TA0002\"",
+            ),
+            (
+                rules_find_by_subtechnique(),
+                "alert.attributes.params.threat.technique.subtechnique.id: \"T1059.001\"",
+            ),
+        ] {
+            assert_eq!(planned.method, "GET");
+            assert_eq!(planned.path, "/api/detection_engine/rules/_find");
+            let query = planned.query.as_deref().expect("query");
+            assert!(
+                query.starts_with("page=1&per_page=50&sort_field=name&sort_order=asc&filter="),
+                "{query}"
+            );
+            assert_eq!(
+                decoded_filter(&planned),
+                format!("{clause} AND {MARKER_FILTER}")
+            );
+            assert_eq!(planned.body, None);
+        }
+    }
+
+    #[test]
+    fn inventories_count_only_sample_marker_objects() {
+        let decoded = |path: String| percent_decode(&path);
+        assert_eq!(
+            decoded(marker_rule_inventory()),
+            "/api/detection_engine/rules/_find?page=1&per_page=1&filter=(alert.attributes.params.ruleId: elasticctl-sample* OR alert.attributes.tags: \"elasticctl-sample\")"
+        );
+        assert_eq!(
+            decoded(marker_list_inventory()),
+            "/api/exception_lists/_find?page=1&per_page=1&namespace_type=single&filter=(exception-list.attributes.list_id: elasticctl-sample* OR exception-list.attributes.tags: \"elasticctl-sample\")"
+        );
+        assert_eq!(
+            marker_index_inventory(),
+            "/_resolve/index/%2Aelasticctl-sample%2A"
+        );
     }
 
     #[test]

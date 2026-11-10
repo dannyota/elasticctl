@@ -1,10 +1,19 @@
 //! Marker objects for the compose recording.
 //!
-//! Every object is claimed in `CleanupOwnership` before the request that
-//! creates it, so a create whose answer is lost stays cleanup-owned. Every
-//! create is create-only and sent once: a conflict means another run holds
-//! the fixed identity, so the claim is released and cleanup never touches
-//! the object.
+//! Every object is claimed in `CleanupOwnership` and marked unresolved
+//! before the request that creates it. A definite success resolves the
+//! claim; a definite conflict means another run holds the fixed identity,
+//! so the claim is released and cleanup never touches the object. Any other
+//! end, a timeout, a connection error, a 5xx or other failure, an
+//! interrupt, or a panic, leaves the claim unresolved for cleanup's settle
+//! window.
+//!
+//! Every Kibana create is create-only and sent once. The marker documents
+//! are the exception: the transport's only Elasticsearch write,
+//! `post_absolute_es`, retries a 5xx, so a 409 there can follow this run's
+//! own applied write. The claim is still released on a 409, which leaves
+//! such an index for the baseline audit to report rather than risk deleting
+//! another run's index.
 
 use crate::clock::now_rfc3339;
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
@@ -14,6 +23,7 @@ use crate::recorder::compose::cleanup::{
 };
 use crate::recorder::compose::evidence::PrivateLog;
 use crate::recorder::compose::requests::{RULES_PATH, marker_document_path, package_status};
+use crate::recorder::compose::settle::Unresolved;
 use crate::recorder::compose::{
     ALERT_DOCS, COMPOSE_ITEM_ID, COMPOSE_RULE_NAME, ComposeSession, MISSING_INDEX, MISSING_RULE_ID,
     MISSING_RULE_NAME, PACKAGE_CANDIDATES,
@@ -125,21 +135,49 @@ fn conflict(object: &'static str) -> elasticctl_core::Error {
     ))
 }
 
-/// Send one create exactly once. The claim is set first, so a create whose
-/// answer is lost stays cleanup-owned. A conflict releases the claim.
+/// One object's ownership flag and its unresolved flag.
+struct Claim<'a> {
+    owned: &'a mut bool,
+    unresolved: &'a mut bool,
+}
+
+impl Claim<'_> {
+    /// Set both flags before the request that may create the object.
+    fn take(&mut self) {
+        *self.owned = true;
+        *self.unresolved = true;
+    }
+
+    /// A definite success: the object is this run's.
+    fn resolve(&mut self) {
+        *self.unresolved = false;
+    }
+
+    /// A definite conflict: the object is another run's.
+    fn release(&mut self) {
+        *self.owned = false;
+        *self.unresolved = false;
+    }
+}
+
+/// Send one create exactly once. Only a success or a conflict resolves the
+/// claim; every other end leaves it unresolved.
 async fn create_once(
     t: &Transport,
     path: &str,
     body: &Value,
-    claim: &mut bool,
+    mut claim: Claim<'_>,
     object: &'static str,
     context: &'static str,
 ) -> elasticctl_core::Result<Value> {
-    *claim = true;
+    claim.take();
     match t.post_once(path, Some(body)).await {
-        Ok(created) => Ok(created),
+        Ok(created) => {
+            claim.resolve();
+            Ok(created)
+        }
         Err(error) if error.kind == ErrorKind::Conflict => {
-            *claim = false;
+            claim.release();
             Err(conflict(object))
         }
         Err(error) => Err(safe_recording_transport_error(context, error)),
@@ -148,11 +186,15 @@ async fn create_once(
 
 /// Index the marker documents with the create-only route, then refresh. The
 /// index is claimed before the first write; an existing document means the
-/// index is not this run's.
+/// index is not this run's. The claim resolves once every document reports
+/// created.
 pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl_core::Result<()> {
     let t = compose.session.transport;
-    let owned = &mut compose.session.ownership;
-    owned.alert_index = true;
+    let mut claim = Claim {
+        owned: &mut compose.session.ownership.alert_index,
+        unresolved: &mut compose.unresolved.alert_index,
+    };
+    claim.take();
     for seq in 1..=ALERT_DOCS {
         let doc = json!({
             "@timestamp": now_rfc3339(),
@@ -170,7 +212,7 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
                 ));
             }
             Err(error) if error.kind == ErrorKind::Conflict => {
-                owned.alert_index = false;
+                claim.release();
                 return Err(conflict(INDEX));
             }
             Err(error) => {
@@ -181,6 +223,7 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
             }
         }
     }
+    claim.resolve();
     let proof = t
         .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
         .await
@@ -315,19 +358,25 @@ fn proven_id(
 }
 
 /// Create the list, its two items, and both rules, in that order, keeping
-/// each server id for cleanup's re-reads and the fixture placeholders.
+/// each server id for cleanup's re-reads and the fixture placeholders. The
+/// alerting rule's alerts are owned from its claim on, since the rule can
+/// exist even when its create answer is lost.
 pub(super) async fn create_objects(
     compose: &mut ComposeSession<'_>,
 ) -> elasticctl_core::Result<()> {
     let t = compose.session.transport;
     let owned = &mut compose.session.ownership;
+    let unresolved: &mut Unresolved = &mut compose.unresolved;
     let ids = &mut compose.ids;
 
     let list = create_once(
         t,
         "/api/exception_lists",
         &list_body(),
-        &mut owned.list,
+        Claim {
+            owned: &mut owned.list,
+            unresolved: &mut unresolved.list,
+        },
         LIST,
         "creating the marker list failed",
     )
@@ -339,7 +388,10 @@ pub(super) async fn create_objects(
         (
             ITEM_ID,
             "elasticctl-sample-1.exe",
-            &mut owned.item,
+            Claim {
+                owned: &mut owned.item,
+                unresolved: &mut unresolved.item,
+            },
             owns_item as fn(&Value) -> bool,
             ITEM,
             "creating marker item 1 failed",
@@ -348,7 +400,10 @@ pub(super) async fn create_objects(
         (
             COMPOSE_ITEM_ID,
             "elasticctl-sample-2.exe",
-            &mut owned.compose_item,
+            Claim {
+                owned: &mut owned.compose_item,
+                unresolved: &mut unresolved.compose_item,
+            },
             owns_compose_item,
             COMPOSE_ITEM,
             "creating marker item 2 failed",
@@ -368,22 +423,33 @@ pub(super) async fn create_objects(
         *id = Some(proven_id(&item, owns, object)?);
     }
 
+    compose.alerts = true;
     let rule = create_once(
         t,
         RULES_PATH,
         &rule_body(&list_id),
-        &mut owned.alert_rule,
+        Claim {
+            owned: &mut owned.alert_rule,
+            unresolved: &mut unresolved.alert_rule,
+        },
         RULE,
         "creating the marker rule failed",
     )
-    .await?;
-    ids.rule = Some(proven_id(&rule, owns_alert_rule, RULE)?);
+    .await;
+    if !owned.alert_rule {
+        // A conflict: the rule, and so its alerts, are another run's.
+        compose.alerts = false;
+    }
+    ids.rule = Some(proven_id(&rule?, owns_alert_rule, RULE)?);
 
     let missing_rule = create_once(
         t,
         RULES_PATH,
         &missing_rule_body(),
-        &mut owned.compose_rule,
+        Claim {
+            owned: &mut owned.compose_rule,
+            unresolved: &mut unresolved.compose_rule,
+        },
         MISSING_RULE,
         "creating the missing-index rule failed",
     )
@@ -416,7 +482,10 @@ pub(super) async fn create_case(
         t,
         elasticctl_api::cases::CASES_PATH,
         &case_body(),
-        &mut compose.session.ownership.case,
+        Claim {
+            owned: &mut compose.session.ownership.case,
+            unresolved: &mut compose.unresolved.case,
+        },
         CASE,
         "creating the marker case failed",
     )
@@ -571,7 +640,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_conflicting_create_releases_its_claim_and_a_lost_answer_keeps_it() {
-        for (status, still_claimed) in [(409, false), (500, true), (400, true)] {
+        for (status, still_claimed) in [(409, false), (500, true), (503, true), (400, true)] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/api/exception_lists"))
@@ -582,20 +651,27 @@ mod tests {
                 .mount(&server)
                 .await;
             let t = mock_transport(&server);
-            let mut claim = false;
+            let (mut owned, mut unresolved) = (false, false);
 
             let error = create_once(
                 &t,
                 "/api/exception_lists",
                 &list_body(),
-                &mut claim,
+                Claim {
+                    owned: &mut owned,
+                    unresolved: &mut unresolved,
+                },
                 LIST,
                 "creating the marker list failed",
             )
             .await
             .expect_err("failed create");
 
-            assert_eq!(claim, still_claimed, "{status}");
+            assert_eq!(owned, still_claimed, "{status}");
+            assert_eq!(
+                unresolved, still_claimed,
+                "{status}: only a conflict is a definite answer"
+            );
             assert!(!error.message.contains("private"), "{}", error.message);
             assert_eq!(
                 requests(&server).await,
@@ -603,6 +679,34 @@ mod tests {
                 "{status}: a create is sent exactly once"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_successful_create_resolves_its_claim() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/exception_lists"))
+            .respond_with(ok(list_body()))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let (mut owned, mut unresolved) = (false, false);
+
+        create_once(
+            &t,
+            "/api/exception_lists",
+            &list_body(),
+            Claim {
+                owned: &mut owned,
+                unresolved: &mut unresolved,
+            },
+            LIST,
+            "creating the marker list failed",
+        )
+        .await
+        .expect("created");
+
+        assert!(owned && !unresolved);
     }
 
     #[test]

@@ -10,8 +10,8 @@ use crate::recorder::compose::evidence::{
 use crate::recorder::compose::provision::{create_case, owns_missing_rule};
 use crate::recorder::compose::requests::{
     MARKER_RULE_IDS, Planned, case_ids_probe_body, cases_by_alert, exception_items_count,
-    resolve_index, rule_get, rules_find_by_technique, rules_find_sorted_page,
-    session_alert_count_body, signals_activity,
+    resolve_index, rule_get, rules_find_by_subtechnique, rules_find_by_tactic,
+    rules_find_by_technique, rules_find_sorted_page, session_alert_count_body, signals_activity,
 };
 use crate::recorder::compose::{
     ABSENT_ALERT_ID, ALERT_DOCS, CASE_IDS_ATTEMPTS, COMPOSE_RULE_NAME, ComposeSession,
@@ -202,8 +202,25 @@ fn page_rule_ids(page: &Value, name: &'static str) -> elasticctl_core::Result<Ve
         .ok_or_else(|| recording_error(format!("refusing to record {name}: unexpected page shape")))
 }
 
-/// Both rule reads after one execution, both `_find` pages, and the item
-/// count on the marker list.
+/// Read the tactic and subtechnique pages, each ANDed with the marker
+/// filter, and keep only their status and total in the private log. They
+/// are measurements, not fixtures, so a failed read does not stop the step.
+async fn measure_threat_probes(t: &Transport, log: &mut PrivateLog) {
+    for (name, planned) in [
+        ("rules_find_by_tactic", rules_find_by_tactic()),
+        ("rules_find_by_subtechnique", rules_find_by_subtechnique()),
+    ] {
+        let entry = match t.get(&planned.target()).await {
+            Ok(page) => json!({"result": "ok", "total": page.get("total").cloned()}),
+            Err(error) => json!({"result": "error", "kind": error.kind.as_str(),
+                "http_status": error.http_status}),
+        };
+        log.add("threat_probes", name, entry);
+    }
+}
+
+/// Both rule reads after one execution, both `_find` pages, the private
+/// threat probes, and the item count on the marker list.
 pub(super) async fn record_rules(
     t: &Transport,
     exchanges: &mut Exchanges,
@@ -256,6 +273,7 @@ pub(super) async fn record_rules(
     }
     normalize_rule_page(&mut page);
     exchanges.response("rules_find_by_technique", &planned, page);
+    measure_threat_probes(t, log).await;
 
     let planned = exception_items_count();
     let mut items = recorded_get(t, log, "exception_items_count", &planned, false)

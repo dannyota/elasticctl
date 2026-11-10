@@ -3,16 +3,20 @@
 //! An object is touched only while its ownership flag is set. Every delete
 //! re-reads the object first and requires its marker fields, and the server
 //! id when this run learned it. The flag clears only after a later read
-//! finds the object gone. Alerts are closed by explicit id. Failure text is
+//! finds the object gone; for a create whose answer was lost, only after it
+//! has stayed gone for the whole settle window. Alerts are closed by
+//! explicit id until a complete search finds none open. Failure text is
 //! built only from static context and an error's class and status.
 
 use crate::diagnostics::safe_recording_error_summary;
 use crate::recorder::cases::find_marker_cases;
 use crate::recorder::compose::ComposeSession;
+use crate::recorder::compose::alert_search::{SearchError, open_session_alerts};
 use crate::recorder::compose::provision::{owns_compose_item, owns_missing_rule};
 use crate::recorder::compose::requests::{
-    ITEMS_FIND_PATH, close_alerts_body, item_path, list_path, open_session_alerts_body, rule_get,
+    ITEMS_FIND_PATH, close_alerts_body, item_path, list_path, rule_get,
 };
+use crate::recorder::compose::settle::{Timing, Watch};
 use crate::recorder::compose::{COMPOSE_ITEM_ID, MISSING_RULE_ID};
 use crate::recorder::markers::{
     ALERT_PROBE_INDEX, ALERT_RULE_ID, ITEM_ID, LIST_ID, NAMESPACE_TYPE,
@@ -23,7 +27,7 @@ use crate::recorder::ownership::{
 use elasticctl_core::{Error, ErrorKind, Transport, urlencode};
 use serde_json::Value;
 use std::fmt;
-use std::time::Duration;
+use std::time::Instant;
 
 pub(super) const CASE: &str = "the marker case";
 pub(super) const RULE: &str = "rule elasticctl-sample-alert-probe";
@@ -63,6 +67,10 @@ impl Failure {
             "{stage} {object}: {}",
             safe_recording_error_summary(error)
         ))
+    }
+
+    fn incomplete(object: &'static str, reason: &'static str) -> Self {
+        Self(format!("the search for {object} was incomplete: {reason}"))
     }
 }
 
@@ -172,10 +180,39 @@ async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Fai
     Ok(Some(current))
 }
 
+/// Remove one owned object. A create whose answer was lost is read again
+/// for the settle window: each read that finds it with its marker deletes
+/// it and proves it gone, and the window restarts. Returns the last read
+/// that showed the object.
+async fn reconcile(
+    t: &Transport,
+    target: &Target<'_>,
+    unresolved: bool,
+    timing: &Timing,
+) -> Result<Option<Value>, Failure> {
+    if !unresolved {
+        return remove(t, target).await;
+    }
+    let mut watch = Watch::new(timing.settle_window);
+    let mut seen = None;
+    loop {
+        let read = remove(t, target).await?;
+        let removed = read.is_some();
+        if removed {
+            seen = read;
+        }
+        if watch.observe(Instant::now(), removed) {
+            return Ok(seen);
+        }
+        tokio::time::sleep(timing.settle_interval).await;
+    }
+}
+
 /// Remove the marker case. A case has no caller-chosen id: when the create
 /// answer was lost, the one marker case is found by title and tag, which
 /// the preflight proved absent before, then handled by its exact id.
-async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<(), Failure> {
+/// Returns whether a case was deleted.
+async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<bool, Failure> {
     let id = match known.clone() {
         Some(id) => id,
         None => {
@@ -183,7 +220,7 @@ async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<(), Fa
                 .await
                 .map_err(|error| Failure::request("finding", CASE, &error))?;
             match cases.as_slice() {
-                [] if total == 0 => return Ok(()),
+                [] if total == 0 => return Ok(false),
                 [case] if total == 1 => case.id.clone(),
                 _ => return Err(Failure::kept(CASE, "more than one marker case matches")),
             }
@@ -195,7 +232,7 @@ async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<(), Fa
         Ok(case)
             if owns_case(&case) && case.get("id").and_then(Value::as_str) == Some(id.as_str()) => {}
         Ok(_) => return Err(Failure::refused(CASE)),
-        Err(error) if error.kind == ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind == ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(Failure::request("checking", CASE, &error)),
     }
     match elasticctl_api::cases::delete(t, &[id]).await {
@@ -204,76 +241,87 @@ async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<(), Fa
         Err(error) => return Err(Failure::request("deleting", CASE, &error)),
     }
     match t.get(&path).await {
-        Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind == ErrorKind::NotFound => Ok(true),
         Ok(_) => Err(Failure::present(CASE)),
         Err(error) => Err(Failure::request("verifying the removal of", CASE, &error)),
     }
 }
 
-async fn open_session_alerts(
+/// The case counterpart of `reconcile`.
+async fn reconcile_case(
     t: &Transport,
-    rule_uuid: &str,
-) -> elasticctl_core::Result<Vec<String>> {
-    let page = t
-        .post(
-            elasticctl_api::alerts::SEARCH_PATH,
-            Some(&open_session_alerts_body(rule_uuid)),
-        )
-        .await?;
-    page.pointer("/hits/hits")
-        .and_then(Value::as_array)
-        .and_then(|hits| {
-            hits.iter()
-                .map(|hit| hit.get("_id").and_then(Value::as_str).map(str::to_owned))
-                .collect::<Option<Vec<_>>>()
-        })
-        .ok_or_else(|| Error::new(ErrorKind::Http, "decoding session alert ids"))
-}
-
-/// Close the alerts of this run's rule by explicit id until none is open.
-/// The ids come from a read scoped to the rule's per-creation id, so no
-/// alert of an earlier run is ever closed.
-async fn close_session_alerts(
-    t: &Transport,
-    rule_uuid: Option<&str>,
-    interval: Duration,
+    known: &mut Option<String>,
+    unresolved: bool,
+    timing: &Timing,
 ) -> Result<(), Failure> {
-    let Some(rule_uuid) = rule_uuid else {
-        return Ok(());
-    };
-    for round in 0..=CLOSE_ROUNDS {
-        let open = open_session_alerts(t, rule_uuid)
-            .await
-            .map_err(|error| Failure::request("finding", ALERTS, &error))?;
-        if open.is_empty() {
+    if !unresolved {
+        return remove_case(t, known).await.map(|_| ());
+    }
+    let mut watch = Watch::new(timing.settle_window);
+    loop {
+        let removed = remove_case(t, known).await?;
+        if watch.observe(Instant::now(), removed) {
             return Ok(());
         }
-        if round == CLOSE_ROUNDS {
-            break;
+        tokio::time::sleep(timing.settle_interval).await;
+    }
+}
+
+/// Close the alerts of this run's rule by explicit id until a complete
+/// search has found none open for the whole settle window. The ids come
+/// from a read scoped to the rule's per-creation id, so no alert of an
+/// earlier run is ever closed. The window catches an alert the rule's last
+/// execution writes after the rule is deleted.
+async fn close_session_alerts(
+    t: &Transport,
+    rule_uuid: &str,
+    timing: &Timing,
+) -> Result<(), Failure> {
+    let mut watch = Watch::new(timing.settle_window);
+    let mut closes = 0;
+    loop {
+        let open = open_session_alerts(t, rule_uuid)
+            .await
+            .map_err(|error| match error {
+                SearchError::Request(error) => Failure::request("finding", ALERTS, &error),
+                SearchError::Incomplete(reason) => Failure::incomplete(ALERTS, reason),
+            })?;
+        if open.total == 0 {
+            if watch.observe(Instant::now(), false) {
+                return Ok(());
+            }
+            tokio::time::sleep(timing.settle_interval).await;
+            continue;
         }
+        watch.reset();
+        if closes == CLOSE_ROUNDS {
+            return Err(Failure(format!("{ALERTS} are still open")));
+        }
+        closes += 1;
         t.post(
             elasticctl_api::alerts::STATUS_PATH,
-            Some(&close_alerts_body(&open)),
+            Some(&close_alerts_body(&open.ids)),
         )
         .await
         .map_err(|error| Failure::request("closing", ALERTS, &error))?;
-        tokio::time::sleep(interval).await;
+        tokio::time::sleep(timing.poll).await;
     }
-    Err(Failure(format!("{ALERTS} are still open")))
 }
 
 /// Remove every object this run still owns, in dependency order: the case
 /// that holds the alert, both rules, the rule's alerts, the items, the list
 /// once it is empty, then the index.
-pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration) -> Vec<Failure> {
+pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -> Vec<Failure> {
     let t = compose.session.transport;
     let owned = &mut compose.session.ownership;
+    let unresolved = &mut compose.unresolved;
     let ids = &mut compose.ids;
+    let alerts = &mut compose.alerts;
     let mut failures = Vec::new();
 
     if owned.case {
-        match remove_case(t, &mut ids.case).await {
-            Ok(()) => owned.case = false,
+        match reconcile_case(t, &mut ids.case, unresolved.case, timing).await {
+            Ok(()) => (owned.case, unresolved.case) = (false, false),
             Err(failure) => failures.push(failure),
         }
     }
@@ -287,10 +335,10 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
                 owns_missing_rule,
                 ids.missing_rule.as_deref(),
             );
-            remove(t, &target).await
+            reconcile(t, &target, unresolved.compose_rule, timing).await
         };
         match removed {
-            Ok(_) => owned.compose_rule = false,
+            Ok(_) => (owned.compose_rule, unresolved.compose_rule) = (false, false),
             Err(failure) => failures.push(failure),
         }
     }
@@ -298,11 +346,11 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
         let removed = {
             let path = rule_get(ALERT_RULE_ID).target();
             let target = Target::kibana(RULE, path, owns_alert_rule, ids.rule.as_deref());
-            remove(t, &target).await
+            reconcile(t, &target, unresolved.alert_rule, timing).await
         };
         match removed {
             Ok(read) => {
-                owned.alert_rule = false;
+                (owned.alert_rule, unresolved.alert_rule) = (false, false);
                 // A create whose answer was lost still produced alerts under
                 // the id the re-read showed.
                 if ids.rule.is_none() {
@@ -316,13 +364,23 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
             Err(failure) => failures.push(failure),
         }
     }
-    if let Err(failure) = close_session_alerts(t, ids.rule.as_deref(), interval).await {
-        failures.push(failure);
+    if *alerts {
+        match ids.rule.as_deref() {
+            Some(rule_uuid) => match close_session_alerts(t, rule_uuid, timing).await {
+                // While the rule is still owned it can still write alerts.
+                Ok(()) => *alerts = owned.alert_rule,
+                Err(failure) => failures.push(failure),
+            },
+            // The rule never existed for this run, so it wrote no alerts.
+            None if !owned.alert_rule => *alerts = false,
+            None => {}
+        }
     }
 
-    for (flag, object, item_id, owns, id) in [
+    for (flag, lost, object, item_id, owns, id) in [
         (
             &mut owned.compose_item,
+            &mut unresolved.compose_item,
             COMPOSE_ITEM,
             COMPOSE_ITEM_ID,
             owns_compose_item as fn(&Value) -> bool,
@@ -330,6 +388,7 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
         ),
         (
             &mut owned.item,
+            &mut unresolved.item,
             ITEM,
             ITEM_ID,
             owns_item,
@@ -339,8 +398,9 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
         if !*flag {
             continue;
         }
-        match remove(t, &Target::kibana(object, item_path(item_id), owns, id)).await {
-            Ok(_) => *flag = false,
+        let target = Target::kibana(object, item_path(item_id), owns, id);
+        match reconcile(t, &target, *lost, timing).await {
+            Ok(_) => (*flag, *lost) = (false, false),
             Err(failure) => failures.push(failure),
         }
     }
@@ -355,10 +415,10 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
                     "{ITEMS_FIND_PATH}?list_id={}&namespace_type={NAMESPACE_TYPE}&page=1&per_page=1",
                     urlencode(LIST_ID)
                 ));
-                remove(t, &target).await
+                reconcile(t, &target, unresolved.list, timing).await
             };
             match removed {
-                Ok(_) => owned.list = false,
+                Ok(_) => (owned.list, unresolved.list) = (false, false),
                 Err(failure) => failures.push(failure),
             }
         }
@@ -375,8 +435,8 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration
             id: None,
             empty: None,
         };
-        match remove(t, &target).await {
-            Ok(_) => owned.alert_index = false,
+        match reconcile(t, &target, unresolved.alert_index, timing).await {
+            Ok(_) => (owned.alert_index, unresolved.alert_index) = (false, false),
             Err(failure) => failures.push(failure),
         }
     }
@@ -390,6 +450,7 @@ pub(super) fn still_owned(compose: &ComposeSession<'_>) -> Vec<&'static str> {
         (owned.case, CASE),
         (owned.alert_rule, RULE),
         (owned.compose_rule, MISSING_RULE),
+        (compose.alerts, ALERTS),
         (owned.compose_item, COMPOSE_ITEM),
         (owned.item, ITEM),
         (owned.list, LIST),
@@ -397,6 +458,24 @@ pub(super) fn still_owned(compose: &ComposeSession<'_>) -> Vec<&'static str> {
     ]
     .into_iter()
     .filter_map(|(owned, object)| owned.then_some(object))
+    .collect()
+}
+
+/// Owned objects whose create answer was lost and that did not settle. Each
+/// may still appear, so the operator must check it by hand.
+pub(super) fn still_unresolved(compose: &ComposeSession<'_>) -> Vec<&'static str> {
+    let unresolved = &compose.unresolved;
+    [
+        (unresolved.case, CASE),
+        (unresolved.alert_rule, RULE),
+        (unresolved.compose_rule, MISSING_RULE),
+        (unresolved.compose_item, COMPOSE_ITEM),
+        (unresolved.item, ITEM),
+        (unresolved.list, LIST),
+        (unresolved.alert_index, INDEX),
+    ]
+    .into_iter()
+    .filter_map(|(lost, object)| lost.then_some(object))
     .collect()
 }
 
@@ -445,7 +524,7 @@ mod tests {
         let t = mock_transport(&server);
         let mut compose = ComposeSession::new(&t);
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert!(failures.is_empty(), "{failures:?}");
         assert!(requests(&server).await.is_empty());
@@ -464,7 +543,7 @@ mod tests {
         let mut compose = ComposeSession::new(&t);
         compose.session.ownership.alert_rule = true;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert_eq!(
             failures,
@@ -497,7 +576,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert_eq!(failures, [Failure::refused(RULE)]);
         assert!(
@@ -539,7 +618,7 @@ mod tests {
         let mut compose = ComposeSession::new(&t);
         compose.session.ownership.case = true;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert!(failures.is_empty(), "{failures:?}");
         assert!(!compose.session.ownership.case);
@@ -569,7 +648,7 @@ mod tests {
         let mut compose = ComposeSession::new(&t);
         compose.session.ownership.case = true;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert_eq!(
             failures,
@@ -600,7 +679,7 @@ mod tests {
         compose.session.ownership.list = true;
         compose.ids.list = Some("list-1".into());
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert_eq!(failures, [Failure::kept(LIST, "it still holds items")]);
         assert!(compose.session.ownership.list);
@@ -629,7 +708,7 @@ mod tests {
         let mut compose = ComposeSession::new(&t);
         compose.session.ownership.alert_index = true;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert_eq!(failures, [Failure::present(INDEX)]);
         assert!(compose.session.ownership.alert_index);
@@ -657,7 +736,7 @@ mod tests {
         owned.compose_item = true;
         owned.list = true;
 
-        let failures = cleanup(&mut compose, Duration::ZERO).await;
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
 
         assert!(failures.is_empty(), "{failures:?}");
         assert!(still_owned(&compose).is_empty());
