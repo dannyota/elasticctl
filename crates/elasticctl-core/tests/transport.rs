@@ -1530,7 +1530,7 @@ fn transport_exposes_the_configured_space() {
 async fn invalid_spaces_are_refused_before_transport_construction() {
     let server = MockServer::start().await;
     for space in [
-        "", ".", "..", "a/b", "a?b", "a#b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
+        ".", "..", "a/b", "a?b", "a#b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
     ] {
         let mut profile = profile_for(&server);
         profile.space = space.into();
@@ -1548,7 +1548,7 @@ async fn valid_spaces_keep_their_request_urls() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .mount(&server)
         .await;
-    for space in ["default", "my-space", "soc_123"] {
+    for space in ["", "default", "my-space", "soc_123"] {
         let mut profile = profile_for(&server);
         profile.space = space.into();
         Transport::new(&profile)
@@ -1562,6 +1562,7 @@ async fn valid_spaces_keep_their_request_urls() {
     assert_eq!(
         paths,
         [
+            "/api/status",
             "/api/status",
             "/s/my-space/api/status",
             "/s/soc_123/api/status"

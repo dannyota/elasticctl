@@ -60,9 +60,11 @@ long.
 ### 3.1 elasticctl-core
 
 Does not know about detection rules.
-Space ids must match `[a-z0-9_-]+`; profile resolution and transport
+A space id is empty, which means the default space, or matches
+`[a-z0-9_-]+`, the Kibana space id format. Profile resolution and transport
 construction refuse any other value with kind `error` and the static message
-`invalid space id`.
+`invalid space id`, so a space such as `..` cannot reach another space's
+routes.
 
 - **`config`** — profiles in `~/.elasticctl/config.toml`, `0600` enforced on
   write and warned on read. Writes go through a same-directory temporary file

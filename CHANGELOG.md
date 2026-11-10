@@ -29,8 +29,8 @@
 
 ### Fixed
 
-- Reject invalid space ids before profile resolution or transport construction.
-
+- A Kibana space id other than empty or `[a-z0-9_-]+` is refused before any
+  request, so a space such as `..` cannot reach the default space's routes.
 - `elasticctl_core::Transport` refuses a request path that does not start with
   `/` before sending anything, so a path such as `@other.example/x` cannot
   carry the credential to another host.

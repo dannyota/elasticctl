@@ -8,11 +8,15 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// A Kibana space id is one URL path segment. An empty space means the
+/// default space, as it always has.
 pub(crate) fn validate_space(space: &str) -> Result<()> {
-    if space.is_empty()
-        || !space
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    if space.is_empty() {
+        return Ok(());
+    }
+    if !space
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
     {
         return Err(Error::new(ErrorKind::Error, "invalid space id"));
     }
@@ -476,7 +480,7 @@ mod tests {
     #[test]
     fn invalid_spaces_are_refused_during_resolution() {
         for space in [
-            "", ".", "..", "a/b", "a?b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
+            ".", "..", "a/b", "a?b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
         ] {
             let mut config = sample();
             config.profiles.get_mut("default").unwrap().space = space.into();
