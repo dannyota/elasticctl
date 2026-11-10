@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- `elasticctl_core::Transport::put_absolute_es_once`,
+  `post_absolute_es_once`, and `delete_absolute_es_once` send an
+  Elasticsearch write exactly once, with no retry on any status.
+
 ### Changed
 
 - Rule normalization drops the tag `Missing Elastic Cloud API Key`, which
@@ -9,6 +15,12 @@
   writes it, `state diff` does not report it as drift, and `state push` never
   sends it or plans an update only because the server holds it. `rules get`,
   MCP `rules_get`, and `rules export` omit it too.
+
+### Fixed
+
+- `elasticctl_core::Transport` refuses a request path that does not start with
+  `/` before sending anything, so a path such as `@other.example/x` cannot
+  carry the credential to another host.
 
 ## 0.7.5 — 2026-11-10
 

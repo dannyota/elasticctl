@@ -1,0 +1,10 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "cases_by_alert_none",
+  "request": {
+    "method": "GET",
+    "path": "/api/cases/alerts/elasticctl-sample-absent-alert"
+  },
+  "response": []
+}

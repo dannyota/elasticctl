@@ -1020,6 +1020,357 @@ async fn delete_absolute_es_targets_the_es_host() {
     );
 }
 
+async fn absolute_es_once(
+    t: &Transport,
+    operation: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> elasticctl_core::Result<serde_json::Value> {
+    match operation {
+        "PUT" => t.put_absolute_es_once(path, body).await,
+        "POST" => t.post_absolute_es_once(path, Some(body)).await,
+        "DELETE" => t.delete_absolute_es_once(path).await,
+        _ => unreachable!("test case is a single-attempt Elasticsearch write"),
+    }
+}
+
+/// Accept connections, read one request head, and close each connection
+/// without an answer. Counts every accepted connection.
+async fn closing_connection_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&accepted);
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            count.fetch_add(1, Ordering::SeqCst);
+            let mut request = Vec::new();
+            let mut buffer = [0; 1_024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            drop(stream);
+        }
+    });
+    (url, accepted, server)
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_send_one_request_to_the_es_host_with_only_authorization() {
+    for (operation, route) in [
+        ("PUT", "/marker-index"),
+        ("POST", "/marker-index/_create/1"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method(operation))
+            .and(path(route))
+            .and(header("authorization", "ApiKey essu_test"))
+            .and(WithoutHeader("kbn-xsrf"))
+            .and(WithoutHeader("elastic-api-version"))
+            .and(body_json(json!({"value": 1})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+        let body = absolute_es_once(&t, operation, route, &json!({"value": 1}))
+            .await
+            .unwrap();
+
+        assert_eq!(body["ok"], true, "{operation}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "{operation}");
+        assert_eq!(requests[0].url.path(), route, "{operation}");
+    }
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_send_one_attempt_on_a_transient_status() {
+    for operation in ["PUT", "POST", "DELETE"] {
+        for (status, message) in [(429, "rate limited"), (503, "temporarily unavailable")] {
+            let server = MockServer::start().await;
+            Mock::given(method(operation))
+                .and(path("/marker-index"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(json!({"message": message})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method(operation))
+                .and(path("/marker-index"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+            let error = absolute_es_once(&t, operation, "/marker-index", &json!({}))
+                .await
+                .expect_err("a single-attempt write must not replay a transient response");
+
+            assert_eq!(error.kind, ErrorKind::Http, "{operation} {status}");
+            assert_eq!(error.http_status, Some(status), "{operation} {status}");
+            assert_eq!(error.message, message, "{operation} {status}");
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_classify_errors_like_the_retrying_write() {
+    let exists = json!({"error": {"type": "resource_already_exists_exception",
+        "reason": "index [marker-index/AbC123] already exists"}, "status": 400});
+    let conflict = json!({"error": {"type": "version_conflict_engine_exception",
+        "reason": "[1]: version conflict, document already exists"}, "status": 409});
+    for operation in ["PUT", "POST", "DELETE"] {
+        for (status, body) in [
+            (400, exists.clone()),
+            (403, json!({"message": "no access"})),
+            (409, conflict.clone()),
+            (503, json!({"message": "temporarily unavailable"})),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+            let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+
+            let once = absolute_es_once(&t, operation, "/marker-index", &json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+            let retrying = t
+                .post_absolute_es("/marker-index", &json!({}))
+                .await
+                .unwrap_err();
+
+            assert_eq!(once.kind, retrying.kind, "{operation} {status}");
+            assert_eq!(
+                once.http_status, retrying.http_status,
+                "{operation} {status}"
+            );
+            assert_eq!(once.message, retrying.message, "{operation} {status}");
+            assert_eq!(once.http_status, Some(status), "{operation} {status}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_never_follow_a_redirect_off_the_es_host() {
+    for operation in ["PUT", "POST", "DELETE"] {
+        for status in [307, 308] {
+            let server = MockServer::start().await;
+            let elsewhere = MockServer::start().await;
+            Mock::given(method(operation))
+                .and(path("/marker-index"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("location", format!("{}/marker-index", elsewhere.uri())),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(0)
+                .mount(&elsewhere)
+                .await;
+
+            let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+            let error = absolute_es_once(&t, operation, "/marker-index", &json!({}))
+                .await
+                .expect_err("a single-attempt write must return the redirect");
+
+            assert_eq!(error.kind, ErrorKind::Http, "{operation} {status}");
+            assert_eq!(error.http_status, Some(status), "{operation} {status}");
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+            assert!(elsewhere.received_requests().await.unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_do_not_retry_a_dropped_connection() {
+    for operation in ["PUT", "POST", "DELETE"] {
+        let (url, accepted, server) = closing_connection_server().await;
+        let mut profile = profile_for_url("https://kibana.invalid".into());
+        profile.es_url = Some(url);
+        let t = Transport::new(&profile).unwrap();
+
+        let error = absolute_es_once(&t, operation, "/marker-index", &json!({}))
+            .await
+            .expect_err("a dropped connection must fail the write");
+        // Leave room for a replay to arrive before counting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        server.abort();
+        let _ = server.await;
+
+        assert_eq!(error.kind, ErrorKind::Connection, "{operation}");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1, "{operation}");
+    }
+}
+
+#[tokio::test]
+async fn absolute_es_once_writes_do_not_reuse_idle_connections() {
+    let (url, requests, notify, server) = keep_alive_connection_server().await;
+    let mut profile = profile_for_url("https://kibana.invalid".into());
+    profile.es_url = Some(url);
+    let t = Transport::new(&profile).unwrap();
+
+    let first = t.put_absolute_es_once("/marker-index", &json!({})).await;
+    let second = t
+        .post_absolute_es_once("/marker-index/_create/1", Some(&json!({})))
+        .await;
+    assert_eq!(first.unwrap()["ok"], true);
+    assert_eq!(second.unwrap()["ok"], true);
+
+    let observed = wait_for_requests(&requests, &notify, 2).await;
+    server.abort();
+    let _ = server.await;
+
+    assert_ne!(
+        observed[0], observed[1],
+        "single-attempt writes must use a fresh connection"
+    );
+}
+
+#[tokio::test]
+async fn a_single_attempt_elasticsearch_post_without_a_body_sends_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/marker-index/_refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"_shards": {}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+
+    t.post_absolute_es_once("/marker-index/_refresh", None)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].body.is_empty(), "a body was sent");
+    assert!(!requests[0].headers.contains_key("content-type"));
+}
+
+/// One Kibana and one Elasticsearch method of each family, retrying and
+/// single-attempt, by name.
+const PATH_FAMILIES: [&str; 4] = ["kibana", "kibana_once", "es", "es_once"];
+
+async fn send_in_family(
+    t: &Transport,
+    family: &str,
+    path: &str,
+) -> elasticctl_core::Result<serde_json::Value> {
+    match family {
+        "kibana" => t.get(path).await,
+        "kibana_once" => t.post_once(path, None).await,
+        "es" => t.get_absolute_es(path).await,
+        "es_once" => t.post_absolute_es_once(path, None).await,
+        _ => unreachable!("test case names a request family"),
+    }
+}
+
+/// A Kibana profile in the default space, or an Elasticsearch profile whose
+/// Kibana host is unreachable, both aimed at `server`.
+fn family_profile(family: &str, server: &MockServer) -> Profile {
+    if family.starts_with("es") {
+        absolute_es_profile_for(server)
+    } else {
+        profile_for(server)
+    }
+}
+
+#[tokio::test]
+async fn a_path_without_a_leading_slash_is_refused_before_any_request() {
+    let attacker = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&attacker)
+        .await;
+    let to_attacker = format!("@{}/x", attacker.address());
+    for family in PATH_FAMILIES {
+        for request_path in [
+            "@attacker.example/x",
+            "attacker.example/x",
+            "",
+            to_attacker.as_str(),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .mount(&server)
+                .await;
+            let t = Transport::new(&family_profile(family, &server)).unwrap();
+
+            let error = send_in_family(&t, family, request_path)
+                .await
+                .expect_err("a path that does not start with / must be refused");
+
+            assert_eq!(error.kind, ErrorKind::Error, "{family} {request_path:?}");
+            assert_eq!(
+                error.message, "request path must start with /",
+                "{family} {request_path:?}"
+            );
+            assert_eq!(error.http_status, None, "{family} {request_path:?}");
+            assert!(
+                server.received_requests().await.unwrap().is_empty(),
+                "{family} {request_path:?}"
+            );
+        }
+    }
+    assert!(
+        attacker.received_requests().await.unwrap().is_empty(),
+        "a credential reached another authority"
+    );
+}
+
+#[tokio::test]
+async fn a_double_slash_path_still_targets_the_configured_host() {
+    for family in PATH_FAMILIES {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .mount(&server)
+            .await;
+        let t = Transport::new(&family_profile(family, &server)).unwrap();
+
+        let body = send_in_family(&t, family, "//double").await.unwrap();
+
+        assert_eq!(body["ok"], true, "{family}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "{family}");
+        assert_eq!(requests[0].url.path(), "//double", "{family}");
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("host")
+                .map(|host| host.to_str().unwrap()),
+            Some(server.address().to_string().as_str()),
+            "{family}"
+        );
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("authorization")
+                .map(|value| value.to_str().unwrap()),
+            Some("ApiKey essu_test"),
+            "{family}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn post_text_returns_the_raw_body_for_ndjson_export() {
     let server = MockServer::start().await;

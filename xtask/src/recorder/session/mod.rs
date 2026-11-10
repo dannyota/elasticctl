@@ -130,6 +130,13 @@ pub(crate) struct CleanupOwnership {
     /// Async ES|QL ids returned to this session's starts. Each stays owned
     /// until its delete succeeds or the result is already gone.
     pub(crate) esql_async_ids: Vec<String>,
+    /// The compose step's second marker rule and second marker list item.
+    /// Each is set before its create request, released when the create
+    /// answers that the identity already exists, and otherwise cleared only
+    /// after an exact-id read finds it gone. Only the compose cleanup reads
+    /// them.
+    pub(crate) compose_rule: bool,
+    pub(crate) compose_item: bool,
 }
 
 #[derive(Default)]

@@ -168,7 +168,7 @@ impl Transport {
         body: Option<&Value>,
         attempt_limit: u32,
     ) -> Result<Response> {
-        let url = self.url(path);
+        let url = self.url(path)?;
         let request_method = method.clone();
         self.send_retrying(method, &url, attempt_limit, || {
             let mut req = client
@@ -201,7 +201,7 @@ impl Transport {
         body: Option<&Value>,
         attempt_limit: u32,
     ) -> Result<Value> {
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self
             .send_with_attempt_limit(method.clone(), path, body, attempt_limit)
             .await?;
@@ -218,7 +218,7 @@ impl Transport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self
             .send_with_client_attempt_limit(&self.one_shot_client, method.clone(), path, body, 1)
             .await?;
@@ -240,7 +240,7 @@ impl Transport {
     /// version internal routes do not serve, so it is omitted.
     pub async fn get_internal(&self, path: &str) -> Result<Value> {
         let method = Method::GET;
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self
             .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 Ok(self
@@ -273,7 +273,7 @@ impl Transport {
     /// `elasticctl-api` or `elasticctl-cli`.
     pub async fn post_internal(&self, path: &str, body: &Value) -> Result<Value> {
         let method = Method::POST;
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self
             .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 Ok(self
@@ -299,7 +299,7 @@ impl Transport {
     /// headers.
     pub async fn get_with_headers(&self, path: &str) -> Result<Responded> {
         let method = Method::GET;
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self.send(method.clone(), path, None).await?;
 
         let mut headers = BTreeMap::new();
@@ -380,11 +380,38 @@ impl Transport {
         self.send_absolute_es(Method::POST, path, Some(body)).await
     }
 
+    /// PUT JSON to Elasticsearch exactly once.
+    ///
+    /// This is for a write whose outcome must not be blurred by a retry, such
+    /// as an index create whose answer decides who owns the index. It uses
+    /// the one-shot client of [`Self::put_once`] and otherwise the request
+    /// construction, response parsing, and error classification of
+    /// [`Self::post_absolute_es`].
+    pub async fn put_absolute_es_once(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::PUT, path, Some(body), 1)
+            .await
+    }
+
+    /// POST to Elasticsearch exactly once, with a JSON body or none. A route
+    /// such as `_refresh` rejects any body. See
+    /// [`Self::put_absolute_es_once`].
+    pub async fn post_absolute_es_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::POST, path, body, 1)
+            .await
+    }
+
     /// DELETE from Elasticsearch.
     ///
     /// The fixture recorder uses this to remove its scratch index.
     pub async fn delete_absolute_es(&self, path: &str) -> Result<Value> {
         self.send_absolute_es(Method::DELETE, path, None).await
+    }
+
+    /// DELETE from Elasticsearch exactly once. See
+    /// [`Self::put_absolute_es_once`].
+    pub async fn delete_absolute_es_once(&self, path: &str) -> Result<Value> {
+        self.send_absolute_es_with(&self.one_shot_client, Method::DELETE, path, None, 1)
+            .await
     }
 
     /// DELETE from Elasticsearch with a JSON body. The PIT close needs one;
@@ -400,12 +427,23 @@ impl Transport {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
-        let url = format!("{}{}", self.es_base, path);
+        self.send_absolute_es_with(&self.client, method, path, body, self.attempt_limit)
+            .await
+    }
+
+    async fn send_absolute_es_with(
+        &self,
+        client: &Client,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+    ) -> Result<Value> {
+        let url = self.es_url(path)?;
         let request_method = method.clone();
         let response = self
-            .send_retrying(method.clone(), &url, self.attempt_limit, || {
-                let mut req = self
-                    .client
+            .send_retrying(method.clone(), &url, attempt_limit, || {
+                let mut req = client
                     .request(request_method.clone(), &url)
                     .header("Authorization", &self.auth_header);
                 if let Some(b) = body {
@@ -425,7 +463,7 @@ impl Transport {
     /// POST and return the raw body for NDJSON endpoints.
     pub async fn post_text(&self, path: &str, body: Option<&Value>) -> Result<String> {
         let method = Method::POST;
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self.send(method.clone(), path, body).await?;
         self.response_text(&method, &url, response).await
     }
@@ -444,7 +482,7 @@ impl Transport {
         ndjson: &str,
     ) -> Result<Value> {
         let method = Method::POST;
-        let url = self.url(path);
+        let url = self.url(path)?;
         let response = self
             .send_retrying(method.clone(), &url, self.attempt_limit, || {
                 // Retryable HTTP responses deliberately replay this POST. Part and Form are

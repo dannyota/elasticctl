@@ -83,7 +83,7 @@ fn agent_policy_exchange_fixture(
 /// this returns only the reduced item, never the envelope, and returns
 /// `None` rather than silently publishing an unreduced body when `item` is
 /// missing or not an object. The caller must refuse to record on `None`.
-fn reduce_package_status_item(body: &Value) -> Option<Value> {
+pub(super) fn reduce_package_status_item(body: &Value) -> Option<Value> {
     let item = body.get("item")?.as_object()?;
     let installed_version = item
         .get("installationInfo")

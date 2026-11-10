@@ -98,12 +98,21 @@ Does not know about detection rules.
   API key is the default; basic auth exists for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
   on every non-GET request, `elastic-api-version` where required, and prefixes
-  space-scoped paths as `/s/<space>/api/...`. Retries with backoff on 429 and
+  space-scoped paths as `/s/<space>/api/...`. A request path must start with
+  `/`: the Kibana and Elasticsearch URL builders refuse any other path with
+  `ErrorKind::Error` before a request is built or a credential attached,
+  because a path such as `@other.example/x` appended to the base URL would
+  send the request and its credential to another host. Retries with backoff on 429 and
   5xx only, never on 4xx. JSON POST, PUT, and DELETE also expose one-shot
   variants for ownership-guarded mutations that cannot be replayed safely.
   One-shot sends the request once with redirects, connection pooling, and the
   HTTP client's protocol-level retries disabled; its caller resolves an
   ambiguous outcome with an exact read instead of repeating the mutation.
+  Elasticsearch PUT, POST, and DELETE have the same one-shot form,
+  `put_absolute_es_once`, `post_absolute_es_once`, and
+  `delete_absolute_es_once`, for a write whose
+  outcome must not be blurred by a retry, such as an index create whose answer
+  decides who owns the index.
   JSON, raw-export, multipart-import, and Elasticsearch responses share that
   retry loop and timeout/connection classification. A body-read failure is
   therefore classified the same way as a failure before the response headers.

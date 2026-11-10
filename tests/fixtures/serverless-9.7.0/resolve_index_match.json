@@ -1,0 +1,22 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "resolve_index_match",
+  "request": {
+    "method": "GET",
+    "path": "/_resolve/index/elasticctl-sample-alert-events%2A"
+  },
+  "response": {
+    "indices": [
+      {
+        "name": "elasticctl-sample-alert-events",
+        "attributes": [
+          "open"
+        ],
+        "mode": "standard"
+      }
+    ],
+    "aliases": [],
+    "data_streams": []
+  }
+}

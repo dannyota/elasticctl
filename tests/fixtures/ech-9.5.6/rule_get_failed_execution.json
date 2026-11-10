@@ -1,0 +1,60 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "rule_get_failed_execution",
+  "request": {
+    "method": "GET",
+    "path": "/api/detection_engine/rules",
+    "query": "rule_id=elasticctl-sample-compose-missing-index"
+  },
+  "response": {
+    "query": "marker: elasticctl-sample",
+    "rule_id": "elasticctl-sample-compose-missing-index",
+    "name": "elasticctl sample compose missing index",
+    "immutable": false,
+    "rule_source": {
+      "type": "internal"
+    },
+    "version": 1,
+    "revision": 0,
+    "language": "kuery",
+    "updated_by": "REDACTED",
+    "index": [
+      "elasticctl-sample-compose-missing"
+    ],
+    "created_by": "REDACTED",
+    "enabled": true,
+    "interval": "1m",
+    "from": "now-10m",
+    "to": "now",
+    "execution_summary": {
+      "last_execution": {
+        "date": "2026-01-01T00:00:00.000Z",
+        "status": "partial failure",
+        "status_order": 20,
+        "message": "elasticctl-fixture-server-text",
+        "metrics": {}
+      }
+    },
+    "description": "Recorded by cargo xtask record-compose. Safe to delete.",
+    "tags": [
+      "elasticctl-sample"
+    ],
+    "author": [],
+    "threat": [],
+    "related_integrations": [],
+    "required_fields": [],
+    "setup": "",
+    "false_positives": [],
+    "references": [],
+    "risk_score": 21,
+    "risk_score_mapping": [],
+    "severity": "low",
+    "severity_mapping": [],
+    "output_index": "",
+    "max_signals": 100,
+    "exceptions_list": [],
+    "actions": [],
+    "type": "query"
+  }
+}
