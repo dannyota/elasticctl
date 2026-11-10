@@ -74,6 +74,7 @@ impl ServerState {
                         response_body_limit: Some(16_777_216),
                         disable_redirects: true,
                         disable_retries: true,
+                        disable_connection_pool: false,
                     },
                 )
             })
@@ -91,6 +92,7 @@ impl ServerState {
                         response_body_limit: Some(16_777_216),
                         disable_redirects: true,
                         disable_retries: false,
+                        disable_connection_pool: false,
                     },
                 )
             })
