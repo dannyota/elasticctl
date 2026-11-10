@@ -234,6 +234,9 @@ fn fixture(name: &str) -> Value {
             include_str!("../../../tests/fixtures/serverless-9.7.0/exception_list_items_find.json")
         }
         "esql_query" => include_str!("../../../tests/fixtures/serverless-9.7.0/esql_query.json"),
+        "resolve_index_match" => {
+            include_str!("../../../tests/fixtures/serverless-9.7.0/resolve_index_match.json")
+        }
         _ => panic!("unknown fixture {name}"),
     };
     serde_json::from_str::<Value>(source).expect("fixture parses")["response"].clone()
@@ -311,6 +314,7 @@ async fn mount_catalog_success_routes(server: &MockServer) {
             "exception_list_items_find",
         ),
         ("POST", "/_query", "esql_query"),
+        ("GET", "/_resolve/index/logs-%2A", "resolve_index_match"),
     ] {
         mount_fixture(server, verb, route, body).await;
     }
@@ -355,7 +359,7 @@ fn success_arguments(name: &str) -> Value {
         "fleet_integration_policies_get" => {
             json!({"selector":"elasticctl-sample-integration-policy"})
         }
-        "rules_get" | "rule_health" => json!({"selector":"elasticctl-fixture-probe"}),
+const PLACEHOLDER_TOOLS: [&str; 0] = [];
         "exceptions_get" => json!({"list_id":"elasticctl-sample-exceptions","namespace":"single"}),
         "search_esql" => json!({"query":"FROM logs-*"}),
         "search_dsl" => json!({"index":"logs-*","query":{"match_all":{}}}),
@@ -510,7 +514,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
 
 /// Task tools registered before their implementation. Each answers every
 /// call with an error, so only the router error is checked for them.
-const PLACEHOLDER_TOOLS: [&str; 1] = ["rule_readiness"];
+const PLACEHOLDER_TOOLS: [&str; 0] = [];
 
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
