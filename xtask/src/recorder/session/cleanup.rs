@@ -389,8 +389,6 @@ impl RecordingSession<'_> {
             }
         }
 
-        self.cleanup_compose(&mut errors).await;
-
         if self.ownership.rule {
             match self
                 .transport

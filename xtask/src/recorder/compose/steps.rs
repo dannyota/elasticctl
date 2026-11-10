@@ -3,22 +3,22 @@
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::recorder::cases::register_case_extras;
 use crate::recorder::compose::evidence::{
-    CASE_IDS_FIELD, Exchanges, PrivateLog, normalize_alert_search, normalize_cases_by_alert,
-    normalize_items, normalize_rule, normalize_rule_page,
+    ALERT_INDEX_PLACEHOLDER, CASE_IDS_FIELD, Exchanges, PrivateLog, normalize_alert_search,
+    normalize_cases_by_alert, normalize_items, normalize_rule, normalize_rule_page,
+    resolve_names_are_markers,
 };
-use crate::recorder::compose::provision::{create_case, delete_case, owns_missing_rule};
+use crate::recorder::compose::provision::{create_case, owns_missing_rule};
 use crate::recorder::compose::requests::{
     MARKER_RULE_IDS, Planned, case_ids_probe_body, cases_by_alert, exception_items_count,
     resolve_index, rule_get, rules_find_by_technique, rules_find_sorted_page,
     session_alert_count_body, signals_activity,
 };
 use crate::recorder::compose::{
-    ABSENT_ALERT_ID, ALERT_DOCS, CASE_IDS_ATTEMPTS, COMPOSE_RULE_NAME, MATCH_PATTERN,
-    MISSING_INDEX, MISSING_RULE_ID, NO_MATCH_PATTERN,
+    ABSENT_ALERT_ID, ALERT_DOCS, CASE_IDS_ATTEMPTS, COMPOSE_RULE_NAME, ComposeSession,
+    EXCLUSION_PATTERN, MATCH_PATTERN, MISSING_INDEX, MISSING_RULE_ID, NO_MATCH_PATTERN,
 };
 use crate::recorder::markers::{ALERT_POLL_ATTEMPTS, ALERT_RULE_ID, CASE_ID_PLACEHOLDER, LIST_ID};
 use crate::recorder::ownership::owns_alert_rule;
-use crate::recorder::session::RecordingSession;
 use elasticctl_core::{ErrorKind, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -115,8 +115,18 @@ async fn wait_for_execution(
     )))
 }
 
-/// The three `_resolve/index` recordings. Only marker names are sent, and a
-/// response naming anything else is refused.
+/// The number of top-level entries in a resolve body.
+fn resolved_entries(body: &Value) -> usize {
+    ["indices", "aliases", "data_streams"]
+        .iter()
+        .filter_map(|key| body.get(*key).and_then(Value::as_array))
+        .map(Vec::len)
+        .sum()
+}
+
+/// The three `_resolve/index` recordings, and the exclusion pattern in the
+/// private log only. Only marker names are sent, and a response naming
+/// anything else at any depth is refused.
 pub(super) async fn record_resolve(
     t: &Transport,
     exchanges: &mut Exchanges,
@@ -126,31 +136,15 @@ pub(super) async fn record_resolve(
         println!("record-compose: no Elasticsearch URL; skipping the _resolve/index recordings");
         return Ok(());
     }
-    let resolved_names = |body: &Value| -> Option<Vec<String>> {
-        let mut names = Vec::new();
-        for key in ["indices", "aliases", "data_streams"] {
-            for entry in body.get(key)?.as_array()? {
-                names.push(entry.get("name")?.as_str()?.to_string());
-            }
-        }
-        Some(names)
-    };
 
     let planned = resolve_index(MATCH_PATTERN);
     let body = recorded_get(t, log, "resolve_index_match", &planned, true)
         .await
         .map_err(safe("resolving the marker index pattern failed"))?;
-    match resolved_names(&body) {
-        Some(names)
-            if !names.is_empty()
-                && names
-                    .iter()
-                    .all(|name| name.starts_with("elasticctl-sample-")) => {}
-        _ => {
-            return Err(recording_error(
-                "refusing to record resolve_index_match: the response is not only marker names",
-            ));
-        }
+    if resolved_entries(&body) == 0 || !resolve_names_are_markers(&body) {
+        return Err(recording_error(
+            "refusing to record resolve_index_match: the response is not only marker names",
+        ));
     }
     exchanges.response("resolve_index_match", &planned, body);
 
@@ -158,12 +152,23 @@ pub(super) async fn record_resolve(
     let body = recorded_get(t, log, "resolve_index_no_match", &planned, true)
         .await
         .map_err(safe("resolving the no-match marker pattern failed"))?;
-    if resolved_names(&body).is_none_or(|names| !names.is_empty()) {
+    if resolved_entries(&body) != 0 || !resolve_names_are_markers(&body) {
         return Err(recording_error(
             "refusing to record resolve_index_no_match: the response is not three empty arrays",
         ));
     }
     exchanges.response("resolve_index_no_match", &planned, body);
+
+    // Whatever the exclusion pattern answers is a measurement, not a
+    // fixture; `recorded_get` keeps the body or the error privately.
+    let _ = recorded_get(
+        t,
+        log,
+        "resolve_index_exclusion",
+        &resolve_index(EXCLUSION_PATTERN),
+        true,
+    )
+    .await;
 
     let planned = resolve_index(MISSING_INDEX);
     match recorded_get(t, log, "resolve_index_not_found", &planned, true).await {
@@ -347,6 +352,11 @@ pub(super) async fn record_activity(
         if let Some(uuid) = hit.source["kibana.alert.uuid"].as_str() {
             placeholders.insert(uuid.to_string(), placeholder);
         }
+        // The backing index is not a marker name; the placeholder replaces
+        // it wherever it appears, not only in `_index`.
+        if let Some(index) = &hit.index {
+            placeholders.insert(index.clone(), ALERT_INDEX_PLACEHOLDER.to_string());
+        }
     }
     let first = &page.hits[0];
     let alert = SessionAlert {
@@ -398,17 +408,18 @@ async fn measure_case_ids(
 }
 
 /// Create the marker case, attach the session alert, record both case
-/// reads, measure the case-ids field privately, then delete the case.
+/// reads, and measure the case-ids field privately. Cleanup removes the
+/// case.
 pub(super) async fn record_cases(
-    session: &mut RecordingSession<'_>,
+    compose: &mut ComposeSession<'_>,
     exchanges: &mut Exchanges,
     log: &mut PrivateLog,
     placeholders: &mut Placeholders,
     alert: &SessionAlert,
     interval: Duration,
 ) -> elasticctl_core::Result<()> {
-    let t = session.transport;
-    let created = create_case(session).await?;
+    let t = compose.session.transport;
+    let created = create_case(compose).await?;
     let case = elasticctl_api::cases::decode_case(&created)
         .map_err(|_| recording_error("case create response failed decoding"))?;
     placeholders.insert(case.id.clone(), CASE_ID_PLACEHOLDER.to_string());
@@ -423,7 +434,7 @@ pub(super) async fn record_cases(
         "owner": elasticctl_api::cases::OWNER,
     });
     let attached = t
-        .post(
+        .post_once(
             &elasticctl_api::cases::comments_path(&case.id),
             Some(&attach),
         )
@@ -473,6 +484,5 @@ pub(super) async fn record_cases(
     }
     exchanges.response("cases_by_alert_none", &planned, rows);
 
-    measure_case_ids(t, log, &alert.id, interval).await?;
-    delete_case(session, &case.id).await
+    measure_case_ids(t, log, &alert.id, interval).await
 }

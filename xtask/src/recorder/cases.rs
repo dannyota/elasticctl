@@ -23,7 +23,7 @@ fn case_marker_filter() -> elasticctl_api::cases_ops::CaseFilter {
     }
 }
 
-async fn find_marker_cases(
+pub(super) async fn find_marker_cases(
     t: &elasticctl_core::Transport,
 ) -> elasticctl_core::Result<(Vec<elasticctl_api::cases::Case>, u64)> {
     let query = elasticctl_api::cases_ops::find_query(

@@ -17,6 +17,9 @@ pub(super) const ITEMS_FIND_PATH: &str = "/api/exception_lists/items/_find";
 pub(super) const CASES_BY_ALERT_PATH: &str = "/api/cases/alerts";
 pub(super) const RESOLVE_INDEX_PATH: &str = "/_resolve/index";
 pub(super) const PACKAGES_PATH: &str = "/api/fleet/epm/packages";
+pub(super) const PREBUILT_STATUS_PATH: &str = "/api/detection_engine/rules/prepackaged/_status";
+/// Alerts read per cleanup round. The step makes far fewer.
+const SESSION_ALERT_PAGE: u64 = 1_000;
 
 /// One request as the recorder sends it. `target` is what the transport
 /// receives; `descriptor` is what a fixture keeps as its `request`.
@@ -185,6 +188,51 @@ pub(super) fn case_ids_probe_body(alert_id: &str) -> Value {
         "size": 1,
         "_source": ["kibana.alert.case_ids"]
     })
+}
+
+/// Cleanup read of the alert ids this run's rule produced that are not yet
+/// closed. The rule's per-creation saved-object id keeps alerts of every
+/// earlier run out. Never recorded.
+pub(super) fn open_session_alerts_body(rule_uuid: &str) -> Value {
+    json!({
+        "query": {"bool": {
+            "filter": [
+                {"term": {"kibana.alert.rule.rule_id": ALERT_RULE_ID}},
+                {"term": {"kibana.alert.rule.uuid": rule_uuid}}
+            ],
+            "must_not": [{"term": {"kibana.alert.workflow_status": "closed"}}]
+        }},
+        "size": SESSION_ALERT_PAGE,
+        "_source": false,
+        "track_total_hits": true
+    })
+}
+
+/// Close exactly the named alerts. Never a query.
+pub(super) fn close_alerts_body(alert_ids: &[String]) -> Value {
+    json!({"signal_ids": alert_ids, "status": "closed"})
+}
+
+/// The marker exception list read.
+pub(super) fn list_path() -> String {
+    format!(
+        "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
+        urlencode(LIST_ID)
+    )
+}
+
+/// One marker exception item read or delete.
+pub(super) fn item_path(item_id: &str) -> String {
+    format!(
+        "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
+        urlencode(item_id)
+    )
+}
+
+/// Create-only marker document write: Elasticsearch answers 409 when the
+/// id already exists instead of overwriting it.
+pub(super) fn marker_document_path(index: &str, seq: usize) -> String {
+    format!("/{index}/_create/{seq}")
 }
 
 #[cfg(test)]
@@ -437,6 +485,45 @@ mod tests {
         assert_eq!(
             case_ids_probe_body("a1")["query"],
             json!({"ids": {"values": ["a1"]}})
+        );
+    }
+
+    #[test]
+    fn cleanup_alert_bodies_name_this_run_and_explicit_ids_only() {
+        let open = open_session_alerts_body("so-1");
+        assert_eq!(
+            open["query"]["bool"]["filter"],
+            json!([
+                {"term": {"kibana.alert.rule.rule_id": ALERT_RULE_ID}},
+                {"term": {"kibana.alert.rule.uuid": "so-1"}}
+            ])
+        );
+        assert_eq!(
+            open["query"]["bool"]["must_not"],
+            json!([{"term": {"kibana.alert.workflow_status": "closed"}}])
+        );
+        assert_eq!(open["_source"], false);
+        let close = close_alerts_body(&["a1".to_string(), "a2".to_string()]);
+        assert_eq!(
+            close,
+            json!({"signal_ids": ["a1", "a2"], "status": "closed"})
+        );
+        assert!(close.get("query").is_none());
+    }
+
+    #[test]
+    fn marker_documents_use_the_create_only_route() {
+        assert_eq!(
+            marker_document_path("elasticctl-sample-alert-events", 3),
+            "/elasticctl-sample-alert-events/_create/3"
+        );
+        assert_eq!(
+            item_path("elasticctl-sample-exception-item-2"),
+            "/api/exception_lists/items?item_id=elasticctl-sample-exception-item-2&namespace_type=single"
+        );
+        assert_eq!(
+            list_path(),
+            "/api/exception_lists?list_id=elasticctl-sample-exceptions&namespace_type=single"
         );
     }
 

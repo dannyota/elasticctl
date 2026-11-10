@@ -24,6 +24,38 @@ use std::path::{Path, PathBuf};
 /// reaches a fixture.
 pub(super) const CASE_IDS_FIELD: &str = "kibana.alert.case_ids";
 
+/// Stands in for the alerts backing index, which is not a marker name.
+pub(super) const ALERT_INDEX_PLACEHOLDER: &str = "elasticctl-fixture-alert-index";
+
+/// Prefixes of a marker index, alias, data stream, or backing index name.
+const MARKER_NAME_PREFIXES: [&str; 2] = ["elasticctl-sample-", ".ds-elasticctl-sample-"];
+
+/// Resolve keys whose values are not index names.
+const RESOLVE_NON_NAME_KEYS: [&str; 3] = ["attributes", "timestamp_field", "mode"];
+
+/// True when every name a `_resolve/index` body holds, at any depth, is a
+/// marker name: top-level entries and the aliases, indices, data streams,
+/// and backing indices nested in them. Attribute words, the timestamp
+/// field, and the index mode are not names.
+pub(super) fn resolve_names_are_markers(body: &Value) -> bool {
+    fn walk(value: &Value) -> bool {
+        match value {
+            Value::String(name) => MARKER_NAME_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix)),
+            Value::Array(items) => items.iter().all(walk),
+            Value::Object(map) => map
+                .iter()
+                .all(|(key, value)| RESOLVE_NON_NAME_KEYS.contains(&key.as_str()) || walk(value)),
+            Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        }
+    }
+    ["indices", "aliases", "data_streams"]
+        .iter()
+        .all(|key| body.get(*key).is_some_and(Value::is_array))
+        && walk(body)
+}
+
 /// Rule fields that change on every create. Only the top level is cleared:
 /// a recursive strip of `id` would also remove the `threat` ids.
 const RULE_TOP_LEVEL_VOLATILE: [&str; 3] = ["id", "created_at", "updated_at"];
@@ -85,13 +117,21 @@ pub(super) fn normalize_items(page: &mut Value) {
     strip_volatile(page, RULE_VOLATILE_FIELDS);
 }
 
-/// Normalize a signals search the way the alert probe's fixture is, and
-/// drop the private case-ids field.
+/// Normalize a signals search the way the alert probe's fixture is, drop
+/// the private case-ids field, and replace each hit's backing index with
+/// the placeholder.
 pub(super) fn normalize_alert_search(response: &mut Value) {
     strip_volatile(response, ALERT_SEARCH_VOLATILE_FIELDS);
     strip_volatile(response, &[CASE_IDS_FIELD]);
     scrub_alert_timestamps(response);
     scrub_alert_urls(response);
+    if let Some(Value::Array(hits)) = response.pointer_mut("/hits/hits") {
+        for hit in hits.iter_mut().filter_map(Value::as_object_mut) {
+            if hit.contains_key("_index") {
+                hit.insert("_index".into(), json!(ALERT_INDEX_PLACEHOLDER));
+            }
+        }
+    }
 }
 
 /// Normalize the cases-by-alert rows the way case fixtures are. The route
@@ -336,8 +376,12 @@ mod tests {
             }]},
             "aggregations": {"status": {"buckets": [{"key": "open", "doc_count": 1}]}}
         });
+        response["hits"]["hits"][0]["_index"] =
+            json!(".internal.alerts-security.alerts-private-space-000001");
         normalize_alert_search(&mut response);
         let hit = &response["hits"]["hits"][0];
+        assert_eq!(hit["_index"], ALERT_INDEX_PLACEHOLDER);
+        assert!(!response.to_string().contains("alerts-security"));
         assert!(hit["_source"].get(CASE_IDS_FIELD).is_none());
         assert!(hit.get("sort").is_none());
         assert!(response.get("took").is_none());
@@ -347,6 +391,40 @@ mod tests {
             response["aggregations"]["status"]["buckets"][0]["doc_count"],
             1
         );
+    }
+
+    #[test]
+    fn resolve_validation_reaches_every_nested_name() {
+        let marker = json!({
+            "indices": [{"name": "elasticctl-sample-alert-events", "attributes": ["open", "hidden"],
+                "aliases": ["elasticctl-sample-alias"], "data_stream": "elasticctl-sample-ds",
+                "mode": "standard"}],
+            "aliases": [{"name": "elasticctl-sample-alias", "indices": ["elasticctl-sample-alert-events"]}],
+            "data_streams": [{"name": "elasticctl-sample-ds", "timestamp_field": "@timestamp",
+                "backing_indices": [".ds-elasticctl-sample-ds-REDACTED-000001"]}]
+        });
+        assert!(resolve_names_are_markers(&marker));
+        assert!(resolve_names_are_markers(
+            &json!({"indices": [], "aliases": [], "data_streams": []})
+        ));
+        for (pointer, leaked) in [
+            ("/indices/0/aliases/0", "prod-secrets"),
+            ("/indices/0/data_stream", "logs-private"),
+            ("/aliases/0/indices/0", "customer-data"),
+            (
+                "/data_streams/0/backing_indices/0",
+                ".ds-logs-private-2026.11.10-000001",
+            ),
+            ("/indices/0/name", "other-index"),
+        ] {
+            let mut body = marker.clone();
+            *body.pointer_mut(pointer).expect("pointer") = json!(leaked);
+            assert!(!resolve_names_are_markers(&body), "{pointer}");
+        }
+        let mut unknown = marker.clone();
+        unknown["indices"][0]["new_field"] = json!("unlisted-name");
+        assert!(!resolve_names_are_markers(&unknown));
+        assert!(!resolve_names_are_markers(&json!({"indices": []})));
     }
 
     #[test]

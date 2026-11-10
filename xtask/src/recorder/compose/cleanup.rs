@@ -1,0 +1,680 @@
+//! Compose cleanup: remove exactly what this run created.
+//!
+//! An object is touched only while its ownership flag is set. Every delete
+//! re-reads the object first and requires its marker fields, and the server
+//! id when this run learned it. The flag clears only after a later read
+//! finds the object gone. Alerts are closed by explicit id. Failure text is
+//! built only from static context and an error's class and status.
+
+use crate::diagnostics::safe_recording_error_summary;
+use crate::recorder::cases::find_marker_cases;
+use crate::recorder::compose::ComposeSession;
+use crate::recorder::compose::provision::{owns_compose_item, owns_missing_rule};
+use crate::recorder::compose::requests::{
+    ITEMS_FIND_PATH, close_alerts_body, item_path, list_path, open_session_alerts_body, rule_get,
+};
+use crate::recorder::compose::{COMPOSE_ITEM_ID, MISSING_RULE_ID};
+use crate::recorder::markers::{
+    ALERT_PROBE_INDEX, ALERT_RULE_ID, ITEM_ID, LIST_ID, NAMESPACE_TYPE,
+};
+use crate::recorder::ownership::{
+    owns_alert_index, owns_alert_rule, owns_case, owns_item, owns_list,
+};
+use elasticctl_core::{Error, ErrorKind, Transport, urlencode};
+use serde_json::Value;
+use std::fmt;
+use std::time::Duration;
+
+pub(super) const CASE: &str = "the marker case";
+pub(super) const RULE: &str = "rule elasticctl-sample-alert-probe";
+pub(super) const MISSING_RULE: &str = "rule elasticctl-sample-compose-missing-index";
+pub(super) const ALERTS: &str = "the session alerts";
+pub(super) const ITEM: &str = "exception item 1";
+pub(super) const COMPOSE_ITEM: &str = "exception item 2";
+pub(super) const LIST: &str = "the marker exception list";
+pub(super) const INDEX: &str = "index elasticctl-sample-alert-events";
+
+/// Close requests sent for the session alerts before cleanup reports any
+/// that are still open.
+const CLOSE_ROUNDS: u32 = 3;
+
+/// One cleanup failure. Its text holds only static context and an error's
+/// class and status, so it is safe to print.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Failure(String);
+
+impl Failure {
+    fn refused(object: &'static str) -> Self {
+        Self(format!(
+            "refusing to delete {object}: its marker fields or id do not match"
+        ))
+    }
+
+    fn present(object: &'static str) -> Self {
+        Self(format!("{object} is still present"))
+    }
+
+    fn kept(object: &'static str, reason: &'static str) -> Self {
+        Self(format!("keeping {object}: {reason}"))
+    }
+
+    fn request(stage: &'static str, object: &'static str, error: &Error) -> Self {
+        Self(format!(
+            "{stage} {object}: {}",
+            safe_recording_error_summary(error)
+        ))
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// One fixed-id object and the reads that prove it this run's, then gone.
+struct Target<'a> {
+    object: &'static str,
+    read: String,
+    delete: String,
+    /// The read that proves absence. It differs from `read` only for the
+    /// index, whose marker lives in a document.
+    absent: String,
+    elasticsearch: bool,
+    owns: fn(&Value) -> bool,
+    /// The server id this run learned, which a re-read must still show.
+    id: Option<&'a str>,
+    /// A `_find` whose `total` must be zero before the delete.
+    empty: Option<String>,
+}
+
+impl Target<'_> {
+    fn kibana<'a>(
+        object: &'static str,
+        path: String,
+        owns: fn(&Value) -> bool,
+        id: Option<&'a str>,
+    ) -> Target<'a> {
+        Target {
+            object,
+            read: path.clone(),
+            delete: path.clone(),
+            absent: path,
+            elasticsearch: false,
+            owns,
+            id,
+            empty: None,
+        }
+    }
+
+    async fn get(&self, t: &Transport, path: &str) -> elasticctl_core::Result<Value> {
+        if self.elasticsearch {
+            t.get_absolute_es(path).await
+        } else {
+            t.get(path).await
+        }
+    }
+
+    fn matches(&self, value: &Value) -> bool {
+        (self.owns)(value)
+            && self
+                .id
+                .is_none_or(|id| value.get("id").and_then(Value::as_str) == Some(id))
+    }
+}
+
+async fn confirm_absent(t: &Transport, target: &Target<'_>) -> Result<(), Failure> {
+    match target.get(t, &target.absent).await {
+        Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(Failure::present(target.object)),
+        Err(error) => Err(Failure::request(
+            "verifying the removal of",
+            target.object,
+            &error,
+        )),
+    }
+}
+
+/// Remove one owned object. Returns the read taken before the delete, or
+/// `None` when the object was already gone.
+async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Failure> {
+    let current = match target.get(t, &target.read).await {
+        Ok(value) if target.matches(&value) => value,
+        Ok(_) => return Err(Failure::refused(target.object)),
+        Err(error) if error.kind == ErrorKind::NotFound => {
+            if target.absent != target.read {
+                confirm_absent(t, target).await?;
+            }
+            return Ok(None);
+        }
+        Err(error) => return Err(Failure::request("checking", target.object, &error)),
+    };
+    if let Some(find) = &target.empty {
+        let page = t
+            .get(find)
+            .await
+            .map_err(|error| Failure::request("counting the items on", target.object, &error))?;
+        if page.get("total").and_then(Value::as_u64) != Some(0) {
+            return Err(Failure::kept(target.object, "it still holds items"));
+        }
+    }
+    let deleted = if target.elasticsearch {
+        t.delete_absolute_es(&target.delete).await
+    } else {
+        t.delete(&target.delete).await
+    };
+    match deleted {
+        Ok(_) => {}
+        Err(error) if error.kind == ErrorKind::NotFound => {}
+        Err(error) => return Err(Failure::request("deleting", target.object, &error)),
+    }
+    confirm_absent(t, target).await?;
+    Ok(Some(current))
+}
+
+/// Remove the marker case. A case has no caller-chosen id: when the create
+/// answer was lost, the one marker case is found by title and tag, which
+/// the preflight proved absent before, then handled by its exact id.
+async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<(), Failure> {
+    let id = match known.clone() {
+        Some(id) => id,
+        None => {
+            let (cases, total) = find_marker_cases(t)
+                .await
+                .map_err(|error| Failure::request("finding", CASE, &error))?;
+            match cases.as_slice() {
+                [] if total == 0 => return Ok(()),
+                [case] if total == 1 => case.id.clone(),
+                _ => return Err(Failure::kept(CASE, "more than one marker case matches")),
+            }
+        }
+    };
+    *known = Some(id.clone());
+    let path = elasticctl_api::cases::case_path(&id);
+    match t.get(&path).await {
+        Ok(case)
+            if owns_case(&case) && case.get("id").and_then(Value::as_str) == Some(id.as_str()) => {}
+        Ok(_) => return Err(Failure::refused(CASE)),
+        Err(error) if error.kind == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(Failure::request("checking", CASE, &error)),
+    }
+    match elasticctl_api::cases::delete(t, &[id]).await {
+        Ok(()) => {}
+        Err(error) if error.kind == ErrorKind::NotFound => {}
+        Err(error) => return Err(Failure::request("deleting", CASE, &error)),
+    }
+    match t.get(&path).await {
+        Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(Failure::present(CASE)),
+        Err(error) => Err(Failure::request("verifying the removal of", CASE, &error)),
+    }
+}
+
+async fn open_session_alerts(
+    t: &Transport,
+    rule_uuid: &str,
+) -> elasticctl_core::Result<Vec<String>> {
+    let page = t
+        .post(
+            elasticctl_api::alerts::SEARCH_PATH,
+            Some(&open_session_alerts_body(rule_uuid)),
+        )
+        .await?;
+    page.pointer("/hits/hits")
+        .and_then(Value::as_array)
+        .and_then(|hits| {
+            hits.iter()
+                .map(|hit| hit.get("_id").and_then(Value::as_str).map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| Error::new(ErrorKind::Http, "decoding session alert ids"))
+}
+
+/// Close the alerts of this run's rule by explicit id until none is open.
+/// The ids come from a read scoped to the rule's per-creation id, so no
+/// alert of an earlier run is ever closed.
+async fn close_session_alerts(
+    t: &Transport,
+    rule_uuid: Option<&str>,
+    interval: Duration,
+) -> Result<(), Failure> {
+    let Some(rule_uuid) = rule_uuid else {
+        return Ok(());
+    };
+    for round in 0..=CLOSE_ROUNDS {
+        let open = open_session_alerts(t, rule_uuid)
+            .await
+            .map_err(|error| Failure::request("finding", ALERTS, &error))?;
+        if open.is_empty() {
+            return Ok(());
+        }
+        if round == CLOSE_ROUNDS {
+            break;
+        }
+        t.post(
+            elasticctl_api::alerts::STATUS_PATH,
+            Some(&close_alerts_body(&open)),
+        )
+        .await
+        .map_err(|error| Failure::request("closing", ALERTS, &error))?;
+        tokio::time::sleep(interval).await;
+    }
+    Err(Failure(format!("{ALERTS} are still open")))
+}
+
+/// Remove every object this run still owns, in dependency order: the case
+/// that holds the alert, both rules, the rule's alerts, the items, the list
+/// once it is empty, then the index.
+pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, interval: Duration) -> Vec<Failure> {
+    let t = compose.session.transport;
+    let owned = &mut compose.session.ownership;
+    let ids = &mut compose.ids;
+    let mut failures = Vec::new();
+
+    if owned.case {
+        match remove_case(t, &mut ids.case).await {
+            Ok(()) => owned.case = false,
+            Err(failure) => failures.push(failure),
+        }
+    }
+
+    if owned.compose_rule {
+        let removed = {
+            let path = rule_get(MISSING_RULE_ID).target();
+            let target = Target::kibana(
+                MISSING_RULE,
+                path,
+                owns_missing_rule,
+                ids.missing_rule.as_deref(),
+            );
+            remove(t, &target).await
+        };
+        match removed {
+            Ok(_) => owned.compose_rule = false,
+            Err(failure) => failures.push(failure),
+        }
+    }
+    if owned.alert_rule {
+        let removed = {
+            let path = rule_get(ALERT_RULE_ID).target();
+            let target = Target::kibana(RULE, path, owns_alert_rule, ids.rule.as_deref());
+            remove(t, &target).await
+        };
+        match removed {
+            Ok(read) => {
+                owned.alert_rule = false;
+                // A create whose answer was lost still produced alerts under
+                // the id the re-read showed.
+                if ids.rule.is_none() {
+                    ids.rule = read
+                        .as_ref()
+                        .and_then(|rule| rule.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+            }
+            Err(failure) => failures.push(failure),
+        }
+    }
+    if let Err(failure) = close_session_alerts(t, ids.rule.as_deref(), interval).await {
+        failures.push(failure);
+    }
+
+    for (flag, object, item_id, owns, id) in [
+        (
+            &mut owned.compose_item,
+            COMPOSE_ITEM,
+            COMPOSE_ITEM_ID,
+            owns_compose_item as fn(&Value) -> bool,
+            ids.compose_item.as_deref(),
+        ),
+        (
+            &mut owned.item,
+            ITEM,
+            ITEM_ID,
+            owns_item,
+            ids.item.as_deref(),
+        ),
+    ] {
+        if !*flag {
+            continue;
+        }
+        match remove(t, &Target::kibana(object, item_path(item_id), owns, id)).await {
+            Ok(_) => *flag = false,
+            Err(failure) => failures.push(failure),
+        }
+    }
+
+    if owned.list {
+        if owned.item || owned.compose_item {
+            failures.push(Failure::kept(LIST, "an item on it is still owned"));
+        } else {
+            let removed = {
+                let mut target = Target::kibana(LIST, list_path(), owns_list, ids.list.as_deref());
+                target.empty = Some(format!(
+                    "{ITEMS_FIND_PATH}?list_id={}&namespace_type={NAMESPACE_TYPE}&page=1&per_page=1",
+                    urlencode(LIST_ID)
+                ));
+                remove(t, &target).await
+            };
+            match removed {
+                Ok(_) => owned.list = false,
+                Err(failure) => failures.push(failure),
+            }
+        }
+    }
+
+    if owned.alert_index {
+        let target = Target {
+            object: INDEX,
+            read: format!("/{ALERT_PROBE_INDEX}/_doc/1"),
+            delete: format!("/{ALERT_PROBE_INDEX}"),
+            absent: format!("/{ALERT_PROBE_INDEX}"),
+            elasticsearch: true,
+            owns: owns_alert_index,
+            id: None,
+            empty: None,
+        };
+        match remove(t, &target).await {
+            Ok(_) => owned.alert_index = false,
+            Err(failure) => failures.push(failure),
+        }
+    }
+    failures
+}
+
+/// The objects this run still owns, for the operator.
+pub(super) fn still_owned(compose: &ComposeSession<'_>) -> Vec<&'static str> {
+    let owned = &compose.session.ownership;
+    [
+        (owned.case, CASE),
+        (owned.alert_rule, RULE),
+        (owned.compose_rule, MISSING_RULE),
+        (owned.compose_item, COMPOSE_ITEM),
+        (owned.item, ITEM),
+        (owned.list, LIST),
+        (owned.alert_index, INDEX),
+    ]
+    .into_iter()
+    .filter_map(|(owned, object)| owned.then_some(object))
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recorder::markers::{ALERT_MARKER_TAG, CASE_TAG, CASE_TITLE};
+    use crate::recorder::test_support::mock_transport;
+    use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ok(body: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    fn not_found() -> ResponseTemplate {
+        ResponseTemplate::new(404).set_body_json(json!({"statusCode": 404}))
+    }
+
+    async fn requests(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .map(|r| match r.url.query() {
+                Some(query) => format!("{} {}?{query}", r.method, r.url.path()),
+                None => format!("{} {}", r.method, r.url.path()),
+            })
+            .collect()
+    }
+
+    async fn mount_rule(server: &MockServer, http: &'static str, response: ResponseTemplate) {
+        Mock::given(method(http))
+            .and(path("/api/detection_engine/rules"))
+            .and(query_param("rule_id", ALERT_RULE_ID))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn nothing_owned_sends_no_request() {
+        let server = MockServer::start().await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(requests(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_untagged_rule_under_the_fixed_id_is_never_patched_or_deleted() {
+        let server = MockServer::start().await;
+        mount_rule(
+            &server,
+            "GET",
+            ok(json!({"rule_id": ALERT_RULE_ID, "tags": [], "id": "so-1"})),
+        )
+        .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.alert_rule = true;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert_eq!(
+            failures,
+            [Failure::refused(RULE)],
+            "the rule was not refused"
+        );
+        assert!(compose.session.ownership.alert_rule);
+        assert_eq!(
+            requests(&server).await,
+            ["GET /api/detection_engine/rules?rule_id=elasticctl-sample-alert-probe"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rule_whose_server_id_changed_is_refused() {
+        let server = MockServer::start().await;
+        mount_rule(
+            &server,
+            "GET",
+            ok(json!({"rule_id": ALERT_RULE_ID, "tags": [ALERT_MARKER_TAG], "id": "so-2"})),
+        )
+        .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.alert_rule = true;
+        compose.ids.rule = Some("so-1".into());
+        Mock::given(method("POST"))
+            .and(path(elasticctl_api::alerts::SEARCH_PATH))
+            .respond_with(ok(json!({"hits": {"total": {"value": 0}, "hits": []}})))
+            .mount(&server)
+            .await;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert_eq!(failures, [Failure::refused(RULE)]);
+        assert!(
+            requests(&server).await.iter().all(|r| r.starts_with("GET ")
+                || r.starts_with("POST /api/detection_engine/signals/search")),
+            "a mutation was sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_case_create_is_found_by_its_marker_and_removed_by_id() {
+        let server = MockServer::start().await;
+        let case = json!({"id": "case-1", "title": CASE_TITLE, "tags": [CASE_TAG],
+            "description": "x", "status": "open", "version": "v1"});
+        Mock::given(method("GET"))
+            .and(path("/api/cases/_find"))
+            .respond_with(ok(
+                json!({"cases": [case.clone()], "total": 1, "page": 1, "per_page": 100}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/cases/case-1"))
+            .respond_with(ok(case))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/cases/case-1"))
+            .respond_with(not_found())
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/cases"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.case = true;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(!compose.session.ownership.case);
+        let sent = requests(&server).await;
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        assert!(sent[0].starts_with("GET /api/cases/_find?"));
+        assert_eq!(sent[1], "GET /api/cases/case-1");
+        assert_eq!(sent[2], "DELETE /api/cases?ids=%5B%22case-1%22%5D");
+        assert_eq!(sent[3], "GET /api/cases/case-1");
+    }
+
+    #[tokio::test]
+    async fn more_than_one_marker_case_is_left_for_review() {
+        let server = MockServer::start().await;
+        let case = |id: &str| {
+            json!({"id": id, "title": CASE_TITLE, "tags": [CASE_TAG], "description": "x",
+                "status": "open", "version": "v1"})
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/cases/_find"))
+            .respond_with(ok(
+                json!({"cases": [case("a"), case("b")], "total": 2, "page": 1, "per_page": 100}),
+            ))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.case = true;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert_eq!(
+            failures,
+            [Failure::kept(CASE, "more than one marker case matches")]
+        );
+        assert!(compose.session.ownership.case);
+        assert_eq!(requests(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_list_is_kept_while_it_still_holds_items() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/exception_lists"))
+            .respond_with(ok(json!({"list_id": LIST_ID, "namespace_type": "single",
+                "tags": ["elasticctl", "fixture", ALERT_MARKER_TAG], "id": "list-1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(ITEMS_FIND_PATH))
+            .respond_with(ok(
+                json!({"data": [{}], "total": 1, "page": 1, "per_page": 1}),
+            ))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.list = true;
+        compose.ids.list = Some("list-1".into());
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert_eq!(failures, [Failure::kept(LIST, "it still holds items")]);
+        assert!(compose.session.ownership.list);
+        assert!(
+            requests(&server)
+                .await
+                .iter()
+                .all(|r| r.starts_with("GET "))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_index_without_its_marker_document_is_kept() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{ALERT_PROBE_INDEX}/_doc/1")))
+            .respond_with(not_found())
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{ALERT_PROBE_INDEX}")))
+            .respond_with(ok(json!({})))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.alert_index = true;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert_eq!(failures, [Failure::present(INDEX)]);
+        assert!(compose.session.ownership.alert_index);
+        assert!(
+            requests(&server)
+                .await
+                .iter()
+                .all(|r| r.starts_with("GET "))
+        );
+    }
+
+    #[tokio::test]
+    async fn objects_already_gone_are_released_after_one_read_each() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(not_found())
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        let owned = &mut compose.session.ownership;
+        owned.alert_rule = true;
+        owned.compose_rule = true;
+        owned.item = true;
+        owned.compose_item = true;
+        owned.list = true;
+
+        let failures = cleanup(&mut compose, Duration::ZERO).await;
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(still_owned(&compose).is_empty());
+        assert_eq!(requests(&server).await.len(), 5);
+    }
+
+    #[test]
+    fn failure_text_keeps_only_the_class_and_status() {
+        let error = Error::with_status(
+            ErrorKind::Http,
+            500,
+            "https://private.example.internal:9243 refused",
+        );
+        let failure = Failure::request("deleting", RULE, &error);
+        assert_eq!(
+            failure.to_string(),
+            "deleting rule elasticctl-sample-alert-probe: class=http status=500"
+        );
+    }
+}

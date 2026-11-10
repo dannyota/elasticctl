@@ -45,8 +45,12 @@ re-recorded. The owner accepted this on 2026-11-10.
 | `exception_items_count.json` | Item `_find` with `per_page=1` on a two-item marker list |
 | `resolve_index_match.json` | Marker index pattern |
 | `resolve_index_no_match.json` | Marker wildcard that matches nothing |
-| `resolve_index_not_found.json` | Missing concrete marker name, the 404 body |
+| `resolve_index_not_found.json` | Missing concrete marker name: the 404 as the transport classifies it (kind, status, reason) |
 | `package_not_installed.json` | Status of one package the recorder first proves is not installed |
+
+The transport returns a non-success response as a classified error and keeps
+no raw body, so the 404 fixture records that classification. Tests of the 404
+path assert the kind and status the caller sees.
 
 Existing fixtures are reused unchanged and never hand-edited. Synthetic
 bodies belong in adversarial tests only.

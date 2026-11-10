@@ -1,18 +1,21 @@
-//! Marker objects for the compose recording and their cleanup.
+//! Marker objects for the compose recording.
 //!
 //! Every object is claimed in `CleanupOwnership` before the request that
-//! creates it, so a lost create response still leaves it cleanup-owned.
-//! Session cleanup re-reads each object and deletes it only when its marker
-//! fields still match.
+//! creates it, so a create whose answer is lost stays cleanup-owned. Every
+//! create is create-only and sent once: a conflict means another run holds
+//! the fixed identity, so the claim is released and cleanup never touches
+//! the object.
 
 use crate::clock::now_rfc3339;
-use crate::diagnostics::{
-    recording_error, safe_recording_error_summary, safe_recording_transport_error,
+use crate::diagnostics::{recording_error, safe_recording_transport_error};
+use crate::recorder::agent_policies::reduce_package_status_item;
+use crate::recorder::compose::cleanup::{
+    CASE, COMPOSE_ITEM, INDEX, ITEM, LIST, MISSING_RULE, RULE,
 };
-use crate::recorder::cases::require_no_marker_cases;
-use crate::recorder::compose::requests::{RULES_PATH, package_status, rule_get};
+use crate::recorder::compose::evidence::PrivateLog;
+use crate::recorder::compose::requests::{RULES_PATH, marker_document_path, package_status};
 use crate::recorder::compose::{
-    ALERT_DOCS, COMPOSE_ITEM_ID, COMPOSE_RULE_NAME, MISSING_INDEX, MISSING_RULE_ID,
+    ALERT_DOCS, COMPOSE_ITEM_ID, COMPOSE_RULE_NAME, ComposeSession, MISSING_INDEX, MISSING_RULE_ID,
     MISSING_RULE_NAME, PACKAGE_CANDIDATES,
 };
 use crate::recorder::markers::{
@@ -20,20 +23,13 @@ use crate::recorder::markers::{
     MARKER_TAGS, NAMESPACE_TYPE,
 };
 use crate::recorder::ownership::{
-    owns_alert_index, owns_alert_rule, owns_case, owns_item, owns_list, require_absent_alert_index,
-    require_absent_alert_rule, require_absent_item, require_absent_list,
+    owns_alert_index, owns_alert_rule, owns_case, owns_item, owns_list,
 };
-use crate::recorder::session::RecordingSession;
-use elasticctl_core::{ErrorKind, Transport, urlencode};
+use elasticctl_core::{ErrorKind, Transport};
 use serde_json::{Value, json};
 
-/// Server ids of the created marker objects. They stay in memory and only
-/// ever reach a fixture as placeholders.
-pub(super) struct Provisioned {
-    pub(super) list_id: String,
-    pub(super) rule_uuid: String,
-    pub(super) missing_rule_uuid: String,
-}
+/// The package the marker rule names in `related_integrations`.
+const SYSTEM_PACKAGE: &str = "system";
 
 /// Tags on the marker list and items: the shared fixture tags the existing
 /// ownership checks require, plus the sample marker.
@@ -68,81 +64,6 @@ pub(super) fn owns_compose_item(value: &Value) -> bool {
         && has_sample_tag(value)
 }
 
-fn item_path(item_id: &str) -> String {
-    format!(
-        "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
-        urlencode(item_id)
-    )
-}
-
-fn missing_rule_path() -> String {
-    rule_get(MISSING_RULE_ID).target()
-}
-
-async fn require_not_found(
-    t: &Transport,
-    path: &str,
-    elasticsearch: bool,
-    label: &'static str,
-) -> elasticctl_core::Result<()> {
-    let read = if elasticsearch {
-        t.get_absolute_es(path).await
-    } else {
-        t.get(path).await
-    };
-    match read {
-        Ok(_) => Err(recording_error(format!(
-            "refusing to record: {label} already exists and is not cleanup-owned"
-        ))),
-        Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(safe_recording_transport_error(
-            "compose preflight read failed",
-            error,
-        )),
-    }
-}
-
-fn preflight_error(error: elasticctl_core::Error) -> elasticctl_core::Error {
-    // The shared preflights return their own static refusal or a raw
-    // transport error. Keep a refusal; reduce a transport error to its class.
-    if error.http_status.is_none()
-        && error.kind == ErrorKind::Error
-        && error.message.starts_with("refusing to record")
-    {
-        error
-    } else {
-        safe_recording_transport_error("compose preflight read failed", error)
-    }
-}
-
-/// Prove every marker identity this step writes is absent before any write.
-pub(super) async fn preflight(t: &Transport) -> elasticctl_core::Result<()> {
-    require_absent_alert_rule(t)
-        .await
-        .map_err(preflight_error)?;
-    require_absent_alert_index(t)
-        .await
-        .map_err(preflight_error)?;
-    require_absent_list(t).await.map_err(preflight_error)?;
-    require_absent_item(t).await.map_err(preflight_error)?;
-    require_not_found(t, &item_path(COMPOSE_ITEM_ID), false, "exception item 2").await?;
-    require_not_found(
-        t,
-        &missing_rule_path(),
-        false,
-        "the compose missing-index rule",
-    )
-    .await?;
-    require_not_found(
-        t,
-        &format!("/{MISSING_INDEX}"),
-        true,
-        "the missing marker index",
-    )
-    .await?;
-    require_no_marker_cases(t).await.map_err(preflight_error)
-}
-
 /// Read each candidate package and keep the first whose status is
 /// `not_installed`. A candidate the registry does not know is skipped; no
 /// package is ever installed or removed.
@@ -170,34 +91,102 @@ pub(super) async fn probe_not_installed_package(
     ))
 }
 
-fn create_error(
-    context: &'static str,
-) -> impl FnOnce(elasticctl_core::Error) -> elasticctl_core::Error {
-    move |error| safe_recording_transport_error(context, error)
+/// Require the `system` package, which the marker rule names, to be
+/// installed. Its reduced status is the installed half of the package
+/// evidence and goes to the private log only.
+pub(super) async fn require_installed_system(
+    t: &Transport,
+    log: &mut PrivateLog,
+) -> elasticctl_core::Result<()> {
+    let body = t
+        .get(&package_status(SYSTEM_PACKAGE).target())
+        .await
+        .map_err(|error| {
+            safe_recording_transport_error("reading the system package status failed", error)
+        })?;
+    let item = &body["item"];
+    if item["name"].as_str() != Some(SYSTEM_PACKAGE) || item["status"].as_str() != Some("installed")
+    {
+        return Err(recording_error(
+            "refusing to record: the system package is not installed",
+        ));
+    }
+    log.add(
+        "responses",
+        "package_system",
+        reduce_package_status_item(&body).unwrap_or(Value::Null),
+    );
+    Ok(())
 }
 
-/// Index the marker documents and refresh. The index is claimed before the
-/// first document write.
-pub(super) async fn create_index(
-    session: &mut RecordingSession<'_>,
-) -> elasticctl_core::Result<()> {
-    let t = session.transport;
-    session.ownership.alert_index = true;
-    session.ownership.alert_index_claimed = true;
+fn conflict(object: &'static str) -> elasticctl_core::Error {
+    recording_error(format!(
+        "refusing to record: {object} already exists and is not this run's"
+    ))
+}
+
+/// Send one create exactly once. The claim is set first, so a create whose
+/// answer is lost stays cleanup-owned. A conflict releases the claim.
+async fn create_once(
+    t: &Transport,
+    path: &str,
+    body: &Value,
+    claim: &mut bool,
+    object: &'static str,
+    context: &'static str,
+) -> elasticctl_core::Result<Value> {
+    *claim = true;
+    match t.post_once(path, Some(body)).await {
+        Ok(created) => Ok(created),
+        Err(error) if error.kind == ErrorKind::Conflict => {
+            *claim = false;
+            Err(conflict(object))
+        }
+        Err(error) => Err(safe_recording_transport_error(context, error)),
+    }
+}
+
+/// Index the marker documents with the create-only route, then refresh. The
+/// index is claimed before the first write; an existing document means the
+/// index is not this run's.
+pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl_core::Result<()> {
+    let t = compose.session.transport;
+    let owned = &mut compose.session.ownership;
+    owned.alert_index = true;
     for seq in 1..=ALERT_DOCS {
         let doc = json!({
             "@timestamp": now_rfc3339(),
             "marker": ALERT_MARKER_TAG,
             "message": format!("elasticctl sample compose event {seq}"),
         });
-        t.post_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/{seq}"), &doc)
+        match t
+            .post_absolute_es(&marker_document_path(ALERT_PROBE_INDEX, seq), &doc)
             .await
-            .map_err(create_error("writing a marker document failed"))?;
+        {
+            Ok(created) if created["result"].as_str() == Some("created") => {}
+            Ok(_) => {
+                return Err(recording_error(
+                    "a marker document write did not report created",
+                ));
+            }
+            Err(error) if error.kind == ErrorKind::Conflict => {
+                owned.alert_index = false;
+                return Err(conflict(INDEX));
+            }
+            Err(error) => {
+                return Err(safe_recording_transport_error(
+                    "writing a marker document failed",
+                    error,
+                ));
+            }
+        }
     }
     let proof = t
         .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
         .await
-        .map_err(create_error("reading a marker document failed"))?;
+        .map_err(|error| {
+            safe_recording_transport_error("reading a marker document failed", error)
+        })?;
     if !owns_alert_index(&proof) {
         return Err(recording_error(
             "marker index write did not prove the fixed marker identity",
@@ -206,7 +195,9 @@ pub(super) async fn create_index(
     // `_refresh` rejects a body, so use the GET form, which sends none.
     t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
         .await
-        .map_err(create_error("refreshing the marker index failed"))?;
+        .map_err(|error| {
+            safe_recording_transport_error("refreshing the marker index failed", error)
+        })?;
     Ok(())
 }
 
@@ -274,7 +265,7 @@ pub(super) fn rule_body(list_server_id: &str) -> Value {
                 }]
             }]
         }],
-        "related_integrations": [{"package": "system", "version": "^2.0.0"}],
+        "related_integrations": [{"package": SYSTEM_PACKAGE, "version": "^2.0.0"}],
         "exceptions_list": [{
             "id": list_server_id,
             "list_id": LIST_ID,
@@ -304,92 +295,101 @@ pub(super) fn missing_rule_body() -> Value {
     })
 }
 
-fn server_id(value: &Value, label: &'static str) -> elasticctl_core::Result<String> {
-    value
+/// The server id of a create response that proved its marker identity.
+fn proven_id(
+    created: &Value,
+    owns: fn(&Value) -> bool,
+    object: &'static str,
+) -> elasticctl_core::Result<String> {
+    if !owns(created) {
+        return Err(recording_error(format!(
+            "{object} create response did not prove the fixed marker identity"
+        )));
+    }
+    created
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| recording_error(format!("{label} create response is missing id")))
+        .ok_or_else(|| recording_error(format!("{object} create response is missing id")))
 }
 
-/// Create the list, its two items, and both rules, in that order. Each
-/// ownership flag is set before its create request.
+/// Create the list, its two items, and both rules, in that order, keeping
+/// each server id for cleanup's re-reads and the fixture placeholders.
 pub(super) async fn create_objects(
-    session: &mut RecordingSession<'_>,
-) -> elasticctl_core::Result<Provisioned> {
-    let t = session.transport;
+    compose: &mut ComposeSession<'_>,
+) -> elasticctl_core::Result<()> {
+    let t = compose.session.transport;
+    let owned = &mut compose.session.ownership;
+    let ids = &mut compose.ids;
 
-    session.ownership.list = true;
-    let list = t
-        .post("/api/exception_lists", Some(&list_body()))
-        .await
-        .map_err(create_error("creating the marker list failed"))?;
-    if !owns_list(&list) {
-        return Err(recording_error(
-            "exception list create response did not prove the fixed marker identity",
-        ));
-    }
-    let list_id = server_id(&list, "exception list")?;
+    let list = create_once(
+        t,
+        "/api/exception_lists",
+        &list_body(),
+        &mut owned.list,
+        LIST,
+        "creating the marker list failed",
+    )
+    .await?;
+    let list_id = proven_id(&list, owns_list, LIST)?;
+    ids.list = Some(list_id.clone());
 
-    session.ownership.item = true;
-    let item = t
-        .post(
+    for (item_id, value, claim, owns, object, context, id) in [
+        (
+            ITEM_ID,
+            "elasticctl-sample-1.exe",
+            &mut owned.item,
+            owns_item as fn(&Value) -> bool,
+            ITEM,
+            "creating marker item 1 failed",
+            &mut ids.item,
+        ),
+        (
+            COMPOSE_ITEM_ID,
+            "elasticctl-sample-2.exe",
+            &mut owned.compose_item,
+            owns_compose_item,
+            COMPOSE_ITEM,
+            "creating marker item 2 failed",
+            &mut ids.compose_item,
+        ),
+    ] {
+        let body = item_body(item_id, value);
+        let item = create_once(
+            t,
             "/api/exception_lists/items",
-            Some(&item_body(ITEM_ID, "elasticctl-sample-1.exe")),
+            &body,
+            claim,
+            object,
+            context,
         )
-        .await
-        .map_err(create_error("creating marker item 1 failed"))?;
-    if !owns_item(&item) {
-        return Err(recording_error(
-            "exception item 1 create response did not prove the fixed marker identity",
-        ));
+        .await?;
+        *id = Some(proven_id(&item, owns, object)?);
     }
 
-    session.ownership.compose_item = true;
-    let item = t
-        .post(
-            "/api/exception_lists/items",
-            Some(&item_body(COMPOSE_ITEM_ID, "elasticctl-sample-2.exe")),
-        )
-        .await
-        .map_err(create_error("creating marker item 2 failed"))?;
-    if !owns_compose_item(&item) {
-        return Err(recording_error(
-            "exception item 2 create response did not prove the fixed marker identity",
-        ));
-    }
+    let rule = create_once(
+        t,
+        RULES_PATH,
+        &rule_body(&list_id),
+        &mut owned.alert_rule,
+        RULE,
+        "creating the marker rule failed",
+    )
+    .await?;
+    ids.rule = Some(proven_id(&rule, owns_alert_rule, RULE)?);
 
-    session.ownership.alert_rule = true;
-    session.ownership.alert_rule_claimed = true;
-    let rule = t
-        .post(RULES_PATH, Some(&rule_body(&list_id)))
-        .await
-        .map_err(create_error("creating the marker rule failed"))?;
-    if !owns_alert_rule(&rule) {
-        return Err(recording_error(
-            "marker rule create response did not prove the fixed marker identity",
-        ));
-    }
-    let rule_uuid = server_id(&rule, "marker rule")?;
-
-    session.ownership.compose_rule = true;
-    let missing_rule = t
-        .post(RULES_PATH, Some(&missing_rule_body()))
-        .await
-        .map_err(create_error("creating the missing-index rule failed"))?;
-    if !owns_missing_rule(&missing_rule) {
-        return Err(recording_error(
-            "missing-index rule create response did not prove the fixed marker identity",
-        ));
-    }
-    let missing_rule_uuid = server_id(&missing_rule, "missing-index rule")?;
-
-    Ok(Provisioned {
-        list_id,
-        rule_uuid,
-        missing_rule_uuid,
-    })
+    let missing_rule = create_once(
+        t,
+        RULES_PATH,
+        &missing_rule_body(),
+        &mut owned.compose_rule,
+        MISSING_RULE,
+        "creating the missing-index rule failed",
+    )
+    .await?;
+    ids.missing_rule = Some(proven_id(&missing_rule, owns_missing_rule, MISSING_RULE)?);
+    Ok(())
 }
 
 /// The marker case body. No assignee, so no user profile is involved.
@@ -406,125 +406,31 @@ pub(super) fn case_body() -> Value {
     })
 }
 
-/// Create the marker case. `case` is claimed before the create; cleanup
-/// finds a case whose response was lost by its title and tag.
+/// Create the marker case and keep its id. `case` is claimed before the
+/// create; cleanup finds a case whose answer was lost by title and tag.
 pub(super) async fn create_case(
-    session: &mut RecordingSession<'_>,
+    compose: &mut ComposeSession<'_>,
 ) -> elasticctl_core::Result<Value> {
-    session.ownership.case = true;
-    let created = session
-        .transport
-        .post(elasticctl_api::cases::CASES_PATH, Some(&case_body()))
-        .await
-        .map_err(create_error("creating the marker case failed"))?;
-    if !owns_case(&created) {
-        return Err(recording_error(
-            "case create response did not prove the fixed marker identity",
-        ));
-    }
+    let t = compose.session.transport;
+    let created = create_once(
+        t,
+        elasticctl_api::cases::CASES_PATH,
+        &case_body(),
+        &mut compose.session.ownership.case,
+        CASE,
+        "creating the marker case failed",
+    )
+    .await?;
+    compose.ids.case = Some(proven_id(&created, owns_case, CASE)?);
     Ok(created)
-}
-
-/// Delete the marker case by its exact id and prove no marker case remains.
-pub(super) async fn delete_case(
-    session: &mut RecordingSession<'_>,
-    case_id: &str,
-) -> elasticctl_core::Result<()> {
-    let t = session.transport;
-    elasticctl_api::cases::delete(t, &[case_id.to_string()])
-        .await
-        .map_err(create_error("deleting the marker case failed"))?;
-    match t.get(&elasticctl_api::cases::case_path(case_id)).await {
-        Err(error) if error.kind == ErrorKind::NotFound => {}
-        Ok(_) => return Err(recording_error("marker case still exists after delete")),
-        Err(error) => {
-            return Err(safe_recording_transport_error(
-                "verifying the marker case delete failed",
-                error,
-            ));
-        }
-    }
-    require_no_marker_cases(t).await.map_err(preflight_error)?;
-    session.ownership.case = false;
-    Ok(())
-}
-
-/// Delete one owned object by exact id after its marker fields still match,
-/// then prove it is gone. A not-found first read means it is already gone.
-async fn delete_owned(
-    t: &Transport,
-    path: &str,
-    owns: fn(&Value) -> bool,
-    label: &'static str,
-) -> Result<(), String> {
-    match t.get(path).await {
-        Ok(value) if owns(&value) => {
-            t.delete(path).await.map_err(|error| {
-                format!("deleting {label}: {}", safe_recording_error_summary(&error))
-            })?;
-            match t.get(path).await {
-                Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
-                Ok(_) => Err(format!("{label} still exists after delete")),
-                Err(error) => Err(format!(
-                    "verifying {label} deletion: {}",
-                    safe_recording_error_summary(&error)
-                )),
-            }
-        }
-        Ok(_) => Err(format!(
-            "refusing to delete {label}: its marker fields do not match"
-        )),
-        Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "checking {label}: {}",
-            safe_recording_error_summary(&error)
-        )),
-    }
-}
-
-impl RecordingSession<'_> {
-    /// Delete the compose rule over the missing index and the second marker
-    /// item. Each stays owned until a read after its delete is not found.
-    /// The shared slots (marker rule, index, list, first item, case) are
-    /// removed by the rest of session cleanup.
-    pub(crate) async fn cleanup_compose(&mut self, errors: &mut Vec<String>) {
-        if self.ownership.compose_rule {
-            match delete_owned(
-                self.transport,
-                &missing_rule_path(),
-                owns_missing_rule,
-                "the compose missing-index rule",
-            )
-            .await
-            {
-                Ok(()) => self.ownership.compose_rule = false,
-                Err(error) => errors.push(error),
-            }
-        }
-        if self.ownership.compose_item {
-            match delete_owned(
-                self.transport,
-                &item_path(COMPOSE_ITEM_ID),
-                owns_compose_item,
-                "exception item 2",
-            )
-            .await
-            {
-                Ok(()) => self.ownership.compose_item = false,
-                Err(error) => errors.push(error),
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorder::session::CleanupOwnership;
     use crate::recorder::test_support::mock_transport;
-    use std::sync::Mutex;
-    use wiremock::matchers::{method, path, query_param};
-    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn ok(body: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(body)
@@ -535,14 +441,6 @@ mod tests {
             "statusCode": 404, "error": "Not Found",
             "message": "private.example.internal holds no such object"
         }))
-    }
-
-    fn sequence(responses: Vec<ResponseTemplate>) -> impl Fn(&Request) -> ResponseTemplate {
-        let responses = Mutex::new(responses.into_iter());
-        move |_: &Request| {
-            let next = responses.lock().expect("responses").next();
-            next.expect("unexpected request")
-        }
     }
 
     async fn requests(server: &MockServer) -> Vec<String> {
@@ -611,7 +509,6 @@ mod tests {
                 "GET /api/fleet/epm/packages/mysql"
             ]
         );
-        assert!(requests(&server).await.iter().all(|r| r.starts_with("GET")));
     }
 
     #[tokio::test]
@@ -644,152 +541,68 @@ mod tests {
         assert_eq!(requests(&server).await.len(), 1);
     }
 
-    fn missing_rule() -> Value {
-        json!({"rule_id": MISSING_RULE_ID, "tags": [ALERT_MARKER_TAG], "id": "so-2"})
-    }
+    #[tokio::test]
+    async fn the_system_package_must_be_installed() {
+        for (response, accepted) in [
+            (ok(package("system", "installed")), true),
+            (ok(package("system", "not_installed")), false),
+            (ok(package("other", "installed")), false),
+            (not_found(), false),
+        ] {
+            let server = MockServer::start().await;
+            mount_package(&server, "system", response).await;
+            let t = mock_transport(&server);
+            let mut log = PrivateLog::default();
 
-    fn compose_item() -> Value {
-        json!({"item_id": COMPOSE_ITEM_ID, "list_id": LIST_ID, "namespace_type": "single",
-            "tags": list_tags()})
-    }
+            let result = require_installed_system(&t, &mut log).await;
 
-    async fn mount_rule(server: &MockServer, http: &'static str, response: impl Respond + 'static) {
-        Mock::given(method(http))
-            .and(path(RULES_PATH))
-            .and(query_param("rule_id", MISSING_RULE_ID))
-            .respond_with(response)
-            .mount(server)
-            .await;
-    }
-
-    async fn mount_item(server: &MockServer, http: &'static str, response: impl Respond + 'static) {
-        Mock::given(method(http))
-            .and(path("/api/exception_lists/items"))
-            .and(query_param("item_id", COMPOSE_ITEM_ID))
-            .respond_with(response)
-            .mount(server)
-            .await;
-    }
-
-    fn owned_session(t: &Transport) -> RecordingSession<'_> {
-        RecordingSession {
-            transport: t,
-            ownership: CleanupOwnership {
-                compose_rule: true,
-                compose_item: true,
-                ..CleanupOwnership::default()
-            },
+            assert_eq!(result.is_ok(), accepted);
+            if let Err(error) = result {
+                assert!(error.message.contains("system"), "{}", error.message);
+                assert!(!error.message.contains("private"), "{}", error.message);
+            } else {
+                assert_eq!(
+                    log.get("responses").expect("logged")["package_system"]["status"],
+                    "installed"
+                );
+            }
         }
     }
 
     #[tokio::test]
-    async fn cleanup_deletes_both_compose_objects_by_exact_id_and_verifies() {
-        let server = MockServer::start().await;
-        mount_rule(
-            &server,
-            "GET",
-            sequence(vec![ok(missing_rule()), not_found()]),
-        )
-        .await;
-        mount_rule(&server, "DELETE", ok(missing_rule())).await;
-        mount_item(
-            &server,
-            "GET",
-            sequence(vec![ok(compose_item()), not_found()]),
-        )
-        .await;
-        mount_item(&server, "DELETE", ok(compose_item())).await;
-        let t = mock_transport(&server);
-        let mut session = owned_session(&t);
+    async fn a_conflicting_create_releases_its_claim_and_a_lost_answer_keeps_it() {
+        for (status, still_claimed) in [(409, false), (500, true), (400, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/exception_lists"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(json!({"message": "private.example.internal"})),
+                )
+                .mount(&server)
+                .await;
+            let t = mock_transport(&server);
+            let mut claim = false;
 
-        let mut errors = Vec::new();
-        session.cleanup_compose(&mut errors).await;
+            let error = create_once(
+                &t,
+                "/api/exception_lists",
+                &list_body(),
+                &mut claim,
+                LIST,
+                "creating the marker list failed",
+            )
+            .await
+            .expect_err("failed create");
 
-        assert!(errors.is_empty(), "{errors:?}");
-        assert!(!session.ownership.compose_rule);
-        assert!(!session.ownership.compose_item);
-        assert_eq!(
-            requests(&server).await,
-            [
-                "GET /api/detection_engine/rules?rule_id=elasticctl-sample-compose-missing-index",
-                "DELETE /api/detection_engine/rules?rule_id=elasticctl-sample-compose-missing-index",
-                "GET /api/detection_engine/rules?rule_id=elasticctl-sample-compose-missing-index",
-                "GET /api/exception_lists/items?item_id=elasticctl-sample-exception-item-2&namespace_type=single",
-                "DELETE /api/exception_lists/items?item_id=elasticctl-sample-exception-item-2&namespace_type=single",
-                "GET /api/exception_lists/items?item_id=elasticctl-sample-exception-item-2&namespace_type=single",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn cleanup_refuses_objects_whose_marker_fields_changed() {
-        let server = MockServer::start().await;
-        mount_rule(
-            &server,
-            "GET",
-            ok(json!({"rule_id": MISSING_RULE_ID, "tags": ["other"]})),
-        )
-        .await;
-        mount_item(
-            &server,
-            "GET",
-            ok(json!({"item_id": COMPOSE_ITEM_ID, "list_id": "other", "tags": list_tags()})),
-        )
-        .await;
-        let t = mock_transport(&server);
-        let mut session = owned_session(&t);
-
-        let mut errors = Vec::new();
-        session.cleanup_compose(&mut errors).await;
-
-        assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(session.ownership.compose_rule);
-        assert!(session.ownership.compose_item);
-        assert!(requests(&server).await.iter().all(|r| r.starts_with("GET")));
-    }
-
-    #[tokio::test]
-    async fn cleanup_keeps_ownership_when_a_delete_fails_or_the_object_survives() {
-        let server = MockServer::start().await;
-        mount_rule(&server, "GET", ok(missing_rule())).await;
-        mount_rule(
-            &server,
-            "DELETE",
-            ResponseTemplate::new(400)
-                .set_body_json(json!({"message": "private.example.internal"})),
-        )
-        .await;
-        mount_item(&server, "GET", ok(compose_item())).await;
-        mount_item(&server, "DELETE", ok(compose_item())).await;
-        let t = mock_transport(&server);
-        let mut session = owned_session(&t);
-
-        let mut errors = Vec::new();
-        session.cleanup_compose(&mut errors).await;
-
-        assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(errors[0].starts_with("deleting the compose missing-index rule: class="));
-        assert_eq!(errors[1], "exception item 2 still exists after delete");
-        assert!(errors.iter().all(|e| !e.contains("private")));
-        assert!(session.ownership.compose_rule);
-        assert!(session.ownership.compose_item);
-    }
-
-    #[tokio::test]
-    async fn cleanup_releases_objects_that_are_already_gone() {
-        let server = MockServer::start().await;
-        mount_rule(&server, "GET", not_found()).await;
-        mount_item(&server, "GET", not_found()).await;
-        let t = mock_transport(&server);
-        let mut session = owned_session(&t);
-
-        let mut errors = Vec::new();
-        session.cleanup_compose(&mut errors).await;
-
-        assert!(errors.is_empty(), "{errors:?}");
-        assert!(!session.ownership.compose_rule);
-        assert!(!session.ownership.compose_item);
-        assert_eq!(requests(&server).await.len(), 2);
+            assert_eq!(claim, still_claimed, "{status}");
+            assert!(!error.message.contains("private"), "{}", error.message);
+            assert_eq!(
+                requests(&server).await,
+                ["POST /api/exception_lists"],
+                "{status}: a create is sent exactly once"
+            );
+        }
     }
 
     #[test]

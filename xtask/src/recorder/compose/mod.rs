@@ -1,26 +1,38 @@
 //! Compose recording: the request shapes behind the cross-vertical task
 //! tools, recorded from marker objects only.
 //!
-//! The step reuses the shared marker slots for the index (alert probe
-//! index), the alerting rule (alert probe rule id), the exception list and
-//! its first item, and the case. Its second rule and second item have their
-//! own `CleanupOwnership` flags. Session cleanup runs after the step on
-//! success and on every failure.
+//! The step creates a marker index, list, two items, two rules, and a case
+//! under fixed marker identities, each with a create-only request. Its own
+//! cleanup removes exactly what this run created and closes this run's
+//! alerts by id; the shared cleanup of `cargo xtask record` is not used.
+//! Cleanup runs after success, failure, a panic, or Ctrl-C, under a time
+//! bound, and the baseline audit then requires the state captured before
+//! the first write. Fixtures are written only when all of them succeed.
 
+mod baseline;
+mod cleanup;
 mod evidence;
+mod guard;
 mod provision;
 mod requests;
 mod steps;
 
-use crate::diagnostics::{recording_error, safe_recording_transport_error};
+use crate::diagnostics::{
+    recording_error, safe_recording_error_summary, safe_recording_transport_error,
+};
 use crate::environment::{activate_traditional_recorder_profile, transport_from_env};
 use crate::fixtures::{Recording, write_recording};
 use crate::recorder::agent_policies::reduce_package_status_item;
 use crate::recorder::markers::ALERT_POLL_INTERVAL;
-use crate::recorder::session::{CleanupOwnership, CleanupResponses, RecordingSession};
+use crate::recorder::session::{CleanupOwnership, RecordingSession};
+use baseline::Baseline;
+use cleanup::Failure;
+use elasticctl_core::Transport;
 use evidence::{Exchanges, PrivateLog};
-use serde_json::{Value, json};
+use guard::{Ended, guarded};
+use serde_json::json;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -37,6 +49,8 @@ const MISSING_INDEX: &str = "elasticctl-sample-compose-missing";
 const MATCH_PATTERN: &str = "elasticctl-sample-alert-events*";
 /// A marker wildcard that matches nothing.
 const NO_MATCH_PATTERN: &str = "elasticctl-sample-compose-none-*";
+/// An exclusion as a rule's index list holds it. Measured privately.
+const EXCLUSION_PATTERN: &str = "-elasticctl-sample-alert-events*";
 /// A marker alert id that never exists.
 const ABSENT_ALERT_ID: &str = "elasticctl-sample-absent-alert";
 /// Marker documents, and so session alerts. At least the activity page size,
@@ -56,6 +70,43 @@ const PACKAGE_CANDIDATES: [&str; 3] = ["apache", "nginx", "mysql"];
 /// Reads of the case attachment, and of the attached alert before the
 /// case-ids answer is logged.
 const CASE_IDS_ATTEMPTS: u32 = 3;
+/// The bound on cleanup and the baseline audit together.
+const TEARDOWN_LIMIT: Duration = Duration::from_secs(600);
+
+/// Server ids this run learned for the objects it created. They stay in
+/// memory: cleanup's re-reads must still show them, and fixtures hold only
+/// placeholders.
+#[derive(Default)]
+struct ServerIds {
+    list: Option<String>,
+    item: Option<String>,
+    compose_item: Option<String>,
+    rule: Option<String>,
+    missing_rule: Option<String>,
+    case: Option<String>,
+}
+
+/// The session's ownership flags plus what this run learned. The step and
+/// cleanup both borrow it, so a panic or an interrupt leaves it as it stood.
+struct ComposeSession<'a> {
+    session: RecordingSession<'a>,
+    ids: ServerIds,
+    /// Captured before the first write; the audit requires it again.
+    baseline: Option<Baseline>,
+}
+
+impl<'a> ComposeSession<'a> {
+    fn new(transport: &'a Transport) -> Self {
+        Self {
+            session: RecordingSession {
+                transport,
+                ownership: CleanupOwnership::default(),
+            },
+            ids: ServerIds::default(),
+            baseline: None,
+        }
+    }
+}
 
 fn fixture_dir(flavor: &str, version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -64,29 +115,13 @@ fn fixture_dir(flavor: &str, version: &str) -> PathBuf {
         .join(format!("{flavor}-{version}"))
 }
 
-async fn log_installed_package(t: &elasticctl_core::Transport, log: &mut PrivateLog) {
-    let planned = requests::package_status("system");
-    match t.get(&planned.target()).await {
-        Ok(body) => log.add(
-            "responses",
-            "package_system",
-            reduce_package_status_item(&body).unwrap_or(Value::Null),
-        ),
-        Err(error) => log.add(
-            "errors",
-            "package_system",
-            json!({"kind": error.kind.as_str(), "http_status": error.http_status}),
-        ),
-    }
-}
-
 async fn record_steps(
-    session: &mut RecordingSession<'_>,
+    compose: &mut ComposeSession<'_>,
     log: &mut PrivateLog,
     fixture_flavor: Option<String>,
     interval: Duration,
 ) -> elasticctl_core::Result<Recording> {
-    let t = session.transport;
+    let t = compose.session.transport;
     let status = t
         .get("/api/status")
         .await
@@ -103,41 +138,42 @@ async fn record_steps(
     });
     log.set_target(&flavor, &version);
 
-    provision::preflight(t).await?;
+    compose.baseline = Some(baseline::capture(t).await?);
     let (package, package_body) = provision::probe_not_installed_package(t).await?;
     log.add("responses", "package_not_installed", package_body.clone());
-    log_installed_package(t, log).await;
+    provision::require_installed_system(t, log).await?;
 
     let mut exchanges = Exchanges::default();
-    provision::create_index(session).await?;
+    provision::create_index(compose).await?;
     steps::record_resolve(t, &mut exchanges, log).await?;
-    let ids = provision::create_objects(session).await?;
-    let mut placeholders = BTreeMap::from([
-        (
-            ids.list_id.clone(),
-            "elasticctl-fixture-exception-list".to_string(),
-        ),
-        (
-            ids.rule_uuid.clone(),
-            "elasticctl-fixture-rule-uuid".to_string(),
-        ),
-        (
-            ids.missing_rule_uuid.clone(),
-            "elasticctl-fixture-rule-uuid-2".to_string(),
-        ),
-    ]);
+    provision::create_objects(compose).await?;
+    let ids = &compose.ids;
+    let rule_uuid = ids
+        .rule
+        .clone()
+        .ok_or_else(|| recording_error("the marker rule id is unknown"))?;
+    let mut placeholders = BTreeMap::new();
+    for (id, placeholder) in [
+        (&ids.list, "elasticctl-fixture-exception-list"),
+        (&ids.rule, "elasticctl-fixture-rule-uuid"),
+        (&ids.missing_rule, "elasticctl-fixture-rule-uuid-2"),
+    ] {
+        if let Some(id) = id {
+            placeholders.insert(id.clone(), placeholder.to_string());
+        }
+    }
     steps::record_rules(t, &mut exchanges, log, interval).await?;
     let alert = steps::record_activity(
         t,
         &mut exchanges,
         log,
         &mut placeholders,
-        &ids.rule_uuid,
+        &rule_uuid,
         interval,
     )
     .await?;
     steps::record_cases(
-        session,
+        compose,
         &mut exchanges,
         log,
         &mut placeholders,
@@ -160,19 +196,156 @@ async fn record_steps(
     })
 }
 
-/// Run the compose step, then session cleanup whatever the step returned.
-async fn run(
-    session: &mut RecordingSession<'_>,
+/// What cleanup and the baseline audit returned.
+struct Teardown {
+    failures: Vec<Failure>,
+    /// `None` when the step stopped before it captured a baseline, and so
+    /// before any write.
+    audit: Option<elasticctl_core::Result<()>>,
+}
+
+/// Everything `finish` needs to decide whether fixtures may be written.
+struct RunOutcome {
+    step: Ended<elasticctl_core::Result<Recording>>,
+    teardown: Ended<Teardown>,
+    still_owned: Vec<&'static str>,
+}
+
+async fn teardown(compose: &mut ComposeSession<'_>, interval: Duration) -> Teardown {
+    let failures = cleanup::cleanup(compose, interval).await;
+    let audit = match &compose.baseline {
+        Some(baseline) => Some(baseline::audit(compose.session.transport, baseline).await),
+        None => None,
+    };
+    Teardown { failures, audit }
+}
+
+/// Cleanup and the audit, outside whatever ended the step. A second
+/// interrupt or the time bound stops them, and the objects still owned are
+/// reported.
+async fn conclude(
+    compose: &mut ComposeSession<'_>,
+    step: Ended<elasticctl_core::Result<Recording>>,
+    interval: Duration,
+    interrupt: impl Future<Output = ()>,
+) -> RunOutcome {
+    let teardown = guarded(teardown(compose, interval), Some(TEARDOWN_LIMIT), interrupt).await;
+    RunOutcome {
+        step,
+        teardown,
+        still_owned: cleanup::still_owned(compose),
+    }
+}
+
+/// Run the step so that a panic or an interrupt still reaches cleanup.
+/// `interrupt` is called once for the step and once for cleanup.
+async fn run<I, F>(
+    compose: &mut ComposeSession<'_>,
     log: &mut PrivateLog,
     fixture_flavor: Option<String>,
     interval: Duration,
-) -> (
-    elasticctl_core::Result<Recording>,
-    elasticctl_core::Result<CleanupResponses>,
-) {
-    let recorded = record_steps(session, log, fixture_flavor, interval).await;
-    let cleanup = session.cleanup().await;
-    (recorded, cleanup)
+    mut interrupt: I,
+) -> RunOutcome
+where
+    I: FnMut() -> F,
+    F: Future<Output = ()>,
+{
+    let step = guarded(
+        record_steps(compose, log, fixture_flavor, interval),
+        None,
+        interrupt(),
+    )
+    .await;
+    conclude(compose, step, interval, interrupt()).await
+}
+
+/// Decide the result and the lines to print. Fixtures are written only when
+/// the step, cleanup, and the baseline audit all succeeded and nothing is
+/// still owned. Each line holds static text, constants, or an error's class
+/// and status.
+fn finish(
+    outcome: RunOutcome,
+    write: impl FnOnce(Recording) -> elasticctl_core::Result<()>,
+) -> (bool, Vec<String>) {
+    let mut lines = Vec::new();
+    let recording = match outcome.step {
+        Ended::Finished(Ok(recording)) => Some(recording),
+        Ended::Finished(Err(error)) => {
+            lines.push(format!(
+                "record-compose failed: {} ({})",
+                error.message,
+                safe_recording_error_summary(&error)
+            ));
+            None
+        }
+        Ended::Panicked => {
+            lines.push("record-compose failed: the step panicked".to_string());
+            None
+        }
+        Ended::Interrupted => {
+            lines.push("record-compose interrupted".to_string());
+            None
+        }
+        Ended::TimedOut => {
+            lines.push("record-compose failed: the step timed out".to_string());
+            None
+        }
+    };
+    let mut clean = match outcome.teardown {
+        Ended::Finished(teardown) => {
+            for failure in &teardown.failures {
+                lines.push(format!("record-compose cleanup: {failure}"));
+            }
+            let audited = match teardown.audit {
+                Some(Ok(())) => true,
+                Some(Err(error)) => {
+                    lines.push(format!(
+                        "record-compose baseline audit failed: {} ({})",
+                        error.message,
+                        safe_recording_error_summary(&error)
+                    ));
+                    false
+                }
+                None => false,
+            };
+            teardown.failures.is_empty() && audited
+        }
+        Ended::Panicked => {
+            lines.push("record-compose cleanup panicked".to_string());
+            false
+        }
+        Ended::Interrupted => {
+            lines.push("record-compose cleanup interrupted".to_string());
+            false
+        }
+        Ended::TimedOut => {
+            lines.push("record-compose cleanup stopped at its time bound".to_string());
+            false
+        }
+    };
+    if !outcome.still_owned.is_empty() {
+        lines.push(format!(
+            "record-compose cleanup left in place: {}",
+            outcome.still_owned.join(", ")
+        ));
+        clean = false;
+    }
+    match recording {
+        Some(recording) if clean => match write(recording) {
+            Ok(()) => {
+                lines.push("recorded compose fixtures".to_string());
+                (true, lines)
+            }
+            Err(error) => {
+                lines.push(format!(
+                    "record-compose failed after cleanup: {}",
+                    error.message
+                ));
+                (false, lines)
+            }
+        },
+        _ => (false, lines),
+    }
 }
 
 /// `cargo xtask record-compose`: record the compose fixtures from the target
@@ -182,15 +355,23 @@ pub(crate) async fn record_compose() {
         eprintln!("record-compose setup failed: {}", error.message);
         std::process::exit(1);
     }
+    // A panic message can quote a value it was handling. Print a fixed line;
+    // the step's own result reports which phase stopped.
+    std::panic::set_hook(Box::new(|_| {
+        eprintln!("record-compose: a panic stopped the current operation");
+    }));
     let transport = transport_from_env(60);
-    let mut session = RecordingSession {
-        transport: &transport,
-        ownership: CleanupOwnership::default(),
-    };
+    let mut compose = ComposeSession::new(&transport);
     let mut log = PrivateLog::default();
     let fixture_flavor = std::env::var("ELASTICCTL_FIXTURE_FLAVOR").ok();
-    let (recorded, cleanup) =
-        run(&mut session, &mut log, fixture_flavor, ALERT_POLL_INTERVAL).await;
+    let outcome = run(
+        &mut compose,
+        &mut log,
+        fixture_flavor,
+        ALERT_POLL_INTERVAL,
+        guard::ctrl_c,
+    )
+    .await;
 
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     match log.write(&workspace) {
@@ -201,92 +382,110 @@ pub(crate) async fn record_compose() {
         Err(message) => eprintln!("{message}"),
     }
 
-    let recording = match (recorded, cleanup) {
-        (Ok(recording), Ok(_)) => recording,
-        (Err(record_error), Ok(_)) => {
-            eprintln!(
-                "record-compose failed after cleanup: {}",
-                record_error.message
-            );
-            std::process::exit(1);
+    let (succeeded, lines) = finish(outcome, write_recording);
+    for line in &lines {
+        if succeeded {
+            println!("{line}");
+        } else {
+            eprintln!("{line}");
         }
-        (Ok(_), Err(cleanup_error)) => {
-            eprintln!("record-compose cleanup failed: {}", cleanup_error.message);
-            std::process::exit(1);
-        }
-        (Err(record_error), Err(cleanup_error)) => {
-            eprintln!(
-                "record-compose failed after cleanup: {}; cleanup also failed: {}",
-                record_error.message, cleanup_error.message
-            );
-            std::process::exit(1);
-        }
-    };
-    if let Err(error) = write_recording(recording) {
-        eprintln!("record-compose failed after cleanup: {}", error.message);
+    }
+    if !succeeded {
         std::process::exit(1);
     }
-    println!("recorded compose fixtures");
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::recorder::markers::{
-        ALERT_PROBE_INDEX, ALERT_RULE_ID, CASE_ID_PLACEHOLDER, ITEM_ID, LIST_ID,
-    };
-    use crate::recorder::test_support::mock_transport;
+mod fake_stack {
+    //! A stateful fake of every route the compose step and its cleanup send.
+    //! Creates apply before an injected failure answers, which models a
+    //! create whose answer was lost.
+
+    use crate::recorder::compose::requests::PREBUILT_STATUS_PATH;
+    use crate::recorder::compose::{ALERT_DOCS, COMPOSE_RULE_NAME};
+    use crate::recorder::markers::{ALERT_MARKER_TAG, ALERT_PROBE_INDEX, ALERT_RULE_ID, LIST_ID};
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::Notify;
     use wiremock::matchers::any;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-    const ALERT_INDEX: &str = ".internal.alerts-security.alerts-default-000001";
+    pub(super) const ALERT_INDEX: &str = ".internal.alerts-security.alerts-default-000001";
+    pub(super) const PREBUILT_RULES: u64 = 2263;
+    pub(super) const SESSION_RULE_UUID: &str = "so-elasticctl-sample-alert-probe";
 
-    const ALL_FIXTURES: [&str; 12] = [
-        "rule_get_executed",
-        "rule_get_failed_execution",
-        "rules_find_sorted_page",
-        "rules_find_by_technique",
-        "signals_search_rule_activity",
-        "cases_by_alert",
-        "cases_by_alert_none",
-        "exception_items_count",
-        "resolve_index_match",
-        "resolve_index_no_match",
-        "resolve_index_not_found",
-        "package_not_installed",
-    ];
-
-    /// What the fake stack holds. Creates apply before an injected failure
-    /// answers, which models a create whose response was lost.
     #[derive(Default)]
-    struct State {
-        index: BTreeMap<String, Value>,
-        list: Option<Value>,
-        items: BTreeMap<String, Value>,
-        rules: BTreeMap<String, Value>,
+    pub(super) struct State {
+        pub(super) index: BTreeMap<String, Value>,
+        pub(super) list: Option<Value>,
+        pub(super) items: BTreeMap<String, Value>,
+        pub(super) rules: BTreeMap<String, Value>,
         rule_reads: BTreeMap<String, u32>,
-        alerts: Vec<Value>,
-        cases: BTreeMap<String, Value>,
+        pub(super) alerts: Vec<Value>,
+        pub(super) cases: BTreeMap<String, Value>,
         attached: Vec<String>,
-        log: Vec<String>,
-        unexpected: Vec<String>,
-        fail_on: Option<String>,
-        foreign_hits: bool,
-        foreign_rule: bool,
-        foreign_case: bool,
-        attachment_lag: u32,
-        existing_rule: bool,
-        installed: Vec<&'static str>,
+        prebuilt_reads: u32,
+        pub(super) log: Vec<String>,
+        pub(super) unexpected: Vec<String>,
+        pub(super) status_requests: Vec<Value>,
+        pub(super) installed: Vec<&'static str>,
+        /// A create label answered 400 after the create applied.
+        pub(super) fail_on: Option<String>,
+        /// A create label whose identity another run takes just before this
+        /// run's create arrives: a foreign object is stored and the create
+        /// answers 409.
+        pub(super) conflict_on: Option<String>,
+        /// A delete label answered 200 while the object stays.
+        pub(super) sticky_delete: Option<String>,
+        /// A delete label answered 500 with server text naming a host.
+        pub(super) failing_delete: Option<String>,
+        /// A create label whose object loses its marker tag right after.
+        pub(super) retag_after_create: Option<String>,
+        /// A create label answered only after two seconds.
+        pub(super) slow_create: Option<String>,
+        /// A delete label answered only after two seconds.
+        pub(super) slow_delete: Option<String>,
+        /// A create label that fires the interrupt while its answer waits.
+        pub(super) interrupt_on: Option<(String, Arc<Notify>)>,
+        pub(super) resolve_match_body: Option<Value>,
+        /// The prebuilt count every read after the first reports.
+        pub(super) prebuilt_after: Option<u64>,
+        /// An open alert of the same rule id from an earlier run.
+        pub(super) historical_alert: bool,
+        pub(super) foreign_hits: bool,
+        pub(super) foreign_rule: bool,
+        pub(super) foreign_case: bool,
+        pub(super) attachment_lag: u32,
+        pub(super) existing_rule: bool,
     }
 
     impl State {
-        fn is_empty(&self) -> bool {
+        pub(super) fn is_empty(&self) -> bool {
             self.index.is_empty()
                 && self.list.is_none()
                 && self.items.is_empty()
                 && self.rules.is_empty()
                 && self.cases.is_empty()
+        }
+
+        pub(super) fn open_alerts(&self, rule_uuid: &str) -> usize {
+            self.alerts
+                .iter()
+                .filter(|alert| {
+                    alert["_source"]["kibana.alert.rule.uuid"] == rule_uuid
+                        && alert["_source"]["kibana.alert.workflow_status"] != "closed"
+                })
+                .count()
+        }
+
+        pub(super) fn mutations(&self) -> Vec<String> {
+            self.log
+                .iter()
+                .filter(|line| !line.starts_with("GET "))
+                .cloned()
+                .collect()
         }
     }
 
@@ -331,6 +530,22 @@ mod tests {
         Some(rule)
     }
 
+    fn alert(n: usize, rule_uuid: &str, list_so: &Value) -> Value {
+        json!({
+            "_id": format!("zz-alert-{n}"), "_index": ALERT_INDEX, "sort": [n, format!("zz-alert-{n}")],
+            "_source": {
+                "@timestamp": "2026-11-10T01:03:00.000Z",
+                "kibana.alert.uuid": format!("zz-alert-{n}"),
+                "kibana.alert.rule.uuid": rule_uuid,
+                "kibana.alert.rule.rule_id": ALERT_RULE_ID,
+                "kibana.alert.rule.name": COMPOSE_RULE_NAME,
+                "kibana.alert.workflow_status": "open",
+                "kibana.alert.rule.parameters": {"exceptions_list": [{"id": list_so}]},
+                "kibana.alert.url": "https://private.example.internal/app/zz-alert-1"
+            }
+        })
+    }
+
     fn create_rule(state: &mut State, body: &Value) -> Value {
         let rule_id = body["rule_id"].as_str().unwrap_or_default().to_string();
         let mut rule = body.clone();
@@ -338,26 +553,13 @@ mod tests {
         rule["created_at"] = json!("2026-11-10T01:02:00.000Z");
         rule["updated_at"] = json!("2026-11-10T01:02:00.000Z");
         if rule_id == ALERT_RULE_ID {
-            let uuid = "so-elasticctl-sample-alert-probe";
             let list_so = state
                 .list
                 .as_ref()
                 .map(|l| l["id"].clone())
                 .unwrap_or_default();
             for n in 1..=ALERT_DOCS {
-                state.alerts.push(json!({
-                    "_id": format!("zz-alert-{n}"), "_index": ALERT_INDEX, "sort": [n, format!("zz-alert-{n}")],
-                    "_source": {
-                        "@timestamp": "2026-11-10T01:03:00.000Z",
-                        "kibana.alert.uuid": format!("zz-alert-{n}"),
-                        "kibana.alert.rule.uuid": uuid,
-                        "kibana.alert.rule.rule_id": ALERT_RULE_ID,
-                        "kibana.alert.rule.name": COMPOSE_RULE_NAME,
-                        "kibana.alert.workflow_status": "open",
-                        "kibana.alert.rule.parameters": {"exceptions_list": [{"id": list_so}]},
-                        "kibana.alert.url": "https://private.example.internal/app/zz-alert-1"
-                    }
-                }));
+                state.alerts.push(alert(n, SESSION_RULE_UUID, &list_so));
             }
         }
         state.rules.insert(rule_id, rule.clone());
@@ -366,9 +568,9 @@ mod tests {
 
     fn signals(state: &mut State, body: &Value) -> Value {
         if body.get("aggs").is_some() {
-            let mut hits: Vec<Value> = state.alerts.iter().take(5).cloned().collect();
+            // Newest first, as the activity sort asks.
+            let mut hits: Vec<Value> = state.alerts.iter().rev().take(5).cloned().collect();
             if state.foreign_hits && !hits.is_empty() {
-                // An older alert of the same rule id from an earlier session.
                 hits[0]["_source"]["kibana.alert.rule.uuid"] = json!("so-older");
             }
             return json!({"took": 2, "timed_out": false,
@@ -386,23 +588,65 @@ mod tests {
             return json!({"hits": {"total": {"value": 1, "relation": "eq"},
                 "hits": [{"_id": id, "_index": ALERT_INDEX, "_source": source}]}});
         }
-        if body.pointer("/query/bool/must_not").is_some() {
-            return json!({"hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}});
-        }
-        let uuid = body.pointer("/query/bool/filter/1/term/kibana.alert.rule.uuid");
-        let count = state
+        let terms: Vec<(String, Value)> = body
+            .pointer("/query/bool/filter")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|clause| clause.get("term")?.as_object()?.iter().next())
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect();
+        let open_only = body.pointer("/query/bool/must_not").is_some();
+        let matching: Vec<Value> = state
             .alerts
             .iter()
-            .filter(|a| Some(&a["_source"]["kibana.alert.rule.uuid"]) == uuid)
-            .count();
-        json!({"hits": {"total": {"value": count, "relation": "eq"}, "hits": []}})
+            .filter(|alert| {
+                terms
+                    .iter()
+                    .all(|(field, value)| &alert["_source"][field.as_str()] == value)
+            })
+            .filter(|alert| {
+                !open_only || alert["_source"]["kibana.alert.workflow_status"] != "closed"
+            })
+            .map(|alert| json!({"_id": alert["_id"], "_index": ALERT_INDEX}))
+            .collect();
+        let size = body["size"].as_u64().unwrap_or(0) as usize;
+        json!({"hits": {"total": {"value": matching.len(), "relation": "eq"},
+            "hits": matching.into_iter().take(size).collect::<Vec<_>>()}})
+    }
+
+    fn close_alerts(state: &mut State, body: &Value) -> ResponseTemplate {
+        state.status_requests.push(body.clone());
+        let ids: Vec<&str> = body["signal_ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let by_query = body
+            .pointer("/query/term/kibana.alert.rule.rule_id")
+            .cloned();
+        let mut updated = 0;
+        for alert in &mut state.alerts {
+            let named = alert["_id"].as_str().is_some_and(|id| ids.contains(&id));
+            let queried = by_query
+                .as_ref()
+                .is_some_and(|rule_id| &alert["_source"]["kibana.alert.rule.rule_id"] == rule_id);
+            if named || queried {
+                alert["_source"]["kibana.alert.workflow_status"] = json!("closed");
+                updated += 1;
+            }
+        }
+        json_response(
+            200,
+            json!({"total": updated, "updated": updated, "version_conflicts": 0,
+                "noops": 0, "failures": []}),
+        )
     }
 
     fn create_label(method: &str, path: &str, body: &Value) -> Option<String> {
         match (method, path) {
-            ("POST", p) if p.starts_with(&format!("/{ALERT_PROBE_INDEX}/_doc/")) => {
-                Some("index".into())
-            }
+            ("POST", p) if p == format!("/{ALERT_PROBE_INDEX}/_create/1") => Some("index".into()),
             ("POST", "/api/exception_lists") => Some("list".into()),
             ("POST", "/api/exception_lists/items") => Some(format!(
                 "item:{}",
@@ -417,6 +661,90 @@ mod tests {
         }
     }
 
+    fn delete_label(path: &str, request: &Request) -> Option<String> {
+        match path {
+            "/api/detection_engine/rules" => {
+                Some(format!("rule:{}", query_value(request, "rule_id")?))
+            }
+            "/api/exception_lists/items" => {
+                Some(format!("item:{}", query_value(request, "item_id")?))
+            }
+            "/api/exception_lists" => Some("list".into()),
+            "/api/cases" => Some("case".into()),
+            p if p == format!("/{ALERT_PROBE_INDEX}") => Some("index".into()),
+            _ => None,
+        }
+    }
+
+    /// Store the object another run created under this run's fixed identity.
+    /// It carries the marker, so only the create answer shows it is not ours.
+    fn plant_foreign(state: &mut State, label: &str) {
+        let tags = json!(["elasticctl", "fixture", ALERT_MARKER_TAG]);
+        match label.split_once(':') {
+            None if label == "index" => {
+                state.index.insert(
+                    "1".into(),
+                    json!({"marker": ALERT_MARKER_TAG, "owner": "another run"}),
+                );
+            }
+            None => {
+                state.list = Some(json!({"list_id": LIST_ID, "namespace_type": "single",
+                    "tags": tags, "id": "list-foreign"}));
+            }
+            Some(("item", item_id)) => {
+                state.items.insert(
+                    item_id.to_string(),
+                    json!({"item_id": item_id, "list_id": LIST_ID, "namespace_type": "single",
+                        "tags": tags, "id": "item-foreign"}),
+                );
+            }
+            Some((_, rule_id)) => {
+                state.rules.insert(
+                    rule_id.to_string(),
+                    json!({"rule_id": rule_id, "tags": [ALERT_MARKER_TAG], "id": "so-foreign"}),
+                );
+            }
+        }
+    }
+
+    pub(super) fn foreign_present(state: &State, label: &str) -> bool {
+        match label.split_once(':') {
+            None if label == "index" => state
+                .index
+                .get("1")
+                .is_some_and(|doc| doc["owner"] == "another run"),
+            None => state
+                .list
+                .as_ref()
+                .is_some_and(|list| list["id"] == "list-foreign"),
+            Some(("item", item_id)) => state
+                .items
+                .get(item_id)
+                .is_some_and(|item| item["id"] == "item-foreign"),
+            Some((_, rule_id)) => state
+                .rules
+                .get(rule_id)
+                .is_some_and(|rule| rule["id"] == "so-foreign"),
+        }
+    }
+
+    fn retag(state: &mut State, label: &str) {
+        let other = json!(["other"]);
+        match label.split_once(':') {
+            Some(("item", item_id)) => {
+                if let Some(item) = state.items.get_mut(item_id) {
+                    item["tags"] = other;
+                }
+            }
+            Some((_, rule_id)) => {
+                if let Some(rule) = state.rules.get_mut(rule_id) {
+                    rule["tags"] = other;
+                }
+            }
+            None => {}
+        }
+    }
+
     fn handle(state: &mut State, request: &Request) -> ResponseTemplate {
         let method = request.method.to_string();
         let path = request.url.path().to_string();
@@ -425,13 +753,51 @@ mod tests {
             Some(query) => format!("{method} {path}?{query}"),
             None => format!("{method} {path}"),
         });
-        let label = create_label(&method, &path, &body);
-        let response = route(state, &method, &path, &body, request);
-        if label.is_some() && label == state.fail_on {
+        let created = create_label(&method, &path, &body);
+        let deleting = if method == "DELETE" {
+            delete_label(&path, request)
+        } else {
+            None
+        };
+        let is = |label: &Option<String>, injected: &Option<String>| {
+            label.is_some() && label == injected
+        };
+        if is(&created, &state.conflict_on) {
+            plant_foreign(state, created.as_deref().unwrap_or_default());
             return json_response(
+                409,
+                json!({"statusCode": 409, "error": "Conflict",
+                    "message": "private.example.internal: already exists"}),
+            );
+        }
+        if is(&deleting, &state.sticky_delete) {
+            return json_response(200, json!({"acknowledged": true}));
+        }
+        if is(&deleting, &state.failing_delete) {
+            return json_response(
+                500,
+                json!({"message": "https://private.example.internal:9243/x refused for operator@example.com"}),
+            );
+        }
+        let mut response = route(state, &method, &path, &body, request);
+        if is(&created, &state.retag_after_create) {
+            retag(state, created.as_deref().unwrap_or_default());
+        }
+        if is(&created, &state.fail_on) {
+            response = json_response(
                 400,
                 json!({"message": "private.example.internal lost reply"}),
             );
+        }
+        if is(&created, &state.slow_create) || is(&deleting, &state.slow_delete) {
+            response = response.set_delay(Duration::from_secs(2));
+        }
+        let label = created.or(deleting);
+        if let Some((interrupt_label, notify)) = &state.interrupt_on
+            && label.as_deref() == Some(interrupt_label.as_str())
+        {
+            notify.notify_one();
+            response = response.set_delay(Duration::from_secs(1));
         }
         response
     }
@@ -444,16 +810,35 @@ mod tests {
         request: &Request,
     ) -> ResponseTemplate {
         let marker_doc = format!("/{ALERT_PROBE_INDEX}/_doc/");
+        let marker_create = format!("/{ALERT_PROBE_INDEX}/_create/");
         match (method, path) {
             ("GET", "/api/status") => json_response(
                 200,
                 json!({"version": {"number": "9.7.0", "build_flavor": "serverless"}}),
             ),
-            ("POST", p) if p.starts_with(&marker_doc) => {
-                state
-                    .index
-                    .insert(p[marker_doc.len()..].to_string(), body.clone());
-                json_response(201, json!({"result": "created"}))
+            ("GET", PREBUILT_STATUS_PATH) => {
+                state.prebuilt_reads += 1;
+                let count = match state.prebuilt_after {
+                    Some(after) if state.prebuilt_reads > 1 => after,
+                    _ => PREBUILT_RULES,
+                };
+                json_response(
+                    200,
+                    json!({"rules_installed": count, "rules_not_installed": 0,
+                        "rules_not_updated": 0, "rules_custom_installed": 0}),
+                )
+            }
+            ("POST", p) if p.starts_with(&marker_create) => {
+                let id = p[marker_create.len()..].to_string();
+                if state.index.contains_key(&id) {
+                    return json_response(
+                        409,
+                        json!({"error": {"type": "version_conflict_engine_exception",
+                            "reason": "private.example.internal document exists"}, "status": 409}),
+                    );
+                }
+                state.index.insert(id.clone(), body.clone());
+                json_response(201, json!({"_id": id, "result": "created"}))
             }
             ("GET", p) if p.starts_with(&marker_doc) => {
                 match state.index.get(&p[marker_doc.len()..]) {
@@ -477,10 +862,13 @@ mod tests {
             }
             ("GET", "/_resolve/index/elasticctl-sample-alert-events%2A") => json_response(
                 200,
-                json!({"indices": [{"name": ALERT_PROBE_INDEX, "attributes": ["open"]}],
-                    "aliases": [], "data_streams": []}),
+                state.resolve_match_body.clone().unwrap_or_else(|| {
+                    json!({"indices": [{"name": ALERT_PROBE_INDEX, "attributes": ["open"]}],
+                        "aliases": [], "data_streams": []})
+                }),
             ),
-            ("GET", "/_resolve/index/elasticctl-sample-compose-none-%2A") => json_response(
+            ("GET", "/_resolve/index/elasticctl-sample-compose-none-%2A")
+            | ("GET", "/_resolve/index/-elasticctl-sample-alert-events%2A") => json_response(
                 200,
                 json!({"indices": [], "aliases": [], "data_streams": []}),
             ),
@@ -515,7 +903,7 @@ mod tests {
             },
             ("DELETE", "/api/exception_lists") => match state.list.take() {
                 Some(list) => {
-                    state.items.clear();
+                    state.items.retain(|_, item| item["list_id"] != LIST_ID);
                     json_response(200, list)
                 }
                 None => missing(),
@@ -537,11 +925,17 @@ mod tests {
                 found.map_or_else(missing, |item| json_response(200, item))
             }
             ("GET", "/api/exception_lists/items/_find") => {
-                let data: Vec<Value> = state.items.values().take(1).cloned().collect();
+                let list_id = json!(query_value(request, "list_id").unwrap_or_default());
+                let on_list: Vec<Value> = state
+                    .items
+                    .values()
+                    .filter(|item| item["list_id"] == list_id)
+                    .cloned()
+                    .collect();
+                let data: Vec<Value> = on_list.iter().take(1).cloned().collect();
                 json_response(
                     200,
-                    json!({"data": data, "page": 1, "per_page": 1,
-                    "total": state.items.len()}),
+                    json!({"data": data, "page": 1, "per_page": 1, "total": on_list.len()}),
                 )
             }
             ("POST", "/api/detection_engine/rules") => {
@@ -560,14 +954,6 @@ mod tests {
                 state
                     .rules
                     .remove(&id)
-                    .map_or_else(missing, |rule| json_response(200, rule))
-            }
-            ("PATCH", "/api/detection_engine/rules") => {
-                let id = body["rule_id"].as_str().unwrap_or_default();
-                state
-                    .rules
-                    .get(id)
-                    .cloned()
                     .map_or_else(missing, |rule| json_response(200, rule))
             }
             ("GET", "/api/detection_engine/rules/_find") => {
@@ -592,6 +978,7 @@ mod tests {
                 let response = signals(state, body);
                 json_response(200, response)
             }
+            ("POST", "/api/detection_engine/signals/status") => close_alerts(state, body),
             ("GET", "/api/cases/_find") => {
                 let cases: Vec<Value> = state.cases.values().cloned().collect();
                 json_response(
@@ -649,9 +1036,9 @@ mod tests {
                 }
                 json_response(200, json!(rows))
             }
-            ("GET", "/api/cases/case-real-1") => state
+            ("GET", p) if p.starts_with("/api/cases/") => state
                 .cases
-                .get("case-real-1")
+                .get(&p["/api/cases/".len()..])
                 .cloned()
                 .map_or_else(missing, |case| json_response(200, case)),
             ("DELETE", "/api/cases") => {
@@ -670,13 +1057,18 @@ mod tests {
         }
     }
 
-    async fn fake_stack(configure: impl FnOnce(&mut State)) -> (MockServer, Arc<Mutex<State>>) {
+    pub(super) async fn fake_stack(
+        configure: impl FnOnce(&mut State),
+    ) -> (MockServer, Arc<Mutex<State>>) {
         let server = MockServer::start().await;
         let mut state = State {
             installed: vec!["apache", "system"],
             ..State::default()
         };
         configure(&mut state);
+        if state.historical_alert {
+            state.alerts.push(alert(0, "so-older", &Value::Null));
+        }
         let state = Arc::new(Mutex::new(state));
         let shared = Arc::clone(&state);
         Mock::given(any())
@@ -687,17 +1079,59 @@ mod tests {
             .await;
         (server, state)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake_stack::{ALERT_INDEX, SESSION_RULE_UUID, State, fake_stack, foreign_present};
+    use super::*;
+    use crate::recorder::markers::{
+        ALERT_PROBE_INDEX, ALERT_RULE_ID, CASE_ID_PLACEHOLDER, ITEM_ID, LIST_ID,
+    };
+    use crate::recorder::test_support::mock_transport;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+    use wiremock::MockServer;
+
+    const ALL_FIXTURES: [&str; 12] = [
+        "rule_get_executed",
+        "rule_get_failed_execution",
+        "rules_find_sorted_page",
+        "rules_find_by_technique",
+        "signals_search_rule_activity",
+        "cases_by_alert",
+        "cases_by_alert_none",
+        "exception_items_count",
+        "resolve_index_match",
+        "resolve_index_no_match",
+        "resolve_index_not_found",
+        "package_not_installed",
+    ];
+
+    /// Text that must never reach a printed line.
+    const PRIVATE_TEXT: [&str; 7] = [
+        "private.example",
+        "https://",
+        "http://",
+        "127.0.0.1",
+        "operator@",
+        "refused for",
+        "lost reply",
+    ];
 
     struct Outcome {
-        recorded: elasticctl_core::Result<Recording>,
-        cleanup: elasticctl_core::Result<CleanupResponses>,
-        ownership_before_cleanup: Vec<(&'static str, bool)>,
-        ownership_after_cleanup: Vec<(&'static str, bool)>,
+        step_error: Option<elasticctl_core::Error>,
+        failures: Vec<String>,
+        ownership_before_cleanup: BTreeMap<&'static str, bool>,
+        ownership_after_cleanup: BTreeMap<&'static str, bool>,
         log: PrivateLog,
+        succeeded: bool,
+        lines: Vec<String>,
+        written: Option<Recording>,
     }
 
-    fn flags(ownership: &CleanupOwnership) -> Vec<(&'static str, bool)> {
-        vec![
+    fn flags(ownership: &CleanupOwnership) -> BTreeMap<&'static str, bool> {
+        BTreeMap::from([
             ("alert_index", ownership.alert_index),
             ("list", ownership.list),
             ("item", ownership.item),
@@ -705,35 +1139,85 @@ mod tests {
             ("alert_rule", ownership.alert_rule),
             ("compose_rule", ownership.compose_rule),
             ("case", ownership.case),
-        ]
+        ])
     }
 
-    /// Session cleanup sweeps marker cases by title and tag but leaves the
-    /// `case` flag set, so the fake stack's state proves the case is gone.
-    fn released(after: &[(&'static str, bool)]) -> bool {
-        after.iter().all(|(name, owned)| *name == "case" || !owned)
+    fn released(flags: &BTreeMap<&'static str, bool>) -> bool {
+        flags.values().all(|owned| !owned)
     }
 
-    async fn record_against(transport: &elasticctl_core::Transport) -> Outcome {
-        let mut session = RecordingSession {
-            transport,
-            ownership: CleanupOwnership::default(),
+    fn settle(
+        outcome: RunOutcome,
+        ownership_before_cleanup: BTreeMap<&'static str, bool>,
+        ownership_after_cleanup: BTreeMap<&'static str, bool>,
+        log: PrivateLog,
+    ) -> Outcome {
+        let step_error = match &outcome.step {
+            Ended::Finished(Err(error)) => Some(error.clone()),
+            _ => None,
         };
-        let mut log = PrivateLog::default();
-        let recorded = record_steps(&mut session, &mut log, None, Duration::ZERO).await;
-        let ownership_before_cleanup = flags(&session.ownership);
-        let cleanup = session.cleanup().await;
+        let failures = match &outcome.teardown {
+            Ended::Finished(teardown) => {
+                teardown.failures.iter().map(ToString::to_string).collect()
+            }
+            _ => Vec::new(),
+        };
+        let mut written = None;
+        let (succeeded, lines) = finish(outcome, |recording| {
+            written = Some(recording);
+            Ok(())
+        });
         Outcome {
-            recorded,
-            cleanup,
+            step_error,
+            failures,
             ownership_before_cleanup,
-            ownership_after_cleanup: flags(&session.ownership),
+            ownership_after_cleanup,
             log,
+            succeeded,
+            lines,
+            written,
         }
+    }
+
+    /// The two halves of `run`, with the ownership flags read in between.
+    async fn record_against(transport: &Transport) -> Outcome {
+        let mut compose = ComposeSession::new(transport);
+        let mut log = PrivateLog::default();
+        let step = guarded(
+            record_steps(&mut compose, &mut log, None, Duration::ZERO),
+            None,
+            std::future::pending(),
+        )
+        .await;
+        let before = flags(&compose.session.ownership);
+        let outcome = conclude(&mut compose, step, Duration::ZERO, std::future::pending()).await;
+        settle(outcome, before, flags(&compose.session.ownership), log)
+    }
+
+    fn short_timeout_transport(server: &MockServer) -> Transport {
+        Transport::new(&elasticctl_core::Profile {
+            kibana_url: server.uri(),
+            es_url: Some(server.uri()),
+            api_key: Some("test".into()),
+            username: None,
+            password: None,
+            space: "default".into(),
+            verify: true,
+            timeout_secs: 1,
+        })
+        .expect("transport")
     }
 
     fn fixture_names(recording: &Recording) -> Vec<&'static str> {
         recording.fixtures.iter().map(|f| f.name).collect()
+    }
+
+    fn assert_clean_lines(lines: &[String]) {
+        for line in lines {
+            for private in PRIVATE_TEXT {
+                assert!(!line.contains(private), "{line}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -743,8 +1227,9 @@ mod tests {
 
         let outcome = record_against(&t).await;
 
-        let recording = outcome.recorded.expect("recorded");
-        outcome.cleanup.expect("cleanup");
+        assert!(outcome.succeeded, "{:?}", outcome.lines);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        let recording = outcome.written.expect("written");
         let mut names = fixture_names(&recording);
         names.sort();
         let mut expected = ALL_FIXTURES.to_vec();
@@ -755,6 +1240,7 @@ mod tests {
         let state = state.lock().expect("state");
         assert!(state.is_empty(), "marker objects remain");
         assert!(state.unexpected.is_empty(), "{:?}", state.unexpected);
+        assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0);
 
         let document = |name: &str| {
             recording
@@ -823,12 +1309,18 @@ mod tests {
             "private.example",
             "WzIsMV0=",
             "2026-11-10",
+            ALERT_INDEX,
+            "alerts-security",
         ] {
             assert!(!public.contains(private), "a fixture holds {private}");
         }
         assert_eq!(
             outcome.log.get("kibana_alert_case_ids_present"),
             Some(&json!(true))
+        );
+        assert_eq!(
+            outcome.log.get("responses").expect("responses")["package_system"]["status"],
+            "installed"
         );
     }
 
@@ -851,13 +1343,18 @@ mod tests {
 
             let outcome = record_against(&t).await;
 
-            assert!(outcome.recorded.is_err(), "{label}");
-            let before: BTreeMap<_, _> = outcome.ownership_before_cleanup.into_iter().collect();
-            assert!(before[owner], "{owner} was not claimed before its create");
-            outcome
-                .cleanup
-                .unwrap_or_else(|e| panic!("{label}: {}", e.message));
+            assert!(outcome.step_error.is_some(), "{label}");
+            assert!(
+                outcome.ownership_before_cleanup[owner],
+                "{owner} was not claimed before its create"
+            );
+            assert!(
+                outcome.failures.is_empty(),
+                "{label}: {:?}",
+                outcome.failures
+            );
             assert!(released(&outcome.ownership_after_cleanup), "{label}");
+            assert!(!outcome.succeeded && outcome.written.is_none(), "{label}");
             let state = state.lock().expect("state");
             assert!(
                 state.is_empty(),
@@ -868,6 +1365,7 @@ mod tests {
                 "{label}: {:?}",
                 state.unexpected
             );
+            assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0, "{label}");
         }
     }
 
@@ -875,7 +1373,7 @@ mod tests {
     async fn creates_run_in_order_after_every_preflight_read() {
         let (server, state) = fake_stack(|_| {}).await;
         let t = mock_transport(&server);
-        record_against(&t).await.recorded.expect("recorded");
+        assert!(record_against(&t).await.succeeded);
 
         let state = state.lock().expect("state");
         let position = |needle: &str| {
@@ -885,17 +1383,19 @@ mod tests {
                 .position(|line| line.starts_with(needle))
                 .unwrap_or_else(|| panic!("{needle} not sent"))
         };
-        let first_write = position(&format!("POST /{ALERT_PROBE_INDEX}/_doc/1"));
+        let first_write = position(&format!("POST /{ALERT_PROBE_INDEX}/_create/1"));
         for preflight in [
             "GET /api/detection_engine/rules?rule_id=elasticctl-sample-alert-probe",
-            &format!("GET /{ALERT_PROBE_INDEX}"),
+            "GET /api/detection_engine/rules?rule_id=elasticctl-sample-compose-missing-index",
             "GET /api/exception_lists?",
             &format!("GET /api/exception_lists/items?item_id={ITEM_ID}"),
             "GET /api/exception_lists/items?item_id=elasticctl-sample-exception-item-2",
-            "GET /api/detection_engine/rules?rule_id=elasticctl-sample-compose-missing-index",
+            &format!("GET /{ALERT_PROBE_INDEX}"),
             "GET /elasticctl-sample-compose-missing",
             "GET /api/cases/_find",
+            "GET /api/detection_engine/rules/prepackaged/_status",
             "GET /api/fleet/epm/packages/apache",
+            "GET /api/fleet/epm/packages/system",
         ] {
             assert!(position(preflight) < first_write, "{preflight}");
         }
@@ -920,7 +1420,12 @@ mod tests {
                 "POST /api/cases/case-real-1/comments",
             ]
         );
-        assert!(!state.log.iter().any(|line| line.starts_with("PUT ")));
+        assert!(
+            state
+                .log
+                .iter()
+                .all(|line| !line.starts_with("PUT ") && !line.starts_with("PATCH "))
+        );
         assert!(
             !state
                 .log
@@ -943,13 +1448,13 @@ mod tests {
 
             let outcome = record_against(&t).await;
 
-            let error = outcome.recorded.err().expect("refused");
+            let error = outcome.step_error.expect("refused");
             assert!(
                 error.message.contains("refusing to record"),
                 "{}",
                 error.message
             );
-            outcome.cleanup.expect("cleanup");
+            assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
             assert!(released(&outcome.ownership_after_cleanup));
             assert!(state.lock().expect("state").is_empty());
         }
@@ -959,7 +1464,7 @@ mod tests {
     async fn a_lagging_attachment_is_read_again_within_its_bound() {
         let (server, state) = fake_stack(|s| s.attachment_lag = 2).await;
         let t = mock_transport(&server);
-        record_against(&t).await.recorded.expect("recorded");
+        assert!(record_against(&t).await.succeeded);
         let reads = |state: &State| {
             state
                 .log
@@ -972,40 +1477,38 @@ mod tests {
         let (server, state) = fake_stack(|s| s.attachment_lag = 3).await;
         let t = mock_transport(&server);
         let outcome = record_against(&t).await;
-        assert!(outcome.recorded.is_err());
-        outcome.cleanup.expect("cleanup");
+        assert!(outcome.step_error.is_some());
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
         let state = state.lock().expect("state");
         assert_eq!(reads(&state), 3);
         assert!(state.is_empty());
     }
 
     #[tokio::test]
-    async fn a_preflight_refusal_creates_nothing() {
+    async fn a_preflight_refusal_sends_no_mutation_and_never_touches_the_existing_rule() {
         let (server, state) = fake_stack(|s| s.existing_rule = true).await;
         let t = mock_transport(&server);
 
         let outcome = record_against(&t).await;
 
-        let error = outcome.recorded.err().expect("refused");
+        let error = outcome.step_error.expect("refused");
         assert!(
             error.message.contains("refusing to record"),
             "{}",
             error.message
         );
-        assert!(
-            outcome
-                .ownership_before_cleanup
-                .iter()
-                .all(|(_, owned)| !owned)
-        );
+        assert!(released(&outcome.ownership_before_cleanup));
+        assert!(!outcome.succeeded && outcome.written.is_none());
         let state = state.lock().expect("state");
-        assert!(
-            !state.log.iter().any(|line| line.starts_with("POST /api/")
-                && !line.starts_with("POST /api/detection_engine/signals/search")),
-            "{:?}",
-            state.log
+        assert_eq!(state.mutations(), Vec::<String>::new());
+        assert_eq!(
+            state.log,
+            [
+                "GET /api/status",
+                "GET /api/detection_engine/rules?rule_id=elasticctl-sample-alert-probe",
+            ],
+            "cleanup after a refusal sends nothing"
         );
-        assert!(!state.log.iter().any(|line| line.starts_with("DELETE ")));
     }
 
     #[tokio::test]
@@ -1015,21 +1518,34 @@ mod tests {
 
         let outcome = record_against(&t).await;
 
-        assert!(outcome.recorded.is_err());
+        assert!(outcome.step_error.is_some());
         let state = state.lock().expect("state");
-        assert!(
-            !state
-                .log
-                .iter()
-                .any(|line| line.starts_with(&format!("POST /{ALERT_PROBE_INDEX}")))
-        );
+        assert_eq!(state.mutations(), Vec::<String>::new());
         assert!(state.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_uninstalled_system_package_fails_before_any_write() {
+        let (server, state) = fake_stack(|s| s.installed = vec!["apache"]).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let error = outcome.step_error.expect("refused");
+        assert_eq!(
+            error.message,
+            "refusing to record: the system package is not installed"
+        );
+        assert_eq!(
+            state.lock().expect("state").mutations(),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]
     async fn without_an_elasticsearch_url_the_resolve_recordings_are_skipped() {
         let (server, state) = fake_stack(|_| {}).await;
-        let t = elasticctl_core::Transport::new(&elasticctl_core::Profile {
+        let t = Transport::new(&elasticctl_core::Profile {
             kibana_url: server.uri(),
             es_url: None,
             api_key: Some("test".into()),
@@ -1043,8 +1559,8 @@ mod tests {
 
         let outcome = record_against(&t).await;
 
-        let recording = outcome.recorded.expect("recorded");
-        outcome.cleanup.expect("cleanup");
+        assert!(outcome.succeeded, "{:?}", outcome.lines);
+        let recording = outcome.written.expect("written");
         let names = fixture_names(&recording);
         assert_eq!(names.len(), 9);
         assert!(names.iter().all(|name| !name.starts_with("resolve_index")));
@@ -1058,10 +1574,414 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_conflicting_create_releases_its_claim_and_leaves_the_object() {
+        for (label, owner) in [
+            ("index", "alert_index"),
+            ("list", "list"),
+            ("item:elasticctl-sample-exception-item", "item"),
+            ("item:elasticctl-sample-exception-item-2", "compose_item"),
+            ("rule:elasticctl-sample-alert-probe", "alert_rule"),
+            (
+                "rule:elasticctl-sample-compose-missing-index",
+                "compose_rule",
+            ),
+        ] {
+            let (server, state) = fake_stack(|s| s.conflict_on = Some(label.to_string())).await;
+            let t = mock_transport(&server);
+
+            let outcome = record_against(&t).await;
+
+            let error = outcome.step_error.expect("refused");
+            assert!(
+                error.message.contains("already exists"),
+                "{label}: {}",
+                error.message
+            );
+            assert!(!outcome.ownership_before_cleanup[owner], "{label}");
+            assert!(!outcome.succeeded && outcome.written.is_none(), "{label}");
+            let state = state.lock().expect("state");
+            assert!(
+                foreign_present(&state, label),
+                "{label}: the foreign object was touched"
+            );
+            let touches_foreign =
+                |line: &String| match label.split_once(':') {
+                    None if label == "index" => line == &format!("DELETE /{ALERT_PROBE_INDEX}"),
+                    None => line.starts_with("DELETE /api/exception_lists?"),
+                    Some(("item", id)) => line
+                        .starts_with(&format!("DELETE /api/exception_lists/items?item_id={id}&")),
+                    Some((_, id)) => line
+                        .starts_with(&format!("DELETE /api/detection_engine/rules?rule_id={id}")),
+                };
+            assert!(
+                !state
+                    .log
+                    .iter()
+                    .any(|line| line.starts_with("PATCH ") || touches_foreign(line)),
+                "{label}: {:?}",
+                state.log
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delete_answered_ok_while_the_object_remains_keeps_ownership() {
+        for (label, owner, object) in [
+            (
+                "item:elasticctl-sample-exception-item",
+                "item",
+                "exception item 1 is still present",
+            ),
+            ("list", "list", "the marker exception list is still present"),
+        ] {
+            let (server, _state) = fake_stack(|s| s.sticky_delete = Some(label.to_string())).await;
+            let t = mock_transport(&server);
+
+            let outcome = record_against(&t).await;
+
+            assert!(
+                outcome.failures.iter().any(|f| f == object),
+                "{label}: {:?}",
+                outcome.failures
+            );
+            assert!(outcome.ownership_after_cleanup[owner], "{label}");
+            assert!(!outcome.succeeded && outcome.written.is_none(), "{label}");
+            assert!(
+                outcome
+                    .lines
+                    .iter()
+                    .any(|line| line.starts_with("record-compose cleanup left in place:")),
+                "{label}: {:?}",
+                outcome.lines
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_changed_child_keeps_its_parent_list() {
+        let (server, state) = fake_stack(|s| {
+            s.retag_after_create = Some("item:elasticctl-sample-exception-item-2".into())
+        })
+        .await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        assert!(outcome.ownership_after_cleanup["compose_item"]);
+        assert!(outcome.ownership_after_cleanup["list"]);
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        let state = state.lock().expect("state");
+        assert!(state.list.is_some(), "the parent list was deleted");
+        assert!(
+            !state.log.iter().any(|line| {
+                line.starts_with("DELETE /api/exception_lists?")
+                || line.starts_with(
+                    "DELETE /api/exception_lists/items?item_id=elasticctl-sample-exception-item-2"
+                )
+            }),
+            "{:?}",
+            state.log
+        );
+    }
+
+    #[tokio::test]
+    async fn a_baseline_mismatch_writes_no_fixture() {
+        let (server, state) = fake_stack(|s| s.prebuilt_after = Some(2262)).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        assert!(outcome.step_error.is_none());
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(!outcome.succeeded);
+        assert!(outcome.written.is_none(), "a fixture was written");
+        assert!(
+            outcome.lines.iter().any(|line| line.starts_with(
+                "record-compose baseline audit failed: the prebuilt rule count changed"
+            )),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(state.lock().expect("state").is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_this_runs_alerts_are_closed_and_only_by_id() {
+        let (server, state) = fake_stack(|s| s.historical_alert = true).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        assert!(outcome.succeeded, "{:?}", outcome.lines);
+        let state = state.lock().expect("state");
+        assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0);
+        assert_eq!(
+            state.open_alerts("so-older"),
+            1,
+            "an earlier run's alert was closed"
+        );
+        assert!(!state.status_requests.is_empty());
+        for request in &state.status_requests {
+            assert!(request.get("query").is_none(), "{request}");
+            let ids = request["signal_ids"].as_array().expect("explicit ids");
+            assert!(
+                ids.iter()
+                    .all(|id| id.as_str().is_some_and(|id| id != "zz-alert-0")),
+                "{request}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_signals_fixture_holds_no_alert_index_name() {
+        let (server, _state) = fake_stack(|_| {}).await;
+        let t = mock_transport(&server);
+
+        let recording = record_against(&t).await.written.expect("written");
+
+        let signals = recording
+            .fixtures
+            .iter()
+            .find(|f| f.name == "signals_search_rule_activity")
+            .expect("signals fixture");
+        assert_eq!(
+            signals.document["response"]["hits"]["hits"][0]["_index"],
+            evidence::ALERT_INDEX_PLACEHOLDER
+        );
+        let text = signals.document.to_string();
+        assert!(!text.contains("alerts-security"), "{text}");
+        assert!(!text.contains(".internal."), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_resolve_body_naming_a_nested_non_marker_is_refused() {
+        for body in [
+            json!({"indices": [{"name": ALERT_PROBE_INDEX, "aliases": ["prod-secrets"],
+                "attributes": ["open"]}], "aliases": [], "data_streams": []}),
+            json!({"indices": [{"name": ALERT_PROBE_INDEX, "attributes": ["open"]}],
+                "aliases": [{"name": "elasticctl-sample-a", "indices": ["customer-data"]}],
+                "data_streams": []}),
+            json!({"indices": [], "aliases": [], "data_streams": [{
+                "name": "elasticctl-sample-ds", "timestamp_field": "@timestamp",
+                "backing_indices": [".ds-logs-private-2026.11.10-000001"]}]}),
+        ] {
+            let (server, state) = fake_stack(|s| s.resolve_match_body = Some(body.clone())).await;
+            let t = mock_transport(&server);
+
+            let outcome = record_against(&t).await;
+
+            let error = outcome.step_error.expect("refused");
+            assert!(
+                error.message.contains("resolve_index_match"),
+                "{}",
+                error.message
+            );
+            assert!(outcome.written.is_none());
+            assert!(state.lock().expect("state").is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn printed_lines_hold_no_host_url_or_server_text() {
+        let (server, _state) =
+            fake_stack(|s| s.failing_delete = Some("rule:elasticctl-sample-alert-probe".into()))
+                .await;
+        let t = mock_transport(&server);
+        let outcome = record_against(&t).await;
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .any(|f| f == "deleting rule elasticctl-sample-alert-probe: class=http status=500"),
+            "{:?}",
+            outcome.failures
+        );
+        assert!(!outcome.succeeded);
+        assert_clean_lines(&outcome.lines);
+
+        // A timed-out request's transport message names the URL.
+        let (server, _state) = fake_stack(|s| {
+            s.slow_create = Some("item:elasticctl-sample-exception-item".into());
+            s.slow_delete = Some("list".into());
+        })
+        .await;
+        let t = short_timeout_transport(&server);
+        let outcome = record_against(&t).await;
+        let error = outcome.step_error.as_ref().expect("timed out");
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Timeout);
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .any(|f| f == "deleting the marker exception list: class=timeout status=none"),
+            "{:?}",
+            outcome.failures
+        );
+        assert!(!outcome.succeeded);
+        assert_clean_lines(&outcome.lines);
+    }
+
+    #[tokio::test]
+    async fn the_exclusion_pattern_resolve_is_logged_privately_only() {
+        let (server, _state) = fake_stack(|_| {}).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let recording = outcome.written.expect("written");
+        assert_eq!(recording.fixtures.len(), 12);
+        assert!(
+            fixture_names(&recording)
+                .iter()
+                .all(|name| !name.contains("exclusion"))
+        );
+        assert_eq!(
+            outcome.log.get("responses").expect("responses")["resolve_index_exclusion"],
+            json!({"indices": [], "aliases": [], "data_streams": []})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_create_that_times_out_stays_owned_and_cleanup_removes_it() {
+        let (server, state) = fake_stack(|s| {
+            s.slow_create = Some("rule:elasticctl-sample-compose-missing-index".into())
+        })
+        .await;
+        let t = short_timeout_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let error = outcome.step_error.expect("timed out");
+        assert_eq!(error.kind, elasticctl_core::ErrorKind::Timeout);
+        assert!(outcome.ownership_before_cleanup["compose_rule"]);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(released(&outcome.ownership_after_cleanup));
+        assert!(state.lock().expect("state").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_mid_provisioning_still_runs_cleanup() {
+        let notify = Arc::new(Notify::new());
+        let fired = Arc::clone(&notify);
+        let (server, state) = fake_stack(move |s| {
+            s.interrupt_on = Some(("rule:elasticctl-sample-alert-probe".into(), fired));
+        })
+        .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        let mut log = PrivateLog::default();
+        let mut calls = 0;
+
+        let outcome = run(&mut compose, &mut log, None, Duration::ZERO, || {
+            calls += 1;
+            let first = calls == 1;
+            let notify = Arc::clone(&notify);
+            async move {
+                if first {
+                    notify.notified().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }
+        })
+        .await;
+
+        assert!(matches!(outcome.step, Ended::Interrupted));
+        let after = flags(&compose.session.ownership);
+        let outcome = settle(outcome, BTreeMap::new(), after, log);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(released(&outcome.ownership_after_cleanup));
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert_eq!(
+            outcome.lines.first().map(String::as_str),
+            Some("record-compose interrupted")
+        );
+        let state = state.lock().expect("state");
+        assert!(state.is_empty(), "the in-flight rule survived");
+        assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0);
+    }
+
+    #[tokio::test]
+    async fn a_panic_mid_provisioning_still_runs_cleanup() {
+        let (server, state) = fake_stack(|_| {}).await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+
+        let step = guarded(
+            async {
+                provision::create_index(&mut compose).await?;
+                provision::create_objects(&mut compose).await?;
+                if compose.session.ownership.compose_rule {
+                    panic!("injected panic mid-provisioning");
+                }
+                Err::<Recording, _>(recording_error("not reached"))
+            },
+            None,
+            std::future::pending(),
+        )
+        .await;
+        assert!(matches!(step, Ended::Panicked));
+        let before = flags(&compose.session.ownership);
+        assert!(before.values().filter(|owned| **owned).count() >= 6);
+
+        let outcome = conclude(&mut compose, step, Duration::ZERO, std::future::pending()).await;
+
+        let after = flags(&compose.session.ownership);
+        let outcome = settle(outcome, before, after, PrivateLog::default());
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(released(&outcome.ownership_after_cleanup));
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        let state = state.lock().expect("state");
+        assert!(state.is_empty());
+        assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0);
+    }
+
+    #[tokio::test]
+    async fn a_second_interrupt_stops_cleanup_and_names_what_is_still_owned() {
+        let (server, state) = fake_stack(|_| {}).await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        let mut log = PrivateLog::default();
+        let mut calls = 0;
+
+        let outcome = run(&mut compose, &mut log, None, Duration::ZERO, || {
+            calls += 1;
+            let second = calls == 2;
+            async move {
+                if !second {
+                    std::future::pending::<()>().await;
+                }
+            }
+        })
+        .await;
+
+        assert!(matches!(outcome.step, Ended::Finished(Ok(_))));
+        assert!(matches!(outcome.teardown, Ended::Interrupted));
+        let after = flags(&compose.session.ownership);
+        let outcome = settle(outcome, BTreeMap::new(), after, log);
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert!(
+            outcome
+                .lines
+                .contains(&"record-compose cleanup interrupted".to_string()),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
+            outcome.lines.iter().any(|line| line
+                == "record-compose cleanup left in place: the marker case, rule elasticctl-sample-alert-probe, rule elasticctl-sample-compose-missing-index, exception item 2, exception item 1, the marker exception list, index elasticctl-sample-alert-events"),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(!state.lock().expect("state").is_empty());
+    }
+
     #[test]
     fn fixture_list_matches_the_spec_and_the_marker_constants() {
         assert_eq!(ALL_FIXTURES.len(), 12);
         assert_eq!(MATCH_PATTERN, format!("{ALERT_PROBE_INDEX}*"));
+        assert_eq!(EXCLUSION_PATTERN, format!("-{MATCH_PATTERN}"));
         for name in [
             MISSING_RULE_ID,
             COMPOSE_ITEM_ID,
