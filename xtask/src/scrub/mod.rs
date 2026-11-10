@@ -79,12 +79,12 @@ fn redact_backing_index_date(name: &str) -> Option<String> {
     // these characters, so a comma-joined list or prose never matches as one
     // name.
     let is_stream = !stream.is_empty()
-        && stream.chars().all(|c| {
-            !c.is_uppercase()
-                && !matches!(
-                    c,
-                    ' ' | '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|' | ',' | '#' | ':'
-                )
+        && stream.to_lowercase() == stream
+        && !stream.chars().any(|c| {
+            matches!(
+                c,
+                ' ' | '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|' | ',' | '#' | ':'
+            )
         });
     (is_stream && is_date && is_generation).then(|| format!(".ds-{stream}-REDACTED-{generation}"))
 }
@@ -348,7 +348,8 @@ mod tests {
                 ".ds-logs-system.auth-default-2026.01.31-000012",
                 ".ds-logs@prod-2026.11.09-000001",
                 ".ds-logs-café-2026.11.09-000001",
-                ".ds-logs\u{a0}prod-2026.11.09-000001"
+                ".ds-logs\u{a0}prod-2026.11.09-000001",
+                ".ds-logs\u{2102}-2026.11.09-000001"
             ],
             "keep": [
                 ".alerts-security.alerts-default",
@@ -373,7 +374,8 @@ mod tests {
                     ".ds-logs-system.auth-default-REDACTED-000012",
                     ".ds-logs@prod-REDACTED-000001",
                     ".ds-logs-café-REDACTED-000001",
-                    ".ds-logs\u{a0}prod-REDACTED-000001"
+                    ".ds-logs\u{a0}prod-REDACTED-000001",
+                    ".ds-logs\u{2102}-REDACTED-000001"
                 ],
                 "keep": [
                     ".alerts-security.alerts-default",
