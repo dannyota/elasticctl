@@ -12,7 +12,8 @@ switched off?" Description text, exact:
 > Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK
 > technique, tactic, index pattern, or integration package. Each row counts
 > enabled and disabled rules. Use rules_list with technique or tactic to see
-> the rules behind a row. Read-only.
+> the rules behind a row. Reads at most 4,000 rules; near that size a call
+> can need a longer server --timeout. Read-only.
 
 **Input**
 

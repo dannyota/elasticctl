@@ -214,6 +214,8 @@ async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<bool, 
             }
         }
     };
+    elasticctl_api::compose::require_path_segment(&id)
+        .map_err(|error| Failure::request("checking", CASE, &error))?;
     *known = Some(id.clone());
     let path = elasticctl_api::cases::case_path(&id);
     match t.get(&path).await {
@@ -557,6 +559,32 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn reserved_case_cleanup_ids_are_encoded_as_one_segment() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(not_found())
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let id = "../../case?x#y%";
+        assert!(!remove_case(&t, &mut Some(id.into())).await.unwrap());
+        assert_eq!(
+            requests(&server).await,
+            [format!("GET /api/cases/{}", elasticctl_core::urlencode(id))]
+        );
+    }
+
+    #[tokio::test]
+    async fn hostile_case_cleanup_ids_send_no_requests() {
+        for id in ["", ".", ".."] {
+            let server = MockServer::start().await;
+            let t = mock_transport(&server);
+            assert!(remove_case(&t, &mut Some(id.into())).await.is_err());
+            assert!(requests(&server).await.is_empty());
+        }
+    }
 
     fn ok(body: Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(body)

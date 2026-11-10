@@ -8,6 +8,21 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// A Kibana space id is one URL path segment. An empty space means the
+/// default space, as it always has.
+pub(crate) fn validate_space(space: &str) -> Result<()> {
+    if space.is_empty() {
+        return Ok(());
+    }
+    if !space
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    {
+        return Err(Error::new(ErrorKind::Error, "invalid space id"));
+    }
+    Ok(())
+}
+
 const REDACTED: &str = "***";
 
 /// Whether overrides change the target deployment or credential.
@@ -438,6 +453,8 @@ impl Config {
             profile.timeout_secs = v;
         }
 
+        validate_space(&profile.space)?;
+
         let source = if is_identity_override(ov) {
             Source::Flags
         } else {
@@ -459,6 +476,27 @@ impl Config {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn invalid_spaces_are_refused_during_resolution() {
+        for space in [
+            ".", "..", "a/b", "a?b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
+        ] {
+            let mut config = sample();
+            config.profiles.get_mut("default").unwrap().space = space.into();
+            for overrides in [
+                Overrides::default(),
+                Overrides {
+                    space: Some(space.into()),
+                    ..Default::default()
+                },
+            ] {
+                let error = config.resolve(None, &overrides).unwrap_err();
+                assert_eq!(error.kind, ErrorKind::Error);
+                assert_eq!(error.message, "invalid space id");
+            }
+        }
+    }
 
     fn sample() -> Config {
         let mut profiles = BTreeMap::new();
