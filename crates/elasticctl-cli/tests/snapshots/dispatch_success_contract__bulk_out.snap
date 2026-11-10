@@ -1,0 +1,111 @@
+---
+source: crates/elasticctl-cli/tests/dispatch_success_contract.rs
+expression: results
+---
+[
+  {
+    "args": [
+      "search",
+      "dsl",
+      "{\"query\":{\"term\":{\"marker\":\"elasticctl-sample\"}}}",
+      "--index",
+      "logs-*",
+      "--limit",
+      "2",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/logs-*/_pit",
+        "query": "keep_alive=1m",
+        "body": "{}"
+      },
+      {
+        "method": "POST",
+        "path": "/_search",
+        "query": null,
+        "body": "{\"size\":2,\"sort\":[{\"_shard_doc\":\"asc\"}],\"pit\":{\"id\":\"pit-1\",\"keep_alive\":\"1m\"},\"query\":{\"term\":{\"marker\":\"elasticctl-sample\"}}}"
+      },
+      {
+        "method": "DELETE",
+        "path": "/_pit",
+        "query": null,
+        "body": "{\"id\":\"pit-1\"}"
+      }
+    ],
+    "out": "{\"seq\":1,\"message\":\"elasticctl sample search document 1\",\"marker\":\"elasticctl-sample\"}\n{\"seq\":2,\"message\":\"elasticctl sample search document 2\",\"marker\":\"elasticctl-sample\"}\n",
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "alerts",
+      "list",
+      "--limit",
+      "2",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/api/detection_engine/signals/search",
+        "query": null,
+        "body": "{\"query\":{\"match_all\":{}},\"sort\":[{\"@timestamp\":{\"order\":\"desc\"}},{\"kibana.alert.uuid\":{\"order\":\"asc\"}}],\"size\":1000}"
+      }
+    ],
+    "out": "{\"kibana.alert.rule.name\":\"elasticctl sample alert probe\",\"kibana.alert.workflow_status\":\"open\"}\n{\"kibana.alert.rule.name\":\"elasticctl sample alert probe\",\"kibana.alert.workflow_status\":\"open\"}\n",
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "cases",
+      "list",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/_find",
+        "query": "page=1&perPage=100&sortField=createdAt&sortOrder=desc",
+        "body": ""
+      }
+    ],
+    "out": "{\"id\":\"elasticctl-fixture-case\",\"title\":\"elasticctl sample case\",\"status\":\"open\",\"severity\":\"low\",\"tags\":[\"elasticctl-sample\"],\"comments\":0,\"created_at\":\"2026-01-01T00:00:00.000Z\"}\n",
+    "pulled_rule": null
+  },
+  {
+    "args": [
+      "cases",
+      "list",
+      "--limit",
+      "0",
+      "--out",
+      "ROOT/out"
+    ],
+    "code": 0,
+    "stdout": "",
+    "stderr": "",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/cases/_find",
+        "query": "page=1&perPage=100&sortField=createdAt&sortOrder=desc",
+        "body": ""
+      }
+    ],
+    "out": "",
+    "pulled_rule": null
+  }
+]

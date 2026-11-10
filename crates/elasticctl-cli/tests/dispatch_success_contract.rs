@@ -95,6 +95,13 @@ async fn server(state: bool, reopen_case: bool) -> MockServer {
                     response[0]["status"] = body["cases"][0]["status"].clone();
                     return ResponseTemplate::new(200).set_body_json(response);
                 }
+                ("POST", "/logs-*/_pit" | "/logs-%2A/_pit") => {
+                    // The recorder strips the PIT id; restore only its test placeholder.
+                    let mut response = fixture("search_pit_open");
+                    response["id"] = json!("pit-1");
+                    return ResponseTemplate::new(200).set_body_json(response);
+                }
+                ("DELETE", "/_pit") => "search_pit_close",
                 ("POST", "/_query") => "esql_query",
                 ("POST", p) if p.ends_with("/_search") => "search_pit_page",
                 _ => {
@@ -207,7 +214,9 @@ async fn capture(args: &[&str]) -> Value {
     let output = dir.path().join("out");
     if args.contains(&"--out") {
         assert!(output.is_file(), "missing output file: {args:?}, {out:?}");
-        assert!(!fs::read(&output).unwrap().is_empty());
+        if !args.windows(2).any(|pair| pair == ["--limit", "0"]) {
+            assert!(!fs::read(&output).unwrap().is_empty());
+        }
         if args.starts_with(&["dashboards", "bundle", "export"]) {
             assert_eq!(
                 fs::read_to_string(&output).unwrap(),
@@ -507,6 +516,111 @@ async fn health_success() {
             &["config", "test", "--json"],
             &["doctor", "--json"],
             &["info", "--json"],
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn list_search() {
+    pin(
+        "list_search",
+        &[
+            &[
+                "fleet",
+                "agent-policies",
+                "list",
+                "--search",
+                "sample agent",
+                "--json",
+            ],
+            &[
+                "fleet",
+                "agent-policies",
+                "list",
+                "--search",
+                "SaMpLe-AgEnT",
+                "--json",
+            ],
+            &[
+                "fleet",
+                "integration-policies",
+                "list",
+                "--search",
+                "system",
+                "--json",
+            ],
+            &[
+                "fleet",
+                "integration-policies",
+                "list",
+                "--search",
+                "SaMpLe-InTeGrAtIoN",
+                "--json",
+            ],
+            &["data-views", "list", "--search", "@timestamp", "--json"],
+            &["data-views", "list", "--search", "SaMpLe SoUrCe", "--json"],
+            &[
+                "dashboards",
+                "list",
+                "--search",
+                "elasticctl sample dashboard",
+                "--json",
+            ],
+            &[
+                "rules",
+                "list",
+                "--search",
+                "elasticctl fixture probe",
+                "--json",
+            ],
+            &[
+                "exceptions",
+                "list",
+                "--namespace",
+                "single",
+                "--search",
+                "elasticctl sample exceptions",
+                "--json",
+            ],
+            &[
+                "alerts",
+                "list",
+                "--search",
+                "elasticctl sample alert probe",
+                "--json",
+            ],
+            &[
+                "cases",
+                "list",
+                "--search",
+                "elasticctl sample case",
+                "--json",
+            ],
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bulk_out() {
+    pin(
+        "bulk_out",
+        &[
+            &[
+                "search",
+                "dsl",
+                "{\"query\":{\"term\":{\"marker\":\"elasticctl-sample\"}}}",
+                "--index",
+                "logs-*",
+                "--limit",
+                "2",
+                "--out",
+                "ROOT/out",
+            ],
+            &["alerts", "list", "--limit", "2", "--out", "ROOT/out"],
+            &["cases", "list", "--out", "ROOT/out"],
+            &["cases", "list", "--limit", "0", "--out", "ROOT/out"],
         ],
     )
     .await;
