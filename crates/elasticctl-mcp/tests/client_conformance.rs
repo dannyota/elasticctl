@@ -330,6 +330,7 @@ async fn mount_catalog_success_routes(server: &MockServer) {
 
 fn success_arguments(name: &str) -> Value {
     match name {
+        "alert_context" => json!({"alert_id":"elasticctl-fixture-alert-1"}),
         "alerts_get" => json!({"alert_id":"elasticctl-fixture-alert-1"}),
         "cases_get" => json!({"id":"elasticctl-fixture-case"}),
         "data_views_get" => json!({"selector":"elasticctl-sample-data-view-source"}),
@@ -493,12 +494,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
 
 /// Task tools registered before their implementation. Each answers every
 /// call with an error, so only the router error is checked for them.
-const PLACEHOLDER_TOOLS: [&str; 4] = [
-    "alert_context",
-    "detection_coverage",
-    "rule_health",
-    "rule_readiness",
-];
+const PLACEHOLDER_TOOLS: [&str; 3] = ["detection_coverage", "rule_health", "rule_readiness"];
 
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
