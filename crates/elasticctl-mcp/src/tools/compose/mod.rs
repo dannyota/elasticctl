@@ -128,7 +128,6 @@ pub(crate) struct LastExecutionData {
 pub(crate) struct RuleContextData {
     #[serde(flatten)]
     pub rule: super::rules::RuleGetData,
-    #[schemars(required)]
     pub execution: Option<LastExecutionData>,
 }
 #[derive(Debug, Serialize, JsonSchema)]
@@ -300,6 +299,19 @@ pub(crate) fn project_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_never_run_rule_may_carry_a_null_execution() {
+        let schema = serde_json::to_value(schemars::schema_for!(RuleContextData)).unwrap();
+        let execution = &schema["properties"]["execution"];
+        let allows_null = execution["type"] == "null"
+            || execution["anyOf"]
+                .as_array()
+                .is_some_and(|alternatives| alternatives.iter().any(|a| a["type"] == "null"))
+            || execution["type"]
+                .as_array()
+                .is_some_and(|types| types.iter().any(|t| t == "null"));
+        assert!(allows_null, "{execution}");
+    }
     #[test]
     fn parts_omit_inapplicable_fields_and_map_errors() {
         let ok = part(Part::Ok(7), Ok).unwrap();

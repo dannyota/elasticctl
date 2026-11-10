@@ -296,3 +296,29 @@ async fn every_request_wrapper_refuses_a_dot_id_before_any_request() {
         assert!(requests(&server).await.is_empty());
     }
 }
+
+#[tokio::test]
+async fn a_case_comment_or_attachment_to_a_dot_id_sends_no_post() {
+    let server = stack().await;
+    let t = transport(&server);
+    for id in ["", ".", ".."] {
+        assert_refused(
+            elasticctl_api::cases::add_comment(&t, id, "marker comment")
+                .await
+                .unwrap_err(),
+        );
+        assert_refused(
+            elasticctl_api::cases::attach_alerts(
+                &t,
+                id,
+                &["alert-1".to_string()],
+                &["index-1".to_string()],
+                "rule-1",
+                "rule name",
+            )
+            .await
+            .unwrap_err(),
+        );
+    }
+    assert!(requests(&server).await.is_empty());
+}

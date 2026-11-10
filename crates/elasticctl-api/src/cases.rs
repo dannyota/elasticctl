@@ -201,6 +201,7 @@ pub async fn delete(t: &Transport, ids: &[String]) -> Result<()> {
 
 /// Add a user comment; the response is the updated case.
 pub async fn add_comment(t: &Transport, case_id: &str, comment: &str) -> Result<Case> {
+    crate::compose::require_path_segment(case_id)?;
     let body = json!({"type": "user", "comment": comment, "owner": OWNER});
     decode_case(&t.post(&comments_path(case_id), Some(&body)).await?)
 }
@@ -216,6 +217,7 @@ pub async fn attach_alerts(
     rule_id: &str,
     rule_name: &str,
 ) -> Result<Case> {
+    crate::compose::require_path_segment(case_id)?;
     let body = json!({
         "type": "alert",
         "alertId": alert_ids,
