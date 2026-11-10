@@ -348,6 +348,2674 @@ impl ProtocolFlow {
     }
 }
 
+fn task_tool_literal(name: &str) -> Option<Value> {
+    let literal = match name {
+        "alert_context" => {
+            r##"{
+  "name": "alert_context",
+  "description": "Triage context for one Elastic Security alert: the alert, the rule that fired it with its last execution, the rule's exception lists, cases that contain the alert, and the rule's alert volume in a time window. Read-only.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": [
+      "alert_id"
+    ],
+    "type": "object",
+    "properties": {
+      "alert_id": {
+        "description": "Exact alert document id. Must contain non-whitespace text, be no more than 1,024 UTF-8 bytes, and not be exactly `.` or `..`; the supplied value is used unchanged.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      },
+      "since": {
+        "description": "Window for the rule's alert counts: one to four ASCII digits not starting with 0, followed by s, m, h, d, or w, such as 24h.",
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 5,
+        "default": "24h"
+      }
+    },
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "ToolSuccess": {
+        "description": "A successful tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "data": {
+            "$ref": "#/$defs/AlertContextData"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PageInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "data",
+          "page"
+        ]
+      },
+      "TargetContext": {
+        "description": "Target identity that may safely appear in MCP results.",
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "host",
+          "space"
+        ]
+      },
+      "AlertContextData": {
+        "type": "object",
+        "properties": {
+          "alert": {
+            "$ref": "#/$defs/AlertData"
+          },
+          "rule": {
+            "$ref": "#/$defs/PartData"
+          },
+          "exceptions": {
+            "$ref": "#/$defs/PartData2"
+          },
+          "cases": {
+            "$ref": "#/$defs/PartData3"
+          },
+          "activity": {
+            "$ref": "#/$defs/PartData4"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/FindingCode"
+            }
+          }
+        },
+        "required": [
+          "alert",
+          "rule",
+          "exceptions",
+          "cases",
+          "activity",
+          "partial",
+          "findings"
+        ]
+      },
+      "AlertData": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/$defs/AlertSourceData"
+          }
+        },
+        "required": [
+          "id",
+          "source"
+        ]
+      },
+      "AlertSourceData": {
+        "type": "object",
+        "properties": {
+          "@timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.rule.rule_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.rule.name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.risk_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "kibana.alert.workflow_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.workflow_tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PartData": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RuleContextData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "RuleContextData": {
+        "description": "The explicit detailed rule projection.",
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risk_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exceptions_list": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/ExceptionReferenceData"
+            }
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LastExecutionData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "rule_id",
+          "execution"
+        ]
+      },
+      "ExceptionReferenceData": {
+        "description": "A stable exception reference without its volatile saved-object id.",
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LastExecutionData": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "status_order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_truncated": {
+            "type": "boolean"
+          },
+          "metrics": {
+            "$ref": "#/$defs/ExecutionMetricsData"
+          }
+        },
+        "required": [
+          "status",
+          "date",
+          "message_truncated",
+          "metrics"
+        ]
+      },
+      "ExecutionMetricsData": {
+        "type": "object",
+        "properties": {
+          "total_search_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "total_indexing_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "total_enrichment_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "execution_gap_duration_s": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "ToolError": {
+        "description": "A caller-safe, classified tool error.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "http_status",
+          "code",
+          "message"
+        ]
+      },
+      "PartData2": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExceptionCoverageData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ExceptionCoverageData": {
+        "type": "object",
+        "properties": {
+          "referenced": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ListCoverageData"
+            }
+          }
+        },
+        "required": [
+          "referenced",
+          "truncated",
+          "lists"
+        ]
+      },
+      "ListCoverageData": {
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "type": "string"
+          },
+          "namespace_type": {
+            "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "list_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "list_id",
+          "namespace_type",
+          "status"
+        ]
+      },
+      "PartData3": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RelatedCasesData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "RelatedCasesData": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/RelatedCaseData"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "truncated",
+          "cases"
+        ]
+      },
+      "RelatedCaseData": {
+        "description": "One case that contains the alert; `case` is present only when `status` is `ok`.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "case": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CaseData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ]
+      },
+      "CaseData": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totalComment": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "tags"
+        ]
+      },
+      "PartData4": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ActivityData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ActivityData": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "by_status": {
+            "$ref": "#/$defs/StatusCountsData"
+          },
+          "recent": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/AlertData"
+            }
+          }
+        },
+        "required": [
+          "window",
+          "total",
+          "by_status"
+        ]
+      },
+      "StatusCountsData": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "acknowledged": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "closed": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "other": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "open",
+          "acknowledged",
+          "closed",
+          "other"
+        ]
+      },
+      "FindingCode": {
+        "type": "string",
+        "enum": [
+          "alert_not_open",
+          "rule_missing",
+          "rule_disabled",
+          "rule_last_execution_failed",
+          "exception_list_missing",
+          "has_related_case"
+        ]
+      },
+      "PageInfo": {
+        "description": "Paging metadata shared by list tools.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "returned": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "limit",
+          "returned",
+          "total",
+          "has_more",
+          "truncated"
+        ]
+      },
+      "ToolFailure": {
+        "description": "A failed tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "error": {
+            "$ref": "#/$defs/ToolError"
+          }
+        },
+        "required": [
+          "target",
+          "error"
+        ]
+      }
+    },
+    "anyOf": [
+      {
+        "$ref": "#/$defs/ToolSuccess"
+      },
+      {
+        "$ref": "#/$defs/ToolFailure"
+      }
+    ],
+    "type": "object"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  }
+}"##
+        }
+        "detection_coverage" => {
+            r##"{
+  "name": "detection_coverage",
+  "description": "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Read-only.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "GroupBy": {
+        "description": "Row grouping.",
+        "type": "string",
+        "enum": [
+          "technique",
+          "tactic",
+          "index_pattern",
+          "integration"
+        ]
+      },
+      "SourceInput": {
+        "description": "Rule source, in the rules_list vocabulary.",
+        "type": "string",
+        "enum": [
+          "custom",
+          "customized",
+          "prebuilt",
+          "all"
+        ]
+      }
+    },
+    "type": "object",
+    "properties": {
+      "group_by": {
+        "description": "What each row counts rules by: technique, tactic, index_pattern, or integration.",
+        "$ref": "#/$defs/GroupBy",
+        "default": "technique"
+      },
+      "enabled": {
+        "description": "Restrict the corpus to enabled or disabled rules. Absent reads both.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "source": {
+        "$ref": "#/$defs/SourceInput",
+        "default": "all"
+      },
+      "tag": {
+        "description": "Exact rule-tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "maxLength": 1024
+      },
+      "limit": {
+        "type": "integer",
+        "format": "uint",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 50
+      }
+    },
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "ToolSuccess": {
+        "description": "A successful tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "data": {
+            "$ref": "#/$defs/CoverageData"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PageInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "data",
+          "page"
+        ]
+      },
+      "TargetContext": {
+        "description": "Target identity that may safely appear in MCP results.",
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "host",
+          "space"
+        ]
+      },
+      "CoverageData": {
+        "type": "object",
+        "properties": {
+          "group_by": {
+            "$ref": "#/$defs/GroupBy"
+          },
+          "summary": {
+            "$ref": "#/$defs/CoverageSummaryData"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CoverageRowData"
+            }
+          }
+        },
+        "required": [
+          "group_by",
+          "summary",
+          "rows"
+        ]
+      },
+      "GroupBy": {
+        "description": "Row grouping.",
+        "type": "string",
+        "enum": [
+          "technique",
+          "tactic",
+          "index_pattern",
+          "integration"
+        ]
+      },
+      "CoverageSummaryData": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "enabled_rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "disabled_rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "unmapped_rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "groups": {
+            "description": "Groups before the row limit.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "rules",
+          "enabled_rules",
+          "disabled_rules",
+          "unmapped_rules",
+          "groups"
+        ]
+      },
+      "CoverageRowData": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tactics": {
+            "description": "Present only when rows group by technique.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled_rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "disabled_rules": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "key",
+          "enabled_rules",
+          "disabled_rules"
+        ]
+      },
+      "PageInfo": {
+        "description": "Paging metadata shared by list tools.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "returned": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "limit",
+          "returned",
+          "total",
+          "has_more",
+          "truncated"
+        ]
+      },
+      "ToolFailure": {
+        "description": "A failed tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "error": {
+            "$ref": "#/$defs/ToolError"
+          }
+        },
+        "required": [
+          "target",
+          "error"
+        ]
+      },
+      "ToolError": {
+        "description": "A caller-safe, classified tool error.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "http_status",
+          "code",
+          "message"
+        ]
+      }
+    },
+    "anyOf": [
+      {
+        "$ref": "#/$defs/ToolSuccess"
+      },
+      {
+        "$ref": "#/$defs/ToolFailure"
+      }
+    ],
+    "type": "object"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  }
+}"##
+        }
+        "rule_health" => {
+            r##"{
+  "name": "rule_health",
+  "description": "Health of one Elastic Security rule: its definition, last execution status and message, alert counts by workflow status with the five newest alerts in a time window, and its exception lists with item counts. Read-only.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": [
+      "selector"
+    ],
+    "additionalProperties": false,
+    "type": "object",
+    "properties": {
+      "selector": {
+        "description": "Exact rule_id or display name. Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      },
+      "since": {
+        "description": "Alert window ending now: one to four ASCII digits not starting with 0, followed by s, m, h, d, or w, such as 24h. Timestamps and date math are rejected.",
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 5,
+        "default": "24h"
+      }
+    }
+  },
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "ToolSuccess": {
+        "description": "A successful tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "data": {
+            "$ref": "#/$defs/RuleHealthData"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PageInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "data",
+          "page"
+        ]
+      },
+      "TargetContext": {
+        "description": "Target identity that may safely appear in MCP results.",
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "host",
+          "space"
+        ]
+      },
+      "RuleHealthData": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/RuleContextData"
+          },
+          "alerts": {
+            "$ref": "#/$defs/PartData"
+          },
+          "exceptions": {
+            "$ref": "#/$defs/PartData2"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/FindingCode"
+            }
+          }
+        },
+        "required": [
+          "rule",
+          "alerts",
+          "exceptions",
+          "partial",
+          "findings"
+        ]
+      },
+      "RuleContextData": {
+        "description": "The explicit detailed rule projection.",
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risk_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exceptions_list": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/ExceptionReferenceData"
+            }
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LastExecutionData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "rule_id",
+          "execution"
+        ]
+      },
+      "ExceptionReferenceData": {
+        "description": "A stable exception reference without its volatile saved-object id.",
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LastExecutionData": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "status_order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_truncated": {
+            "type": "boolean"
+          },
+          "metrics": {
+            "$ref": "#/$defs/ExecutionMetricsData"
+          }
+        },
+        "required": [
+          "status",
+          "date",
+          "message_truncated",
+          "metrics"
+        ]
+      },
+      "ExecutionMetricsData": {
+        "type": "object",
+        "properties": {
+          "total_search_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "total_indexing_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "total_enrichment_duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "execution_gap_duration_s": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "PartData": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HealthActivityData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "HealthActivityData": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "by_status": {
+            "$ref": "#/$defs/StatusCountsData"
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AlertData"
+            }
+          }
+        },
+        "required": [
+          "window",
+          "total",
+          "by_status",
+          "recent"
+        ]
+      },
+      "StatusCountsData": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "acknowledged": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "closed": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "other": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "open",
+          "acknowledged",
+          "closed",
+          "other"
+        ]
+      },
+      "AlertData": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/$defs/AlertSourceData"
+          }
+        },
+        "required": [
+          "id",
+          "source"
+        ]
+      },
+      "AlertSourceData": {
+        "type": "object",
+        "properties": {
+          "@timestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.rule.rule_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.rule.name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.severity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.risk_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "kibana.alert.workflow_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kibana.alert.workflow_tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ToolError": {
+        "description": "A caller-safe, classified tool error.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "http_status",
+          "code",
+          "message"
+        ]
+      },
+      "PartData2": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExceptionCoverageData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ExceptionCoverageData": {
+        "type": "object",
+        "properties": {
+          "referenced": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ListCoverageData"
+            }
+          }
+        },
+        "required": [
+          "referenced",
+          "truncated",
+          "lists"
+        ]
+      },
+      "ListCoverageData": {
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "type": "string"
+          },
+          "namespace_type": {
+            "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "list_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "list_id",
+          "namespace_type",
+          "status"
+        ]
+      },
+      "FindingCode": {
+        "description": "Static finding codes, in the order the report lists them.",
+        "type": "string",
+        "enum": [
+          "rule_disabled",
+          "never_executed",
+          "last_execution_failed",
+          "last_execution_partial_failure",
+          "execution_gap",
+          "no_alerts_in_window",
+          "exception_list_missing"
+        ]
+      },
+      "PageInfo": {
+        "description": "Paging metadata shared by list tools.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "returned": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "limit",
+          "returned",
+          "total",
+          "has_more",
+          "truncated"
+        ]
+      },
+      "ToolFailure": {
+        "description": "A failed tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "error": {
+            "$ref": "#/$defs/ToolError"
+          }
+        },
+        "required": [
+          "target",
+          "error"
+        ]
+      }
+    },
+    "anyOf": [
+      {
+        "$ref": "#/$defs/ToolSuccess"
+      },
+      {
+        "$ref": "#/$defs/ToolFailure"
+      }
+    ],
+    "type": "object"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  }
+}"##
+        }
+        "rule_readiness" => {
+            r##"{
+  "name": "rule_readiness",
+  "description": "Data readiness of one Elastic Security rule: whether each index pattern resolves to indices, aliases, or data streams (counts only), whether its data view exists, and whether its related Fleet integration packages are installed and used by an integration policy. Read-only.",
+  "inputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": [
+      "selector"
+    ],
+    "type": "object",
+    "properties": {
+      "selector": {
+        "description": "Exact rule_id or display name. Must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "ToolSuccess": {
+        "description": "A successful tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "data": {
+            "$ref": "#/$defs/ReadinessData"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PageInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "target",
+          "data",
+          "page"
+        ]
+      },
+      "TargetContext": {
+        "description": "Target identity that may safely appear in MCP results.",
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "host",
+          "space"
+        ]
+      },
+      "ReadinessData": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "$ref": "#/$defs/RuleRefData"
+          },
+          "index_source": {
+            "$ref": "#/$defs/IndexSourceData"
+          },
+          "data_views": {
+            "$ref": "#/$defs/PartData"
+          },
+          "patterns": {
+            "$ref": "#/$defs/PartData2"
+          },
+          "integrations": {
+            "$ref": "#/$defs/PartData3"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/FindingData"
+            }
+          }
+        },
+        "required": [
+          "rule",
+          "index_source",
+          "data_views",
+          "patterns",
+          "integrations",
+          "partial",
+          "findings"
+        ]
+      },
+      "RuleRefData": {
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "rule_id"
+        ]
+      },
+      "IndexSourceData": {
+        "type": "string",
+        "enum": [
+          "index",
+          "data_view",
+          "none"
+        ]
+      },
+      "PartData": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DataViewsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "DataViewsData": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "rule_data_view": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RuleDataViewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "count"
+        ]
+      },
+      "RuleDataViewData": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "found": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "found"
+        ]
+      },
+      "ToolError": {
+        "description": "A caller-safe, classified tool error.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "http_status",
+          "code",
+          "message"
+        ]
+      },
+      "PartData2": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PatternsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "PatternsData": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PatternRowData"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "truncated",
+          "rows"
+        ]
+      },
+      "PatternRowData": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/$defs/PatternStateData"
+          },
+          "indices": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "aliases": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "data_streams": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_view_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "state"
+        ]
+      },
+      "PatternStateData": {
+        "type": "string",
+        "enum": [
+          "matches",
+          "no_match",
+          "exclusion",
+          "unresolved"
+        ]
+      },
+      "PartData3": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/IntegrationsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skip_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "IntegrationsData": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PackageRowData"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "truncated",
+          "rows"
+        ]
+      },
+      "PackageRowData": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/RowStatusData"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ToolError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "install_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "installed_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policies": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "package",
+          "status"
+        ]
+      },
+      "RowStatusData": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "unavailable"
+        ]
+      },
+      "FindingData": {
+        "type": "string",
+        "enum": [
+          "rule_disabled",
+          "no_index_source",
+          "data_view_missing",
+          "no_pattern_matches",
+          "pattern_unresolved",
+          "integration_not_installed",
+          "integration_without_policy",
+          "patterns_truncated",
+          "integrations_truncated"
+        ]
+      },
+      "PageInfo": {
+        "description": "Paging metadata shared by list tools.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "returned": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "limit",
+          "returned",
+          "total",
+          "has_more",
+          "truncated"
+        ]
+      },
+      "ToolFailure": {
+        "description": "A failed tool envelope.",
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/TargetContext"
+          },
+          "error": {
+            "$ref": "#/$defs/ToolError"
+          }
+        },
+        "required": [
+          "target",
+          "error"
+        ]
+      }
+    },
+    "anyOf": [
+      {
+        "$ref": "#/$defs/ToolSuccess"
+      },
+      {
+        "$ref": "#/$defs/ToolFailure"
+      }
+    ],
+    "type": "object"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  }
+}"##
+        }
+        _ => return None,
+    };
+    Some(serde_json::from_str(literal).expect("literal task definition is JSON"))
+}
+
+fn rules_list_input_literal() -> Value {
+    serde_json::from_str(r##"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "RuleSourceInput": {
+      "description": "The closed source vocabulary accepted by the existing API.",
+      "type": "string",
+      "enum": [
+        "custom",
+        "customized",
+        "prebuilt",
+        "all"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 50
+    },
+    "enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "rule_type": {
+      "description": "Exact rule-type filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "severity": {
+      "description": "Exact rule-severity filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "tag": {
+      "description": "Exact rule-tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "search": {
+      "description": "Rule display-name substring or exact-tag search. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "technique": {
+      "description": "MITRE ATT&CK technique or subtechnique id. When supplied, it must be T followed by four ASCII digits, such as T1059, or T, four ASCII digits, a period, and three ASCII digits, such as T1059.001.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "tactic": {
+      "description": "MITRE ATT&CK tactic id. When supplied, it must be TA followed by four ASCII digits, such as TA0002.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "source": {
+      "$ref": "#/$defs/RuleSourceInput",
+      "default": "all"
+    }
+  }
+}"##)
+        .expect("literal rules list input is JSON")
+}
+
 fn catalog_schemas(reply: &Value) -> BTreeMap<String, Value> {
     reply["result"]["tools"]
         .as_array()
@@ -355,6 +3023,12 @@ fn catalog_schemas(reply: &Value) -> BTreeMap<String, Value> {
         .iter()
         .map(|tool| {
             let name = tool["name"].as_str().expect("tool has a string name");
+            if let Some(expected) = task_tool_literal(name) {
+                assert_eq!(*tool, expected, "{name} literal definition");
+            }
+            if name == "rules_list" {
+                assert_eq!(tool["inputSchema"], rules_list_input_literal());
+            }
             let input = tool.get("inputSchema").expect("tool has an input schema");
             let output = tool.get("outputSchema").expect("tool has an output schema");
             assert!(input.is_object(), "{name} input schema is an object");
@@ -429,6 +3103,15 @@ fn exercise_catalog_process_mode(
         assert_eq!(listed["result"]["resultType"], "complete");
     }
     assert_eq!(tool_names(&listed), expected_names, "{bin} {flow:?}");
+    assert_eq!(expected_names.len(), if query_enabled { 26 } else { 24 });
+    let frame_bytes = serde_json::to_vec(&listed)
+        .expect("catalog frame serializes")
+        .len();
+    assert!(
+        frame_bytes <= 1_048_576,
+        "{bin} {flow:?}: {frame_bytes} bytes"
+    );
+    eprintln!("catalog query={query_enabled} {bin} {flow:?}: {frame_bytes} bytes");
     let schemas = catalog_schemas(&listed);
     id += 1;
 
@@ -460,6 +3143,16 @@ fn exercise_catalog_process_mode(
         }
     }
 
+    for method in ["resources/list", "prompts/list"] {
+        write_json(&mut child, flow.request(id, method, json!({})));
+        let reply = read_json_line(&mut stdout);
+        assert_eq!(reply["id"], id);
+        assert_eq!(
+            reply["error"],
+            json!({"code": -32601, "message": "Unknown MCP tool"})
+        );
+        id += 1;
+    }
     let output = close_and_collect(child, stdout);
     assert!(output.status.success(), "{bin} {flow:?}: {output:?}");
     assert!(output.stdout.is_empty(), "{bin} {flow:?}: {output:?}");
