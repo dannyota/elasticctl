@@ -3063,7 +3063,7 @@ fn assert_local_invalid_argument(reply: &Value, context: &str) {
 }
 
 fn expected_resource_entries(templates: bool) -> Value {
-    let coverage = "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Read-only.";
+    let coverage = "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Reads at most 4,000 rules; near that size a call can need a longer server --timeout. Read-only.";
     if templates {
         json!([
             {"uriTemplate":"elasticctl://stack/alerts/{alert_id}","name":"alert","title":"Alert by id","description":"Inspect one alert by its exact document id.","mimeType":"application/json"},
