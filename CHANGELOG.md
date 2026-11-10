@@ -16,6 +16,12 @@
   sends it or plans an update only because the server holds it. `rules get`,
   MCP `rules_get`, and `rules export` omit it too.
 
+### Fixed
+
+- `elasticctl_core::Transport` refuses a request path that does not start with
+  `/` before sending anything, so a path such as `@other.example/x` cannot
+  carry the credential to another host.
+
 ## 0.7.5 — 2026-11-10
 
 ### Fixed

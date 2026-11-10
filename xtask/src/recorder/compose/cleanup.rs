@@ -6,9 +6,11 @@
 //! reports the UUID this run recorded; one without a recorded UUID is never
 //! deleted. The flag clears only after a later read finds the object gone;
 //! for a create whose answer was lost, only after it has stayed gone for
-//! the whole settle window. Alerts are closed by explicit id until a
-//! complete search finds none open. Failure text is built only from static
-//! context and an error's class and status.
+//! the whole settle window. After a marker document write whose answer was
+//! lost, the index name is watched for that window once this run's index is
+//! gone, and an index that appears is never deleted. Alerts are closed by
+//! explicit id until a complete search finds none open. Failure text is
+//! built only from static context and an error's class and status.
 
 use crate::diagnostics::safe_recording_error_summary;
 use crate::recorder::cases::find_marker_cases;
@@ -64,6 +66,12 @@ impl Failure {
     fn unrecorded(object: &'static str) -> Self {
         Self(format!(
             "{object} is present without a UUID this run recorded and needs manual recovery"
+        ))
+    }
+
+    fn recreated(object: &'static str) -> Self {
+        Self(format!(
+            "{object} appeared again after this run deleted it and needs manual recovery"
         ))
     }
 
@@ -306,6 +314,23 @@ async fn reconcile_index(
     }
 }
 
+/// Watch the marker index name for the settle window once this run's index
+/// is gone. A marker document write whose answer was lost can still be
+/// applied and create an index under the name. Such an index is not this
+/// run's, so it is never deleted and is left for manual recovery.
+async fn watch_recreation(t: &Transport, timing: &Timing) -> Result<(), Failure> {
+    let mut watch = Watch::new(timing.settle_window);
+    loop {
+        if read_index_uuid(t, "watching").await?.is_some() {
+            return Err(Failure::recreated(INDEX));
+        }
+        if watch.observe(Instant::now(), false) {
+            return Ok(());
+        }
+        tokio::time::sleep(timing.settle_interval).await;
+    }
+}
+
 /// Close the alerts of this run's rule by explicit id until a complete
 /// search has found none open for the whole settle window. The ids come
 /// from a read scoped to the rule's per-creation id, so no alert of an
@@ -470,6 +495,12 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
             Err(failure) => failures.push(failure),
         }
     }
+    if unresolved.index_recreation && !owned.alert_index {
+        match watch_recreation(t, timing).await {
+            Ok(()) => unresolved.index_recreation = false,
+            Err(failure) => failures.push(failure),
+        }
+    }
     failures
 }
 
@@ -502,7 +533,7 @@ pub(super) fn still_unresolved(compose: &ComposeSession<'_>) -> Vec<&'static str
         (unresolved.compose_item, COMPOSE_ITEM),
         (unresolved.item, ITEM),
         (unresolved.list, LIST),
-        (unresolved.alert_index, INDEX),
+        (unresolved.alert_index || unresolved.index_recreation, INDEX),
     ]
     .into_iter()
     .filter_map(|(lost, object)| lost.then_some(object))
@@ -742,6 +773,48 @@ mod tests {
         assert_eq!(
             requests(&server).await,
             [format!("GET {}", index_uuid_path())]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_index_that_appears_after_a_recreatable_index_is_deleted_is_never_deleted() {
+        let server = MockServer::start().await;
+        let uuid =
+            |uuid: &str| ok(json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": uuid}}}}));
+        for answer in [uuid("uuid-1"), not_found(), uuid("uuid-auto")] {
+            Mock::given(method("GET"))
+                .and(path(index_uuid_path()))
+                .respond_with(answer)
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("DELETE"))
+            .and(path(marker_index_path()))
+            .respond_with(ok(json!({"acknowledged": true})))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        compose.session.ownership.alert_index = true;
+        compose.ids.index_uuid = Some("uuid-1".into());
+        compose.unresolved.index_recreation = true;
+
+        let failures = cleanup(&mut compose, &Timing::INSTANT).await;
+
+        assert_eq!(failures, [Failure::recreated(INDEX)]);
+        assert!(!compose.session.ownership.alert_index);
+        assert!(compose.unresolved.index_recreation);
+        assert_eq!(still_unresolved(&compose), [INDEX]);
+        let read = format!("GET {}", index_uuid_path());
+        assert_eq!(
+            requests(&server).await,
+            [
+                read.clone(),
+                format!("DELETE {}", marker_index_path()),
+                read.clone(),
+                read
+            ]
         );
     }
 

@@ -2,8 +2,9 @@
 //!
 //! Recorded exchanges are held until the step ends, then scrubbed with the
 //! final placeholder map, so an id learned late is still replaced in every
-//! fixture. Raw bodies, timings, and measurements that must stay out of the
-//! public fixtures go to an owner-only file under the ignored `target/`.
+//! fixture. Text the server wrote in its own words is replaced there too.
+//! Raw bodies, timings, and measurements that must stay out of the public
+//! fixtures go to an owner-only file under the ignored `target/`.
 
 use crate::fixtures::{RecordedFixture, error_fixture, exchange_fixture};
 use crate::recorder::compose::requests::Planned;
@@ -23,6 +24,62 @@ use std::path::{Path, PathBuf};
 /// The alert field whose presence is a private measurement. It never
 /// reaches a fixture.
 pub(super) const CASE_IDS_FIELD: &str = "kibana.alert.case_ids";
+
+/// Stands in for text the server wrote in its own words: an execution
+/// message, an alert reason, or an error reason. Such text can quote a
+/// username, an email, an API key id, a host, or an index name, which a
+/// scrub by key cannot see.
+pub(super) const SERVER_TEXT_PLACEHOLDER: &str = "elasticctl-fixture-server-text";
+
+/// Keys, matched on their last dot-separated segment, whose strings are
+/// server prose wherever they appear.
+const PROSE_KEYS: [&str; 2] = ["message", "reason"];
+
+/// `execution_summary` keys whose strings are structured and kept: the
+/// decoders read `status`, and `date` holds the fixed placeholder.
+const EXECUTION_KEPT_KEYS: [&str; 2] = ["status", "date"];
+
+/// Replace every string at any depth with the placeholder, except under the
+/// keys in `kept`. Keys, types, numbers, and order stay.
+fn replace_strings(value: &mut Value, kept: &[&str]) {
+    match value {
+        Value::String(text) => *text = SERVER_TEXT_PLACEHOLDER.to_string(),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| replace_strings(item, kept)),
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if !kept.contains(&key.as_str()) {
+                    replace_strings(value, kept);
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// Replace server prose in a response: every string in `execution_summary`
+/// except its status and date, and every string under a `message` or
+/// `reason` key, such as `kibana.alert.reason`. The originals stay in the
+/// private log.
+fn replace_server_text(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                let leaf = key.rsplit('.').next().unwrap_or(key);
+                if key == "execution_summary" {
+                    replace_strings(value, &EXECUTION_KEPT_KEYS);
+                } else if PROSE_KEYS.contains(&leaf) {
+                    replace_strings(value, &[]);
+                } else {
+                    replace_server_text(value);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(replace_server_text),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
 
 /// Stands in for the alerts backing index, which is not a marker name.
 pub(super) const ALERT_INDEX_PLACEHOLDER: &str = "elasticctl-fixture-alert-index";
@@ -76,9 +133,10 @@ fn zero_numbers(value: &mut Value) {
 }
 
 /// Normalize one rule body. `execution_summary` stays: its keys, status,
-/// message, and metric types are the evidence. Its date becomes the fixed
+/// and metric types are the evidence. Its date becomes the fixed
 /// placeholder and every metric becomes zero of the same number kind; the
-/// real values go to the private log.
+/// real values go to the private log. Its message is server prose, which
+/// `Exchanges::into_fixtures` replaces.
 pub(super) fn normalize_rule(rule: &mut Value) {
     let Some(map) = rule.as_object_mut() else {
         return;
@@ -189,7 +247,9 @@ impl Exchanges {
         });
     }
 
-    /// Scrub every held exchange with the final placeholder map.
+    /// Scrub every held exchange with the final placeholder map and replace
+    /// its server prose. An error keeps its kind and status; its message is
+    /// server prose too.
     pub(super) fn into_fixtures(
         self,
         flavor: &str,
@@ -204,14 +264,11 @@ impl Exchanges {
                 match pending.outcome {
                     Outcome::Response(mut response) => {
                         scrub_placeholder_values(&mut response, placeholders);
+                        replace_server_text(&mut response);
                         exchange_fixture(pending.name, flavor, version, request, response)
                     }
                     Outcome::Error(mut error) => {
-                        for (real, placeholder) in placeholders {
-                            if !real.is_empty() {
-                                error.message = error.message.replace(real, placeholder);
-                            }
-                        }
+                        error.message = SERVER_TEXT_PLACEHOLDER.to_string();
                         let mut fixture = error_fixture(pending.name, flavor, version, error);
                         let mut request = request;
                         crate::scrub::scrub(&mut request);
@@ -302,7 +359,9 @@ impl PrivateLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorder::compose::requests::{rule_get, signals_activity};
+    use crate::recorder::compose::requests::{
+        resolve_index, rule_get, rules_find_sorted_page, signals_activity,
+    };
 
     fn executed_rule() -> Value {
         json!({
@@ -345,7 +404,6 @@ mod tests {
         assert_eq!(last["date"], ALERT_FIXTURE_TIMESTAMP);
         assert_eq!(last["status"], "succeeded");
         assert_eq!(last["status_order"], 0);
-        assert_eq!(last["message"], "Rule execution completed successfully");
         assert!(last["metrics"]["total_search_duration_ms"].is_u64());
         assert_eq!(last["metrics"]["total_search_duration_ms"], 0);
         assert!(last["metrics"]["execution_gap_duration_s"].is_f64());
@@ -470,12 +528,100 @@ mod tests {
         assert_eq!(fixtures[1].document["error"]["http_status"], 404);
         assert_eq!(
             fixtures[1].document["error"]["message"],
-            "no such index [elasticctl-fixture-alert-1]"
+            SERVER_TEXT_PLACEHOLDER
         );
         assert_eq!(
             fixtures[1].document["request"]["path"],
             "/api/detection_engine/signals/search"
         );
+    }
+
+    /// Identity that server prose can quote: a user, an email, an API key
+    /// id, a host, and an index name.
+    const IDENTITY: [&str; 5] = [
+        "jdoe-operator",
+        "jdoe@example.com",
+        "kq3Rb-identity-key",
+        "kb.private.example.internal",
+        "prod-secrets-000001",
+    ];
+
+    fn identity_prose() -> String {
+        format!(
+            "action [indices:data/read/search] is unauthorized for API key id [{}] of user [{}] ({}) on {} for index [{}]",
+            IDENTITY[2], IDENTITY[0], IDENTITY[1], IDENTITY[3], IDENTITY[4]
+        )
+    }
+
+    #[test]
+    fn server_prose_that_quotes_identity_never_reaches_a_fixture() {
+        let prose = identity_prose();
+        let mut rule = executed_rule();
+        let last = &mut rule["execution_summary"]["last_execution"];
+        last["status"] = json!("failed");
+        last["message"] = json!(prose);
+        last["warnings"] = json!([{"message": prose, "code": 1}]);
+        normalize_rule(&mut rule);
+        let mut alerts = json!({"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [{
+            "_id": "a1", "_index": ".internal.alerts-security.alerts-default-000001",
+            "_source": {"kibana.alert.reason": prose, "kibana.alert.workflow_status": "open",
+                "kibana.alert.original_event": {"reason": [prose]}}
+        }]}});
+        normalize_alert_search(&mut alerts);
+        let mut exchanges = Exchanges::default();
+        exchanges.response(
+            "rule_get_failed_execution",
+            &rule_get("elasticctl-sample-compose-missing-index"),
+            rule.clone(),
+        );
+        exchanges.response(
+            "rules_find_sorted_page",
+            &rules_find_sorted_page(),
+            json!({"page": 1, "perPage": 500, "total": 1, "data": [rule],
+                "warnings": [{"message": prose}], "error": {"reason": prose}}),
+        );
+        exchanges.response("signals_search_rule_activity", &signals_activity(), alerts);
+        exchanges.error(
+            "resolve_index_not_found",
+            &resolve_index("elasticctl-sample-compose-missing"),
+            elasticctl_core::Error::with_status(elasticctl_core::ErrorKind::NotFound, 404, prose),
+        );
+
+        let fixtures = exchanges.into_fixtures("serverless", "9.7.0", &BTreeMap::new());
+
+        let public =
+            serde_json::to_string(&fixtures.iter().map(|f| &f.document).collect::<Vec<_>>())
+                .expect("encode");
+        for identity in IDENTITY {
+            assert!(!public.contains(identity), "a fixture holds {identity}");
+        }
+        let last = &fixtures[0].document["response"]["execution_summary"]["last_execution"];
+        assert_eq!(last["message"], SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(last["warnings"][0]["message"], SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(last["warnings"][0]["code"], 1);
+        assert_eq!(last["status"], "failed");
+        assert_eq!(last["status_order"], 0);
+        assert_eq!(last["date"], ALERT_FIXTURE_TIMESTAMP);
+        assert!(last["metrics"]["execution_gap_duration_s"].is_f64());
+        let page = &fixtures[1].document["response"];
+        assert_eq!(
+            page["data"][0]["execution_summary"]["last_execution"]["message"],
+            SERVER_TEXT_PLACEHOLDER
+        );
+        assert_eq!(page["warnings"][0]["message"], SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(page["error"]["reason"], SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(page["total"], 1);
+        let source = &fixtures[2].document["response"]["hits"]["hits"][0]["_source"];
+        assert_eq!(source["kibana.alert.reason"], SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(
+            source["kibana.alert.original_event"]["reason"],
+            json!([SERVER_TEXT_PLACEHOLDER])
+        );
+        assert_eq!(source["kibana.alert.workflow_status"], "open");
+        let error = &fixtures[3].document["error"];
+        assert_eq!(error["kind"], "not_found");
+        assert_eq!(error["http_status"], 404);
+        assert_eq!(error["message"], SERVER_TEXT_PLACEHOLDER);
     }
 
     #[test]

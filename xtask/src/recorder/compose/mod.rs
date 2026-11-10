@@ -453,6 +453,17 @@ mod fake_stack {
     pub(super) const SESSION_RULE_UUID: &str = "so-elasticctl-sample-alert-probe";
     /// The UUID of a marker index another run created.
     pub(super) const FOREIGN_INDEX_UUID: &str = "uuid-foreign";
+    /// What a server can write in its own words: an authorization failure
+    /// that quotes a user, an email, an API key id, a host, and an index.
+    pub(super) const IDENTITY_PROSE: &str = "action [indices:data/read/search] is unauthorized for API key id [kq3Rb-identity-key] of user [jdoe-operator] (jdoe@example.com) on kb.private.example.internal for index [prod-secrets-000001]";
+    /// Each identity the prose above quotes.
+    pub(super) const IDENTITY_TOKENS: [&str; 5] = [
+        "kq3Rb-identity-key",
+        "jdoe-operator",
+        "jdoe@example.com",
+        "kb.private.example.internal",
+        "prod-secrets-000001",
+    ];
 
     #[derive(Default)]
     pub(super) struct State {
@@ -467,6 +478,9 @@ mod fake_stack {
         /// Another run's marker index, with a marker document 1, replaces
         /// this run's index just before cleanup reaches it.
         pub(super) index_replaced_before_cleanup: bool,
+        /// The request line after whose answer another run's marker index
+        /// replaces this run's.
+        pub(super) index_replaced_after: Option<String>,
         pub(super) list: Option<Value>,
         pub(super) items: BTreeMap<String, Value>,
         pub(super) rules: BTreeMap<String, Value>,
@@ -486,7 +500,8 @@ mod fake_stack {
         /// A create label answered 503 after the create applied.
         pub(super) unavailable_after_create: Option<String>,
         /// A create label answered 503 before it applies. The object lands
-        /// right after the next read of its identity.
+        /// right after the next read of its identity; a marker document
+        /// lands once the index is gone, and creates it again.
         pub(super) late_create: Option<String>,
         /// A create label answered 503 that never lands.
         pub(super) lost_create: Option<String>,
@@ -588,10 +603,7 @@ mod fake_stack {
             let (status, message) = if rule_id == ALERT_RULE_ID {
                 ("succeeded", "Rule execution completed successfully")
             } else {
-                (
-                    "partial failure",
-                    "no index matching elasticctl-sample-compose-missing",
-                )
+                ("partial failure", IDENTITY_PROSE)
             };
             rule["execution_summary"] = json!({"last_execution": {
                 "date": "2026-11-10T01:03:00.000Z", "status": status, "status_order": 20,
@@ -611,6 +623,7 @@ mod fake_stack {
                 "kibana.alert.rule.rule_id": ALERT_RULE_ID,
                 "kibana.alert.rule.name": COMPOSE_RULE_NAME,
                 "kibana.alert.workflow_status": "open",
+                "kibana.alert.reason": IDENTITY_PROSE,
                 "kibana.alert.rule.parameters": {"exceptions_list": [{"id": list_so}]},
                 "kibana.alert.url": "https://private.example.internal/app/zz-alert-1"
             }
@@ -944,9 +957,17 @@ mod fake_stack {
         if is(&created, &state.lost_create) {
             return unavailable();
         }
+        let read = read_label(&path, request);
         let landing = method == "GET"
-            && state.pending.as_ref().map(|(label, _)| label)
-                == read_label(&path, request).as_ref();
+            && match state.pending.as_ref() {
+                // A delayed document write lands once the index is gone, and
+                // creates it again as automatic index creation does.
+                Some((label, _)) if label.starts_with("doc:") => {
+                    read.as_deref() == Some("index") && state.index_uuid.is_none()
+                }
+                Some((label, _)) => Some(label) == read.as_ref(),
+                None => false,
+            };
         if is(&deleting, &state.sticky_delete) {
             return json_response(200, json!({"acknowledged": true}));
         }
@@ -957,6 +978,13 @@ mod fake_stack {
             );
         }
         let mut response = route(state, &method, &path, &body, request);
+        if state.index_replaced_after.is_some()
+            && state.index_replaced_after.as_ref() == state.log.last()
+        {
+            state.index_replaced_after = None;
+            state.index_uuid = Some("uuid-other-run".into());
+            state.index = BTreeMap::from([("1".to_string(), foreign_document())]);
+        }
         if state.index_replaced_before_cleanup && deleting.as_deref() == Some("list") {
             state.index_uuid = Some("uuid-other-run".into());
             state.index = BTreeMap::from([("1".to_string(), foreign_document())]);
@@ -1069,7 +1097,10 @@ mod fake_stack {
                     None => missing(),
                 }
             }
-            ("GET", p) if p == format!("/{ALERT_PROBE_INDEX}/_refresh") => {
+            ("POST", p) if p == format!("/{ALERT_PROBE_INDEX}/_refresh") => {
+                if state.index_uuid.is_none() {
+                    return index_not_found();
+                }
                 json_response(200, json!({"_shards": {}}))
             }
             ("GET", p) if p == format!("/{ALERT_PROBE_INDEX}") => {
@@ -1102,7 +1133,7 @@ mod fake_stack {
             | ("GET", "/elasticctl-sample-compose-missing") => json_response(
                 404,
                 json!({"error": {"type": "index_not_found_exception",
-                    "reason": "no such index [elasticctl-sample-compose-missing]"}, "status": 404}),
+                    "reason": IDENTITY_PROSE}, "status": 404}),
             ),
             ("GET", p) if p.starts_with("/api/fleet/epm/packages/") => {
                 let name = &p["/api/fleet/epm/packages/".len()..];
@@ -1349,7 +1380,10 @@ mod fake_stack {
 
 #[cfg(test)]
 mod tests {
-    use super::fake_stack::{ALERT_INDEX, SESSION_RULE_UUID, State, fake_stack, foreign_present};
+    use super::fake_stack::{
+        ALERT_INDEX, IDENTITY_PROSE, IDENTITY_TOKENS, SESSION_RULE_UUID, State, fake_stack,
+        foreign_present,
+    };
     use super::*;
     use crate::recorder::markers::{
         ALERT_PROBE_INDEX, ALERT_RULE_ID, CASE_ID_PLACEHOLDER, ITEM_ID, LIST_ID,
@@ -1403,6 +1437,7 @@ mod tests {
     fn unresolved_flags(unresolved: &Unresolved) -> BTreeMap<&'static str, bool> {
         BTreeMap::from([
             ("alert_index", unresolved.alert_index),
+            ("index_recreation", unresolved.index_recreation),
             ("list", unresolved.list),
             ("item", unresolved.item),
             ("compose_item", unresolved.compose_item),
@@ -1535,6 +1570,11 @@ mod tests {
 
         assert!(outcome.succeeded, "{:?}", outcome.lines);
         assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(
+            outcome.unresolved_before_cleanup.values().all(|lost| !lost),
+            "{:?}",
+            outcome.unresolved_before_cleanup
+        );
         let recording = outcome.written.expect("written");
         let mut names = fixture_names(&recording);
         names.sort();
@@ -1691,19 +1731,20 @@ mod tests {
         };
         let first_write = position(&format!("PUT /{ALERT_PROBE_INDEX}"));
         let settings = format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid");
-        let documents: Vec<String> = (1..=ALERT_DOCS)
-            .map(|seq| format!("POST /{ALERT_PROBE_INDEX}/_create/{seq}"))
-            .collect();
-        let mut index_writes = vec![
-            format!("PUT /{ALERT_PROBE_INDEX}"),
-            settings.clone(),
+        let mut index_writes = vec![format!("PUT /{ALERT_PROBE_INDEX}"), settings.clone()];
+        for seq in 1..=ALERT_DOCS {
+            index_writes.push(settings.clone());
+            index_writes.push(format!("POST /{ALERT_PROBE_INDEX}/_create/{seq}"));
+        }
+        index_writes.extend([
+            format!("GET /{ALERT_PROBE_INDEX}/_doc/1"),
             settings,
-        ];
-        index_writes.extend(documents);
+            format!("POST /{ALERT_PROBE_INDEX}/_refresh"),
+        ]);
         assert_eq!(
             state.log[first_write..first_write + index_writes.len()],
             index_writes,
-            "the index is created, its UUID read and read again, then written"
+            "the index is created and its UUID read, then read again before every write"
         );
         for preflight in [
             "GET /api/detection_engine/rules/_find?page=1&per_page=1&filter=",
@@ -2704,6 +2745,10 @@ mod tests {
             "the conflict released the index"
         );
         assert!(!outcome.unresolved_before_cleanup["alert_index"]);
+        assert!(
+            !outcome.unresolved_before_cleanup["index_recreation"],
+            "a conflict is a definite answer"
+        );
         assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
         assert!(released(&outcome.ownership_after_cleanup));
         assert!(!outcome.succeeded && outcome.written.is_none());
@@ -2762,6 +2807,197 @@ mod tests {
                 "the create was sent twice"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_replaced_index_stops_the_next_write_and_the_refresh() {
+        let index_line = |rest: &str| format!("{ALERT_PROBE_INDEX}{rest}");
+        for (trigger, written) in [
+            (format!("POST /{}", index_line("/_create/1")), 1),
+            (format!("POST /{}", index_line("/_create/3")), 3),
+            (format!("GET /{}", index_line("/_doc/1")), ALERT_DOCS),
+        ] {
+            let (server, state) =
+                fake_stack(|s| s.index_replaced_after = Some(trigger.clone())).await;
+            let t = mock_transport(&server);
+
+            let outcome = record_against(&t).await;
+
+            let error = outcome.step_error.expect("refused");
+            assert_eq!(
+                error.message,
+                "refusing to write: index elasticctl-sample-alert-events is not the one this run created",
+                "{trigger}"
+            );
+            assert!(outcome.ownership_before_cleanup["alert_index"], "{trigger}");
+            assert!(outcome.ownership_after_cleanup["alert_index"], "{trigger}");
+            assert_eq!(
+                outcome.failures,
+                [
+                    "refusing to delete index elasticctl-sample-alert-events: its marker fields or id do not match"
+                ],
+                "{trigger}"
+            );
+            assert!(!outcome.succeeded && outcome.written.is_none(), "{trigger}");
+            let state = state.lock().expect("state");
+            let writes: Vec<&String> = state
+                .log
+                .iter()
+                .filter(|line| line.starts_with(&format!("POST /{ALERT_PROBE_INDEX}/")))
+                .collect();
+            assert_eq!(writes.len(), written, "{trigger}: {writes:?}");
+            assert!(
+                writes.iter().all(|line| line.contains("/_create/")),
+                "{trigger}: the refresh was sent"
+            );
+            let at = state
+                .log
+                .iter()
+                .position(|line| *line == trigger)
+                .expect("sent");
+            assert_eq!(
+                state.log[at + 1],
+                format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"),
+                "{trigger}: the next request is not the UUID read"
+            );
+            assert_eq!(state.index_uuid.as_deref(), Some("uuid-other-run"));
+            assert!(foreign_present(&state, "doc:1"), "{trigger}");
+            assert!(
+                !state.log.contains(&format!("DELETE /{ALERT_PROBE_INDEX}")),
+                "{trigger}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_document_write_whose_answer_was_lost_is_watched_after_the_index_delete() {
+        let label = "doc:2";
+        let (server, state) = fake_stack(|s| s.lost_create = Some(label.into())).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_with(&t, short_settle(150)).await;
+
+        assert_eq!(
+            outcome.step_error.as_ref().expect("lost").http_status,
+            Some(503)
+        );
+        assert!(outcome.unresolved_before_cleanup["index_recreation"]);
+        assert!(!outcome.unresolved_before_cleanup["alert_index"]);
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        assert!(released(&outcome.ownership_after_cleanup));
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert!(
+            outcome.teardown_time >= Duration::from_millis(150),
+            "{:?}",
+            outcome.teardown_time
+        );
+        let state = state.lock().expect("state");
+        assert!(state.is_empty());
+        let delete = state
+            .log
+            .iter()
+            .position(|line| *line == format!("DELETE /{ALERT_PROBE_INDEX}"))
+            .expect("deleted");
+        let reads = state.log[delete..]
+            .iter()
+            .filter(|line| **line == format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"))
+            .count();
+        assert!(reads >= 3, "read {reads} times");
+        assert_eq!(
+            state.creates.iter().filter(|c| c.as_str() == label).count(),
+            1,
+            "the write was sent twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_index_recreated_by_a_late_document_write_is_never_deleted() {
+        let label = "doc:2";
+        let (server, state) = fake_stack(|s| s.late_create = Some(label.into())).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_with(&t, short_settle(100)).await;
+
+        assert!(outcome.unresolved_before_cleanup["index_recreation"]);
+        assert_eq!(
+            outcome.failures,
+            [
+                "index elasticctl-sample-alert-events appeared again after this run deleted it and needs manual recovery"
+            ]
+        );
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert!(
+            outcome.lines.iter().any(|line| line.starts_with(
+                "record-compose needs manual recovery: index elasticctl-sample-alert-events "
+            )),
+            "{:?}",
+            outcome.lines
+        );
+        assert_clean_lines(&outcome.lines);
+        let state = state.lock().expect("state");
+        assert_eq!(state.index_uuid.as_deref(), Some("uuid-auto"));
+        assert!(state.index.contains_key("2"), "the late write did not land");
+        assert_eq!(
+            state
+                .log
+                .iter()
+                .filter(|line| **line == format!("DELETE /{ALERT_PROBE_INDEX}"))
+                .count(),
+            1,
+            "the recreated index was deleted: {:?}",
+            state.log
+        );
+    }
+
+    #[tokio::test]
+    async fn server_prose_never_reaches_a_fixture_and_stays_in_the_private_log() {
+        let (server, _state) = fake_stack(|_| {}).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_against(&t).await;
+
+        let recording = outcome.written.expect("written");
+        let public = serde_json::to_string(
+            &recording
+                .fixtures
+                .iter()
+                .map(|f| &f.document)
+                .collect::<Vec<_>>(),
+        )
+        .expect("encode");
+        for token in IDENTITY_TOKENS {
+            assert!(!public.contains(token), "a fixture holds {token}");
+        }
+        let document = |name: &str| {
+            recording
+                .fixtures
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.document.clone())
+                .expect("fixture")
+        };
+        let last = &document("rule_get_failed_execution")["response"]["execution_summary"]["last_execution"];
+        assert_eq!(last["message"], evidence::SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(last["status"], "partial failure");
+        assert_eq!(last["status_order"], 20);
+        let not_found = &document("resolve_index_not_found")["error"];
+        assert_eq!(not_found["kind"], "not_found");
+        assert_eq!(not_found["http_status"], 404);
+        assert_eq!(not_found["message"], evidence::SERVER_TEXT_PLACEHOLDER);
+        assert_eq!(
+            document("signals_search_rule_activity")["response"]["hits"]["hits"][0]["_source"]["kibana.alert.reason"],
+            evidence::SERVER_TEXT_PLACEHOLDER
+        );
+
+        let responses = outcome.log.get("responses").expect("responses");
+        assert_eq!(
+            responses["rule_get_failed_execution"]["execution_summary"]["last_execution"]["message"],
+            IDENTITY_PROSE
+        );
+        assert_eq!(
+            outcome.log.get("errors").expect("errors")["resolve_index_not_found"]["message"],
+            IDENTITY_PROSE
+        );
     }
 
     #[test]

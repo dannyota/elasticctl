@@ -1028,7 +1028,7 @@ async fn absolute_es_once(
 ) -> elasticctl_core::Result<serde_json::Value> {
     match operation {
         "PUT" => t.put_absolute_es_once(path, body).await,
-        "POST" => t.post_absolute_es_once(path, body).await,
+        "POST" => t.post_absolute_es_once(path, Some(body)).await,
         "DELETE" => t.delete_absolute_es_once(path).await,
         _ => unreachable!("test case is a single-attempt Elasticsearch write"),
     }
@@ -1228,7 +1228,7 @@ async fn absolute_es_once_writes_do_not_reuse_idle_connections() {
 
     let first = t.put_absolute_es_once("/marker-index", &json!({})).await;
     let second = t
-        .post_absolute_es_once("/marker-index/_create/1", &json!({}))
+        .post_absolute_es_once("/marker-index/_create/1", Some(&json!({})))
         .await;
     assert_eq!(first.unwrap()["ok"], true);
     assert_eq!(second.unwrap()["ok"], true);
@@ -1241,6 +1241,134 @@ async fn absolute_es_once_writes_do_not_reuse_idle_connections() {
         observed[0], observed[1],
         "single-attempt writes must use a fresh connection"
     );
+}
+
+#[tokio::test]
+async fn a_single_attempt_elasticsearch_post_without_a_body_sends_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/marker-index/_refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"_shards": {}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let t = Transport::new(&absolute_es_profile_for(&server)).unwrap();
+
+    t.post_absolute_es_once("/marker-index/_refresh", None)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].body.is_empty(), "a body was sent");
+    assert!(!requests[0].headers.contains_key("content-type"));
+}
+
+/// One Kibana and one Elasticsearch method of each family, retrying and
+/// single-attempt, by name.
+const PATH_FAMILIES: [&str; 4] = ["kibana", "kibana_once", "es", "es_once"];
+
+async fn send_in_family(
+    t: &Transport,
+    family: &str,
+    path: &str,
+) -> elasticctl_core::Result<serde_json::Value> {
+    match family {
+        "kibana" => t.get(path).await,
+        "kibana_once" => t.post_once(path, None).await,
+        "es" => t.get_absolute_es(path).await,
+        "es_once" => t.post_absolute_es_once(path, None).await,
+        _ => unreachable!("test case names a request family"),
+    }
+}
+
+/// A Kibana profile in the default space, or an Elasticsearch profile whose
+/// Kibana host is unreachable, both aimed at `server`.
+fn family_profile(family: &str, server: &MockServer) -> Profile {
+    if family.starts_with("es") {
+        absolute_es_profile_for(server)
+    } else {
+        profile_for(server)
+    }
+}
+
+#[tokio::test]
+async fn a_path_without_a_leading_slash_is_refused_before_any_request() {
+    let attacker = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&attacker)
+        .await;
+    let to_attacker = format!("@{}/x", attacker.address());
+    for family in PATH_FAMILIES {
+        for request_path in [
+            "@attacker.example/x",
+            "attacker.example/x",
+            "",
+            to_attacker.as_str(),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .mount(&server)
+                .await;
+            let t = Transport::new(&family_profile(family, &server)).unwrap();
+
+            let error = send_in_family(&t, family, request_path)
+                .await
+                .expect_err("a path that does not start with / must be refused");
+
+            assert_eq!(error.kind, ErrorKind::Error, "{family} {request_path:?}");
+            assert_eq!(
+                error.message, "request path must start with /",
+                "{family} {request_path:?}"
+            );
+            assert_eq!(error.http_status, None, "{family} {request_path:?}");
+            assert!(
+                server.received_requests().await.unwrap().is_empty(),
+                "{family} {request_path:?}"
+            );
+        }
+    }
+    assert!(
+        attacker.received_requests().await.unwrap().is_empty(),
+        "a credential reached another authority"
+    );
+}
+
+#[tokio::test]
+async fn a_double_slash_path_still_targets_the_configured_host() {
+    for family in PATH_FAMILIES {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .mount(&server)
+            .await;
+        let t = Transport::new(&family_profile(family, &server)).unwrap();
+
+        let body = send_in_family(&t, family, "//double").await.unwrap();
+
+        assert_eq!(body["ok"], true, "{family}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "{family}");
+        assert_eq!(requests[0].url.path(), "//double", "{family}");
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("host")
+                .map(|host| host.to_str().unwrap()),
+            Some(server.address().to_string().as_str()),
+            "{family}"
+        );
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("authorization")
+                .map(|value| value.to_str().unwrap()),
+            Some("ApiKey essu_test"),
+            "{family}"
+        );
+    }
 }
 
 #[tokio::test]

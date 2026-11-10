@@ -55,6 +55,11 @@ pub(super) struct Unresolved {
     pub(super) item: bool,
     pub(super) list: bool,
     pub(super) alert_index: bool,
+    /// A marker document write whose answer was lost. The server can still
+    /// apply it after cleanup deletes this run's index, and automatic index
+    /// creation then makes an index under the marker name that is not this
+    /// run's. Cleared only once the name has stayed absent for the window.
+    pub(super) index_recreation: bool,
 }
 
 /// How long a watched object has been seen absent.

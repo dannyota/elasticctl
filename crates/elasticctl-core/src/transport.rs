@@ -368,7 +368,31 @@ impl Transport {
         self.capabilities().await?.require_feature(feature)
     }
 
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base, Self::space_path(&self.space, path))
+    fn url(&self, path: &str) -> Result<String> {
+        let path = origin_relative(path)?;
+        Ok(format!(
+            "{}{}",
+            self.base,
+            Self::space_path(&self.space, path)
+        ))
+    }
+
+    fn es_url(&self, path: &str) -> Result<String> {
+        Ok(format!("{}{}", self.es_base, origin_relative(path)?))
+    }
+}
+
+/// Refuse a request path that does not start with `/`. The path is appended
+/// to a configured base URL, so any other first character could extend the
+/// host or start userinfo, as `@other.example/x` does, and send the
+/// credential to another authority.
+fn origin_relative(path: &str) -> Result<&str> {
+    if path.starts_with('/') {
+        Ok(path)
+    } else {
+        Err(Error::new(
+            ErrorKind::Error,
+            "request path must start with /",
+        ))
     }
 }

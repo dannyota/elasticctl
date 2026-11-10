@@ -11,8 +11,8 @@
 //! Every create is create-only and sent once, so a retry can never turn this
 //! run's applied write into a conflict. The marker index is created
 //! explicitly and its UUID kept: the index is this run's only while it still
-//! reports that UUID, which is read again before the marker documents are
-//! written and before cleanup deletes it.
+//! reports that UUID, which is read again before every marker document
+//! write, before the refresh, and before cleanup deletes it.
 
 use crate::clock::now_rfc3339;
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
@@ -240,8 +240,9 @@ async fn require_own_index(t: &Transport, uuid: &str) -> elasticctl_core::Result
 /// with the create-only route and refresh. The index is claimed before the
 /// create, which is sent once. A definite "already exists" releases the
 /// claim; the claim resolves only once the UUID is read, and any other end
-/// leaves it unresolved. The documents are written only after a second read
-/// still shows that UUID.
+/// leaves it unresolved. Every document write and the refresh is sent once,
+/// right after a read that still shows that UUID; a read that does not
+/// stops the writes and keeps the claim.
 pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl_core::Result<()> {
     let t = compose.session.transport;
     let mut claim = Claim {
@@ -284,32 +285,9 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
     compose.ids.index_uuid = Some(uuid.clone());
     claim.resolve();
 
-    require_own_index(t, &uuid).await?;
     for seq in 1..=ALERT_DOCS {
-        let doc = json!({
-            "@timestamp": now_rfc3339(),
-            "marker": ALERT_MARKER_TAG,
-            "message": format!("elasticctl sample compose event {seq}"),
-        });
-        // A conflict here fails the step but leaves the index owned: its
-        // UUID proves it this run's, and cleanup removes it by that UUID.
-        match t
-            .post_absolute_es_once(&marker_document_path(ALERT_PROBE_INDEX, seq), &doc)
-            .await
-        {
-            Ok(created) if created["result"].as_str() == Some("created") => {}
-            Ok(_) => {
-                return Err(recording_error(
-                    "a marker document write did not report created",
-                ));
-            }
-            Err(error) => {
-                return Err(safe_recording_transport_error(
-                    "writing a marker document failed",
-                    error,
-                ));
-            }
-        }
+        require_own_index(t, &uuid).await?;
+        write_document(t, &mut compose.unresolved.index_recreation, seq).await?;
     }
     let proof = t
         .get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_doc/1"))
@@ -322,13 +300,56 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
             "marker index write did not prove the fixed marker identity",
         ));
     }
-    // `_refresh` rejects a body, so use the GET form, which sends none.
-    t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
+    require_own_index(t, &uuid).await?;
+    // `_refresh` rejects a body, so none is sent.
+    t.post_absolute_es_once(&format!("/{ALERT_PROBE_INDEX}/_refresh"), None)
         .await
         .map_err(|error| {
             safe_recording_transport_error("refreshing the marker index failed", error)
         })?;
     Ok(())
+}
+
+/// Write marker document `seq` with the create-only route, exactly once.
+///
+/// `recreatable` is set before the request and cleared only by a definite
+/// answer: the document created, or a conflict. Any other end may leave the
+/// write to be applied later, after cleanup has deleted the index, and
+/// automatic index creation then makes an index under the marker name again.
+/// Cleanup watches the name for that. A conflict fails the step but leaves
+/// the index owned: its UUID proves it this run's.
+async fn write_document(
+    t: &Transport,
+    recreatable: &mut bool,
+    seq: usize,
+) -> elasticctl_core::Result<()> {
+    let doc = json!({
+        "@timestamp": now_rfc3339(),
+        "marker": ALERT_MARKER_TAG,
+        "message": format!("elasticctl sample compose event {seq}"),
+    });
+    *recreatable = true;
+    match t
+        .post_absolute_es_once(&marker_document_path(ALERT_PROBE_INDEX, seq), Some(&doc))
+        .await
+    {
+        Ok(created) if created["result"].as_str() == Some("created") => {
+            *recreatable = false;
+            Ok(())
+        }
+        Ok(_) => Err(recording_error(
+            "a marker document write did not report created",
+        )),
+        Err(error) => {
+            if error.kind == ErrorKind::Conflict {
+                *recreatable = false;
+            }
+            Err(safe_recording_transport_error(
+                "writing a marker document failed",
+                error,
+            ))
+        }
+    }
 }
 
 pub(super) fn list_body() -> Value {
@@ -953,6 +974,60 @@ mod tests {
             let sent = requests(&server).await;
             assert_eq!(sent.len(), 1 + count, "{sent:?}");
             assert!(sent.iter().all(|r| !r.starts_with("POST ")), "{sent:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_document_write_marks_the_index_recreatable_after_one_request() {
+        let failure = |status: u16, kind: &str| {
+            ResponseTemplate::new(status).set_body_json(json!({"error": {"type": kind,
+                "reason": "private.example.internal"}, "status": status}))
+        };
+        for (response, recreatable) in [
+            (failure(503, "unavailable"), true),
+            (failure(500, "x"), true),
+            (failure(400, "mapper_parsing_exception"), true),
+            (ok(json!({"_id": "1", "result": "updated"})), true),
+            (failure(409, "version_conflict_engine_exception"), false),
+        ] {
+            let server = MockServer::start().await;
+            mount_index_create(&server, acknowledged()).await;
+            mount_uuid_reads(
+                &server,
+                vec![
+                    settings(ALERT_PROBE_INDEX, "uuid-1"),
+                    settings(ALERT_PROBE_INDEX, "uuid-1"),
+                ],
+            )
+            .await;
+            Mock::given(method("POST"))
+                .and(path(marker_document_path(ALERT_PROBE_INDEX, 1)))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            let t = mock_transport(&server);
+            let mut compose = ComposeSession::new(&t);
+
+            let error = create_index(&mut compose).await.expect_err("stopped");
+
+            assert_eq!(
+                compose.unresolved.index_recreation, recreatable,
+                "{error:?}"
+            );
+            assert!(compose.session.ownership.alert_index);
+            assert!(!compose.unresolved.alert_index);
+            assert_eq!(compose.ids.index_uuid.as_deref(), Some("uuid-1"));
+            assert!(!error.message.contains("private"), "{}", error.message);
+            assert_eq!(
+                requests(&server).await,
+                [
+                    format!("PUT /{ALERT_PROBE_INDEX}"),
+                    format!("GET {}", index_uuid_path()),
+                    format!("GET {}", index_uuid_path()),
+                    format!("POST {}", marker_document_path(ALERT_PROBE_INDEX, 1)),
+                ],
+                "the write is sent once and nothing follows it"
+            );
         }
     }
 
