@@ -49,6 +49,24 @@ A rule with no key for the chosen grouping adds one to
 `summary.unmapped_rules`. A missing or null field yields no key. A present
 field of the wrong type fails the call with kind `http`.
 
+**Edge cases**
+
+- A `technique[].id` is used as is. An id that already has the subtechnique
+  shape, such as `T1059.001`, keys its own row.
+- A `null` or wrong-typed element inside the `index`, `threat`,
+  `threat[].technique`, or `related_integrations` array fails the call with
+  kind `http`. An absent or `null` field yields no key.
+- Only the fields the chosen grouping reads are type-checked. `tactic` never
+  reads `technique`, and `index_pattern` and `integration` never read
+  `threat`.
+- `data_view_id` is read only when `index` gives no pattern: it is absent,
+  `null`, or empty. Beside a non-empty `index`, its type is not checked.
+- Technique rows always carry `tactics`, possibly empty. Rows of the other
+  groupings never carry it.
+- `name` is omitted when no name was seen for the key.
+- An explicit `null` for `group_by` or `source` is `invalid_argument`. Omit
+  the field to get its default.
+
 Rows sort by `enabled_rules` descending, then `disabled_rules` descending,
 then `key` ascending in byte order.
 
@@ -144,6 +162,25 @@ Part rules:
   read makes that row `unavailable`. `policies` counts the listed
   integration policies whose `package.name` equals the package, and is exact
   because the list is complete.
+
+**Edge cases**
+
+- An `index` array that holds a non-string counts as no index list;
+  `index_source` is then decided by `data_view_id`.
+- A data view `title` splits on `,` with no trimming. Each component,
+  spaces included, is one pattern, and `data_view_ids` matches a pattern
+  against whole components the same way.
+- `data_view_ids` appears on every pattern row, `exclusion` and
+  `unresolved` rows included, whenever the data view list was read.
+- A `related_integrations` value other than an array or `null`, an entry
+  without a string `package`, or a `version` that is neither a string nor
+  `null` makes `integrations` `unavailable` with kind `http`. No Fleet
+  request is sent.
+- Packages are deduplicated by name, keeping the first eight distinct names
+  in rule order. A row's `version` comes from the first entry with that
+  name. `integrations.value.total` counts distinct names.
+- When several skip reasons apply to `patterns`, `not_applicable` wins, then
+  `not_configured`, then `dependency_unavailable`.
 
 **Output `data`**
 

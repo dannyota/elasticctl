@@ -64,8 +64,9 @@ The server reaches only the stack, profile, and space chosen at startup.
 
 It can:
 
-- Read the routes its twenty inspection tools need, and the Elasticsearch
-  identity check `stack_doctor` uses.
+- Read the routes its twenty-four default tools need, including the
+  Elasticsearch identity check `stack_doctor` uses and the index pattern
+  resolve `rule_readiness` uses, which returns counts only.
 - With `--allow-query-tools`, run synchronous ES|QL queries and index searches
   with the selected credential.
 

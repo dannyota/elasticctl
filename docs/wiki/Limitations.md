@@ -57,6 +57,26 @@ answers `unsupported`; narrow the selection with a filter or a tag.
 The server's rule export is capped at 10,000 rules and refuses a larger export
 with a 400. Narrow `rules export` with selectors, `--tag`, or `--source`.
 
+## Coverage reads at most 4,000 rules
+
+A rule search returns each rule's full definition; one response for 2,263
+rules measured about 19 MB, above the 16 MiB response cap. MCP
+`detection_coverage` therefore reads matching rules in 500-rule pages sorted
+by creation time and checks that no rule is missing or repeated. It accepts
+at most 4,000 matching rules so that the call ends inside the deadline; a
+larger match fails with `unsupported`. Narrow it with `enabled`, `source`, or
+`tag`. If the rules change during two read attempts, the call fails with
+`conflict`; retry it.
+
+## A rule over a missing index reports partial failure
+
+When a rule's index patterns match no index, Kibana records its last
+execution as `partial failure`, not `failed`. Prebuilt rules for data the
+deployment does not collect often show it. MCP `rule_health` reports
+`last_execution_partial_failure` for this status, and `alert_context` reports
+`rule_last_execution_failed` only for `failed`. `rule_readiness` shows which
+patterns match.
+
 ## Prebuilt rule install takes no selection
 
 The public install route installs every missing prebuilt rule and updates every
@@ -84,6 +104,14 @@ alerts, and cases. Elasticsearch index access follows the credential. `search`
 and the MCP query tools read every index the API key can read, whatever
 `--space` says. Limit access with the key's privileges. See
 [Search](Search.md#access).
+
+## Index pattern checks need the Elasticsearch URL
+
+MCP `rule_readiness` resolves a rule's index patterns on Elasticsearch, with
+`_resolve/index`, not through Kibana. When the profile has no Elasticsearch
+URL, it skips the `patterns` part with `not_configured` and still reports the
+data view and integrations. Set the URL with `ELASTICCTL_ES_URL` or in the
+profile; see [Configuration](Configuration.md#environment-variables).
 
 ## Assigning a user needs a Kibana user profile
 

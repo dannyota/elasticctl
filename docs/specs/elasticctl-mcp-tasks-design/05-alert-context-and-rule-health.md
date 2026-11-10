@@ -51,6 +51,15 @@ Part rules:
   `cases::get`; a failed get makes that row `unavailable` and keeps its `id`
   and `title`.
 
+**Edge cases**
+
+- `alert_id` and `since` are validated before any request.
+- The rule fields the `rule` projection reads, the `rules_get` fields and
+  `execution`, are type-checked after the rule read and before the reads
+  that depend on it. A malformed rule makes `rule` `unavailable` with kind
+  `http`. `exceptions` and `activity` are then `skipped` with
+  `dependency_unavailable`, and `cases` is still read.
+
 **Output `data`**
 
 | Field | Type |
@@ -127,6 +136,17 @@ it?" Description text, exact:
 
 Maximum 14 requests. Selector ambiguity stays a `conflict` failure of the
 call, as in `rules_get`. Neither part depends on the other.
+
+**Edge cases**
+
+- An `alerts` or `exceptions` part whose value fails projection, such as a
+  malformed alert among `recent`, becomes `unavailable` with kind `http`.
+  The rule, the other part, and the findings that do not need the failed
+  part are kept.
+- A malformed rule, its execution summary included, still fails the call:
+  the rule read is primary.
+- `alerts.value.recent` is always written, as an empty array when the
+  window has no alerts.
 
 **Output `data`**
 
