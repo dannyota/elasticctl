@@ -66,7 +66,8 @@ running agent because it owns the files. Review each task before dependent work 
 - A red scheduled run on `master` is fixed forward at once. The weekly `audit` job catches new
   RustSec advisories against an unchanged tree, which means the shipped release carries them.
   Check `gh run list --branch master --limit 3` when a session starts work.
-- Dependabot opens one grouped pull request per ecosystem each week. Merge it when green; when a
-  dependency change breaks the build, fix it on that branch.
-- Pin every third-party action by full commit SHA with a `# vX.Y.Z` comment. Dependabot keeps
-  the pins current.
+- Dependabot runs alerts only: no version or security-update pull requests, so it never uses
+  Actions runners. Check `gh api repos/dannyota/elasticctl/dependabot/alerts?state=open` and
+  the weekly `audit` job, then update dependencies in our own pull request.
+- Pin every action by full commit SHA with a `# vX.Y.Z` comment; the repository requires it.
+  Bump pins by hand in our own pull request.
