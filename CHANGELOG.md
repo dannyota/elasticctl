@@ -6,6 +6,10 @@
 
 - `rules get`, `enable`, `disable`, `delete`, `preview`, and MCP `rules_get`
   read a rule once when selected by its `rule_id`, instead of twice.
+- MCP `rules_list` reads one page of `limit` rules, ordered by name, instead of
+  the whole corpus. With default arguments it failed with `unsupported` on
+  stacks with the prebuilt rules installed, because the 19.3 MB response for
+  2,263 rules exceeded the 16 MiB body cap. `rules list` is unchanged.
 
 ## 0.7.4 — 2026-11-10
 

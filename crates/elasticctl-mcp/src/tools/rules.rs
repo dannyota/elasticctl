@@ -316,13 +316,14 @@ impl ToolAdapter for RulesAdapter {
                 ToolId::RulesList => {
                     let (limit, filter) = parse_input::<RulesListInput>(arguments)?.filter()?;
                     let transport = state.transport().await.map_err(AdapterError::Core)?;
-                    let report = rules_ops::list(transport, &filter)
+                    let per_page =
+                        u32::try_from(limit).map_err(|_| AdapterError::InvalidArgument)?;
+                    let report = rules_ops::list_page(transport, &filter, per_page)
                         .await
                         .map_err(AdapterError::Core)?;
-                    let total = u64::try_from(report.total)
-                        .map_err(|_| AdapterError::Core(projection_error()))?;
+                    let total = report.total;
                     let returned = report.rules.len().min(limit);
-                    let truncated = returned < report.rules.len();
+                    let truncated = (returned as u64) < total;
                     let rules = report
                         .rules
                         .iter()

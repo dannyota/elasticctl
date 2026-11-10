@@ -636,9 +636,14 @@ async fn rules_list_uses_complete_collection_before_the_requested_row_cap() {
         !requests[0].query.contains_key("filter"),
         "all omits source filter"
     );
+    assert_eq!(requests[0].query.get("per_page"), Some(&"50".to_string()));
     assert_eq!(
-        requests[0].query.get("per_page"),
-        Some(&"10000".to_string())
+        requests[0].query.get("sort_field"),
+        Some(&"name".to_string())
+    );
+    assert_eq!(
+        requests[0].query.get("sort_order"),
+        Some(&"asc".to_string())
     );
     harness.close_input();
     harness.join().await.expect("clean EOF");

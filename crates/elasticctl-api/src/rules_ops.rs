@@ -27,6 +27,13 @@ pub struct RuleListReport {
     pub rules: Vec<Rule>,
 }
 
+/// One name-ordered page of rules and the server's match total.
+#[derive(Debug, Clone)]
+pub struct RulePage {
+    pub total: u64,
+    pub rules: Vec<Rule>,
+}
+
 /// The report an `enable`/`disable` apply renders. Field order is the
 /// serialized JSON key order and is contractual: the root `Cargo.toml` enables
 /// `serde_json`'s `preserve_order`.
@@ -77,6 +84,16 @@ pub async fn list(t: &Transport, filter: &RuleFilter) -> Result<RuleListReport> 
     }
     let total = rules.len();
     Ok(RuleListReport { total, rules })
+}
+
+/// Read at most `limit` rules in one request, ordered by name. MCP uses this
+/// because a whole-corpus read can exceed the response body cap.
+pub async fn list_page(t: &Transport, filter: &RuleFilter, limit: u32) -> Result<RulePage> {
+    let (rules, total) = rules::find_first_by_name(t, filter, limit).await?;
+    if rules.is_empty() && is_unselected_source_query(filter) {
+        rules::verify_source_partition(t).await?;
+    }
+    Ok(RulePage { total, rules })
 }
 
 /// A `rules list` filter has no positional selectors. Any remaining clause
