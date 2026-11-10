@@ -210,7 +210,13 @@ impl ServerHandler for McpServer {
                 .build(),
         );
         info.protocol_version = ProtocolVersion::V_2025_11_25;
-        info.instructions = Some(instructions(self.state.allows_query_tools()).to_owned());
+        info.instructions = Some(
+            catalog::instructions(
+                &self.state.options(),
+                instructions(self.state.allows_query_tools()),
+            )
+            .to_owned(),
+        );
         info.server_info = Implementation::new("elasticctl", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -226,7 +232,7 @@ impl ServerHandler for McpServer {
     ) -> std::result::Result<ListToolsResult, rmcp::ErrorData> {
         let _ = self.state.target();
         Ok(ListToolsResult {
-            tools: catalog::definitions_for(self.state.allows_query_tools()),
+            tools: catalog::definitions_for(&self.state.options()),
             ..Default::default()
         })
     }
@@ -365,9 +371,10 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
-        let Some(dispatch) =
-            dispatch_target(request.name.as_ref(), self.state.allows_query_tools())
-        else {
+        let Some(dispatch) = dispatch_target(
+            catalog::enabled_name(request.name.as_ref(), &self.state.options()),
+            self.state.allows_query_tools(),
+        ) else {
             return Err(unknown_tool_error());
         };
         let cancellation = context.ct.clone();

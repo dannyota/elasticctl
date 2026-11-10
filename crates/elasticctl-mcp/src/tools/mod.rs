@@ -15,6 +15,8 @@ mod compose;
 mod content;
 mod exceptions;
 mod fleet;
+mod mutations;
+mod plans;
 mod query;
 mod rules;
 mod stack;
@@ -56,6 +58,10 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::PlanApply | ToolId::PlanDiscard | ToolId::PlanGet | ToolId::PlanList => {
+            Some(plans::adapter())
+        }
+        ToolId::RulesSetEnabledPlan => Some(mutations::rules::adapter()),
         ToolId::AlertContext
         | ToolId::DetectionCoverage
         | ToolId::RuleHealth
@@ -82,17 +88,17 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
 }
 
 /// Return the production definitions in lexical catalog order.
-pub(crate) fn definitions(allow_query_tools: bool) -> Vec<Tool> {
-    let mut definitions = triage::definitions();
-    definitions.extend(content::definitions());
-    definitions.extend(exceptions::definitions());
-    definitions.extend(fleet::definitions());
-    definitions.extend(rules::definitions());
-    if allow_query_tools {
-        definitions.extend(query::definitions());
-    }
-    definitions.extend(stack::definitions());
-    definitions.extend(compose::definitions());
-    definitions.sort_by(|a, b| a.name.cmp(&b.name));
-    definitions
+pub(crate) fn definitions(options: &crate::ServerOptions) -> Vec<Tool> {
+    ToolId::ALL
+        .into_iter()
+        .filter(|tool| tool.enabled(options))
+        .map(|tool| {
+            adapter_for(tool)
+                .expect("registered adapter")
+                .definitions()
+                .into_iter()
+                .find(|definition| definition.name == tool.name())
+                .expect("registered definition")
+        })
+        .collect()
 }

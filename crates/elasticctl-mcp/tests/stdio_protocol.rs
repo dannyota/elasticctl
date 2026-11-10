@@ -423,6 +423,7 @@ async fn startup_accepts_query_tools_before_opening_the_protocol() {
         elasticctl_mcp::ServerOptions {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: true,
+            allow_mutations: elasticctl_mcp::MutationClasses::default(),
         },
     );
     harness
@@ -512,6 +513,7 @@ async fn public_startup_validation_checks_every_resolved_url_and_timeout_boundar
             elasticctl_mcp::ServerOptions {
                 call_timeout: Duration::from_secs(seconds),
                 allow_query_tools: false,
+                allow_mutations: elasticctl_mcp::MutationClasses::default(),
             },
             input,
             output,
@@ -535,6 +537,7 @@ async fn public_startup_validation_checks_every_resolved_url_and_timeout_boundar
             elasticctl_mcp::ServerOptions {
                 call_timeout: Duration::from_secs(seconds),
                 allow_query_tools: false,
+                allow_mutations: elasticctl_mcp::MutationClasses::default(),
             },
             server_input,
             server_output,

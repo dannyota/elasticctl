@@ -24,6 +24,7 @@ pub use runtime::{serve_io, serve_stdio};
 pub struct ServerOptions {
     pub call_timeout: Duration,
     pub allow_query_tools: bool,
+    pub allow_mutations: crate::MutationClasses,
 }
 
 impl Default for ServerOptions {
@@ -31,6 +32,7 @@ impl Default for ServerOptions {
         Self {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: false,
+            allow_mutations: crate::MutationClasses::default(),
         }
     }
 }
@@ -41,7 +43,9 @@ pub struct ServerState {
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
     query_transport: tokio::sync::OnceCell<Transport>,
+    mutation_transport: tokio::sync::OnceCell<Transport>,
     allow_query_tools: bool,
+    allow_mutations: crate::MutationClasses,
     call_timeout: Duration,
     permits: Arc<Semaphore>,
 }
@@ -58,7 +62,9 @@ impl ServerState {
             resolved,
             transport: tokio::sync::OnceCell::new(),
             query_transport: tokio::sync::OnceCell::new(),
+            mutation_transport: tokio::sync::OnceCell::new(),
             allow_query_tools,
+            allow_mutations: crate::MutationClasses::default(),
             call_timeout,
             permits: Arc::new(Semaphore::new(4)),
         }
@@ -76,6 +82,25 @@ impl ServerState {
                         disable_redirects: true,
                         disable_retries: true,
                         disable_connection_pool: false,
+                    },
+                )
+            })
+            .await
+    }
+
+    /// Lazily construct the one-attempt transport for confirmed mutations.
+    #[allow(dead_code)]
+    pub async fn mutation_transport(&self) -> Result<&Transport> {
+        self.mutation_transport
+            .get_or_try_init(|| async {
+                Transport::with_options(
+                    &self.resolved.profile,
+                    TransportOptions {
+                        debug: false,
+                        response_body_limit: Some(16_777_216),
+                        disable_redirects: true,
+                        disable_retries: true,
+                        disable_connection_pool: true,
                     },
                 )
             })
@@ -109,6 +134,14 @@ impl ServerState {
         self.permits.clone().try_acquire_owned().ok()
     }
 
+    fn options(&self) -> ServerOptions {
+        ServerOptions {
+            call_timeout: self.call_timeout,
+            allow_query_tools: self.allow_query_tools,
+            allow_mutations: self.allow_mutations.clone(),
+        }
+    }
+
     fn allows_query_tools(&self) -> bool {
         self.allow_query_tools
     }
@@ -116,6 +149,13 @@ impl ServerState {
 
 /// Validate configuration that can be rejected before MCP startup or network I/O.
 fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetContext> {
+    crate::MutationClasses::parse(options.allow_mutations.names())?;
+    if !options.allow_mutations.is_empty() && target.profile.es_url.is_none() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL.",
+        ));
+    }
     let seconds = options.call_timeout.as_secs();
     if seconds == 0 || seconds > 120 || options.call_timeout.subsec_nanos() != 0 {
         return Err(Error::new(
@@ -309,6 +349,106 @@ mod tests {
         }
     }
 
+    /// The write transport is built on first use, follows no redirect,
+    /// retries nothing, and opens a fresh connection for every request.
+    #[tokio::test]
+    async fn mutation_transport_is_lazy_and_sends_each_request_once_on_its_own_socket() {
+        use std::sync::atomic::AtomicUsize;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener binds");
+        let address = listener.local_addr().expect("listener address");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (accepted, seen) = (Arc::clone(&connections), Arc::clone(&paths));
+        let responder = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let seen = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    let mut socket = BufReader::new(socket);
+                    loop {
+                        let mut request_line = String::new();
+                        if socket.read_line(&mut request_line).await.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        loop {
+                            let mut header = String::new();
+                            let read = socket.read_line(&mut header).await.unwrap_or(0);
+                            if read == 0 || header == "\r\n" {
+                                break;
+                            }
+                        }
+                        let path = request_line
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or_default()
+                            .to_string();
+                        let response = if path.contains("redirect") {
+                            "HTTP/1.1 302 Found\r\nLocation: /followed\r\nContent-Length: 0\r\n\r\n"
+                        } else if path.contains("unavailable") {
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                        } else {
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                        };
+                        seen.lock().expect("paths lock").push(path);
+                        if socket
+                            .get_mut()
+                            .write_all(response.as_bytes())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let base = format!("http://{address}");
+        let mut target = resolved(&base, Some(&base));
+        target.profile.api_key = Some("test-key".to_string());
+        let options = ServerOptions {
+            call_timeout: Duration::from_secs(5),
+            allow_query_tools: false,
+            allow_mutations: crate::MutationClasses::parse(["rules-toggle"])
+                .expect("rules-toggle parses"),
+        };
+        let context = validate_target(&target, &options).expect("target validates");
+        let state = super::ServerState::new(context, target, options.call_timeout, false);
+        assert!(
+            !state.mutation_transport.initialized(),
+            "nothing is built before first use"
+        );
+        let transport = state
+            .mutation_transport()
+            .await
+            .expect("mutation transport builds");
+        assert!(state.mutation_transport.initialized());
+
+        let redirected = transport
+            .get("/redirect")
+            .await
+            .expect_err("302 is not followed");
+        assert_eq!(redirected.http_status, Some(302));
+        let unavailable = transport.get("/unavailable").await.expect_err("503 fails");
+        assert_eq!(unavailable.http_status, Some(503));
+        transport.get("/ok").await.expect("first read succeeds");
+        transport.get("/ok").await.expect("second read succeeds");
+
+        let paths = paths.lock().expect("paths lock").clone();
+        assert_eq!(paths.len(), 4, "each request was sent once: {paths:?}");
+        assert!(
+            !paths.iter().any(|path| path.contains("followed")),
+            "the redirect target was never requested: {paths:?}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            4,
+            "every request opened its own connection"
+        );
+        responder.abort();
+    }
+
     #[test]
     fn validates_text_without_normalizing_it() {
         assert!(validate_text("selector", "value", 1_024).is_ok());
@@ -331,6 +471,7 @@ mod tests {
         let options = ServerOptions {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: false,
+            allow_mutations: crate::MutationClasses::default(),
         };
         assert!(
             validate_target(
@@ -393,6 +534,7 @@ mod tests {
                     &ServerOptions {
                         call_timeout: Duration::from_secs(seconds),
                         allow_query_tools: false,
+                        allow_mutations: crate::MutationClasses::default(),
                     },
                 )
                 .is_err()
@@ -405,6 +547,7 @@ mod tests {
                     &ServerOptions {
                         call_timeout: Duration::from_secs(seconds),
                         allow_query_tools: false,
+                        allow_mutations: crate::MutationClasses::default(),
                     },
                 )
                 .is_ok()
@@ -545,6 +688,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,
@@ -621,6 +765,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,
@@ -1052,6 +1197,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,
