@@ -1,0 +1,36 @@
+name: Wiki
+
+# Publication is disabled. Every event renders a read-only preview.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - docs/wiki/**
+      - scripts/wiki-sync.sh
+      - .github/workflows/wiki.yml
+  push:
+    branches: [master]
+    paths:
+      - docs/wiki/**
+      - scripts/wiki-sync.sh
+      - .github/workflows/wiki.yml
+  workflow_dispatch:
+
+# A new push to a pull request cancels its older run. Other events group by
+# commit, so a newer master push never cancels a pending master run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash scripts/wiki-sync.sh --dry-run

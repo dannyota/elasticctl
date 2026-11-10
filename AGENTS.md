@@ -24,6 +24,7 @@ spec first and in the same commit as any behavior change.
 |What is in scope, and how does the API behave?|`docs/specs/elasticctl-design.md`|
 |What does a capability area add?|`docs/specs/elasticctl-*-design.md`|
 |What was planned and proven per release?|`docs/plans/`, `docs/conformance/`, `docs/reviews/`|
+|How do users run the CLI and MCP server?|`docs/wiki/`|
 |What changed?|`CHANGELOG.md`|
 |How do I set up, test, and contribute?|`CONTRIBUTING.md`|
 |Which environment variables exist?|`.env.example`|
@@ -32,6 +33,7 @@ spec first and in the same commit as any behavior change.
 |-|-|
 |Planning, briefing, implementing, or reviewing|[`instructions/workflow.md`](instructions/workflow.md)|
 |Writing or splitting Rust and Markdown|[`instructions/rust.md`](instructions/rust.md)|
+|Writing README, wiki, or other documentation|[`instructions/documentation.md`](instructions/documentation.md)|
 |Running tests, recording fixtures, or using sample data|[`instructions/testing.md`](instructions/testing.md)|
 |Touching live stacks, `.env`, credentials, or the lab|[`instructions/live-stacks.md`](instructions/live-stacks.md)|
 |Changing transport, an API call, or the response model|[`instructions/elastic-api.md`](instructions/elastic-api.md)|
