@@ -57,7 +57,7 @@ fn current_request_builder_adds_metadata_to_tool_requests_but_legacy_omits_it() 
     }
 }
 
-fn mcp_subprocess_config(dir: &Path, endpoint: &str) -> PathBuf {
+pub(super) fn mcp_subprocess_config(dir: &Path, endpoint: &str) -> PathBuf {
     let config = dir.join("mcp-subprocess.toml");
     std::fs::write(
         &config,
@@ -1287,7 +1287,7 @@ fn exercise_query_protocol(child: &mut McpChild, index: &str) -> TestResult {
     validate_dsl_empty(&dsl_empty)
 }
 
-fn initialize_child(child: &mut McpChild, allow_query_tools: bool) -> TestResult {
+pub(super) fn initialize_child(child: &mut McpChild, allow_query_tools: bool) -> TestResult {
     let initialize = child.request("initialize", json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"elasticctl-live-smoke","version":env!("CARGO_PKG_VERSION")}}))?;
     if initialize
         .pointer("/result/protocolVersion")

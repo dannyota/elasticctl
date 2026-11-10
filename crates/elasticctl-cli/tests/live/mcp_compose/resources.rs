@@ -6,6 +6,29 @@ use crate::{
 };
 use serde_json::{Value, json};
 
+pub(super) trait ResourceRequests {
+    fn request_raw(&mut self, method: &'static str, params: Value) -> TestResult<Value>;
+    fn protocol_path(&self) -> McpProtocolPath;
+
+    fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+        let response = self.request_raw(method, params)?;
+        if response.get("error").is_some() || response.get("result").is_none() {
+            return Err(format!("MCP {method} request returned an error."));
+        }
+        Ok(response)
+    }
+}
+
+impl ResourceRequests for McpChild {
+    fn request_raw(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+        McpChild::request_raw(self, method, params)
+    }
+
+    fn protocol_path(&self) -> McpProtocolPath {
+        self.protocol_path
+    }
+}
+
 fn expected_resource_entries(templates: bool) -> Value {
     let coverage = "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Reads at most 4,000 rules; near that size a call can need a longer server --timeout. Read-only.";
     if templates {
@@ -46,9 +69,11 @@ fn read_text<'a>(frame: &'a Value, uri: &str) -> TestResult<&'a str> {
         .pointer("/contents/0/text")
         .and_then(Value::as_str)
         .ok_or("MCP resource text missing.")?;
-    if text.len() > 262_144
+    if frame.get("error").is_some()
+        || text.len() > 262_144
         || serde_json::from_str::<Value>(text).is_err()
-        || *result != json!({"contents":[{"uri":uri,"mimeType":"application/json","text":text}]})
+        || *result
+            != json!({"contents":[{"uri":uri,"mimeType":"application/json","text":text}],"ttlMs":0,"cacheScope":"private"})
     {
         return Err("MCP resource result did not match.".to_string());
     }
@@ -73,8 +98,8 @@ fn validate_error(frame: &Value, code: i64) -> TestResult {
     }
 }
 
-pub(super) fn not_found_checks(child: &mut McpChild) -> TestResult {
-    let code = match child.protocol_path {
+pub(super) fn not_found_checks(child: &mut impl ResourceRequests) -> TestResult {
+    let code = match child.protocol_path() {
         McpProtocolPath::Current => -32602,
         McpProtocolPath::Legacy => -32002,
     };
@@ -115,7 +140,7 @@ where
 }
 
 fn read_pair(
-    child: &mut McpChild,
+    child: &mut impl ResourceRequests,
     uri: &str,
     label: &str,
     tool: &str,
@@ -136,7 +161,7 @@ fn read_pair(
     })
 }
 
-pub(super) fn current_checks(child: &mut McpChild, e: &Expected<'_>) -> TestResult {
+pub(super) fn current_checks(child: &mut impl ResourceRequests, e: &Expected<'_>) -> TestResult {
     validate_capabilities(&child.request("server/discover", json!({}))?)?;
     for (method, key, entries) in [
         (
@@ -290,28 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn retries_the_pair_once_and_redacts_failures() {
-        let mut calls = 0;
-        compare_pair("elasticctl://stack/rules/{rule_id}", || {
-            calls += 1;
-            Ok(calls == 2)
-        })
-        .unwrap();
-        assert_eq!(calls, 2);
-        calls = 0;
-        let error = compare_pair("elasticctl://stack/rules/{rule_id}", || {
-            calls += 1;
-            Ok(false)
-        })
-        .unwrap_err();
-        assert_eq!(calls, 2);
-        assert_eq!(
-            error,
-            "MCP resource and tool text differed for elasticctl://stack/rules/{rule_id}."
-        );
-    }
-
-    #[test]
     fn discovery_capabilities_are_exact() {
         let mut frame = json!({"result":{"capabilities":{"prompts":{},"resources":{},"tools":{}}}});
         validate_capabilities(&frame).unwrap();
@@ -324,8 +327,7 @@ mod tests {
     #[test]
     fn read_result_is_exact() {
         let uri = "elasticctl://stack/info";
-        let mut frame =
-            json!({"result":{"contents":[{"uri":uri,"mimeType":"application/json","text":"{}"}]}});
+        let mut frame = json!({"result":{"contents":[{"uri":uri,"mimeType":"application/json","text":"{}"}],"ttlMs":0,"cacheScope":"private"}});
         assert_eq!(read_text(&frame, uri).unwrap(), "{}");
         for mutation in [
             json!({"contents":[]}),
@@ -334,7 +336,16 @@ mod tests {
             json!({"contents":[{"uri":uri,"mimeType":"application/json","text":"{}","extra":true}]}),
             json!({"contents":[{"uri":uri,"mimeType":"application/json","text":"invalid"}]}),
         ] {
-            assert!(read_text(&json!({"result":mutation}), uri).is_err());
+            let mut bad = frame.clone();
+            bad["result"]["contents"] = mutation["contents"].clone();
+            assert!(read_text(&bad, uri).is_err());
+        }
+        for (key, wrong) in [("ttlMs", json!(1)), ("cacheScope", json!("public"))] {
+            let mut bad = frame.clone();
+            bad["result"].as_object_mut().unwrap().remove(key);
+            assert!(read_text(&bad, uri).is_err());
+            bad["result"][key] = wrong;
+            assert!(read_text(&bad, uri).is_err());
         }
         frame["result"]["extra"] = json!(true);
         assert!(read_text(&frame, uri).is_err());
@@ -370,3 +381,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "resource_requests.rs"]
+mod request_tests;
+
+#[cfg(test)]
+#[path = "resource_frames.rs"]
+mod frame_tests;
