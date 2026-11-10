@@ -1,7 +1,8 @@
 # Security
 
-`elkctl` changes nothing without `--yes`, keeps credentials out of URLs and
-logs, and refuses a response it cannot trust. None of these can be turned off.
+`elkctl` changes nothing without `--yes` on the command line or a person's
+confirmation in an MCP client, keeps credentials out of URLs and logs, and
+refuses a response it cannot trust. None of these can be turned off.
 
 ## Changes
 
@@ -14,8 +15,9 @@ logs, and refuses a response it cannot trust. None of these can be turned off.
   `rules delete` or `exceptions delete`. Items inside a mirrored exception list
   reconcile exactly, including deletes, because a list's item set is written
   in full. See [Rules as Code](Rules-as-Code.md#push).
-- The MCP server has no tool that changes the stack; see
-  [MCP server](#mcp-server).
+- The MCP server changes the stack only through a mutation class the operator
+  enables at startup, and only after a person confirms each plan in the
+  client; see [MCP server](#mcp-server).
 
 ## Credentials
 
@@ -69,12 +71,16 @@ It can:
   resolve `rule_readiness` uses, which returns counts only.
 - With `--allow-query-tools`, run synchronous ES|QL queries and index searches
   with the selected credential.
+- With `--allow-mutations rules-toggle`, enable or disable named rules: one
+  rule bulk action request per plan, after a person confirms the plan in the
+  client. See [MCP Mutations](MCP-Mutations.md).
 
 It cannot:
 
-- Send a request that changes the stack. It sends no `PUT`, `PATCH`, or
-  `DELETE`, and no Fleet setup, rule preview, import, async query, or point in
-  time request.
+- Send a request that changes the stack, other than the rule bulk action of a
+  confirmed plan. It sends no `PUT`, `PATCH`, or `DELETE`, and no Fleet setup,
+  rule preview, import, async query, or point in time request. It deletes
+  nothing and never runs `state push`.
 - Change its target. No tool accepts a profile, space, host, URL, credential,
   configuration path, timeout, debug option, or file path.
 - Read or write local files. Startup reads only the selected configuration and

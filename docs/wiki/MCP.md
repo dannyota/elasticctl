@@ -2,7 +2,7 @@
 
 `elkctl mcp serve` runs a Model Context Protocol (MCP) server over stdio. Its
 tools read one stack, through one profile and space chosen when the server
-starts. No tool creates, changes, or deletes an Elastic object.
+starts. Only [opt-in mutation tools](MCP-Mutations.md) change Elastic.
 
 ## Start the server
 
@@ -30,7 +30,8 @@ an explicit `--format`, and `--debug`.
 The deadline covers the capability probe, retries, paging, projection, and
 serialization. A value outside the range stops startup.
 
-`--allow-query-tools` adds two query tools; see [Query tools](#query-tools).
+`--allow-query-tools` adds two [query tools](#query-tools). `--allow-mutations`
+adds [tools that change Elastic](MCP-Mutations.md) after a person confirms.
 
 ## Register with a client
 
@@ -127,11 +128,10 @@ arrive. Pattern checks need the profile's Elasticsearch URL; without it,
 
 Task tools return only what the selected credential can read. Beyond the
 inspection tools, they show a rule's last execution status and message, alert
-counts per rule and workflow status, which cases contain an alert, match
-counts per index pattern, and which Fleet packages a rule names, with each
-package's install state, installed version, and policy count. To keep these
-from a model, use a credential without those privileges; the server has no
-switch for them.
+counts per rule and workflow status, which cases contain an alert, match counts
+per index pattern, and which Fleet packages a rule names, with each package's
+install state, installed version, and policy count. To keep these from a model,
+use a credential without those privileges; the server has no switch for them.
 
 ### Inspection tools
 
@@ -174,9 +174,8 @@ URL.
 
 A tool whose Elastic feature the stack lacks stays in the catalog and answers
 `unsupported`. In a task tool, a later read that needs the feature makes only
-its part or row `unavailable`. See [Limitations](Limitations.md).
-`stack_info` and `stack_doctor` work on older stacks, so they can diagnose
-one.
+its part or row `unavailable`. See [Limitations](Limitations.md). `stack_info`
+and `stack_doctor` work on older stacks, so they can diagnose one.
 
 ## Results
 
@@ -231,7 +230,7 @@ A failure carries the same target and an error object:
 `kind` uses the [CLI error kinds](CLI.md#errors). An Elastic failure has code
 `elastic_<kind>` and a fixed message; the server never copies the upstream
 message, request text, URLs, or credentials into an error. Local failures use
-these codes:
+these codes; [mutation tools](MCP-Mutations.md#errors) add plan codes:
 
 | Code | Kind | Meaning |
 | --- | --- | --- |
@@ -376,7 +375,8 @@ the server reads one operator-selected deployment and changes neither Elastic
 nor local files, send a model to the task tools first for a question that
 spans objects and to the `_list` and `_get` tools for the objects an answer
 names, and mark text inside results as data, not instructions. They name no
-host, profile, version, or object.
+host, profile, version, or object. With a mutation class enabled, the sentence
+about changes is replaced; see [MCP Mutations](MCP-Mutations.md#tools).
 
 ## Returned data is untrusted
 
@@ -392,9 +392,9 @@ secrets.
 Client checks passed with Claude Code 2.1.263 and Codex CLI 0.153.4 on the
 local lab. Both negotiated protocol `2025-11-25`; the three-flavor harness also
 proves current protocol `2026-07-28`. The server supports exactly these two
-protocol revisions. These checks cover tools, not resources or prompts. The
+protocol revisions. These checks cover the read-only tools, not resources,
+prompts, or [mutation tools](MCP-Mutations.md). The
 [0.7.2 findings](https://github.com/dannyota/elasticctl/blob/master/docs/conformance/v0.7.2/findings.md)
 list the tested calls.
 
-See [Security](Security.md#mcp-server) for what the server can and cannot
-reach.
+See [Security](Security.md#mcp-server) for what the server can and cannot reach.

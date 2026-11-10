@@ -1,10 +1,12 @@
 # elasticctl 0.9 MCP mutation design
 
-Status: design only. No 0.9 code exists. The [shared design](elasticctl-design.md)
-defines existing behavior and the [0.7 MCP design](elasticctl-mcp-design.md)
-defines the server this extends. [Research](../plans/v0.9-research.md) records
-sources, probes, and unmeasured claims. Plans:
-[0.9.0](../plans/v0.9.0.md), [0.9.1](../plans/v0.9.1.md),
+Status: 0.9.0 (`rules-toggle`) is implemented on the `dev-0.9` integration
+branch, pending live evidence and release. 0.9.1 and 0.9.2 are designed.
+
+The [shared design](elasticctl-design.md) defines existing behavior and the
+[0.7 MCP design](elasticctl-mcp-design.md) defines the server this extends.
+[Research](../plans/v0.9-research.md) records sources, probes, and unmeasured
+claims. Plans: [0.9.0](../plans/v0.9.0.md), [0.9.1](../plans/v0.9.1.md),
 [0.9.2](../plans/v0.9.2.md).
 
 0.9 answers one question: what consent means when the caller is a model. The
