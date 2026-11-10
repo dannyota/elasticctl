@@ -62,10 +62,14 @@ fi
 repo=${GITHUB_REPOSITORY:-$(git remote get-url origin | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')}
 # `base64 -w0` is GNU-only; stripping newlines works with BSD base64 too.
 auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::add-mask::$auth"; fi
+# Pass the header through the environment so it is not a process argument.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=http.extraheader
+export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
 wiki="$render/.wiki"
 
-git -c http.extraheader="AUTHORIZATION: basic $auth" \
-  clone --quiet --depth 1 "https://github.com/$repo.wiki.git" "$wiki" ||
+git clone --quiet --depth 1 "https://github.com/$repo.wiki.git" "$wiki" ||
   die "cannot clone the wiki; enable it and create the first page in the web UI"
 
 find "$wiki" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
@@ -81,5 +85,5 @@ source_sha=$(git -C "$OLDPWD" rev-parse --short HEAD)
 git -c user.name="${GIT_AUTHOR_NAME:-github-actions[bot]}" \
   -c user.email="${GIT_AUTHOR_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}" \
   commit --quiet -m "Sync from $source_sha"
-git -c http.extraheader="AUTHORIZATION: basic $auth" push --quiet origin HEAD
+git push --quiet origin HEAD
 echo "wiki-sync: pushed $(git diff --stat HEAD~1 | tail -1)"
