@@ -72,6 +72,17 @@ its pulled counterpart forever. Two modes resolve it:
 `rules validate` applies the same default-filling, so an engineer can see
 exactly what a sparse file will become before pushing it.
 
+Serverless also appends the tag `Missing Elastic Cloud API Key` to a rule that
+a project-scoped key enables (section 7.2). Normalization treats it as
+server-applied state, like the volatile fields: it removes every `tags`
+element that equals that exact string, case-sensitive, and keeps the other
+tags in order. An emptied array stays `[]`; an absent or non-array `tags` is
+left as it is. `pull` never writes the tag, `diff` never reports it, and `push`
+never sends it, so a rule cannot carry this exact tag through the mirror.
+`rules get`, MCP `rules_get`, and `rules export` return the same normalized
+rule, so they omit the tag as well. `rules list` and `rules import` do not
+normalize.
+
 ### 5.2 Reading the corpus
 
 `_find` is read in one request, not paged. `per_page` is bounded by

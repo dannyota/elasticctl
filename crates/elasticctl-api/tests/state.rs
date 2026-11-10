@@ -297,6 +297,178 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
     );
 }
 
+/// The tag Serverless appends after an enable (spec 7.2).
+const CLOUD_KEY_TAG: &str = "Missing Elastic Cloud API Key";
+const SERVERLESS_FIND: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tests/fixtures/serverless-9.7.0/rules_find.json"
+));
+
+/// The recorded Serverless rule row, its tags `["elasticctl", "fixture"]`.
+/// Its exception reference is dropped so no container lookup is needed;
+/// `tagged` appends the Serverless tag.
+fn recorded_rule(tagged: bool) -> Value {
+    let fixture: Value = serde_json::from_str(SERVERLESS_FIND).expect("rules_find fixture is JSON");
+    let mut row = fixture["response"]["data"][0].clone();
+    row["exceptions_list"] = json!([]);
+    if tagged {
+        row["tags"]
+            .as_array_mut()
+            .expect("the recorded rule has tags")
+            .push(json!(CLOUD_KEY_TAG));
+    }
+    row
+}
+
+fn write_recorded_rule(dir: &Path, rule: &Value) {
+    let id = rule["rule_id"].as_str().unwrap();
+    write_local_rule(dir, id, &format!("{rule}\n"));
+}
+
+/// A mirror pulled from a stack whose rule does not hold the tag yet.
+async fn mirror_pulled_before_the_enable() -> tempfile::TempDir {
+    let stack = MockStack::with_rules(vec![recorded_rule(false)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Ndjson,
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+    dir
+}
+
+/// Spec 5.1: the tag is server-applied state, never mirror content.
+#[tokio::test]
+async fn pull_never_writes_the_cloud_key_tag() {
+    let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    state::pull(
+        stack.transport(),
+        dir.path(),
+        Format::Ndjson,
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    let file = dir.path().join("rules/elasticctl-fixture-probe.ndjson");
+    let body = std::fs::read_to_string(&file).unwrap();
+    assert!(!body.contains(CLOUD_KEY_TAG), "pull wrote the tag: {body}");
+    let rule: Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+    assert_eq!(rule["tags"], json!(["elasticctl", "fixture"]));
+}
+
+#[tokio::test]
+async fn diff_is_clean_when_only_the_server_holds_the_cloud_key_tag() {
+    let dir = mirror_pulled_before_the_enable().await;
+    let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
+
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    assert!(d.clean, "the tag read as drift: {:?}", d.changes);
+    assert!(d.changes.is_empty());
+}
+
+/// A rule file that carries the tag by hand reads as not carrying it.
+#[tokio::test]
+async fn diff_is_clean_when_only_the_rule_file_holds_the_cloud_key_tag() {
+    let stack = MockStack::with_rules(vec![recorded_rule(false)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    write_recorded_rule(dir.path(), &recorded_rule(true));
+
+    let d = state::diff(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+    )
+    .await
+    .unwrap();
+
+    assert!(d.clean, "the tag read as drift: {:?}", d.changes);
+    assert!(d.changes.is_empty());
+}
+
+#[tokio::test]
+async fn push_plans_no_update_when_only_the_server_holds_the_cloud_key_tag() {
+    let dir = mirror_pulled_before_the_enable().await;
+    let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
+
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(plan.summary.pending, 0, "{:?}", plan.preview_details);
+    assert!(stack.write_requests().await.is_empty());
+}
+
+/// A real change still writes, and the write omits the tag even when both the
+/// rule file and the server hold it.
+#[tokio::test]
+async fn push_never_sends_the_cloud_key_tag() {
+    let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut local = recorded_rule(true);
+    local["risk_score"] = json!(99);
+    write_recorded_rule(dir.path(), &local);
+
+    let plan = state::plan_push(
+        stack.transport(),
+        dir.path(),
+        &[],
+        None,
+        None,
+        RuleSource::Custom,
+        &identity(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.summary.pending, 1);
+    assert_eq!(
+        plan.preview_details,
+        vec!["elasticctl-fixture-probe  elasticctl fixture probe  update (risk_score)".to_string()],
+        "the tag is not a planned field change"
+    );
+
+    state::apply_push(stack.transport(), plan).await.unwrap();
+
+    assert_eq!(
+        stack.write_paths().await,
+        vec!["PUT /api/detection_engine/rules".to_string()]
+    );
+    let sent = stack.last_rule_write_body().await;
+    assert_eq!(sent["tags"], json!(["elasticctl", "fixture"]));
+    assert_eq!(sent["risk_score"], json!(99));
+}
+
 /// A local mirror with one rule referencing a NEW list that has one item.
 fn mirror_with_rule_and_new_list() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();

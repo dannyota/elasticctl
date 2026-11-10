@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Rule normalization drops the tag `Missing Elastic Cloud API Key`, which
+  Serverless appends to a rule a project-scoped key enables. `state pull` never
+  writes it, `state diff` does not report it as drift, and `state push` never
+  sends it or plans an update only because the server holds it. `rules get`,
+  MCP `rules_get`, and `rules export` omit it too.
+
 ## 0.7.5 — 2026-11-10
 
 ### Fixed
