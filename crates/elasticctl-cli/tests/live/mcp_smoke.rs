@@ -74,8 +74,8 @@ async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
     let config = mcp_subprocess_config(dir.path(), &server.uri());
-    let mut current = McpChild::spawn(&config, false).expect("start current MCP child");
-    let mut legacy = McpChild::spawn(&config, true).expect("start legacy MCP child");
+    let mut current = McpChild::spawn_offline(&config, false).expect("start current MCP child");
+    let mut legacy = McpChild::spawn_offline(&config, true).expect("start legacy MCP child");
 
     let discovery = current
         .request("server/discover", json!({}))
@@ -132,7 +132,8 @@ async fn raw_requests_keep_resource_errors_and_success_requests_stay_strict() {
     let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
     let config = mcp_subprocess_config(dir.path(), &server.uri());
     for (allow_query_tools, code) in [(false, -32602), (true, -32002)] {
-        let mut child = McpChild::spawn(&config, allow_query_tools).expect("start MCP child");
+        let mut child =
+            McpChild::spawn_offline(&config, allow_query_tools).expect("start MCP child");
         if allow_query_tools {
             initialize_child(&mut child, true).expect("initialize legacy child");
         }
@@ -158,6 +159,25 @@ async fn raw_requests_keep_resource_errors_and_success_requests_stay_strict() {
             .expect("mock server requests")
             .is_empty()
     );
+}
+
+#[test]
+fn offline_children_drop_every_target_override() {
+    let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
+    for allow_query_tools in [false, true] {
+        let command = offline_child_command(&dir.path().join("config.toml"), allow_query_tools);
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        for name in TARGET_OVERRIDES {
+            assert!(
+                removed.iter().any(|removed| removed == name),
+                "{name} stays inherited"
+            );
+        }
+    }
 }
 
 #[test]
@@ -2220,19 +2240,59 @@ impl Drop for ChildOwner {
     }
 }
 
+/// Variables that take precedence over the configuration file. An offline
+/// child drops them so an exported shell target cannot replace the mock.
+pub(super) const TARGET_OVERRIDES: [&str; 5] = [
+    "ELASTICCTL_KIBANA_URL",
+    "ELASTICCTL_ES_URL",
+    "ELASTICCTL_API_KEY",
+    "ELASTICCTL_SPACE",
+    "ELASTICCTL_TIMEOUT",
+];
+
+fn child_command(config: &Path, allow_query_tools: bool) -> std::process::Command {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
+    command
+        .arg("--config")
+        .arg(config)
+        .args(["mcp", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if allow_query_tools {
+        command.arg("--allow-query-tools");
+    }
+    command
+}
+
+pub(super) fn offline_child_command(
+    config: &Path,
+    allow_query_tools: bool,
+) -> std::process::Command {
+    let mut command = child_command(config, allow_query_tools);
+    for name in TARGET_OVERRIDES {
+        command.env_remove(name);
+    }
+    command
+}
+
 impl McpChild {
     pub(super) fn spawn(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
-        let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
-        command
-            .arg("--config")
-            .arg(config)
-            .args(["mcp", "serve"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if allow_query_tools {
-            command.arg("--allow-query-tools");
-        }
+        Self::spawn_command(child_command(config, allow_query_tools), allow_query_tools)
+    }
+
+    /// Starts a child for an offline test, against the mock target only.
+    pub(super) fn spawn_offline(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
+        Self::spawn_command(
+            offline_child_command(config, allow_query_tools),
+            allow_query_tools,
+        )
+    }
+
+    fn spawn_command(
+        mut command: std::process::Command,
+        allow_query_tools: bool,
+    ) -> TestResult<Self> {
         let child = command
             .spawn()
             .map_err(|_| "MCP child could not be started.".to_string())?;

@@ -45,11 +45,11 @@ async fn real_current_resource_frames_match_live_validators() {
     let server = stack().await;
     let dir = tempfile::tempdir().unwrap();
     let config = mcp_subprocess_config(dir.path(), &server.uri());
-    let mut child = McpChild::spawn(&config, false).unwrap();
+    let mut child = McpChild::spawn_offline(&config, false).unwrap();
     let mut failures = Vec::new();
     let frame = child.request("server/discover", json!({})).unwrap();
     if let Err(error) = validate_capabilities(&frame) {
-        failures.push(format!("server/discover: {error}: {frame}"));
+        failures.push(format!("server/discover: {error}"));
     }
     for (method, key, entries) in [
         (
@@ -66,7 +66,7 @@ async fn real_current_resource_frames_match_live_validators() {
     ] {
         let frame = child.request(method, json!({})).unwrap();
         if let Err(error) = validate_list(&frame, key, &entries) {
-            failures.push(format!("{method}: {error}: {frame}"));
+            failures.push(format!("{method}: {error}"));
         }
     }
     let rule = recorded("rule_get_executed.json")["response"]["rule_id"]
@@ -89,8 +89,7 @@ async fn real_current_resource_frames_match_live_validators() {
         ),
     ] {
         if let Err(error) = read_pair(&mut child, &uri, &uri, tool, args) {
-            let frame = child.request("resources/read", json!({"uri":uri})).unwrap();
-            failures.push(format!("{uri}: {error}: {frame}"));
+            failures.push(format!("{uri}: {error}"));
         }
     }
     for (index, args, replacement) in [
@@ -124,10 +123,7 @@ async fn real_current_resource_frames_match_live_validators() {
             )
             .unwrap();
         if let Err(error) = validate_prompt(&frame, &expected) {
-            failures.push(format!(
-                "prompts/get {}: {error}: {frame}",
-                definition["name"]
-            ));
+            failures.push(format!("prompts/get {}: {error}", definition["name"]));
         }
     }
     not_found_checks(&mut child).unwrap();
@@ -140,7 +136,7 @@ async fn real_legacy_resource_errors_match_live_validators() {
     let server = stack().await;
     let dir = tempfile::tempdir().unwrap();
     let config = mcp_subprocess_config(dir.path(), &server.uri());
-    let mut child = McpChild::spawn(&config, true).unwrap();
+    let mut child = McpChild::spawn_offline(&config, true).unwrap();
     initialize_child(&mut child, true).unwrap();
     not_found_checks(&mut child).unwrap();
     child.shutdown().unwrap();
