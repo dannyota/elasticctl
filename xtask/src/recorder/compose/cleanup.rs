@@ -496,9 +496,10 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
         }
     }
     if unresolved.index_recreation && !owned.alert_index {
-        match watch_recreation(t, timing).await {
-            Ok(()) => unresolved.index_recreation = false,
-            Err(failure) => failures.push(failure),
+        // A clean watch does not prove the lost write will never land, so
+        // the flag stays set and the operator is told to check the index.
+        if let Err(failure) = watch_recreation(t, timing).await {
+            failures.push(failure);
         }
     }
     failures

@@ -2887,6 +2887,13 @@ mod tests {
         assert!(released(&outcome.ownership_after_cleanup));
         assert!(!outcome.succeeded && outcome.written.is_none());
         assert!(
+            outcome.lines.iter().any(|line| line.starts_with(
+                "record-compose needs manual recovery: index elasticctl-sample-alert-events "
+            )),
+            "{:?}",
+            outcome.lines
+        );
+        assert!(
             outcome.teardown_time >= Duration::from_millis(150),
             "{:?}",
             outcome.teardown_time
