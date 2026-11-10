@@ -42,6 +42,11 @@ Fixtures are recorded from real traffic, never hand-written. They are tagged wit
 stack version, and live in `tests/fixtures/<flavor>-<version>/`. Do not hand-edit a fixture to
 make a test pass; re-record it.
 
+The same holds for MCP frames. A live check that compares a frame with an exact shape needs an
+offline test that runs the real server and passes its frame through that check, on each protocol
+path the check runs on. A hand-written frame repeats the author's guess, so it cannot catch a
+wrong expectation.
+
 The directory is named for the *deployment* flavor, not the reported flavor. Hosted and
 self-managed Kibana both report `build_flavor: "traditional"`. Recording a Hosted stack without
 `ELASTICCTL_FIXTURE_FLAVOR=ech` overwrites `traditional-9.5.1`.

@@ -12,6 +12,7 @@ use crate::{
     result::{self, TargetContext},
 };
 
+mod admission;
 mod handler;
 mod lifecycle;
 mod runtime;

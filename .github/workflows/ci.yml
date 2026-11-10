@@ -33,6 +33,9 @@ jobs:
         with:
           fetch-depth: 0
       - run: bash scripts/test/check-lengths-test.sh
+      # The shim needs Bash 4.4 or newer; the macOS runner ships Bash 3.2.
+      - if: runner.os == 'Linux'
+        run: bash scripts/test/mcp-stdio-shim-test.sh
       - name: Check file lengths
         env:
           BASE_REF: ${{ github.base_ref }}

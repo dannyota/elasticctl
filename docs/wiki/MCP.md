@@ -248,7 +248,7 @@ not an error.
 | Limit | Value |
 | --- | --- |
 | Rows per list | Default 50, maximum 200 |
-| Active calls | Four. A fifth call is answered `busy` at once, with no queue and no Elastic request |
+| Active calls | Four, shared by tool calls and [resource reads](#resources). A fifth is answered `busy` at once, with no queue and no Elastic request |
 | Whole call | `--timeout`: default 30 seconds, allowed 1 to 120 |
 | Structured result | 262,144 bytes |
 | Outbound message | 1,048,576 bytes |
@@ -296,6 +296,79 @@ Access and retries:
 - Use Elastic privileges to control which indices and services the credential
   can reach.
 
+## Resources and prompts
+
+The server advertises exactly the `prompts`, `resources`, and `tools`
+capabilities. The resource, template, and prompt lists are fixed: listing them
+sends no Elastic request, needs no credential, and takes no call slot.
+
+### Resources
+
+`resources/list` returns the first five URIs below, `resources/templates/list`
+the last four. A read runs the matching tool with fixed arguments, returns its
+`{target, data, page}` JSON as `application/json` text, takes one of the four
+call slots, and obeys `--timeout` and the [limits](#limits).
+
+| URI | Tool and arguments |
+| --- | --- |
+| `elasticctl://stack/coverage/tactic` | `detection_coverage`, `group_by` `tactic`, `limit` 200 |
+| `elasticctl://stack/coverage/technique` | `detection_coverage`, `group_by` `technique`, `limit` 200 |
+| `elasticctl://stack/doctor` | `stack_doctor` |
+| `elasticctl://stack/info` | `stack_info` |
+| `elasticctl://stack/prebuilt-rules/status` | `rules_prebuilt_status` |
+| `elasticctl://stack/alerts/{alert_id}` | `alerts_get` |
+| `elasticctl://stack/cases/{case_id}` | `cases_get` |
+| `elasticctl://stack/exception-lists/{namespace_type}/{list_id}` | `exceptions_get`, item `limit` 50 |
+| `elasticctl://stack/rules/{rule_id}` | `rules_get` |
+
+Percent-encode each id. `namespace_type` is `single` or `agnostic`. The rule
+template takes a `rule_id` only: a display name is not found. A URI holds no
+host, profile, space, credential, query, or fragment.
+
+A failed read is a JSON-RPC error. Current: `2026-07-28`; legacy: `2025-11-25`.
+
+| Cause | Current | Legacy | `message` | `data.code` |
+| --- | --- | --- | --- | --- |
+| Bad URI, an id the tool refuses, Elastic `not_found`, or a rule with another `rule_id` | `-32602` | `-32002` | `Resource not found` | no `data` |
+| A `cursor` on a list request | `-32602` | `-32602` | `Invalid cursor` | no `data` |
+| Four calls already running | `-32603` | `-32603` | `Resource read failed` | `busy` |
+| The `--timeout` deadline | `-32603` | `-32603` | `Resource read failed` | `deadline_exceeded` |
+| Text above the output limit | `-32603` | `-32603` | `Resource read failed` | `result_too_large` |
+| Any other failure | `-32603` | `-32603` | `Resource read failed` | `elastic_<kind>` |
+
+`data` holds only `kind`, `http_status`, and `code`, as in [Errors](#errors).
+A cancelled read gets no response.
+
+### Prompts
+
+A prompt returns one fixed message that asks the model to call a task tool
+with the given arguments. `prompts/get` checks the arguments and reads
+nothing; the model then calls the tool through the client's usual approval.
+
+| Prompt | Arguments | Task tool |
+| --- | --- | --- |
+| `check_rule_readiness` | `rule` | `rule_readiness` |
+| `review_detection_coverage` | `group_by`, optional | `detection_coverage` |
+| `review_rule_health` | `rule`; `since`, optional | `rule_health` |
+| `triage_alert` | `alert_id`; `since`, optional | `alert_context` |
+
+`rule` and `alert_id` are exact ids of 1 to 256 characters from `A-Z`, `a-z`,
+`0-9`, `.`, `_`, `:`, and `-`, so pass a `rule_id`, not a name. `since` uses
+the [task tool](#task-tools) grammar with default `24h`; `group_by` is
+`technique` (default), `tactic`, `index_pattern`, or `integration`. A bad
+argument fails with `-32602` and `Invalid prompt arguments`, an unknown prompt
+with `-32602` and `Unknown prompt`.
+
+### Use them in Claude Code
+
+With the server registered as `elasticctl`, type `@` to pick a resource or
+write `@elasticctl:elasticctl://stack/info`; see
+[Use MCP resources](https://code.claude.com/docs/en/mcp#use-mcp-resources).
+Type `/` to list prompts as `/elasticctl:triage_alert (MCP)`, or run
+`/mcp__elasticctl__triage_alert <alert_id> 7d` with whitespace-separated
+arguments; see
+[Use MCP prompts as commands](https://code.claude.com/docs/en/mcp#use-mcp-prompts-as-commands).
+
 ## Server instructions
 
 The server returns fixed instructions when a client connects. They say that
@@ -319,7 +392,7 @@ secrets.
 Client checks passed with Claude Code 2.1.263 and Codex CLI 0.153.4 on the
 local lab. Both negotiated protocol `2025-11-25`; the three-flavor harness also
 proves current protocol `2026-07-28`. The server supports exactly these two
-protocol revisions. The
+protocol revisions. These checks cover tools, not resources or prompts. The
 [0.7.2 findings](https://github.com/dannyota/elasticctl/blob/master/docs/conformance/v0.7.2/findings.md)
 list the tested calls.
 
