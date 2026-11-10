@@ -322,3 +322,51 @@ async fn a_case_comment_or_attachment_to_a_dot_id_sends_no_post() {
     }
     assert!(requests(&server).await.is_empty());
 }
+
+/// An ordinary case selector whose read answers a dot id. The comment and
+/// attachment plans keep the id the server returned, so applying them must
+/// refuse it before any post.
+#[tokio::test]
+async fn case_plans_from_a_dot_id_response_send_no_post() {
+    use elasticctl_api::cases_ops;
+    for id in ["", ".", ".."] {
+        let server = stack().await;
+        let mut case = recorded("case_get.json");
+        case["id"] = json!(id);
+        mount_get(&server, "/api/cases/ordinary", case).await;
+        let mut alerts = recorded("signals_search.json");
+        let first = alerts["hits"]["hits"][0].clone();
+        let alert_id = first["_id"].as_str().unwrap().to_string();
+        let mut hit = first;
+        hit["_source"]["kibana.alert.rule.uuid"] = json!("rule-uuid");
+        alerts["hits"]["hits"] = json!([hit]);
+        alerts["hits"]["total"] = json!({"value": 1, "relation": "eq"});
+        Mock::given(method("POST"))
+            .and(path("/api/detection_engine/signals/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(alerts))
+            .mount(&server)
+            .await;
+        let t = transport(&server);
+
+        let comment = cases_ops::plan_comment(&t, "ordinary", "marker comment")
+            .await
+            .unwrap();
+        assert_eq!(comment.case_id, id);
+        assert_refused(cases_ops::apply_comment(&t, &comment).await.unwrap_err());
+
+        let attach = cases_ops::plan_attach(&t, "ordinary", &[alert_id])
+            .await
+            .unwrap();
+        let refused = cases_ops::apply_attach(&t, &attach).await;
+        let posted = requests(&server)
+            .await
+            .into_iter()
+            .filter(|line| line.starts_with("POST /api/cases"))
+            .collect::<Vec<_>>();
+        assert!(posted.is_empty(), "{id:?}: {posted:?}");
+        match refused {
+            Err(error) => assert_refused(error),
+            Ok(report) => assert_eq!(report.failed, report.total, "{id:?}"),
+        }
+    }
+}
