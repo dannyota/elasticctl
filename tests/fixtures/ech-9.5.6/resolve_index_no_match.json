@@ -1,0 +1,14 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "resolve_index_no_match",
+  "request": {
+    "method": "GET",
+    "path": "/_resolve/index/elasticctl-sample-compose-none-%2A"
+  },
+  "response": {
+    "indices": [],
+    "aliases": [],
+    "data_streams": []
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "cases_by_alert",
+  "request": {
+    "method": "GET",
+    "path": "/api/cases/alerts/elasticctl-fixture-alert-1"
+  },
+  "response": [
+    {
+      "id": "elasticctl-fixture-case",
+      "title": "elasticctl sample case",
+      "description": "elasticctl sample case",
+      "status": "open",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "totals": {
+        "alerts": 1,
+        "events": 0,
+        "userComments": 0
+      }
+    }
+  ]
+}

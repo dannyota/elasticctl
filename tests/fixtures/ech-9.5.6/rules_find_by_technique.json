@@ -1,0 +1,104 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "rules_find_by_technique",
+  "request": {
+    "method": "GET",
+    "path": "/api/detection_engine/rules/_find",
+    "query": "page=1&per_page=50&sort_field=name&sort_order=asc&filter=alert.attributes.params.threat.technique.id%3A%20%22T1059%22%20AND%20%28alert.attributes.params.ruleId%3A%20%22elasticctl-sample-alert-probe%22%20OR%20alert.attributes.params.ruleId%3A%20%22elasticctl-sample-compose-missing-index%22%29"
+  },
+  "response": {
+    "page": 1,
+    "perPage": 50,
+    "total": 1,
+    "data": [
+      {
+        "query": "marker: elasticctl-sample",
+        "rule_id": "elasticctl-sample-alert-probe",
+        "name": "elasticctl sample compose rule",
+        "immutable": false,
+        "rule_source": {
+          "type": "internal"
+        },
+        "version": 1,
+        "revision": 0,
+        "language": "kuery",
+        "updated_by": "REDACTED",
+        "index": [
+          "elasticctl-sample-alert-events"
+        ],
+        "created_by": "REDACTED",
+        "enabled": true,
+        "interval": "1m",
+        "from": "now-10m",
+        "to": "now",
+        "execution_summary": {
+          "last_execution": {
+            "date": "2026-01-01T00:00:00.000Z",
+            "status": "succeeded",
+            "status_order": 0,
+            "message": "elasticctl-fixture-server-text",
+            "metrics": {
+              "total_indexing_duration_ms": 0,
+              "total_search_duration_ms": 0
+            }
+          }
+        },
+        "description": "Recorded by cargo xtask record-compose. Safe to delete.",
+        "tags": [
+          "elasticctl-sample"
+        ],
+        "author": [],
+        "threat": [
+          {
+            "framework": "MITRE ATT&CK",
+            "tactic": {
+              "id": "TA0002",
+              "name": "Execution",
+              "reference": "https://attack.mitre.org/tactics/TA0002/"
+            },
+            "technique": [
+              {
+                "id": "T1059",
+                "name": "Command and Scripting Interpreter",
+                "reference": "https://attack.mitre.org/techniques/T1059/",
+                "subtechnique": [
+                  {
+                    "id": "T1059.001",
+                    "name": "PowerShell",
+                    "reference": "https://attack.mitre.org/techniques/T1059/001/"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "related_integrations": [
+          {
+            "package": "system",
+            "version": "^2.0.0"
+          }
+        ],
+        "required_fields": [],
+        "setup": "",
+        "false_positives": [],
+        "references": [],
+        "risk_score": 21,
+        "risk_score_mapping": [],
+        "severity": "low",
+        "severity_mapping": [],
+        "output_index": "",
+        "max_signals": 100,
+        "exceptions_list": [
+          {
+            "namespace_type": "single",
+            "list_id": "elasticctl-sample-exceptions",
+            "type": "detection"
+          }
+        ],
+        "actions": [],
+        "type": "query"
+      }
+    ]
+  }
+}
