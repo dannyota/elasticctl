@@ -8,7 +8,11 @@ projects.
 It is modelled on [splunkctl](https://github.com/dannyota/splunkctl) and
 reuses its operating contracts: named profiles, dry-run-by-default mutations,
 structured output, and a stable error taxonomy. The 0.7 read-only MCP server
-calls the existing API layer through a separate frontend library.
+calls the existing API layer through a separate frontend library. 0.8 adds
+cross-vertical task tools, resources, and prompts
+([design](elasticctl-mcp-tasks-design.md)). From 0.9 the server can apply a
+bounded set of changes after a person confirms each stored plan in the client
+([design](elasticctl-mcp-mutation-design.md)).
 
 ## Contents
 

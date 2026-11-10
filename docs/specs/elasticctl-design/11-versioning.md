@@ -59,6 +59,22 @@ review completed on 2026-09-06. The 0.7.2 implementation, live proof, gates,
 and final evidence review completed on 2026-09-06.
 None grants release or publication approval.
 
+The 0.8 task-tool, resource, and prompt capability area is described in
+[`elasticctl-mcp-tasks-design.md`](../elasticctl-mcp-tasks-design.md), with
+[research](../../plans/v0.8-research.md) and plans for
+[0.8.0](../../plans/v0.8.0.md), [0.8.1](../../plans/v0.8.1.md), and
+[0.8.2](../../plans/v0.8.2.md).
+
+The 0.9 MCP mutation capability area is described in
+[`elasticctl-mcp-mutation-design.md`](../elasticctl-mcp-mutation-design.md), with
+[research](../../plans/v0.9-research.md) and plans for
+[0.9.0](../../plans/v0.9.0.md), [0.9.1](../../plans/v0.9.1.md), and
+[0.9.2](../../plans/v0.9.2.md).
+
+Neither grants release or publication approval. Every 0.8 and 0.9 release
+passes the three-flavor conformance matrix; when a trial deployment ends first,
+the release waits for replacement deployments.
+
 Trial deployments are temporary. Their lifetime changes execution order, not
 capability boundaries. The evidence ladder is:
 
@@ -106,8 +122,10 @@ tools want reshaping, that is a fourth area, not a reason to compress.
 ### 11.1 What counts as breaking
 
 SemVer is written for library consumers, but users depend on elasticctl's CLI
-surface, not its Rust types. The CLI surface is the public API that the version
-number describes.
+and MCP surfaces, not its Rust types. Those two surfaces are the public API
+that the version number describes. The library crates are published so
+`cargo install` resolves; in `0.x` their Rust items are not a compatibility
+promise, and a patch release may change them.
 
 Breaking, requiring a minor bump:
 
@@ -116,10 +134,17 @@ Breaking, requiring a minor bump:
 - Changing or removing an error `kind` value
 - Changing an exit code's meaning
 - Changing the on-disk rule format in a way older files cannot round-trip
+- Renaming or removing an MCP tool, resource URI or template, or prompt
+- Renaming or removing an MCP input or output field, or rejecting input that
+  was accepted
+- Changing or removing an MCP error `kind` or `code`
+- Removing a tool from the default catalog or from a startup opt-in
 
 Additive, allowed in a patch release: new commands, new flags with defaults,
 new fields in JSON output, new error kinds for previously unclassified
-failures.
+failures, and new MCP tools, resources, prompts, optional inputs, and output
+fields. Ordering results the contract left unordered, or bounding a read that
+failed a documented cap, is a fix, not a break.
 
 0.2 breaks two things under this list. The state commands default to
 `--source custom` instead of the whole space, and the `diff` report gains an

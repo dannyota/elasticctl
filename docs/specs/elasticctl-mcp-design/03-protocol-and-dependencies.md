@@ -45,6 +45,8 @@ Every registered tool sets `readOnlyHint: true`, `destructiveHint: false`,
 `idempotentHint: true`, and `openWorldHint: true`. These describe the data-read
 contract, not deterministic results or absence of compute/inference costs.
 The registration and request tests enforce scope; annotations do not.
+From 0.9 the opt-in mutation tools are the exception; see
+[mutation design section 3](../elasticctl-mcp-mutation-design/03-startup-opt-in-and-catalog.md).
 
 Use object-shaped structured results and the same compact JSON as one text
 content item. Each tool has an input and output schema. Input objects reject
