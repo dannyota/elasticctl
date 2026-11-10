@@ -206,15 +206,16 @@ fn index_already_exists(error: &elasticctl_core::Error) -> bool {
             })
 }
 
-/// The UUID a settings read reports, when the answer names exactly the
-/// marker index and nothing else.
-pub(super) fn index_uuid(settings: &Value) -> Option<&str> {
-    let indices = settings.as_object().filter(|indices| indices.len() == 1)?;
-    indices
-        .get(ALERT_PROBE_INDEX)?
-        .pointer("/settings/index/uuid")?
-        .as_str()
-        .filter(|uuid| !uuid.is_empty())
+/// The UUID a cat indices read reports, when the answer holds exactly one
+/// row and that row names the marker index.
+pub(super) fn index_uuid(rows: &Value) -> Option<&str> {
+    let [row] = rows.as_array()?.as_slice() else {
+        return None;
+    };
+    if row.get("index")?.as_str()? != ALERT_PROBE_INDEX {
+        return None;
+    }
+    row.get("uuid")?.as_str().filter(|uuid| !uuid.is_empty())
 }
 
 /// Read the marker index UUID again and require the one this run created.
@@ -825,7 +826,7 @@ mod tests {
     }
 
     fn settings(index: &str, uuid: &str) -> ResponseTemplate {
-        ok(json!({(index): {"settings": {"index": {"uuid": uuid}}}}))
+        ok(json!([{"index": index, "uuid": uuid}]))
     }
 
     async fn mount_index_create(server: &MockServer, response: ResponseTemplate) {
@@ -840,7 +841,7 @@ mod tests {
     async fn mount_uuid_reads(server: &MockServer, answers: Vec<ResponseTemplate>) {
         for answer in answers {
             Mock::given(method("GET"))
-                .and(path(format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid")))
+                .and(path(format!("/_cat/indices/{ALERT_PROBE_INDEX}")))
                 .respond_with(answer)
                 .up_to_n_times(1)
                 .mount(server)

@@ -802,7 +802,7 @@ mod fake_stack {
             }
             "/api/exception_lists" => Some("list".into()),
             "/api/cases/_find" => Some("case".into()),
-            p if p == format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid") => Some("index".into()),
+            p if p == format!("/_cat/indices/{ALERT_PROBE_INDEX}") => Some("index".into()),
             _ => None,
         }
     }
@@ -1066,12 +1066,11 @@ mod fake_stack {
                         "index": ALERT_PROBE_INDEX}),
                 )
             }
-            ("GET", p) if p == format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid") => {
+            ("GET", p) if p == format!("/_cat/indices/{ALERT_PROBE_INDEX}") => {
                 match &state.index_uuid {
-                    Some(uuid) => json_response(
-                        200,
-                        json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": uuid}}}}),
-                    ),
+                    Some(uuid) => {
+                        json_response(200, json!([{"index": ALERT_PROBE_INDEX, "uuid": uuid}]))
+                    }
                     None => index_not_found(),
                 }
             }
@@ -1384,6 +1383,7 @@ mod tests {
         ALERT_INDEX, IDENTITY_PROSE, IDENTITY_TOKENS, SESSION_RULE_UUID, State, fake_stack,
         foreign_present,
     };
+    use super::requests::index_uuid_path;
     use super::*;
     use crate::recorder::markers::{
         ALERT_PROBE_INDEX, ALERT_RULE_ID, CASE_ID_PLACEHOLDER, ITEM_ID, LIST_ID,
@@ -1730,7 +1730,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} not sent"))
         };
         let first_write = position(&format!("PUT /{ALERT_PROBE_INDEX}"));
-        let settings = format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid");
+        let settings = format!("GET {}", index_uuid_path());
         let mut index_writes = vec![format!("PUT /{ALERT_PROBE_INDEX}"), settings.clone()];
         for seq in 1..=ALERT_DOCS {
             index_writes.push(settings.clone());
@@ -2761,7 +2761,7 @@ mod tests {
         assert_eq!(deletes.len(), 1, "{:?}", state.log);
         assert_eq!(
             state.log[deletes[0] - 1],
-            format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"),
+            format!("GET {}", index_uuid_path()),
             "the delete was not preceded by the UUID read"
         );
     }
@@ -2857,7 +2857,7 @@ mod tests {
                 .expect("sent");
             assert_eq!(
                 state.log[at + 1],
-                format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"),
+                format!("GET {}", index_uuid_path()),
                 "{trigger}: the next request is not the UUID read"
             );
             assert_eq!(state.index_uuid.as_deref(), Some("uuid-other-run"));
@@ -2907,7 +2907,7 @@ mod tests {
             .expect("deleted");
         let reads = state.log[delete..]
             .iter()
-            .filter(|line| **line == format!("GET /{ALERT_PROBE_INDEX}/_settings/index.uuid"))
+            .filter(|line| **line == format!("GET {}", index_uuid_path()))
             .count();
         assert!(reads >= 3, "read {reads} times");
         assert_eq!(

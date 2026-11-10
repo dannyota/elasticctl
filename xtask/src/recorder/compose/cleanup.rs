@@ -757,10 +757,8 @@ mod tests {
     async fn an_index_without_a_recorded_uuid_is_never_deleted() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path(index_uuid_path()))
-            .respond_with(ok(
-                json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": "uuid-1"}}}}),
-            ))
+            .and(path(format!("/_cat/indices/{ALERT_PROBE_INDEX}")))
+            .respond_with(ok(json!([{"index": ALERT_PROBE_INDEX, "uuid": "uuid-1"}])))
             .mount(&server)
             .await;
         let t = mock_transport(&server);
@@ -780,11 +778,10 @@ mod tests {
     #[tokio::test]
     async fn an_index_that_appears_after_a_recreatable_index_is_deleted_is_never_deleted() {
         let server = MockServer::start().await;
-        let uuid =
-            |uuid: &str| ok(json!({(ALERT_PROBE_INDEX): {"settings": {"index": {"uuid": uuid}}}}));
+        let uuid = |uuid: &str| ok(json!([{"index": ALERT_PROBE_INDEX, "uuid": uuid}]));
         for answer in [uuid("uuid-1"), not_found(), uuid("uuid-auto")] {
             Mock::given(method("GET"))
-                .and(path(index_uuid_path()))
+                .and(path(format!("/_cat/indices/{ALERT_PROBE_INDEX}")))
                 .respond_with(answer)
                 .up_to_n_times(1)
                 .mount(&server)

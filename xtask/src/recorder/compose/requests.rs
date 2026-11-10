@@ -309,8 +309,10 @@ pub(super) fn marker_index_path() -> String {
 }
 
 /// The one setting read that reports the marker index UUID.
+/// Serverless answers the settings and get-index APIs for this index with no
+/// `index.uuid`; the cat indices API reports the UUID on every flavor.
 pub(super) fn index_uuid_path() -> String {
-    format!("/{ALERT_PROBE_INDEX}/_settings/index.uuid")
+    format!("/_cat/indices/{ALERT_PROBE_INDEX}?h=index,uuid&format=json")
 }
 
 #[cfg(test)]
@@ -642,7 +644,7 @@ mod tests {
         assert_eq!(marker_index_path(), "/elasticctl-sample-alert-events");
         assert_eq!(
             index_uuid_path(),
-            "/elasticctl-sample-alert-events/_settings/index.uuid"
+            "/_cat/indices/elasticctl-sample-alert-events?h=index,uuid&format=json"
         );
         assert_eq!(
             item_path("elasticctl-sample-exception-item-2"),
