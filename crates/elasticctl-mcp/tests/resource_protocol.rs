@@ -43,13 +43,18 @@ async fn capabilities_lists_and_cursors_on_both_paths() {
                 uris
             );
             for (row, (name, title, tool)) in rows.iter().zip(entries) {
-                let desc = tools["result"]["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|t| t["name"] == tool)
-                    .unwrap()["description"]
-                    .clone();
+                // The rule template is exact rule_id only, unlike rules_get.
+                let desc = if uri_key == "uriTemplate" && tool == "rules_get" {
+                    json!("Inspect one rule by its exact rule_id.")
+                } else {
+                    tools["result"]["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|t| t["name"] == tool)
+                        .unwrap()["description"]
+                        .clone()
+                };
                 assert_eq!(
                     *row,
                     json!({uri_key:row[uri_key],"name":name,"title":title,"description":desc,"mimeType":"application/json"})

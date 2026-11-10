@@ -68,6 +68,10 @@ name, so after the read the server compares the returned `rule_id` with the
 decoded segment. A mismatch is "resource not found". Identity stays
 `rule_id`, never a name.
 
+Each template `description` is the matching tool's description, except the
+rule template's, which is `Inspect one rule by its exact rule_id.` because
+the `rules_get` text also offers a display name.
+
 Dashboards, data views, and Fleet policies have no template in 0.8. Their
 get tools remain. Adding a template later is additive.
 

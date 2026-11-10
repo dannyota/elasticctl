@@ -132,13 +132,21 @@ pub(crate) fn list() -> Vec<Resource> {
         .collect()
 }
 
+/// The rule template takes an exact `rule_id` only, so it cannot reuse the
+/// `rules_get` description, which also offers a display name.
+const RULE_TEMPLATE_DESCRIPTION: &str = "Inspect one rule by its exact rule_id.";
+
 pub(crate) fn templates() -> Vec<ResourceTemplate> {
     TEMPLATES
         .into_iter()
         .map(|(uri, name, title, tool)| {
+            let description = match tool {
+                ToolId::RulesGet => RULE_TEMPLATE_DESCRIPTION.to_owned(),
+                _ => description(tool),
+            };
             ResourceTemplate::new(uri, name)
                 .with_title(title)
-                .with_description(description(tool))
+                .with_description(description)
                 .with_mime_type("application/json")
         })
         .collect()
@@ -190,14 +198,13 @@ mod tests {
             {"uriTemplate":"elasticctl://stack/alerts/{alert_id}","name":"alert","title":"Alert by id","mimeType":"application/json","description":"Inspect one alert by its exact document id."},
             {"uriTemplate":"elasticctl://stack/cases/{case_id}","name":"case","title":"Case by id","mimeType":"application/json","description":"Inspect one case by its exact id."},
             {"uriTemplate":"elasticctl://stack/exception-lists/{namespace_type}/{list_id}","name":"exception-list","title":"Exception list by namespace and id","mimeType":"application/json","description":"Inspect one exception-list container and its bounded items."},
-            {"uriTemplate":"elasticctl://stack/rules/{rule_id}","name":"rule","title":"Rule by rule_id","mimeType":"application/json","description":"Inspect one rule by its exact rule_id or display name."}
+            {"uriTemplate":"elasticctl://stack/rules/{rule_id}","name":"rule","title":"Rule by rule_id","mimeType":"application/json","description":"Inspect one rule by its exact rule_id."}
         ]);
         let templates = templates();
         assert_eq!(serde_json::to_value(&templates).unwrap(), expected);
-        for (template, tool) in
-            templates
-                .iter()
-                .zip(["alerts_get", "cases_get", "exceptions_get", "rules_get"])
+        for (template, tool) in templates
+            .iter()
+            .zip(["alerts_get", "cases_get", "exceptions_get"])
         {
             assert_eq!(
                 template.description.as_deref(),

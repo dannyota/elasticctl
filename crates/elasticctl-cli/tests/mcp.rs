@@ -3069,7 +3069,7 @@ fn expected_resource_entries(templates: bool) -> Value {
             {"uriTemplate":"elasticctl://stack/alerts/{alert_id}","name":"alert","title":"Alert by id","description":"Inspect one alert by its exact document id.","mimeType":"application/json"},
             {"uriTemplate":"elasticctl://stack/cases/{case_id}","name":"case","title":"Case by id","description":"Inspect one case by its exact id.","mimeType":"application/json"},
             {"uriTemplate":"elasticctl://stack/exception-lists/{namespace_type}/{list_id}","name":"exception-list","title":"Exception list by namespace and id","description":"Inspect one exception-list container and its bounded items.","mimeType":"application/json"},
-            {"uriTemplate":"elasticctl://stack/rules/{rule_id}","name":"rule","title":"Rule by rule_id","description":"Inspect one rule by its exact rule_id or display name.","mimeType":"application/json"}
+            {"uriTemplate":"elasticctl://stack/rules/{rule_id}","name":"rule","title":"Rule by rule_id","description":"Inspect one rule by its exact rule_id.","mimeType":"application/json"}
         ])
     } else {
         json!([
