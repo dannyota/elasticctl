@@ -167,6 +167,7 @@ impl RecordingSession<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recorder::preview::{SEARCH_MARKER, SEARCH_PROBE_INDEX};
     use crate::recorder::session::CleanupOwnership;
     use crate::recorder::test_support::mock_transport;
     use std::sync::Mutex;
@@ -480,5 +481,110 @@ mod tests {
 
         assert!(errors.is_empty(), "{errors:?}");
         assert!(session.ownership.esql_async_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_poll_and_delete_failure_is_retried_by_full_session_cleanup() {
+        let server = MockServer::start().await;
+        mount_start(&server, vec![running("a1")]).await;
+        mount_poll(&server, "a1", vec![failure(400)]).await;
+        mount_delete(&server, "a1", vec![failure(400), failure(400)]).await;
+
+        let t = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        let error = record_esql_async(&mut session, QUERY, "serverless", "9.7.0", Duration::ZERO)
+            .await
+            .err()
+            .expect("poll failure");
+        assert!(error.message.contains("polling"), "{}", error.message);
+        assert_eq!(session.ownership.esql_async_ids, ["a1"]);
+
+        let cleanup = session.cleanup().await.err().expect("cleanup failure");
+        assert!(
+            cleanup
+                .message
+                .contains("deleting async ES|QL result: class="),
+            "{}",
+            cleanup.message
+        );
+        assert_private_text_absent(&cleanup, &server);
+        assert_eq!(session.ownership.esql_async_ids, ["a1"]);
+        let deletes = requests(&server)
+            .await
+            .into_iter()
+            .filter(|r| r == "DELETE /_query/async/a1")
+            .count();
+        assert_eq!(deletes, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_delete_of_a_completed_start_stays_owned() {
+        let server = MockServer::start().await;
+        let mut stored = complete();
+        stored["id"] = json!("done");
+        mount_start(&server, vec![stored]).await;
+        mount_delete(&server, "done", vec![failure(400)]).await;
+
+        let (result, owned) = record(&server).await;
+
+        let error = result.err().expect("delete failure");
+        assert_private_text_absent(&error, &server);
+        assert_eq!(owned, ["done"]);
+    }
+
+    #[tokio::test]
+    async fn session_cleanup_deletes_async_results_before_the_search_index() {
+        let server = MockServer::start().await;
+        mount_delete(&server, "a1", vec![acknowledged()]).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{SEARCH_PROBE_INDEX}/_doc/1")))
+            .respond_with(ok(json!({"_source": {"marker": SEARCH_MARKER}})))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!("/{SEARCH_PROBE_INDEX}")))
+            .respond_with(ok(json!({"acknowledged": true})))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut session = RecordingSession {
+            transport: &t,
+            ownership: CleanupOwnership::default(),
+        };
+        session.ownership.esql_async_ids.push("a1".into());
+        session.ownership.search_index = true;
+
+        // The unmocked alert baseline audit fails; only the async and search
+        // index steps matter here.
+        let cleanup = session.cleanup().await.err().expect("unmocked audit");
+        assert!(
+            !cleanup.message.contains("async ES|QL"),
+            "{}",
+            cleanup.message
+        );
+        assert!(
+            !cleanup.message.contains(SEARCH_PROBE_INDEX),
+            "{}",
+            cleanup.message
+        );
+
+        assert!(session.ownership.esql_async_ids.is_empty());
+        assert!(!session.ownership.search_index);
+        let relevant: Vec<String> = requests(&server)
+            .await
+            .into_iter()
+            .filter(|r| r.contains("/_query/async/") || r.contains(SEARCH_PROBE_INDEX))
+            .collect();
+        assert_eq!(
+            relevant,
+            [
+                "DELETE /_query/async/a1".to_string(),
+                format!("GET /{SEARCH_PROBE_INDEX}/_doc/1"),
+                format!("DELETE /{SEARCH_PROBE_INDEX}"),
+            ]
+        );
     }
 }
