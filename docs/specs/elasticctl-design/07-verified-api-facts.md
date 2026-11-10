@@ -97,6 +97,15 @@ clearer than attempting a mutation and classifying the 400.
 
 Enabling a rule does not bump `revision` — it stayed 0 across the enable.
 
+Serverless 9.7.0 tags a rule that a project-scoped Elasticsearch API key
+enables. Within about ten seconds of a create with `enabled: true`, a `PATCH`
+enable, or a `_bulk_action` enable, Kibana appends the tag
+`Missing Elastic Cloud API Key`. The rule still runs. A later `PUT` or `PATCH`
+that omits the tag removes it, and it stays removed until the next enable.
+Hosted 9.5.6 added no tag in the same probe. elasticctl treats the tag as
+ordinary rule content: `state diff` reports it after an enable, and the next
+`state push` removes it.
+
 ### 7.3 Targeting rules by rule_id in bulk actions
 
 `_bulk_action` accepts `ids`, which are the volatile server-side saved-object

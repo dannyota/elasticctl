@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.5 — 2026-11-10
 
 ### Fixed
 
@@ -10,6 +10,13 @@
   the whole corpus. With default arguments it failed with `unsupported` on
   stacks with the prebuilt rules installed, because the 19.3 MB response for
   2,263 rules exceeded the 16 MiB body cap. `rules list` is unchanged.
+
+### Verified
+
+- All eleven conformance contracts pass on Serverless 9.7.0, Hosted 9.5.6,
+  and self-managed 9.5.1. Both Cloud targets held 2,263 prebuilt rules.
+- The Serverless fixture set is re-recorded on 9.7.0 and pins
+  `search esql --out` through the async query API.
 
 ## 0.7.4 — 2026-11-10
 
