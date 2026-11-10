@@ -589,10 +589,12 @@ dependencies = [
  "elasticctl-api",
  "elasticctl-api-test-support",
  "elasticctl-core",
+ "getrandom 0.4.3",
  "jsonschema",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1875,6 +1877,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 
