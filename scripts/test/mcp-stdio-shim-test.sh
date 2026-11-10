@@ -22,7 +22,14 @@ case ${MODE:-} in
   exit) exit "${STATUS:-0}" ;;
   kill) kill -KILL "$$" ;;
   line) IFS= read -r line; printf '%s\n' "$line" >"$MARKER" ;;
-  hold) read -r line; READY='' MODE='wait' bash "$0" & ;;
+  hold)
+    # The grandchild holds stdout open; "<" keeps Bash from giving it /dev/null.
+    READY='' MODE='wait' bash "$0" <"$HOLD" &
+    printf '%s' "$!" >"$MARKER"
+    trap 'printf term >"$MARKER.term"' TERM
+    # A forwarded TERM interrupts the first read.
+    read -r line || read -r line
+    ;;
   *)
     while IFS= read -r line; do printf '%s\n' "$line"; done
     printf '%s' "$line"
@@ -197,23 +204,43 @@ head -c "$size" "$WORK/burst" | cmp -s - "$WORK/burst-log/in.jsonl" || fail 'ear
 cmp -s "$WORK/server-err" "$WORK/err" || fail 'early exit stderr'
 gone 'early exit leftover'
 cases=$((cases+1))
-# A grandchild keeps stdout open after the command exits; TERM still stops
-# the relays. Resending covers a TERM that lands just before shutdown.
+# A grandchild keeps stdout open after the command exits 3. Exactly one TERM,
+# sent while the command runs ("early") or while shutdown waits ("late"),
+# must stop the relays.
 exec 9<>"$WORK/fifo"
-rm -f "$WORK/ready"
-STATUS=3 MODE='hold' READY=$WORK/ready launch "$WORK/hold" -- bash "$WORK/server" <"$WORK/fifo" >"$WORK/out" 2>"$WORK/err"
-await "$WORK/ready" 'hold readiness'
-children "$pid" 'hold children'
-held=$(cat "$WORK/ready")
-printf 'go\n' >&9
-for _ in {1..500}; do kill -0 "$held" 2>/dev/null || break; nap 0.01; done
-for _ in {1..50}; do kill -TERM "$pid" 2>/dev/null || break; nap 0.1; done
-reap "$pid" 'shutdown signal'
-[ "$got" -eq 3 ] || fail 'shutdown signal status'
-gone 'shutdown signal leftover'
+for when in early late; do
+  rm -f "$WORK/ready" "$WORK/holder" "$WORK/holder.term"
+  STATUS=3 MODE='hold' HOLD=$WORK/clock MARKER=$WORK/holder READY=$WORK/ready launch "$WORK/hold-$when" -- bash "$WORK/server" <"$WORK/fifo" >"$WORK/out" 2>"$WORK/err"
+  await "$WORK/holder" "hold readiness $when"
+  children "$pid" "hold children $when"
+  held=$(cat "$WORK/ready")
+  holder=$(cat "$WORK/holder")
+  if [ "$when" = early ]; then
+    kill -TERM "$pid"
+    await "$WORK/holder.term" 'hold forwarding'
+  fi
+  printf 'go\n' >&9
+  for _ in {1..500}; do kill -0 "$held" 2>/dev/null || break; nap 0.01; done
+  ! kill -0 "$held" 2>/dev/null || fail "command exit $when"
+  kill -0 "$holder" 2>/dev/null || fail "holder $when"
+  if [ "$when" = late ]; then
+    kill -0 "$pid" 2>/dev/null || fail 'shutdown did not wait'
+    kill -TERM "$pid"
+  fi
+  reap "$pid" "shutdown signal $when"
+  [ "$got" -eq 3 ] || fail "shutdown status $when"
+  gone "shutdown leftover $when"
+  kill -0 "$holder" 2>/dev/null || fail "holder lost $when"
+  kill "$holder"
+  for _ in {1..500}; do kill -0 "$holder" 2>/dev/null || break; nap 0.01; done
+  ! kill -0 "$holder" 2>/dev/null || fail "holder cleanup $when"
+done
 exec 9>&-
 cases=$((cases+1))
-# A signal at any point of startup stops the shim with 128 plus its number.
+# A signal at any point of startup ends the shim with 128 plus its number: by
+# the default action before the traps exist, by the shim before the command
+# runs, and through the command, which has no traps, after. Only the server's
+# stderr line may appear, and no process from the run remains.
 exec 9<>"$WORK/fifo"
 signals=(TERM INT HUP)
 for i in {0..44}; do
