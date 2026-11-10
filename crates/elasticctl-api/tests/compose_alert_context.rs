@@ -580,7 +580,10 @@ async fn fatal_errors_at_each_step_fail_the_call() {
                     }
                 })
                 .await;
-                let e = alert_context::alert_context(&s.transport(1), ALERT_ID, "24h")
+                // Only the hanging step relies on the timeout; a short one for
+                // the others would turn a slow runner's answer into a timeout.
+                let timeout = if fatal == ErrorKind::Timeout { 1 } else { 30 };
+                let e = alert_context::alert_context(&s.transport(timeout), ALERT_ID, "24h")
                     .await
                     .unwrap_err();
                 assert_eq!(e.kind, fatal, "{failing:?}");
