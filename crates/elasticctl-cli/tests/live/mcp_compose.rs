@@ -12,6 +12,8 @@ mod expect;
 pub(super) mod fill;
 #[path = "mcp_compose/objects.rs"]
 mod objects;
+#[path = "mcp_compose/resources.rs"]
+mod resources;
 #[path = "mcp_compose/shape.rs"]
 mod shape;
 

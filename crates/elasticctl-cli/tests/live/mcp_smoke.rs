@@ -126,6 +126,40 @@ async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn raw_requests_keep_resource_errors_and_success_requests_stay_strict() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
+    let config = mcp_subprocess_config(dir.path(), &server.uri());
+    for (allow_query_tools, code) in [(false, -32602), (true, -32002)] {
+        let mut child = McpChild::spawn(&config, allow_query_tools).expect("start MCP child");
+        if allow_query_tools {
+            initialize_child(&mut child, true).expect("initialize legacy child");
+        }
+        let params = json!({"uri":"elasticctl://plans/x"});
+        let response = child
+            .request_raw("resources/read", params.clone())
+            .expect("raw request retains error frame");
+        assert!(response.get("result").is_none());
+        assert_eq!(
+            response["error"],
+            json!({"code":code,"message":"Resource not found"})
+        );
+        assert_eq!(
+            child.request("resources/read", params).unwrap_err(),
+            "MCP resources/read request returned an error."
+        );
+        child.shutdown().expect("shutdown MCP child");
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server requests")
+            .is_empty()
+    );
+}
+
 #[test]
 fn protocol_result_discriminator_normalization_rejects_invalid_shapes_without_leaking_values() {
     let sentinel = "mcp-result-discriminator-sentinel";
@@ -2262,7 +2296,7 @@ impl McpChild {
         Ok(owner.into_child(replies))
     }
 
-    pub(super) fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+    pub(super) fn request_raw(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(protocol_request(self.protocol_path, id, method, params))?;
@@ -2275,6 +2309,11 @@ impl McpChild {
                 "MCP {method} response id did not match its request."
             ));
         }
+        Ok(response)
+    }
+
+    pub(super) fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+        let response = self.request_raw(method, params)?;
         if response.get("error").is_some() || response.get("result").is_none() {
             return Err(format!("MCP {method} request returned an error."));
         }
