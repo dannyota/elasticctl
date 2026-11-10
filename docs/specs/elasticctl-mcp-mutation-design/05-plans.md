@@ -188,7 +188,7 @@ answered 409 ([section 8.2](08-apply-errors-and-cancellation.md#82-classifying-t
 
 | Limit | Value | When reached |
 | --- | --- | --- |
-| Open plans | 8 | A planner returns `too_many_plans`. Open plans are never evicted |
+| Plans not final (`open` or `applying`) | 8 | A planner returns `too_many_plans`. Neither state is evicted, so the store holds at most 40 plans |
 | Final plan records | 32 | The oldest is dropped. Its id then returns `plan_not_found` |
 | Plan life | 900 seconds from creation, on the monotonic clock | An open plan becomes `expired` at its next access. No call extends it |
 | Objects per plan | 20 | `invalid_argument` before I/O |
@@ -203,7 +203,9 @@ plan can therefore be shown in full.
 
 Expiry is evaluated when a plan is read. A confirmation that arrives after
 expiry does not apply; the call returns `plan_expired`. A plan that is
-`applying` does not expire.
+`applying` does not expire. Any store operation may expire other open plans
+on the way; it hands each one it closed back to the caller, which writes one
+`plan_closed` line per plan.
 
 The store is one `std::sync::Mutex` inside `ServerState`. The lock is never
 held across an await. Nothing is written to disk. When the process exits,

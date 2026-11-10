@@ -3,6 +3,7 @@
 mod bounded_io;
 pub mod catalog;
 mod error;
+mod plan;
 mod prompts;
 mod resources;
 pub mod result;

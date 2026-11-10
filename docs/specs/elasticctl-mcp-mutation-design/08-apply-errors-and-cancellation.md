@@ -151,7 +151,7 @@ existing vocabulary.
 | `plan_discarded` | `conflict` | The plan was discarded |
 | `plan_not_open` | `conflict` | `plan_discard` on a plan that is applying |
 | `plan_too_large` | `unsupported` | The plan or its consent text exceeds a limit |
-| `too_many_plans` | `error` | Eight plans are open |
+| `too_many_plans` | `error` | Eight plans are open or applying |
 | `not_confirmed` | `permission` | The form was not accepted with `apply: true` |
 | `confirmation_unavailable` | `unsupported` | The client cannot show a form |
 | `confirmation_pending` | `error` | Another confirmation is waiting (legacy) |
