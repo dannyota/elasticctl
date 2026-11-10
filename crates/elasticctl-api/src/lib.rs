@@ -16,6 +16,7 @@ pub mod fleet;
 pub mod health;
 pub mod model;
 pub mod normalize;
+pub mod observe;
 pub mod ops;
 pub mod prebuilt;
 pub mod profiles;
@@ -29,8 +30,8 @@ pub mod state;
 
 pub use alerts::{AlertHit, AlertPage, AlertStatus, Conflicts, SignalsOutcome};
 pub use alerts_ops::{
-    AlertFilter, AlertList, AssignPlan, EditReport, QueryStatusPlan, StatusPlan, StatusReport,
-    TagsPlan,
+    AlertFacet, AlertFilter, AlertList, AssignPlan, EditReport, QueryStatusPlan, StatusPlan,
+    StatusReport, TagsPlan,
 };
 pub use cases::{Case, CaseStatus, NewCase};
 pub use cases_ops::{
@@ -55,19 +56,23 @@ pub use fleet::integration_policy_ops::{
     IntegrationPolicyDeletePlan, IntegrationPolicyDeleteReport, IntegrationPolicyImportPlan,
     IntegrationPolicyImportReport,
 };
-pub use health::{DoctorCheck, DoctorReport, InfoReport, Status};
+pub use health::{CredentialIdentity, DoctorCheck, DoctorReport, InfoReport, Status};
 pub use model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ExceptionRef, ExportSummary,
     ITEM_VOLATILE_FIELDS, LIST_VOLATILE_FIELDS, ListKey, Rule, VOLATILE_FIELDS, exception_refs,
     server_defaults,
 };
 pub use normalize::{canonical, comparable, sort_rules};
+pub use observe::{Observed, Preconditions, require_rule_identity};
 pub use ops::{DeleteOutcome, ExportOutcome, ImportPlan, ImportReport, MutationPlan};
 pub use prebuilt::{PrebuiltInstallOutcome, PrebuiltStatus};
 pub use profiles::UserProfile;
 pub use report::{ChangeReport, ReportEntry};
 pub use rules::{BulkAction, BulkOutcome, RuleFilter, RuleSource};
-pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateReport};
+pub use rules_ops::{
+    PreviewReport, RuleCreateOutcome, RuleCreatePlan, RuleListReport, SetEnabledOutcome,
+    ValidateReport,
+};
 pub use state::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, PullReport, PushPlan, PushReport,
 };
