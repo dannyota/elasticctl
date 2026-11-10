@@ -15,7 +15,7 @@ use wiremock::{
 const FIND: &str = "/api/detection_engine/rules/_find";
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/serverless-9.6.0/rules_find.json"
+    "/../../tests/fixtures/serverless-9.7.0/rules_find.json"
 ));
 const TECHNIQUE_DESCRIPTION: &str = "MITRE ATT&CK technique or subtechnique id. When supplied, it must be T followed by four ASCII digits, such as T1059, or T, four ASCII digits, a period, and three ASCII digits, such as T1059.001.";
 const TACTIC_DESCRIPTION: &str = "MITRE ATT&CK tactic id. When supplied, it must be TA followed by four ASCII digits, such as TA0002.";
