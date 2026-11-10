@@ -1,57 +1,43 @@
 # elasticctl
 
-**A safety-first CLI to operate Elastic Security as code.**
+[![CI](https://github.com/dannyota/elasticctl/actions/workflows/ci.yml/badge.svg)](https://github.com/dannyota/elasticctl/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/dannyota/elasticctl/actions/workflows/codeql.yml/badge.svg)](https://github.com/dannyota/elasticctl/actions/workflows/codeql.yml)
+[![crates.io](https://img.shields.io/crates/v/elasticctl)](https://crates.io/crates/elasticctl)
+[![Release](https://img.shields.io/github/v/release/dannyota/elasticctl)](https://github.com/dannyota/elasticctl/releases)
+[![License](https://img.shields.io/github/license/dannyota/elasticctl)](LICENSE)
 
-Examples in this document run `elkctl`, a short alias for the same binary as
-`elasticctl`. Every install method below puts both names on `PATH`. The
-project, the crate on crates.io, and the GitHub repository stay named
-`elasticctl`.
-
-`elasticctl` is a Rust CLI for managing Elastic Security detection rules as
-code across self-managed stacks, Elastic Cloud Hosted deployments, and Elastic
-Cloud Serverless projects. It is a sibling to
+A safety-first command-line tool and Model Context Protocol (MCP) server for
+operating Elastic Security as code on self-managed stacks, Elastic Cloud Hosted
+deployments, and Elastic Cloud Serverless projects. Keep detection rules and
+exception lists in Git, triage alerts and cases, move data views, dashboards,
+and Fleet policies between stacks, and query Elasticsearch. It is a sibling to
 [splunkctl](https://github.com/dannyota/splunkctl) and shares its operating
-contracts:
+contracts: dry-run-by-default changes, named profiles, stable output, and typed
+errors.
 
-- **Remote mutations are dry runs by default.** Nothing is applied until you
-  pass `--yes`, and every preview names the profile, host, and space it would
-  touch.
-- **Configuration as code.** Pull live rules, review structured drift, push
-  approved changes with a change-evidence report. Push never deletes remote
-  rules.
-- **Stable machine output.** Table by default, `--json` on request, typed error
-  envelopes on stderr.
-- **Named profiles** for separate development, UAT, and production instances.
+This is a personal, unofficial project, not affiliated with or endorsed by
+Elastic. Expect breaking changes in minor releases until `1.0.0`.
 
-The Model Context Protocol (MCP) server exposes twenty inspection tools for
-stack diagnostics, rules, exception lists, alerts, cases, data views,
-dashboards, and Fleet policies. Two synchronous query tools require startup
-opt-in.
+Examples run `elkctl`, a short alias for the same binary as `elasticctl`.
+Every install method puts both names on `PATH`. The project, the crate on
+crates.io, and the GitHub repository stay named `elasticctl`.
 
 ## Install
 
-Install from crates.io or download a prebuilt binary.
-
-### From crates.io
-
-Requires the stable Rust toolchain.
+From crates.io, with the stable Rust toolchain:
 
 ```bash
 cargo install elasticctl
 ```
 
-This installs both the `elasticctl` and `elkctl` binaries. Not every release
-reaches crates.io, so this can be a version behind. GitHub Releases always
-carry the newest version.
+This installs both binaries. Not every release reaches crates.io, so this can
+be a version behind. GitHub Releases always carry the newest version.
 
-### From GitHub Releases
-
-Each release ships prebuilt binaries for Linux (glibc and musl), macOS
-(Intel and Apple Silicon), and Windows. Every archive contains both the
-`elasticctl` and `elkctl` binaries. Download the archive for your platform
-from the [latest release](https://github.com/dannyota/elasticctl/releases/latest),
-put both binaries on your `PATH`, or use an installer script, which does that
-for you:
+Or use a prebuilt binary. Each
+[release](https://github.com/dannyota/elasticctl/releases/latest) ships
+archives for Linux (glibc and musl), macOS (Intel and Apple Silicon), and
+Windows, each containing both binaries. The installer scripts put them on
+`PATH`:
 
 ```bash
 # macOS and Linux
@@ -65,312 +51,116 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/dannyota/elasticctl/releases/latest/download/elasticctl-installer.ps1 | iex"
 ```
 
-## Quickstart
+## Quick start
 
-Create a profile from `ELASTICCTL_*` environment variables; `.env.example`
-documents them. The key must be a project-scoped Elasticsearch API key created
-inside Kibana. An organization-level Cloud key can read and create disabled
-rules but cannot enable one.
+Create a profile from `ELASTICCTL_*` environment variables;
+[`.env.example`](.env.example) documents them. Use an Elasticsearch API key
+created inside Kibana. An organization-level Cloud key can read and create
+disabled rules but cannot enable one.
 
 ```bash
 export ELASTICCTL_KIBANA_URL=https://YOUR-PROJECT.kb.YOUR-REGION.aws.elastic.cloud
 export ELASTICCTL_API_KEY=...
 elkctl config init --from-env
+elkctl doctor   # checks reachability, key scope, and rule access
 ```
 
-Confirm the stack is reachable, the key scope is right, and rules are readable:
+Keep rules in a directory and review drift before pushing:
 
 ```bash
-elkctl doctor
-```
-
-## Manage rules as code
-
-```bash
-elkctl state pull --dir state   # writes state/rules/*.ndjson
+elkctl state pull --dir state   # writes state/rules/ and state/exceptions/
 # edit rules, or add new ones
 elkctl state diff --dir state   # field-level drift, no changes made
-elkctl state push --dir state   # preview; add --yes to apply
+elkctl state push --dir state   # preview only
+elkctl state push --dir state --yes
 ```
 
-`push` and every other remote mutation preview by default and apply only with
-`--yes`.
+Every remote change previews first and applies only with `--yes`. `state push`
+never deletes a remote rule or exception list. See [Getting Started][start]
+and [Rules as Code][state].
 
-All state commands accept positional selectors, `--tag`, and
-`--source custom|customized|prebuilt|all`. `--source` defaults to `custom`;
-`--source all` includes the full rule corpus. `--source` limits an unselected
-state command to matching rules. Positional selectors and `--tag` override
-that unselected source scope: they first resolve rule IDs, then read those
-rules:
+## Coverage
 
-```bash
-elkctl state diff --dir state my-rule-id      # one rule
-elkctl state push --dir state --tag prod      # one tag
-```
+| Area | Supports | Guide |
+| --- | --- | --- |
+| Rules as code | Pull, diff, and push rules and their exception lists, with change-evidence reports | [Rules as Code][state] |
+| Rules | List, get, validate, enable, disable, delete, export, import, preview; prebuilt status and install | [Rules][rules] |
+| Exceptions | List, get, validate, export, import, and delete exception lists with their items | [Exceptions][exceptions] |
+| Search | ES\|QL and Query DSL peeks and full exports | [Search][search] |
+| Alerts and cases | Alert status, tags, and assignees; case create, comment, attach, close, reopen, delete | [Alerts and Cases][triage] |
+| Data views and dashboards | Portable files, the default data view, reference-safe delete, Saved Objects bundles | [Data Views and Dashboards][content] |
+| Fleet | Agent and integration policies as portable files | [Fleet][fleet] |
+| MCP | Twenty read-only inspection tools; two opt-in query tools | [MCP][mcp] |
+| Stack | Profiles, `doctor`, and `info` | [Configuration][config] |
 
-`diff` and `push` resolve a selector against the directory first, so a rule you
-have only written locally is selectable by name before it exists on the stack.
+## MCP server
 
-Inspect and manage individual rules:
-
-```bash
-elkctl rules list
-elkctl rules get <rule_id-or-name>
-elkctl rules validate --path rule.yaml
-elkctl rules enable <rule_id> --yes
-elkctl rules export --tag my-corpus --out rules.ndjson
-elkctl rules preview my-rule-id --sample 3
-```
-
-## Manage data views
-
-Data views use stable ids and portable JSON or YAML files. Legacy scripted
-fields are not portable and are rejected before any remote request.
-
-```bash
-elkctl data-views list --search logs
-elkctl data-views get logs-default
-elkctl data-views validate --path data-views.yaml
-elkctl data-views export logs-default --format-file yaml > data-views.yaml
-
-elkctl data-views import --path data-views.yaml --yes
-elkctl data-views default set logs-default --yes
-elkctl data-views default unset --yes
-elkctl data-views delete old-logs --replace-with logs-default --yes
-```
-
-`import`, `delete`, and `default set|unset` are guarded mutations. They print
-a preview unless `--yes` is supplied. Delete refuses a referenced or current
-default data view until its references/default are safely replaced or unset.
-
-## Manage dashboards
-
-Dashboards use stable ids and portable JSON or YAML files. Typed export omits
-server metadata and refuses a dashboard carrying loss warnings. Use an opaque
-Saved Objects bundle when the dashboard needs its deep dependencies moved with
-it.
-
-```bash
-elkctl dashboards list --search security --tag production
-elkctl dashboards get security-overview
-elkctl dashboards validate --path dashboards.yaml
-elkctl dashboards export security-overview --format-file yaml > dashboards.yaml
-
-elkctl dashboards import --path dashboards.yaml --yes
-elkctl dashboards delete retired-overview --yes
-elkctl dashboards bundle export security-overview > dashboards.ndjson
-elkctl dashboards bundle import --path dashboards.ndjson --yes
-```
-
-`import`, `delete`, and `bundle import` are guarded mutations. Typed import
-checks referenced data views before it writes. Bundle bytes stay opaque so the
-server can restore the dashboard and its exported dependencies together.
-
-## Manage Fleet agent policies
-
-```bash
-elkctl fleet agent-policies list --search linux
-elkctl fleet agent-policies get production-linux
-elkctl fleet agent-policies validate --path agent-policies.yaml
-elkctl fleet agent-policies export --all-custom --format-file yaml > agent-policies.yaml
-
-elkctl fleet agent-policies import --path agent-policies.yaml --yes
-elkctl fleet agent-policies delete retired-linux --yes
-```
-
-## Manage Fleet integration policies
-
-```bash
-elkctl fleet integration-policies list --search system
-elkctl fleet integration-policies get production-system
-elkctl fleet integration-policies validate --path integration-policies.yaml
-elkctl fleet integration-policies export --all-custom --format-file yaml > integration-policies.yaml
-
-elkctl fleet integration-policies import --path integration-policies.yaml --yes
-elkctl fleet integration-policies delete retired-system --yes
-```
-
-`import` and `delete` are guarded mutations. They preview by default and apply
-only with `--yes`. Exported integration policies retain the complete
-simplified input map needed for an exact round trip. A create or replacement
-whose package declares inputs rejects `inputs: {}`; export the live policy
-instead of replacing that map with an empty object.
-
-## Triage alerts and cases
-
-```bash
-elkctl alerts list --status open --severity critical
-elkctl alerts ack <alert_id> --yes
-elkctl alerts close <alert_id> --reason false_positive --yes
-
-elkctl cases create --title "Suspicious PowerShell activity" --severity high --yes
-elkctl cases attach <case_id> --alert <alert_id> --yes
-elkctl cases comment <case_id> --message "Confirmed benign, closing." --yes
-```
-
-## MCP clients
-
-Client checks passed with Claude Code 2.1.263 and Codex CLI 0.153.4 on the
-local lab. Both negotiated protocol `2025-11-25`; the three-flavor harness
-also proves current protocol `2026-07-28`. See the
-[0.7.2 findings](docs/conformance/v0.7.2/findings.md) for the tested calls.
-
-Launch the MCP server with an operator-selected
-profile and space:
+`elkctl mcp serve` serves read-only tools over stdio for one profile and space
+chosen at startup:
 
 ```bash
 elkctl --profile analyst --space default mcp serve
 ```
 
-Register a stdio server through your client's settings. For clients that use
-an `mcpServers` object, this placeholder stanza starts the same command:
+The default catalog has twenty inspection tools for stack diagnostics, rules,
+exception lists, alerts, cases, data views, dashboards, and Fleet policies.
+`--allow-query-tools` adds synchronous ES|QL and Query DSL tools. No tool
+changes the stack, selects local files, or changes the target. See
+[MCP][mcp] for the client stanza, limits, and tested clients.
 
-```json
-{
-  "mcpServers": {
-    "elasticctl": {
-      "command": "elkctl",
-      "args": ["--profile", "analyst", "--space", "default", "mcp", "serve"]
-    }
-  }
-}
-```
+## Scripts and AI agents
 
-Choose an existing profile name. Credentials come from that profile or the
-server process environment. Tool calls cannot change the target or select
-local files. The server writes protocol messages to stdout and diagnostics
-to stderr. Use `--timeout` to set a whole-call deadline of 1-120 seconds;
-the default is 30 seconds.
-
-The default catalog contains these twenty inspection tools:
-
-| Area | Tools |
-| --- | --- |
-| Stack | `stack_info`, `stack_doctor` |
-| Rules | `rules_list`, `rules_get`, `rules_prebuilt_status` |
-| Exceptions | `exceptions_list`, `exceptions_get` |
-| Alerts | `alerts_list`, `alerts_get` |
-| Cases | `cases_list`, `cases_get` |
-| Data views | `data_views_list`, `data_views_get`, `data_views_default_get` |
-| Dashboards | `dashboards_list`, `dashboards_get` |
-| Fleet | `fleet_agent_policies_list`, `fleet_agent_policies_get`, `fleet_integration_policies_list`, `fleet_integration_policies_get` |
-
-Lists default to 50 rows and accept limits up to 200. Results include the
-profile, host, and space, plus cap metadata when rows are omitted. Narrow a
-filter or use a get to inspect a capped list.
-
-Enable synchronous ES|QL and Query DSL tools when starting the server:
+- **Stable output:** a table by default, in a terminal and in a script alike.
+  `--json` or `--format json|yaml|csv|jsonl` for machine output, and
+  `--fields` to keep only named fields.
+- **Typed errors:** a failure prints one JSON object on stderr with a stable
+  `kind`, such as `permission` or `not_found`.
+- **Exit codes:** `0` success, `1` error, `2` usage error.
+- **Dry run by default:** every remote change previews and names the profile,
+  host, and space; `--yes` applies it.
+- **Named profiles:** keep development, UAT, and production stacks apart.
+- **Discovery:** `elkctl commands` prints the command tree as JSON.
 
 ```bash
-elkctl --profile analyst --space default mcp serve --allow-query-tools
+elkctl --profile uat rules list --source custom --json
 ```
 
-This adds `search_esql` and `search_dsl` for the life of the process. They can
-read indices allowed by the selected Elastic credential. Kibana space
-selection does not restrict Elasticsearch index access.
+See the [CLI reference][cli] for output, errors, and selectors, and
+[Security][security] for credential handling and the dry-run guard.
 
-Each query call makes one HTTP attempt, including on 429 and server errors.
-A later client call starts new work. Queries may invoke inference services;
-row and output limits bound returned data, not inference cost or earlier
-query work. Use Elastic privileges to control which indices and services the
-credential can access.
+## Documentation
 
-Returned text and nested content are untrusted tool data. They may contain
-sensitive information visible to the selected credential. The server excludes
-configured credentials and raw upstream error details. Authored content and
-queried document fields can still contain secrets. The catalog exposes no
-object mutation tools.
+- [Getting Started][start]: install, create a profile, first commands.
+- [Configuration][config]: profiles, environment variables, spaces, API keys.
+- [CLI reference][cli]: command tree, output formats, errors, exit codes.
+- Guides: [Rules as Code][state], [Rules][rules], [Exceptions][exceptions],
+  [Search][search], [Alerts and Cases][triage],
+  [Data Views and Dashboards][content], [Fleet][fleet], [MCP][mcp].
+- [Security][security]: the dry-run guard, credentials, and MCP reach.
+- [Limitations][limitations]: Elastic behaviors the tool works around.
+- [Changelog](CHANGELOG.md): changes by version.
+- [Design](docs/specs/elasticctl-design.md): scope, architecture, and measured
+  API behavior.
 
-## Command surface
+## Contributing
 
-```
-elkctl config init | list | show | test
-elkctl doctor
-elkctl info
-elkctl mcp serve [--allow-query-tools]
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks a pull request
+must pass, and the rules review holds changes to. Report security problems
+privately through [SECURITY.md](SECURITY.md). Maintainers cut releases with
+[docs/releasing.md](docs/releasing.md).
 
-elkctl rules list [--source custom|customized|prebuilt|all]
-  | get | validate | enable | disable | delete
-elkctl rules export [<selector>...] [--tag TAG] [--source custom|customized|prebuilt|all]
-  | import [--skip-existing] | preview [--sample N]
-elkctl rules prebuilt status|install
+Licensed under [Apache 2.0](LICENSE).
 
-elkctl exceptions list | get | validate | export | import | delete
-
-elkctl data-views list [--search TEXT] | get <id-or-exact-name> | validate --path FILE
-elkctl data-views export [<id-or-exact-name>...] [--format-file json|yaml]
-  | import --path FILE [--overwrite|--skip-existing] --yes
-  | delete <id-or-exact-name>... [--replace-with ID] --yes
-  | default get | set <id-or-exact-name> --yes | unset --yes
-
-elkctl dashboards list [--search TEXT] [--tag TAG] [--limit N]
-  | get <id-or-exact-title> | validate --path FILE
-elkctl dashboards export [<id-or-exact-title>...] [--format-file json|yaml]
-  | import --path FILE [--overwrite|--skip-existing] --yes
-  | delete <id-or-exact-title>... --yes
-  | bundle export [<id-or-exact-title>...]
-  | bundle import --path FILE [--overwrite] --yes
-
-elkctl fleet agent-policies list [--search TEXT] [--limit N] | get <id-or-exact-name>
-  | validate --path FILE
-elkctl fleet agent-policies export [<id-or-exact-name>...|--all-custom] [--format-file json|yaml]
-  | import --path FILE [--overwrite|--skip-existing] --yes
-  | delete <id-or-exact-name>... --yes
-
-elkctl fleet integration-policies list [--search TEXT] [--limit N] | get <id-or-exact-name>
-  | validate --path FILE
-elkctl fleet integration-policies export [<id-or-exact-name>...|--all-custom] [--format-file json|yaml]
-  | import --path FILE [--overwrite|--skip-existing] --yes
-  | delete <id-or-exact-name>... --yes
-
-elkctl state {pull|diff|push} --dir DIR [<selector>...] [--tag TAG]
-  [--source custom|customized|prebuilt|all]
-
-elkctl search esql <QUERY> [--data-view DV | --index IDX] [--limit N]
-elkctl search dsl <BODY> [--data-view DV | --index IDX] [--limit N] [--with-meta]
-
-elkctl alerts list [--status open|acknowledged|closed] [--severity S] [--rule R]
-                   [--tag T] [--assignee USER] [--since DUR|ISO] [--search TEXT]
-elkctl alerts get <alert_id>
-elkctl alerts ack|open|close (<alert_id>... | --query <dsl|@file>) --yes
-elkctl alerts close <alert_id>... --reason false_positive --yes
-elkctl alerts tag <alert_id>... --add triaged --remove noise --yes
-elkctl alerts assign <alert_id>... --add USER --yes
-
-elkctl cases list [--status open|in-progress|closed] [--severity S]
-                  [--tag T] [--search TEXT]
-elkctl cases get <case_id>
-elkctl cases create --title T [--description D] [--tag T]... [--severity S]
-                    [--assignee USER]... --yes
-elkctl cases close|open <case_id>... --yes
-elkctl cases delete <case_id>... --yes
-elkctl cases attach <case_id> --alert <alert_id>... --yes
-elkctl cases comment <case_id> --message TEXT --yes
-
-elkctl completion bash|elvish|fish|powershell|zsh
-elkctl commands
-```
-
-## Global flags
-
-`--profile`, `--config`, `--space`, `--json` / `--format`, `--fields`, `--out`,
-`--yes`, `--timeout`, `--debug`. Run `elkctl help` for details.
-
-`mcp serve` accepts the target and timeout flags. It rejects `--yes`, `--out`,
-`--fields`, `--json`, an explicit `--format`, and `--debug`.
-
-## Development
-
-```bash
-git clone https://github.com/dannyota/elasticctl
-cd elasticctl
-cargo test
-```
-
-Setup, the gates a pull request must pass, and the rules review holds you to:
-[`CONTRIBUTING.md`](CONTRIBUTING.md). Cutting a release:
-[`docs/releasing.md`](docs/releasing.md).
-
-## License
-
-Apache-2.0
+[start]: https://github.com/dannyota/elasticctl/wiki/Getting-Started
+[config]: https://github.com/dannyota/elasticctl/wiki/Configuration
+[cli]: https://github.com/dannyota/elasticctl/wiki/CLI
+[state]: https://github.com/dannyota/elasticctl/wiki/Rules-as-Code
+[rules]: https://github.com/dannyota/elasticctl/wiki/Rules
+[exceptions]: https://github.com/dannyota/elasticctl/wiki/Exceptions
+[search]: https://github.com/dannyota/elasticctl/wiki/Search
+[triage]: https://github.com/dannyota/elasticctl/wiki/Alerts-and-Cases
+[content]: https://github.com/dannyota/elasticctl/wiki/Data-Views-and-Dashboards
+[fleet]: https://github.com/dannyota/elasticctl/wiki/Fleet
+[mcp]: https://github.com/dannyota/elasticctl/wiki/MCP
+[security]: https://github.com/dannyota/elasticctl/wiki/Security
+[limitations]: https://github.com/dannyota/elasticctl/wiki/Limitations
