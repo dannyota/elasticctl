@@ -1,5 +1,10 @@
 //! Case orchestration: filters, list/get, and the guarded mutation plans.
 
+mod recheck;
+pub use recheck::observe_cases;
+mod observed;
+pub use observed::{plan_comment_observed, plan_status_observed};
+
 use crate::alerts;
 use crate::alerts_ops::source_str;
 use crate::cases::{self, Case, CaseStatus, NewCase};
@@ -126,6 +131,19 @@ fn case_noun(n: usize) -> &'static str {
 /// Resolve explicit case ids. Fail-closed: every id must resolve or nothing
 /// proceeds; duplicates collapse preserving first-seen order.
 async fn resolve_cases(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedCase>> {
+    Ok(resolve_case_values(t, ids)
+        .await?
+        .into_iter()
+        .map(|case| ResolvedCase {
+            id: case.id,
+            version: case.version,
+            title: case.title,
+            status: case.status,
+        })
+        .collect())
+}
+
+async fn resolve_case_values(t: &Transport, ids: &[String]) -> Result<Vec<Case>> {
     let mut unique: Vec<String> = Vec::with_capacity(ids.len());
     for id in ids {
         if !unique.contains(id) {
@@ -136,12 +154,7 @@ async fn resolve_cases(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedCase
     let mut missing = Vec::new();
     for id in &unique {
         match cases::get(t, id).await {
-            Ok(case) => resolved.push(ResolvedCase {
-                id: case.id,
-                version: case.version,
-                title: case.title,
-                status: case.status,
-            }),
+            Ok(case) => resolved.push(case),
             Err(e) if e.kind == ErrorKind::NotFound => missing.push(id.clone()),
             Err(e) => return Err(e),
         }
@@ -264,38 +277,7 @@ pub struct StatusPlan {
 /// Fetch each case for its version, mark already-in-state rows, and PATCH
 /// only the rest. A no-op set still previews and reports zero updates.
 pub async fn plan_status(t: &Transport, ids: &[String], target: CaseStatus) -> Result<StatusPlan> {
-    let resolved = resolve_cases(t, ids).await?;
-    let mut updates = Vec::new();
-    let mut details = Vec::new();
-    for case in &resolved {
-        if case.status == target.as_str() {
-            details.push(format!(
-                "{}  {}  already {}",
-                case.id, case.title, case.status
-            ));
-        } else {
-            details.push(format!(
-                "{}  {}  {} -> {}",
-                case.id,
-                case.title,
-                case.status,
-                target.as_str()
-            ));
-            updates.push((case.id.clone(), case.version.clone(), target));
-        }
-    }
-    Ok(StatusPlan {
-        preview_action: format!(
-            "{} {} {}",
-            target.verb(),
-            resolved.len(),
-            case_noun(resolved.len())
-        ),
-        target,
-        updates,
-        resolved: resolved.len(),
-        preview_details: details,
-    })
+    Ok(plan_status_observed(t, ids, target).await?.0)
 }
 
 pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditReport> {
@@ -329,13 +311,15 @@ pub async fn apply_status(t: &Transport, plan: &StatusPlan) -> Result<CaseEditRe
     }
     let updated = cases::patch_status(t, &plan.updates).await.map_err(|e| {
         if e.kind == ErrorKind::Conflict {
-            Error::new(
+            let mut wrapped = Error::new(
                 ErrorKind::Conflict,
                 format!(
                     "a case changed since the preview ({}); re-run the command",
                     e.message
                 ),
-            )
+            );
+            wrapped.http_status = e.http_status;
+            wrapped
         } else {
             e
         }
@@ -576,16 +560,7 @@ pub struct CommentPlan {
 }
 
 pub async fn plan_comment(t: &Transport, case_id: &str, message: &str) -> Result<CommentPlan> {
-    if message.trim().is_empty() {
-        return Err(Error::new(ErrorKind::Error, "pass a non-empty --message"));
-    }
-    let case = cases::get(t, case_id).await?;
-    Ok(CommentPlan {
-        preview_action: format!("Comment on case '{}'", case.title),
-        preview_details: vec![message.to_string()],
-        case_id: case.id,
-        message: message.to_string(),
-    })
+    Ok(plan_comment_observed(t, case_id, message).await?.0)
 }
 
 pub async fn apply_comment(t: &Transport, plan: &CommentPlan) -> Result<CaseEditReport> {

@@ -1,6 +1,11 @@
 //! Alert orchestration: filter construction, list/get, and the triage
 //! mutation plans behind the CLI guard.
 
+mod recheck;
+pub use recheck::{AlertFacet, observe_alerts};
+mod observed;
+pub use observed::{plan_status_by_ids_observed, plan_tags_observed};
+
 use crate::alerts::{self, AlertHit, AlertStatus, Conflicts, SignalsOutcome};
 use crate::{profiles, selection};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
@@ -172,6 +177,19 @@ pub(crate) fn source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
     source.pointer(&pointer).and_then(Value::as_str)
 }
 
+fn workflow_status(source: &Value) -> &str {
+    source_str(source, "kibana.alert.workflow_status").unwrap_or("unknown")
+}
+
+/// Build the search body for explicit alert IDs.
+fn resolve_body(unique: &[String]) -> Value {
+    json!({
+        "query": {"ids": {"values": unique}},
+        "size": unique.len(),
+        "_source": RESOLVE_SOURCE_FIELDS,
+    })
+}
+
 /// Resolve explicit ids to alerts. Fail-closed: every id must resolve or the
 /// command refuses to proceed on the partial set (main spec section 6.3).
 /// Duplicate ids are collapsed, preserving first-seen order.
@@ -182,11 +200,7 @@ async fn resolve_ids(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedAlert>
             unique.push(id.clone());
         }
     }
-    let body = json!({
-        "query": {"ids": {"values": unique}},
-        "size": unique.len(),
-        "_source": RESOLVE_SOURCE_FIELDS,
-    });
+    let body = resolve_body(&unique);
     let page = alerts::search(t, &body).await?;
     let mut resolved = Vec::with_capacity(unique.len());
     for id in &unique {
@@ -206,9 +220,7 @@ async fn resolve_ids(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedAlert>
             rule_name: source_str(&hit.source, "kibana.alert.rule.name")
                 .unwrap_or("(unnamed rule)")
                 .to_string(),
-            status: source_str(&hit.source, "kibana.alert.workflow_status")
-                .unwrap_or("unknown")
-                .to_string(),
+            status: workflow_status(&hit.source).to_string(),
         });
     }
     Ok(resolved)
@@ -246,36 +258,7 @@ pub async fn plan_status_by_ids(
     status: AlertStatus,
     reason: Option<String>,
 ) -> Result<StatusPlan> {
-    require_targets(ids)?;
-    let resolved = resolve_ids(t, ids).await?;
-    let preview_details = resolved
-        .iter()
-        .map(|r| {
-            if r.status == status.as_str() {
-                format!("{}  {}  already {}", r.id, r.rule_name, r.status)
-            } else {
-                format!(
-                    "{}  {}  {} -> {}",
-                    r.id,
-                    r.rule_name,
-                    r.status,
-                    status.as_str()
-                )
-            }
-        })
-        .collect();
-    Ok(StatusPlan {
-        status,
-        reason,
-        preview_action: format!(
-            "{} {} {}",
-            status.verb(),
-            resolved.len(),
-            alert_noun(resolved.len())
-        ),
-        targets: resolved.into_iter().map(|r| r.id).collect(),
-        preview_details,
-    })
+    Ok(plan_status_by_ids_observed(t, ids, status, reason).await?.0)
 }
 
 /// The mutation report the CLI renders. `failed` is elasticctl's judgment —
@@ -501,22 +484,7 @@ pub async fn plan_tags(
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<TagsPlan> {
-    require_targets(ids)?;
-    require_edit(&add, &remove)?;
-    require_disjoint(&add, &remove, "tags")?;
-    let resolved = resolve_ids(t, ids).await?;
-    let summary = edit_summary(&add, &remove);
-    let preview_details = resolved
-        .iter()
-        .map(|r| format!("{}  {}  {}", r.id, r.rule_name, summary))
-        .collect();
-    Ok(TagsPlan {
-        preview_action: format!("Tag {} {}", resolved.len(), alert_noun(resolved.len())),
-        targets: resolved.into_iter().map(|r| r.id).collect(),
-        add,
-        remove,
-        preview_details,
-    })
+    Ok(plan_tags_observed(t, ids, add, remove).await?.0)
 }
 
 pub async fn apply_tags(t: &Transport, plan: &TagsPlan) -> Result<EditReport> {
