@@ -21,7 +21,7 @@ use support::{Harness, current_metadata, options};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path, query_param},
+    matchers::{body_partial_json, method, path, query_param},
 };
 
 struct TapWriter {
@@ -184,6 +184,9 @@ fn fixture(name: &str) -> Value {
         "signals_search" => {
             include_str!("../../../tests/fixtures/serverless-9.7.0/signals_search.json")
         }
+        "signals_search_rule_activity" => include_str!(
+            "../../../tests/fixtures/serverless-9.7.0/signals_search_rule_activity.json"
+        ),
         "cases_find" => include_str!("../../../tests/fixtures/serverless-9.7.0/cases_find.json"),
         "case_get" => include_str!("../../../tests/fixtures/serverless-9.7.0/case_get.json"),
         "data_views_list" => {
@@ -311,6 +314,19 @@ async fn mount_catalog_success_routes(server: &MockServer) {
     ] {
         mount_fixture(server, verb, route, body).await;
     }
+    // The alert activity search is the one signals search with a
+    // workflow status aggregation.
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/signals/search"))
+        .and(body_partial_json(
+            json!({"aggs": {"status": {"terms": {"field": "kibana.alert.workflow_status"}}}}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(fixture("signals_search_rule_activity")),
+        )
+        .with_priority(1)
+        .mount(server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "elasticctl-fixture-probe"))
@@ -339,7 +355,7 @@ fn success_arguments(name: &str) -> Value {
         "fleet_integration_policies_get" => {
             json!({"selector":"elasticctl-sample-integration-policy"})
         }
-        "rules_get" => json!({"selector":"elasticctl-fixture-probe"}),
+        "rules_get" | "rule_health" => json!({"selector":"elasticctl-fixture-probe"}),
         "exceptions_get" => json!({"list_id":"elasticctl-sample-exceptions","namespace":"single"}),
         "search_esql" => json!({"query":"FROM logs-*"}),
         "search_dsl" => json!({"index":"logs-*","query":{"match_all":{}}}),
@@ -494,7 +510,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
 
 /// Task tools registered before their implementation. Each answers every
 /// call with an error, so only the router error is checked for them.
-const PLACEHOLDER_TOOLS: [&str; 3] = ["detection_coverage", "rule_health", "rule_readiness"];
+const PLACEHOLDER_TOOLS: [&str; 2] = ["detection_coverage", "rule_readiness"];
 
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
