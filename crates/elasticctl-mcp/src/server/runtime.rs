@@ -160,12 +160,14 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let state = Arc::new(ServerState::new(
+    let mut state = ServerState::new(
         context,
         target,
         options.call_timeout,
         options.allow_query_tools,
-    ));
+    );
+    state.allow_mutations = options.allow_mutations;
+    let state = Arc::new(state);
     let mut transport = BoundedIo::with_cancellation(input, output, root.clone());
     let Some(first) = transport.receive().await else {
         return Ok(());

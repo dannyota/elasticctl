@@ -24,6 +24,7 @@ pub use runtime::{serve_io, serve_stdio};
 pub struct ServerOptions {
     pub call_timeout: Duration,
     pub allow_query_tools: bool,
+    pub allow_mutations: crate::MutationClasses,
 }
 
 impl Default for ServerOptions {
@@ -31,6 +32,7 @@ impl Default for ServerOptions {
         Self {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: false,
+            allow_mutations: crate::MutationClasses::default(),
         }
     }
 }
@@ -41,7 +43,9 @@ pub struct ServerState {
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
     query_transport: tokio::sync::OnceCell<Transport>,
+    mutation_transport: tokio::sync::OnceCell<Transport>,
     allow_query_tools: bool,
+    allow_mutations: crate::MutationClasses,
     call_timeout: Duration,
     permits: Arc<Semaphore>,
 }
@@ -58,7 +62,9 @@ impl ServerState {
             resolved,
             transport: tokio::sync::OnceCell::new(),
             query_transport: tokio::sync::OnceCell::new(),
+            mutation_transport: tokio::sync::OnceCell::new(),
             allow_query_tools,
+            allow_mutations: crate::MutationClasses::default(),
             call_timeout,
             permits: Arc::new(Semaphore::new(4)),
         }
@@ -76,6 +82,25 @@ impl ServerState {
                         disable_redirects: true,
                         disable_retries: true,
                         disable_connection_pool: false,
+                    },
+                )
+            })
+            .await
+    }
+
+    /// Lazily construct the one-attempt transport for confirmed mutations.
+    #[allow(dead_code)]
+    pub async fn mutation_transport(&self) -> Result<&Transport> {
+        self.mutation_transport
+            .get_or_try_init(|| async {
+                Transport::with_options(
+                    &self.resolved.profile,
+                    TransportOptions {
+                        debug: false,
+                        response_body_limit: Some(16_777_216),
+                        disable_redirects: true,
+                        disable_retries: true,
+                        disable_connection_pool: true,
                     },
                 )
             })
@@ -109,6 +134,14 @@ impl ServerState {
         self.permits.clone().try_acquire_owned().ok()
     }
 
+    fn options(&self) -> ServerOptions {
+        ServerOptions {
+            call_timeout: self.call_timeout,
+            allow_query_tools: self.allow_query_tools,
+            allow_mutations: self.allow_mutations.clone(),
+        }
+    }
+
     fn allows_query_tools(&self) -> bool {
         self.allow_query_tools
     }
@@ -116,6 +149,13 @@ impl ServerState {
 
 /// Validate configuration that can be rejected before MCP startup or network I/O.
 fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetContext> {
+    crate::MutationClasses::parse(options.allow_mutations.names())?;
+    if !options.allow_mutations.is_empty() && target.profile.es_url.is_none() {
+        return Err(Error::new(
+            ErrorKind::Error,
+            "MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL.",
+        ));
+    }
     let seconds = options.call_timeout.as_secs();
     if seconds == 0 || seconds > 120 || options.call_timeout.subsec_nanos() != 0 {
         return Err(Error::new(
@@ -331,6 +371,7 @@ mod tests {
         let options = ServerOptions {
             call_timeout: Duration::from_secs(30),
             allow_query_tools: false,
+            allow_mutations: crate::MutationClasses::default(),
         };
         assert!(
             validate_target(
@@ -393,6 +434,7 @@ mod tests {
                     &ServerOptions {
                         call_timeout: Duration::from_secs(seconds),
                         allow_query_tools: false,
+                        allow_mutations: crate::MutationClasses::default(),
                     },
                 )
                 .is_err()
@@ -405,6 +447,7 @@ mod tests {
                     &ServerOptions {
                         call_timeout: Duration::from_secs(seconds),
                         allow_query_tools: false,
+                        allow_mutations: crate::MutationClasses::default(),
                     },
                 )
                 .is_ok()
@@ -545,6 +588,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,
@@ -621,6 +665,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,
@@ -1052,6 +1097,7 @@ mod tests {
             ServerOptions {
                 call_timeout: Duration::from_secs(1),
                 allow_query_tools: false,
+                allow_mutations: crate::MutationClasses::default(),
             },
             server_input,
             server_output,

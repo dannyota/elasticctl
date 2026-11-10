@@ -60,6 +60,7 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool) -> ! {
         elasticctl_mcp::ServerOptions {
             call_timeout: Duration::from_secs(timeout_secs),
             allow_query_tools,
+            allow_mutations: elasticctl_mcp::MutationClasses::default(),
         },
     )
     .await;

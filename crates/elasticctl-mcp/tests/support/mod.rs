@@ -111,6 +111,7 @@ pub fn options() -> ServerOptions {
     ServerOptions {
         call_timeout: Duration::from_secs(30),
         allow_query_tools: false,
+        allow_mutations: elasticctl_mcp::MutationClasses::default(),
     }
 }
 
