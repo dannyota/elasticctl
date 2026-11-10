@@ -16,8 +16,22 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 mod fleet;
 #[path = "live/mcp_compose.rs"]
 mod mcp_compose;
+#[path = "live/mcp_mutations.rs"]
+mod mcp_mutations;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
+
+#[test]
+#[ignore = "requires a live stack"]
+fn mcp_mutations_plan_and_confirm() {
+    mcp_mutations::run_contract();
+}
+
+#[test]
+#[ignore = "requires a live stack"]
+fn mcp_mutation_measurements() {
+    mcp_mutations::run_measurements();
+}
 
 /// The twelfth contract stays at this integration-test root because the
 /// conformance controller invokes this exact name.
