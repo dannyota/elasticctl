@@ -510,7 +510,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
 
 /// Task tools registered before their implementation. Each answers every
 /// call with an error, so only the router error is checked for them.
-const PLACEHOLDER_TOOLS: [&str; 2] = ["detection_coverage", "rule_readiness"];
+const PLACEHOLDER_TOOLS: [&str; 1] = ["rule_readiness"];
 
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
