@@ -120,7 +120,7 @@ pub(crate) async fn resolve_item(
     transport: &Transport,
     selector: &str,
 ) -> Result<ResolvedIntegrationPolicy> {
-    match integration_policies::get(transport, selector).await {
+    match integration_policies::get_selector(transport, selector).await {
         Ok(policy) => return checked_read(selector, policy.item, None),
         Err(error) if error.kind == ErrorKind::NotFound => {}
         Err(error) => return Err(error),

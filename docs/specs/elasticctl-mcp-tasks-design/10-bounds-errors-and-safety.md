@@ -140,6 +140,12 @@ The 0.7 `cases_get` tool builds the same case path from its `id` input.
 0.8.0 makes it refuse `.` and `..` with `invalid_argument`, and reviews every
 other 0.7 get tool for an id that reaches a path segment.
 
+An id read from a response or a local file obeys the same rule: a data-view,
+dashboard, agent-policy, integration-policy, parent-policy, package name or
+version, or ES|QL async query id that is empty, `.`, or `..` is refused with
+kind `http` before a request is built, and the async query id is
+percent-encoded like the others.
+
 **Remote text in results.** Rule names, descriptions, queries, execution
 messages, case titles, and alert reasons are returned as data inside `data`.
 They are never copied into tool descriptions, server instructions, prompt

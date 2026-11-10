@@ -1,5 +1,6 @@
 //! Typed data-view models and public Kibana route wrappers.
 
+use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -269,6 +270,7 @@ pub async fn list(transport: &Transport) -> Result<Vec<DataViewSummary>> {
 
 /// Get one data view by its stable id.
 pub async fn get(transport: &Transport, id: &str) -> Result<DataView> {
+    let id = require_path_segment(id)?;
     decode_data_view(&transport.get(&data_view_path(id)).await?, "data view get")
 }
 
@@ -286,6 +288,7 @@ pub async fn create(transport: &Transport, spec: &DataViewSpec) -> Result<DataVi
 
 /// Apply the documented partial data-view update.
 pub async fn update(transport: &Transport, id: &str, update: &DataViewUpdate) -> Result<DataView> {
+    let id = require_path_segment(id)?;
     if let Some(fields) = &update.fields {
         validate_scripted_fields(fields)?;
         if !fields.is_empty() {
@@ -311,6 +314,7 @@ pub async fn update_fields_metadata(
     id: &str,
     fields: &Map<String, Value>,
 ) -> Result<()> {
+    let id = require_path_segment(id)?;
     let body = json!({"fields": fields});
     let response = transport
         .post(&format!("{}/fields", data_view_path(id)), Some(&body))
@@ -320,6 +324,7 @@ pub async fn update_fields_metadata(
 
 /// Delete one unreferenced data view.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
+    let id = require_path_segment(id)?;
     decode_delete_success(&transport.delete(&data_view_path(id)).await?)
 }
 

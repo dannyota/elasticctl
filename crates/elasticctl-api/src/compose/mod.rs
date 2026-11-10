@@ -44,3 +44,16 @@ pub fn degrade<T>(result: Result<T>) -> Result<Part<T>> {
 pub fn is_path_segment(value: &str) -> bool {
     !matches!(value, "" | "." | "..")
 }
+/// Refuse an id read from a response or a local file before it becomes one
+/// URL path segment. URL parsing removes `.` and `..` segments, so either
+/// would move the request to a parent route.
+pub fn require_path_segment(value: &str) -> Result<&str> {
+    if is_path_segment(value) {
+        Ok(value)
+    } else {
+        Err(Error::new(
+            ErrorKind::Http,
+            "id is not a single URL path segment",
+        ))
+    }
+}

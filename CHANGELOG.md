@@ -21,6 +21,12 @@
 - `elasticctl_core::Transport` refuses a request path that does not start with
   `/` before sending anything, so a path such as `@other.example/x` cannot
   carry the credential to another host.
+- An id read from a Kibana or Elasticsearch response, or from an import file,
+  is refused with kind `http` before it becomes a URL path segment when it is
+  empty, `.`, or `..`. URL parsing turns those into a request to the parent
+  route. This covers data views, dashboards, agent and integration policies,
+  parent policy ids, package names and versions, and ES|QL async query ids,
+  which are also percent-encoded so a returned `/` cannot add a segment.
 
 ## 0.7.5 — 2026-11-10
 

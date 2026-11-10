@@ -1,5 +1,6 @@
 //! Typed dashboard models and public Kibana route wrappers.
 
+use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -131,19 +132,29 @@ pub async fn search(
     decode_search(&transport.get(&route).await?)
 }
 
-/// Get one dashboard by its stable id.
+/// Get one dashboard by a stable id read from a response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<Dashboard> {
+    get_selector(transport, require_path_segment(id)?).await
+}
+
+/// Get one dashboard by the caller's own selector, which keeps the caller's
+/// validation.
+pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Result<Dashboard> {
     transport.require_feature(Feature::Dashboards).await?;
-    decode_dashboard(&transport.get(&dashboard_path(id)).await?, "dashboard get")
+    decode_dashboard(
+        &transport.get(&dashboard_path(selector)).await?,
+        "dashboard get",
+    )
 }
 
 /// Upsert one dashboard using only its portable body.
 pub async fn put(transport: &Transport, spec: &DashboardSpec) -> Result<Dashboard> {
     validate_spec(spec)?;
+    let id = require_path_segment(&spec.id)?;
     transport.require_feature(Feature::Dashboards).await?;
     decode_dashboard(
         &transport
-            .put(&dashboard_path(&spec.id), &Value::Object(spec.data.clone()))
+            .put(&dashboard_path(id), &Value::Object(spec.data.clone()))
             .await?,
         "dashboard put",
     )
@@ -151,6 +162,7 @@ pub async fn put(transport: &Transport, spec: &DashboardSpec) -> Result<Dashboar
 
 /// Delete one dashboard by id.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
+    let id = require_path_segment(id)?;
     transport.require_feature(Feature::Dashboards).await?;
     match transport.delete(&dashboard_path(id)).await? {
         Value::Null => Ok(()),

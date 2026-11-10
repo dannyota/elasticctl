@@ -1,5 +1,6 @@
 //! Typed integration-policy models and public Fleet route wrappers.
 
+use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -214,12 +215,22 @@ pub async fn list_page(transport: &Transport, page: u64) -> Result<IntegrationPo
     })
 }
 
-/// Read one integration by its stable id in simplified form.
+/// Read one integration in simplified form by a stable id read from a
+/// response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<IntegrationPolicy> {
+    get_selector(transport, require_path_segment(id)?).await
+}
+
+/// Read one integration in simplified form by the caller's own selector, which
+/// keeps the caller's validation.
+pub(crate) async fn get_selector(
+    transport: &Transport,
+    selector: &str,
+) -> Result<IntegrationPolicy> {
     transport.require_feature(Feature::FleetPolicies).await?;
     decode_item(
         &transport
-            .get(&format!("{}?format=simplified", policy_path(id)))
+            .get(&format!("{}?format=simplified", policy_path(selector)))
             .await?,
         "integration policy get",
     )
@@ -245,6 +256,7 @@ pub async fn update(
     id: &str,
     spec: &IntegrationPolicySpec,
 ) -> Result<IntegrationPolicy> {
+    let id = require_path_segment(id)?;
     transport.require_feature(Feature::FleetPolicies).await?;
     spec.validate()?;
     let mut body = encode_spec(spec, "update")?;
@@ -260,6 +272,7 @@ pub async fn update(
 
 /// Delete one integration by id. Never sends `force`.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
+    let id = require_path_segment(id)?;
     transport.require_feature(Feature::FleetPolicies).await?;
     let response = transport.delete(&policy_path(id)).await?;
     let deleted: DeleteEnvelope = decode(&response, "integration policy delete")?;
@@ -290,6 +303,7 @@ pub async fn package_metadata(
                 format!("integration package metadata {field} must not be empty"),
             ));
         }
+        require_path_segment(value)?;
     }
     let body = transport
         .get(&format!(

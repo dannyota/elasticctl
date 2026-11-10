@@ -158,7 +158,7 @@ pub async fn resolve(transport: &Transport, selector: &str) -> Result<AgentPolic
 /// Resolve a selector and retain the single-object response needed by callers
 /// that require populated agent and integration facts.
 async fn resolve_item(transport: &Transport, selector: &str) -> Result<ResolvedAgentPolicy> {
-    match agent_policies::get(transport, selector).await {
+    match agent_policies::get_selector(transport, selector).await {
         Ok(policy) => {
             return Ok(ResolvedAgentPolicy {
                 summary: AgentPolicySummary::from_item(&policy.item)?,

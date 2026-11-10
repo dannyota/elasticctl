@@ -128,7 +128,7 @@ async fn resolve_delete_item(
     transport: &Transport,
     selector: &str,
 ) -> Result<ResolvedIntegrationPolicy> {
-    match integration_policies::get(transport, selector).await {
+    match integration_policies::get_selector(transport, selector).await {
         Ok(policy) => {
             let summary = summary_from_item(&policy.item)?;
             if summary.id != selector {

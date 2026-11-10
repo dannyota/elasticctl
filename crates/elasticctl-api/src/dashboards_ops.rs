@@ -76,7 +76,7 @@ pub fn resolve_from_summaries(
 
 /// Resolve a dashboard by exact id, then by exact title only after an id miss.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<DashboardSummary> {
-    match dashboards::get(transport, selector).await {
+    match dashboards::get_selector(transport, selector).await {
         Ok(dashboard) if dashboard.id == selector => summary_from_dashboard(dashboard),
         Ok(dashboard) => Err(Error::new(
             ErrorKind::Http,

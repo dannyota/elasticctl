@@ -81,8 +81,8 @@ fn degradation() {
 async fn snapshot_existing_and_mismatch() {
     let s = MockServer::start().await;
     let t = transport(&s);
-    let mut body = fixture("rules_get.json");
-    body.as_object_mut().unwrap().remove("execution_summary");
+    let body = fixture("rule_get_executed.json");
+    let last = body["execution_summary"]["last_execution"].clone();
     let id = body["rule_id"].as_str().unwrap().to_owned();
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
@@ -90,7 +90,21 @@ async fn snapshot_existing_and_mismatch() {
         .mount(&s)
         .await;
     let snap = snapshot_by_id(&t, &id).await.unwrap();
-    assert!(snap.execution.is_none());
+    let e = snap.execution.unwrap();
+    assert_eq!(e.status, last["status"].as_str().unwrap());
+    assert_eq!(e.date, last["date"].as_str().unwrap());
+    assert_eq!(e.status_order, last["status_order"].as_i64());
+    assert_eq!(e.message.as_deref(), last["message"].as_str());
+    assert!(!e.message_truncated);
+    assert_eq!(
+        e.metrics.total_search_duration_ms,
+        last["metrics"]["total_search_duration_ms"].as_f64()
+    );
+    assert_eq!(
+        e.metrics.total_indexing_duration_ms,
+        last["metrics"]["total_indexing_duration_ms"].as_f64()
+    );
+    assert!(!snap.rule.as_map().contains_key("execution_summary"));
     assert_eq!(
         snap.rule,
         elasticctl_api::rules_ops::get_one(&t, &id).await.unwrap()
@@ -346,13 +360,22 @@ async fn exception_bounds_and_order() {
         .respond_with(ResponseTemplate::new(200).set_body_json(items.clone()))
         .mount(&s)
         .await;
-    body["exceptions_list"]=json!((0..6).map(|i|json!({"list_id":format!("list-{i}"),"namespace_type":"single","type":"detection"})).collect::<Vec<_>>());
+    let namespace = |i: usize| {
+        if i.is_multiple_of(2) {
+            "single"
+        } else {
+            "agnostic"
+        }
+    };
+    body["exceptions_list"]=json!((0..6).map(|i|json!({"list_id":format!("list-{i}"),"namespace_type":namespace(i),"type":"detection"})).collect::<Vec<_>>());
     let r = elasticctl_api::Rule::from_value(body).unwrap();
     let c = exception_coverage(&t, &r).await.unwrap();
     assert_eq!(c.referenced, 6);
     assert!(c.truncated);
     assert_eq!(c.lists.len(), 5);
-    for row in c.lists {
+    for (i, row) in c.lists.into_iter().enumerate() {
+        assert_eq!(row.key.list_id, format!("list-{i}"));
+        assert_eq!(row.key.namespace_type, namespace(i));
         assert_eq!(
             row.facts.unwrap().item_count,
             items["total"].as_u64().unwrap()
@@ -367,11 +390,19 @@ async fn exception_bounds_and_order() {
     for (i, pair) in req.chunks(2).enumerate() {
         assert_eq!(pair[0].url.path(), "/api/exception_lists");
         assert_eq!(pair[1].url.path(), "/api/exception_lists/items/_find");
+        for request in pair {
+            let q = request
+                .url
+                .query_pairs()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(q["list_id"], format!("list-{i}"));
+            assert_eq!(q["namespace_type"], namespace(i));
+        }
         let q = pair[1]
             .url
             .query_pairs()
             .collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(q["list_id"], format!("list-{i}"));
+        assert_eq!(q["page"], "1");
         assert_eq!(q["per_page"], "1");
     }
 }
