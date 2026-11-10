@@ -563,38 +563,33 @@ async fn malformed_cases_route_is_an_http_part_error() {
 /// no later request is sent.
 #[tokio::test]
 async fn fatal_errors_at_each_step_fail_the_call() {
+    // The cases run one at a time: run together on a loaded runner, a hanging
+    // request could time out before it reached the server.
     let plan = [Alert, Rule, List, Count, Cases, Case, Activity];
-    let mut runs = tokio::task::JoinSet::new();
     for (at, failing) in plan.into_iter().enumerate() {
         for fatal in [ErrorKind::Auth, ErrorKind::Connection, ErrorKind::Timeout] {
-            runs.spawn(async move {
-                let base = recorded(1, 1);
-                let s = Stack::start(move |step, req| {
-                    if step != failing {
-                        return base(step, req);
-                    }
-                    match fatal {
-                        ErrorKind::Auth => Act::Json(401, error_body()),
-                        ErrorKind::Connection => Act::Drop,
-                        _ => Act::Hang,
-                    }
-                })
-                .await;
-                // Only the hanging step relies on the timeout; a short one for
-                // the others would turn a slow runner's answer into a timeout.
-                let timeout = if fatal == ErrorKind::Timeout { 1 } else { 30 };
-                let e = alert_context::alert_context(&s.transport(timeout), ALERT_ID, "24h")
-                    .await
-                    .unwrap_err();
-                assert_eq!(e.kind, fatal, "{failing:?}");
-                // Leave room for a later request to arrive before counting.
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                assert_eq!(s.steps(), plan[..=at], "{failing:?} {fatal:?}");
-            });
+            let base = recorded(1, 1);
+            let s = Stack::start(move |step, req| {
+                if step != failing {
+                    return base(step, req);
+                }
+                match fatal {
+                    ErrorKind::Auth => Act::Json(401, error_body()),
+                    ErrorKind::Connection => Act::Drop,
+                    _ => Act::Hang,
+                }
+            })
+            .await;
+            // Only the hanging step relies on the timeout.
+            let timeout = if fatal == ErrorKind::Timeout { 2 } else { 30 };
+            let e = alert_context::alert_context(&s.transport(timeout), ALERT_ID, "24h")
+                .await
+                .unwrap_err();
+            assert_eq!(e.kind, fatal, "{failing:?}");
+            // Leave room for a later request to arrive before counting.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(s.steps(), plan[..=at], "{failing:?} {fatal:?}");
         }
-    }
-    while let Some(run) = runs.join_next().await {
-        run.unwrap();
     }
 }
 
