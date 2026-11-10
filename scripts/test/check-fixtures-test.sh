@@ -45,6 +45,8 @@ date_part=2026.01.02
 clean "redacted backing index" '"_index": ".ds-logs-sample-default-REDACTED-000001"'
 clean "date inside the stream name" \
   "\"_index\": \".ds-sample-$date_part-123-REDACTED-000001\""
+clean "date and other stream characters before the redaction" \
+  "\"_index\": \".ds-a-$date_part-123@prod-REDACTED-000001\""
 clean "plain index with a date" "\"_index\": \"sample-$date_part\""
 
 leak "dated backing index" \

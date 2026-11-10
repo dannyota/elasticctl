@@ -49,8 +49,9 @@ fi
 
 # A data stream backing index name ends in its rollover date and generation,
 # and the date dates the recording stack. The recorder replaces that date with
-# REDACTED. A date earlier in the name belongs to the stream and is not matched.
-if hits=$(grep -rnE '\.ds-[^"]*-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+([^0-9A-Za-z._-]|$)' "$DIR" 2>/dev/null); then
+# REDACTED. The name ends at a quote, backslash, comma, or space, so a date
+# earlier in the name belongs to the stream and is not matched.
+if hits=$(grep -rnE '\.ds-[^"]*-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+(["\\,[:space:]]|$)' "$DIR" 2>/dev/null); then
   report "a dated backing index name in a fixture" "$hits"
 fi
 
