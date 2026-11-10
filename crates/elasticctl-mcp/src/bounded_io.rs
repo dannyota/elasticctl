@@ -117,13 +117,27 @@ where
             Some(-32601) => "Unknown MCP tool",
             Some(-32603) => "MCP server error",
             Some(-32700) => "Invalid JSON-RPC message",
+            Some(-32002) => "MCP resource not found",
             _ => "MCP protocol error",
         };
-        error.insert(
-            "message".to_string(),
-            serde_json::Value::String(message.to_string()),
-        );
-        error.remove("data");
+        if !matches!(
+            error.get("message").and_then(serde_json::Value::as_str),
+            Some(
+                "Resource not found"
+                    | "Resource read failed"
+                    | "Invalid cursor"
+                    | "Unknown prompt"
+                    | "Invalid prompt arguments"
+            )
+        ) {
+            error.insert(
+                "message".to_string(),
+                serde_json::Value::String(message.to_string()),
+            );
+        }
+        if !error.get("data").is_some_and(safe_error_data) {
+            error.remove("data");
+        }
     }
 
     async fn send_protocol_error(&mut self) -> std::io::Result<()> {
@@ -133,6 +147,45 @@ where
         ))
         .await
     }
+}
+
+fn safe_error_data(value: &serde_json::Value) -> bool {
+    const KINDS: &[&str] = &[
+        "auth",
+        "permission",
+        "not_found",
+        "conflict",
+        "unsupported",
+        "http",
+        "connection",
+        "timeout",
+        "error",
+    ];
+    let Some(data) = value.as_object() else {
+        return false;
+    };
+    data.len() == 3
+        && data
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| KINDS.contains(&kind))
+        && data
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|code| {
+                matches!(
+                    code,
+                    "invalid_argument" | "busy" | "deadline_exceeded" | "result_too_large"
+                ) || code
+                    .strip_prefix("elastic_")
+                    .is_some_and(|kind| KINDS.contains(&kind))
+            })
+        && data.get("http_status").is_some_and(|status| {
+            status.is_null()
+                || status
+                    .as_u64()
+                    .is_some_and(|status| (100..=599).contains(&status))
+        })
 }
 
 impl<R, W> Transport<RoleServer> for BoundedIo<R, W>
@@ -553,5 +606,115 @@ mod tests {
             .expect_err("stalled shutdown hits the static timeout");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(error.to_string(), "MCP transport close timed out");
+    }
+}
+
+#[cfg(test)]
+mod protocol_error_tests {
+    use super::BoundedIo;
+    use serde_json::{Value, json};
+
+    fn sanitized(code: i64, message: &str, data: Value) -> Value {
+        let mut value = json!({"error": {"code": code, "message": message, "data": data}});
+        BoundedIo::<tokio::io::Empty, tokio::io::Sink>::sanitize_protocol_error(&mut value);
+        value
+    }
+
+    #[test]
+    fn five_static_messages_survive() {
+        for message in [
+            "Resource not found",
+            "Resource read failed",
+            "Invalid cursor",
+            "Unknown prompt",
+            "Invalid prompt arguments",
+        ] {
+            assert_eq!(
+                sanitized(-32602, message, Value::Null)["error"]["message"],
+                message
+            );
+        }
+    }
+
+    #[test]
+    fn other_messages_are_replaced_by_code() {
+        for (code, message) in [
+            (-32600, "Invalid MCP request"),
+            (-32602, "Invalid MCP request"),
+            (-32601, "Unknown MCP tool"),
+            (-32603, "MCP server error"),
+            (-32700, "Invalid JSON-RPC message"),
+            (-32002, "MCP resource not found"),
+            (-32099, "MCP protocol error"),
+        ] {
+            let value = sanitized(
+                code,
+                "remote-sentinel",
+                json!({"message": "remote-sentinel"}),
+            );
+            assert_eq!(value["error"]["message"], message);
+            assert!(!value.to_string().contains("remote-sentinel"));
+        }
+    }
+
+    #[test]
+    fn exact_classification_data_survives() {
+        for kind in [
+            "auth",
+            "permission",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "http",
+            "connection",
+            "timeout",
+            "error",
+        ] {
+            for code in [
+                "invalid_argument".to_string(),
+                "busy".into(),
+                "deadline_exceeded".into(),
+                "result_too_large".into(),
+                format!("elastic_{kind}"),
+            ] {
+                for status in [Value::Null, json!(100), json!(403), json!(599)] {
+                    let data = json!({"kind": kind, "http_status": status, "code": code});
+                    assert_eq!(
+                        sanitized(-32603, "Resource read failed", data.clone())["error"]["data"],
+                        data
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unsafe_data_is_removed() {
+        let valid = json!({"kind": "permission", "http_status": 403, "code": "elastic_permission"});
+        let mut invalid = vec![Value::Null, json!("remote-sentinel"), json!([])];
+        for (key, value) in [
+            ("extra", json!("remote-sentinel")),
+            ("message", json!("remote-sentinel")),
+            ("kind", json!("remote-sentinel")),
+            ("code", json!("elastic_remote-sentinel")),
+            ("http_status", json!("403")),
+            ("http_status", json!(99)),
+            ("http_status", json!(600)),
+            ("http_status", json!(403.5)),
+        ] {
+            let mut data = valid.clone();
+            data[key] = value;
+            invalid.push(data);
+        }
+        for key in ["kind", "http_status", "code"] {
+            let mut data = valid.clone();
+            data.as_object_mut().unwrap().remove(key);
+            invalid.push(data);
+        }
+        for data in invalid {
+            let value = sanitized(-32603, "Resource read failed", data);
+            assert!(value["error"].get("data").is_none());
+            assert!(!value.to_string().contains("remote-sentinel"));
+        }
     }
 }

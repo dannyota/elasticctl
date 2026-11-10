@@ -11,10 +11,10 @@ use rmcp::{
     },
     service::RequestContext,
 };
-use tokio::time;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 
+use super::admission::{Admitted, run_admitted};
 use super::{ServerState, tool_failure_result, unavailable_method_error, unknown_tool_error};
 #[cfg(test)]
 use super::{TestCallDrop, test_controls};
@@ -245,22 +245,11 @@ impl ServerHandler for McpServer {
         else {
             return Err(unknown_tool_error());
         };
-        let Some(permit) = self.state.try_admit() else {
-            return tool_failure_result(
-                self.state.target().clone(),
-                error::local(LocalError::Busy),
-                &context.id,
-            )
-            .map(Into::into);
-        };
-
         let cancellation = context.ct.clone();
         let target = self.state.target().clone();
         let request_id = context.id.clone();
         let state = Arc::clone(&self.state);
-        let deadline = time::Instant::now() + self.state.call_timeout;
         let operation = async move {
-            let _permit = permit;
             let outcome = match dispatch {
                 DispatchTarget::Adapter(tool, adapter) => {
                     adapter
@@ -288,30 +277,27 @@ impl ServerHandler for McpServer {
                 }
             }
         };
-        tokio::pin!(operation);
-        tokio::select! {
-            _ = context.ct.cancelled() => Err(rmcp::ErrorData::internal_error("MCP request cancelled", None)),
-            outcome = time::timeout_at(deadline, &mut operation) => {
-                if time::Instant::now() >= deadline {
-                    tool_failure_result(
-                        self.state.target().clone(),
-                        error::local(LocalError::DeadlineExceeded),
-                        &context.id,
-                    ).map(Into::into)
-                } else {
-                    match outcome {
-                        Ok(Ok(result)) => Ok(result),
-                        Ok(Err(error)) => {
-                            let (target, tool_error) = *error;
-                            tool_failure_result(target, tool_error, &context.id).map(Into::into)
-                        }
-                        Err(_) => tool_failure_result(
-                            self.state.target().clone(),
-                            error::local(LocalError::DeadlineExceeded),
-                            &context.id,
-                        ).map(Into::into),
-                    }
-                }
+        match run_admitted(&self.state, context.ct.clone(), operation).await {
+            Admitted::Cancelled => Err(rmcp::ErrorData::internal_error(
+                "MCP request cancelled",
+                None,
+            )),
+            Admitted::Busy => tool_failure_result(
+                self.state.target().clone(),
+                error::local(LocalError::Busy),
+                &context.id,
+            )
+            .map(Into::into),
+            Admitted::DeadlineExceeded => tool_failure_result(
+                self.state.target().clone(),
+                error::local(LocalError::DeadlineExceeded),
+                &context.id,
+            )
+            .map(Into::into),
+            Admitted::Done(Ok(result)) => Ok(result),
+            Admitted::Done(Err(error)) => {
+                let (target, tool_error) = *error;
+                tool_failure_result(target, tool_error, &context.id).map(Into::into)
             }
         }
     }
