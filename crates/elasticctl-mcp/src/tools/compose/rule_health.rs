@@ -54,9 +54,17 @@ impl From<HealthFinding> for FindingCode {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+struct HealthActivityData {
+    window: String,
+    total: u64,
+    by_status: StatusCountsData,
+    recent: Vec<super::super::triage::AlertData>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 struct RuleHealthData {
     rule: RuleContextData,
-    alerts: PartData<ActivityData>,
+    alerts: PartData<HealthActivityData>,
     exceptions: PartData<ExceptionCoverageData>,
     partial: bool,
     findings: Vec<FindingCode>,
@@ -122,18 +130,68 @@ pub(super) async fn call(
         })
 }
 
+fn project_health_activity(
+    activity: elasticctl_api::compose::AlertActivity,
+) -> Result<HealthActivityData, Error> {
+    let recent = activity
+        .recent
+        .iter()
+        .map(super::super::triage::project_alert)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(HealthActivityData {
+        window: activity.window,
+        total: activity.total,
+        by_status: StatusCountsData {
+            open: activity.open,
+            acknowledged: activity.acknowledged,
+            closed: activity.closed,
+            other: activity.other,
+        },
+        recent,
+    })
+}
+
+fn health_part<T, U>(value: Part<T>, project: impl FnOnce(T) -> Result<U, Error>) -> PartData<U> {
+    part(value, project).unwrap_or_else(|_| PartData {
+        status: "unavailable",
+        value: None,
+        error: Some(tool_error(&Error::new(
+            ErrorKind::Http,
+            "invalid rule health part projection",
+        ))),
+        skip_reason: None,
+    })
+}
+
 fn project(report: RuleHealth) -> Result<RuleHealthData, Error> {
-    let findings = report.findings().into_iter().map(Into::into).collect();
-    let partial = report.partial();
+    let findings = report.findings();
     let RuleHealth {
         rule,
         alerts,
         exceptions,
     } = report;
+    let rule = project_snapshot(rule)?;
+    let alerts = health_part(alerts, project_health_activity);
+    let exceptions = health_part(exceptions, |coverage| Ok(project_exceptions(coverage)));
+    let partial = alerts.status == "unavailable"
+        || exceptions.status == "unavailable"
+        || exceptions
+            .value
+            .as_ref()
+            .is_some_and(|coverage| coverage.lists.iter().any(|row| row.status == "unavailable"));
+    let findings = findings
+        .into_iter()
+        .filter(|finding| match finding {
+            HealthFinding::NoAlertsInWindow => alerts.status == "ok",
+            HealthFinding::ExceptionListMissing => exceptions.status == "ok",
+            _ => true,
+        })
+        .map(Into::into)
+        .collect();
     Ok(RuleHealthData {
-        rule: project_snapshot(rule)?,
-        alerts: part(alerts, |activity| project_activity(activity, true))?,
-        exceptions: part(exceptions, |coverage| Ok(project_exceptions(coverage)))?,
+        rule,
+        alerts,
+        exceptions,
         partial,
         findings,
     })

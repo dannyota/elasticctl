@@ -686,3 +686,69 @@ async fn deadline_during_the_activity_read_frees_the_permit() {
 async fn deadline_during_the_second_list_read_frees_the_permit() {
     interrupt(Stage::SecondList, true).await;
 }
+
+#[tokio::test]
+async fn alert_projection_failure_preserves_rule_and_exceptions() {
+    for total in [16, 0] {
+        let mut body = activity();
+        body["hits"]["hits"][0]["_source"]["kibana.alert.severity"] = json!(7);
+        body["hits"]["total"]["value"] = json!(total);
+        let mut rule = rule_with_lists(1);
+        rule["enabled"] = json!(false);
+        let s = stack(rule, body).await;
+        let mut h = Harness::start(target_for(&s), options());
+        let schema = definition(&mut h).await["outputSchema"].clone();
+        let reply = call(&mut h, 1, json!({"selector": PROBE})).await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_schema(&schema, structured(&reply));
+        let data = &structured(&reply)["data"];
+        assert_eq!(data["alerts"]["status"], "unavailable");
+        assert_eq!(data["alerts"]["error"]["kind"], "http");
+        assert_eq!(data["alerts"]["error"]["code"], "elastic_http");
+        assert!(data["alerts"].get("value").is_none());
+        assert_eq!(data["rule"]["rule_id"], PROBE);
+        assert_eq!(data["rule"]["enabled"], false);
+        assert_eq!(data["exceptions"]["status"], "ok");
+        assert_eq!(
+            data["exceptions"]["value"]["lists"][0]["item_count"],
+            recorded("exception_items_count.json")["total"]
+        );
+        assert_eq!(data["partial"], true);
+        assert_eq!(data["findings"], json!(["rule_disabled"]));
+        assert_eq!(
+            log(&s).await,
+            [
+                format!("rule {PROBE}"),
+                "signals".into(),
+                format!("list {}", list_id(0)),
+                format!("count {}", list_id(0))
+            ]
+        );
+        h.close_input();
+        h.join().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn successful_alerts_schema_requires_recent() {
+    let s = stack(rule_with_lists(0), activity()).await;
+    let mut h = Harness::start(target_for(&s), options());
+    let schema = definition(&mut h).await["outputSchema"].clone();
+    let reply = call(&mut h, 1, json!({"selector": PROBE})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let mut content = structured(&reply).clone();
+    assert_schema(&schema, &content);
+    content["data"]["alerts"]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("recent")
+        .unwrap();
+    assert!(
+        !jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&content),
+        "schema accepted alerts without recent"
+    );
+    h.close_input();
+    h.join().await.unwrap();
+}
