@@ -31,7 +31,7 @@ fn rule_health_sample() -> Value {
             "alerts": ok(samples::activity(1, Some(vec![samples::alert("a1", "r1", "r1 rule")]))),
             "exceptions": ok(json!({"referenced": 1, "truncated": false, "lists": [list_row("l1", 1)]})),
             "partial": false,
-            "findings": ["last_execution_partial_failure"],
+            "findings": [],
         }),
         Value::Null,
     )
@@ -46,7 +46,7 @@ fn rule_readiness_sample() -> Value {
             "patterns": ok(json!({"total": 3, "truncated": false, "rows": [
                 {"pattern": "i", "state": "matches", "indices": 1, "aliases": 0, "data_streams": 0, "data_view_ids": ["v1"]},
                 {"pattern": "i-*", "state": "no_match", "indices": 0, "aliases": 0, "data_streams": 0, "data_view_ids": []},
-                {"pattern": "-x*", "state": "exclusion"},
+                {"pattern": "-x*", "state": "exclusion", "data_view_ids": []},
             ]})),
             "integrations": ok(json!({"total": 2, "truncated": false, "rows": [
                 {"package": "system", "version": "^1.0.0", "status": "ok", "install_status": "installed",
@@ -54,7 +54,7 @@ fn rule_readiness_sample() -> Value {
                 {"package": "nope", "version": "^1.0.0", "status": "unavailable", "error": not_found()},
             ]})),
             "partial": true,
-            "findings": ["integration_not_installed"],
+            "findings": [],
         }),
         Value::Null,
     )
@@ -323,4 +323,24 @@ fn validators_reject_inconsistent_parts_findings_and_rows() {
     for (name, value, validate) in mutations {
         assert!(validate(&value).is_err(), "{name} was accepted");
     }
+}
+
+#[test]
+fn technique_rows_require_tactics() {
+    let mut value = coverage_sample();
+    value["data"]["rows"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("tactics");
+    assert!(detection_coverage(&value).is_err());
+}
+
+#[test]
+fn exclusion_rows_include_ids_when_views_are_available() {
+    let mut value = rule_readiness_sample();
+    value["data"]["patterns"]["value"]["rows"][2]
+        .as_object_mut()
+        .unwrap()
+        .remove("data_view_ids");
+    assert!(rule_readiness(&value).is_err());
 }

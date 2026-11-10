@@ -419,3 +419,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_compose/recorded.rs"]
+mod recorded;

@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_eleven_in_order() {
+    fn contract_table_is_the_approved_twelve_in_order() {
         assert_eq!(
             CONTRACTS
                 .iter()
@@ -509,6 +509,7 @@ mod tests {
                 "content",
                 "fleet",
                 "mcp_reads_existing_verticals",
+                "mcp_answers_across_verticals",
             ]
         );
         assert_eq!(CONTRACTS[8].features.len(), 1);
@@ -516,7 +517,7 @@ mod tests {
         assert_eq!(CONTRACTS[8].features[0].label, "dashboards");
         assert_eq!(CONTRACTS[9].name, "fleet");
         assert_eq!(CONTRACTS[9].features[0].feature, Feature::FleetPolicies);
-        let mcp_reads = CONTRACTS.last().unwrap();
+        let mcp_reads = &CONTRACTS[10];
         assert_eq!(mcp_reads.name, "mcp_reads_existing_verticals");
         assert_eq!(
             mcp_reads
@@ -531,6 +532,35 @@ mod tests {
                 Feature::FleetPolicies,
             ]
         );
+    }
+
+    #[test]
+    fn task_contract_has_the_required_features_and_exact_child_command() {
+        let contract = CONTRACTS.last().unwrap();
+        assert_eq!(contract.name, "mcp_answers_across_verticals");
+        assert_eq!(contract.test, contract.name);
+        assert_eq!(
+            contract
+                .features
+                .iter()
+                .map(|f| f.feature)
+                .collect::<Vec<_>>(),
+            vec![
+                Feature::ExceptionLists,
+                Feature::PrebuiltRules,
+                Feature::FleetPolicies
+            ]
+        );
+        let command = test_command(std::path::Path::new("/workspace"), contract, true);
+        let args = command
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(4)
+                .any(|a| a == ["live", contract.test, "--", "--ignored"])
+        );
+        assert!(args.contains(&"--exact"));
     }
 
     #[test]
@@ -599,6 +629,7 @@ mod tests {
                 ContractResult::pass("content"),
                 ContractResult::pass("fleet"),
                 ContractResult::pass("mcp_reads_existing_verticals"),
+                ContractResult::pass("mcp_answers_across_verticals"),
             ],
         };
         assert_eq!(
@@ -659,6 +690,11 @@ mod tests {
                     },
                     {
                         "contract": "mcp_reads_existing_verticals",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "mcp_answers_across_verticals",
                         "result": "pass",
                         "error_class": null,
                     },
@@ -1051,7 +1087,7 @@ mod tests {
             test: "mcp_reads_existing_verticals",
             features: &[EXCEPTION_LISTS, PREBUILT_RULES, DASHBOARDS, FLEET_POLICIES],
         };
-        for contract in [&CONTRACTS[9], &mcp_reads] {
+        for contract in [&CONTRACTS[9], &mcp_reads, CONTRACTS.last().unwrap()] {
             let command = test_command(std::path::Path::new("/workspace"), contract, true);
             assert!(command.get_envs().any(|(name, value)| {
                 name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")

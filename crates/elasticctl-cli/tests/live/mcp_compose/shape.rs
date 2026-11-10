@@ -695,11 +695,15 @@ fn patterns(value: &Value, views_ok: bool) -> TestResult<bool> {
                     return fail(CONTEXT, "had a state that disagrees with its counts");
                 }
             }
-            "exclusion" => keys(row, &["pattern", "state"], view_ids, CONTEXT)?,
+            "exclusion" => {
+                let mut required = vec!["pattern", "state"];
+                required.extend_from_slice(view_ids);
+                keys(row, &required, &[], CONTEXT)?;
+            }
             "unresolved" => {
-                let mut allowed = vec!["error"];
-                allowed.extend_from_slice(view_ids);
-                keys(row, &["pattern", "state"], &allowed, CONTEXT)?;
+                let mut required = vec!["pattern", "state"];
+                required.extend_from_slice(view_ids);
+                keys(row, &required, &["error"], CONTEXT)?;
                 if let Some(error) = row.get("error") {
                     tool_error(error, CONTEXT)?;
                 }
@@ -797,12 +801,11 @@ pub(crate) fn detection_coverage(content: &Value) -> TestResult {
     let mut previous: Option<(u64, u64, &str)> = None;
     for row in rows {
         let row = object(row, "detection_coverage row")?;
-        keys(
-            row,
-            &["key", "enabled_rules", "disabled_rules"],
-            optional_fields,
-            "detection_coverage row",
-        )?;
+        let mut required = vec!["key", "enabled_rules", "disabled_rules"];
+        if group_by == "technique" {
+            required.push("tactics");
+        }
+        keys(row, &required, optional_fields, "detection_coverage row")?;
         let key = string(row, "key", "detection_coverage row")?;
         let enabled = count(row, "enabled_rules", "detection_coverage row")?;
         let disabled = count(row, "disabled_rules", "detection_coverage row")?;
