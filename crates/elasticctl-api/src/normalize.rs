@@ -10,11 +10,20 @@ use crate::model::{
 };
 use serde_json::{Map, Value};
 
-/// Remove the server-owned fields that change on every write.
+/// The tag Serverless appends to a rule that a project-scoped Elasticsearch
+/// API key enables (spec 7.2). It is server-applied state, so normalization
+/// drops it (spec 5.1).
+const CLOUD_API_KEY_TAG: &str = "Missing Elastic Cloud API Key";
+
+/// Remove the server-owned fields that change on every write, and every
+/// `tags` element equal to `CLOUD_API_KEY_TAG`.
 pub fn strip_volatile(rule: &mut Rule) {
     let map = rule.as_map_mut();
     for field in VOLATILE_FIELDS {
         map.remove(field);
+    }
+    if let Some(Value::Array(tags)) = map.get_mut("tags") {
+        tags.retain(|tag| tag.as_str() != Some(CLOUD_API_KEY_TAG));
     }
 }
 
@@ -79,6 +88,11 @@ pub fn comparable(rule: &Rule) -> Rule {
     strip_volatile(&mut out);
     strip_exception_ids(&mut out);
     fill_defaults(&mut out);
+    // A rule left with no tags compares equal whether `tags` is empty or
+    // absent, so dropping the server-applied tag never shows as drift.
+    out.as_map_mut()
+        .entry("tags")
+        .or_insert_with(|| Value::Array(Vec::new()));
     let sorted = sort_value(&Value::Object(out.as_map().clone()));
     Rule::from_value(sorted).expect("rule_id survives normalization")
 }
@@ -207,6 +221,77 @@ mod tests {
         assert_eq!(once, twice);
     }
 
+    fn tagged(tags: Value) -> Rule {
+        Rule::from_value(json!({"rule_id": "abc", "tags": tags})).unwrap()
+    }
+
+    /// Spec 5.1: Serverless appends this tag after an enable (spec 7.2).
+    #[test]
+    fn strip_volatile_removes_every_cloud_key_tag_and_keeps_other_tags_in_order() {
+        let mut r = tagged(json!([
+            "zebra",
+            "Missing Elastic Cloud API Key",
+            "alpha",
+            "Missing Elastic Cloud API Key"
+        ]));
+        strip_volatile(&mut r);
+        assert_eq!(r.as_map()["tags"], json!(["zebra", "alpha"]));
+    }
+
+    #[test]
+    fn strip_volatile_removes_only_the_exact_whole_cloud_key_tag() {
+        let near_misses = json!([
+            "missing elastic cloud api key",
+            "Missing Elastic Cloud API Key ",
+            "Missing Elastic Cloud API Key (prod)",
+            ["Missing Elastic Cloud API Key"],
+            7
+        ]);
+        let mut r = tagged(near_misses.clone());
+        strip_volatile(&mut r);
+        assert_eq!(r.as_map()["tags"], near_misses, "only an exact match goes");
+    }
+
+    #[test]
+    fn strip_volatile_leaves_an_emptied_tag_array_empty() {
+        let mut r = tagged(json!(["Missing Elastic Cloud API Key"]));
+        strip_volatile(&mut r);
+        assert_eq!(r.as_map()["tags"], json!([]));
+    }
+
+    #[test]
+    fn strip_volatile_leaves_absent_and_non_array_tags_alone() {
+        let mut absent = Rule::from_value(json!({"rule_id": "abc"})).unwrap();
+        strip_volatile(&mut absent);
+        assert!(
+            !absent.as_map().contains_key("tags"),
+            "no tags are invented"
+        );
+
+        let mut scalar = tagged(json!("Missing Elastic Cloud API Key"));
+        strip_volatile(&mut scalar);
+        assert_eq!(
+            scalar.as_map()["tags"],
+            json!("Missing Elastic Cloud API Key")
+        );
+    }
+
+    #[test]
+    fn a_cloud_key_tag_never_reaches_the_canonical_or_comparable_form() {
+        let mk = |tags: Value| {
+            Rule::from_value(json!({
+                "rule_id": "abc", "name": "a rule", "type": "query", "risk_score": 21,
+                "tags": tags
+            }))
+            .unwrap()
+        };
+        let server = mk(json!(["fixture", "Missing Elastic Cloud API Key"]));
+        let file = mk(json!(["fixture"]));
+        assert_eq!(canonical(&server), canonical(&file));
+        assert_eq!(comparable(&server), comparable(&file));
+        assert_eq!(comparable(&file), comparable(&server));
+    }
+
     #[test]
     fn fill_defaults_adds_only_absent_fields() {
         let mut r = hand_authored();
@@ -329,6 +414,20 @@ mod tests {
         assert_eq!(rules[0].rule_id().unwrap(), "a");
         assert_eq!(rules[1].rule_id().unwrap(), "c");
         assert!(rules[2].rule_id().is_err(), "unreadable id sorts last");
+    }
+
+    #[test]
+    fn a_rule_with_only_the_server_tag_compares_equal_to_one_without_tags() {
+        let mut tagged = hand_authored();
+        tagged
+            .as_map_mut()
+            .insert("tags".into(), json!([CLOUD_API_KEY_TAG]));
+        let mut untagged = hand_authored();
+        untagged.as_map_mut().remove("tags");
+        assert_eq!(comparable(&tagged), comparable(&untagged));
+        assert_eq!(comparable(&untagged), comparable(&tagged));
+        // The on-disk form does not invent an empty array.
+        assert!(!canonical(&untagged).as_map().contains_key("tags"));
     }
 
     #[test]

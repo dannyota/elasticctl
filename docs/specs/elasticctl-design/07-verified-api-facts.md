@@ -102,9 +102,10 @@ enables. Within about ten seconds of a create with `enabled: true`, a `PATCH`
 enable, or a `_bulk_action` enable, Kibana appends the tag
 `Missing Elastic Cloud API Key`. The rule still runs. A later `PUT` or `PATCH`
 that omits the tag removes it, and it stays removed until the next enable.
-Hosted 9.5.6 added no tag in the same probe. elasticctl treats the tag as
-ordinary rule content: `state diff` reports it after an enable, and the next
-`state push` removes it.
+Hosted 9.5.6 added no tag in the same probe. Normalization drops the tag as
+server-applied state (section 5.1): `state pull` never writes it, `state diff`
+does not report it, and `state push` neither sends it nor plans an update
+because the server holds it.
 
 ### 7.3 Targeting rules by rule_id in bulk actions
 

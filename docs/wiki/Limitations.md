@@ -32,8 +32,11 @@ work. Use an Elasticsearch API key created inside Kibana; see
 ## Serverless tags a rule enabled by a project-scoped key
 
 On Serverless 9.7.0, enabling a rule with a project-scoped key appends the tag
-`Missing Elastic Cloud API Key` to the rule. `state diff` reports that tag once
-as drift, and the next `state push` removes it.
+`Missing Elastic Cloud API Key` to the rule. The rule still runs. `elkctl`
+treats the tag as server-applied state: `state pull` never writes it, `state
+diff` does not report it, and `state push` never sends it. A rule cannot keep
+this exact tag through the mirror; a rule file that carries it reads as if it
+did not. `rules get` and `rules export` omit it as well; `rules list` shows it.
 
 ## Rule search cannot reach description or query
 
