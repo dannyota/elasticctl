@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const FIND: &str = "/api/detection_engine/rules/_find";
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/serverless-9.6.0/rules_find.json"
+    "/../../tests/fixtures/serverless-9.7.0/rules_find.json"
 ));
 
 fn transport(server: &MockServer) -> Transport {
