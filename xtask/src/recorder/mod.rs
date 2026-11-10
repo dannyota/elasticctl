@@ -5,6 +5,7 @@ pub(crate) mod alerts;
 pub(crate) mod cases;
 pub(crate) mod dashboards;
 pub(crate) mod data_views;
+mod esql_async;
 pub(crate) mod integration;
 pub(crate) mod markers;
 pub(crate) mod ownership;

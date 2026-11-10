@@ -520,6 +520,8 @@ impl RecordingSession<'_> {
             }
         }
 
+        self.cleanup_esql_async(&mut errors).await;
+
         if self.ownership.search_index {
             match self
                 .transport
