@@ -7,6 +7,8 @@ pub use preview_execution::{
     PREVIEW_ALERTS_INDEX_PREFIX, PreviewHits, PreviewResult, decode_preview_hits,
     decode_preview_hits_checked, preview, preview_hits,
 };
+mod window;
+pub use window::{WINDOW_MAX_RULES, WINDOW_PAGE, find_window};
 
 use crate::codec::{self, Bundle};
 use crate::model::Rule;
@@ -69,6 +71,10 @@ pub struct RuleFilter {
     /// Friendly name-substring plus exact-tag search (spec 4.7). Distinct from
     /// `name` (exact) and `query` (raw KQL).
     pub search: Option<String>,
+    /// MITRE ATT&CK technique (`T1059`) or subtechnique (`T1059.001`) id.
+    pub technique: Option<String>,
+    /// MITRE ATT&CK tactic id, such as `TA0002`.
+    pub tactic: Option<String>,
 }
 
 impl RuleFilter {
@@ -106,11 +112,48 @@ impl RuleFilter {
                 kql_escape(v)
             ));
         }
+        if let Some(v) = &self.technique {
+            // A period marks a subtechnique id, which has its own field.
+            let sub = if v.contains('.') { ".subtechnique" } else { "" };
+            parts.push(format!(
+                "alert.attributes.params.threat.technique{sub}.id: \"{}\"",
+                kql_escape(v)
+            ));
+        }
+        if let Some(v) = &self.tactic {
+            parts.push(format!(
+                "alert.attributes.params.threat.tactic.id: \"{}\"",
+                kql_escape(v)
+            ));
+        }
         if let Some(v) = &self.query {
             parts.push(v.clone());
         }
         (!parts.is_empty()).then(|| parts.join(" AND "))
     }
+
+    /// Check `technique` (`T` and four ASCII digits, optionally `.` and three
+    /// more) and `tactic` (`TA` and four ASCII digits). Every read calls this
+    /// before the capability probe and before any request.
+    pub fn validate_threat(&self) -> Result<()> {
+        let technique = |v: &str| has_shape(v, "T0000") || has_shape(v, "T0000.000");
+        let tactic = |v: &str| has_shape(v, "TA0000");
+        let message = if !self.technique.as_deref().is_none_or(technique) {
+            "technique must be T and four digits, optionally a period and three digits"
+        } else if !self.tactic.as_deref().is_none_or(tactic) {
+            "tactic must be TA and four digits"
+        } else {
+            return Ok(());
+        };
+        Err(Error::new(ErrorKind::Error, message))
+    }
+}
+
+/// True when `value` equals `shape` byte for byte, where a `0` in `shape`
+/// stands for any ASCII digit.
+fn has_shape(value: &str, shape: &str) -> bool {
+    let same = |(v, s): (u8, u8)| v == s || (s == b'0' && v.is_ascii_digit());
+    value.len() == shape.len() && value.bytes().zip(shape.bytes()).all(same)
 }
 
 /// Escape a value for use inside a double-quoted KQL literal.
@@ -173,6 +216,7 @@ async fn find(
     per_page: u32,
     sort: &str,
 ) -> Result<(Vec<Rule>, u64)> {
+    filter.validate_threat()?;
     if filter.source != RuleSource::All {
         t.require_feature(Feature::RuleSourceScoping).await?;
     }

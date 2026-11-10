@@ -39,6 +39,7 @@ pub(crate) async fn rules(args: &Cli, action: &RulesAction) -> Result<Value, Err
                     name: None,
                     query: filter.clone(),
                     search: search.clone(),
+                    ..Default::default()
                 };
                 match Context::build(&args.global) {
                     Ok(ctx) => cmd::rules::list(&ctx, &f).await,

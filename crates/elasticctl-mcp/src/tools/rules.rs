@@ -123,6 +123,12 @@ struct RulesListInput {
     /// Rule display-name substring or exact-tag search. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.
     #[schemars(length(min = 1, max = 1024))]
     search: Option<String>,
+    /// MITRE ATT&CK technique or subtechnique id. When supplied, it must be T followed by four ASCII digits, such as T1059, or T, four ASCII digits, a period, and three ASCII digits, such as T1059.001.
+    #[schemars(length(min = 1, max = 1024))]
+    technique: Option<String>,
+    /// MITRE ATT&CK tactic id. When supplied, it must be TA followed by four ASCII digits, such as TA0002.
+    #[schemars(length(min = 1, max = 1024))]
+    tactic: Option<String>,
     #[serde(default)]
     #[schemars(default = "default_source")]
     source: RuleSourceInput,
@@ -142,18 +148,21 @@ impl RulesListInput {
                     .map_err(|_| AdapterError::InvalidArgument)?;
             }
         }
-        Ok((
-            self.limit,
-            RuleFilter {
-                source: self.source.into(),
-                enabled: self.enabled,
-                rule_type: self.rule_type,
-                severity: self.severity,
-                tag: self.tag,
-                search: self.search,
-                ..Default::default()
-            },
-        ))
+        let filter = RuleFilter {
+            source: self.source.into(),
+            enabled: self.enabled,
+            rule_type: self.rule_type,
+            severity: self.severity,
+            tag: self.tag,
+            search: self.search,
+            technique: self.technique,
+            tactic: self.tactic,
+            ..Default::default()
+        };
+        filter
+            .validate_threat()
+            .map_err(|_| AdapterError::InvalidArgument)?;
+        Ok((self.limit, filter))
     }
 }
 
