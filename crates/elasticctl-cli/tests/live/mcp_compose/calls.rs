@@ -173,6 +173,9 @@ pub(crate) fn write_private_lines(path: &Path, lines: &[String]) -> TestResult {
 /// a passing test, and these lines belong in every run's output.
 pub(crate) fn emit_public_lines(lines: &[String]) {
     let mut stdout = std::io::stdout().lock();
+    // The harness has already written `test <name> ... ` without a newline;
+    // start a fresh line so the first timing line stands on its own.
+    let _ = writeln!(stdout);
     for line in lines {
         let _ = writeln!(stdout, "{line}");
     }

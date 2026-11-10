@@ -1,6 +1,7 @@
 mod contracts;
 mod report_io;
 mod state;
+mod timing;
 
 use contracts::{CONTRACTS, Contract, ContractResult, FailureClass, Report, classify_failure};
 use elasticctl_core::{Capabilities, Error, Feature, Profile, Transport};
@@ -338,6 +339,9 @@ pub async fn run(values: &[String]) -> Result<(), String> {
                     capabilities.version,
                     contract.name
                 );
+                for line in timing::public_timing_lines(&output.stdout) {
+                    println!("{} {} {line}", args.flavor.as_str(), capabilities.version);
+                }
             }
             Some(FailureClass::Contract) => {
                 report.contracts.push(ContractResult::fail(contract.name));

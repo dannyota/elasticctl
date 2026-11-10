@@ -1525,3 +1525,47 @@ fn transport_exposes_the_configured_space() {
     let transport = Transport::new(&profile).unwrap();
     assert_eq!(transport.space(), "soc");
 }
+
+#[tokio::test]
+async fn invalid_spaces_are_refused_before_transport_construction() {
+    let server = MockServer::start().await;
+    for space in [
+        ".", "..", "a/b", "a?b", "a#b", "%2e%2e", "UPPER", "a b", "é", "a\\b",
+    ] {
+        let mut profile = profile_for(&server);
+        profile.space = space.into();
+        let error = Transport::new(&profile).err().expect("invalid space");
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert_eq!(error.message, "invalid space id");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn valid_spaces_keep_their_request_urls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    for space in ["", "default", "my-space", "soc_123"] {
+        let mut profile = profile_for(&server);
+        profile.space = space.into();
+        Transport::new(&profile)
+            .unwrap()
+            .get("/api/status")
+            .await
+            .unwrap();
+    }
+    let requests = server.received_requests().await.unwrap();
+    let paths: Vec<_> = requests.iter().map(|r| r.url.path()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/api/status",
+            "/api/status",
+            "/s/my-space/api/status",
+            "/s/soc_123/api/status"
+        ]
+    );
+}

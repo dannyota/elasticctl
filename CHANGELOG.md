@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-10
 
 ### Added
 
@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- A Kibana space id other than empty or `[a-z0-9_-]+` is refused before any
+  request, so a space such as `..` cannot reach the default space's routes.
 - `elasticctl_core::Transport` refuses a request path that does not start with
   `/` before sending anything, so a path such as `@other.example/x` cannot
   carry the credential to another host.
@@ -41,6 +43,13 @@
 - MCP `cases_get`, `data_views_get`, `dashboards_get`,
   `fleet_agent_policies_get`, and `fleet_integration_policies_get` refuse an
   id or selector of `.` or `..` with `invalid_argument` and send no request.
+
+### Verified
+
+- All twelve conformance contracts pass on Serverless 9.7.0, Hosted 9.5.6,
+  and self-managed 9.5.1, including `mcp_answers_across_verticals`, which
+  calls the four task tools on both protocol paths. The self-managed run read
+  a 4,000-rule corpus in eight pages per call.
 
 ## 0.7.5 — 2026-11-10
 

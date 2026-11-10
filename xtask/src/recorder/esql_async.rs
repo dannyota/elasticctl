@@ -31,8 +31,9 @@ fn start_body(query: &str) -> Value {
     json!({"query": query, "wait_for_completion_timeout": "1ms", "columnar": true})
 }
 
-fn async_path(id: &str) -> String {
-    format!("/_query/async/{id}")
+fn async_path(id: &str) -> elasticctl_core::Result<String> {
+    let id = elasticctl_api::compose::require_path_segment(id)?;
+    Ok(format!("/_query/async/{}", elasticctl_core::urlencode(id)))
 }
 
 /// Replace the top-level async id, when present, with the fixed placeholder.
@@ -56,7 +57,7 @@ async fn delete_owned(
     session: &mut RecordingSession<'_>,
     id: &str,
 ) -> elasticctl_core::Result<Value> {
-    let result = session.transport.delete_absolute_es(&async_path(id)).await;
+    let result = session.transport.delete_absolute_es(&async_path(id)?).await;
     let released = match &result {
         Ok(_) => true,
         Err(error) => error.kind == elasticctl_core::ErrorKind::NotFound,
@@ -104,7 +105,7 @@ pub(super) async fn record_esql_async(
         recording_error("async ES|QL query finished inside its wait on every start attempt")
     })?;
 
-    let polled = poll(session.transport, &async_path(&id), interval).await;
+    let polled = poll(session.transport, &async_path(&id)?, interval).await;
     let deleted = delete_owned(session, &id).await;
     let complete = polled?;
     let deleted = deleted?;
@@ -222,7 +223,7 @@ mod tests {
 
     async fn mount_poll(server: &MockServer, id: &str, responses: Vec<ResponseTemplate>) {
         Mock::given(method("GET"))
-            .and(path(async_path(id)))
+            .and(path(async_path(id).unwrap()))
             .respond_with(sequence(responses))
             .mount(server)
             .await;
@@ -230,7 +231,7 @@ mod tests {
 
     async fn mount_delete(server: &MockServer, id: &str, responses: Vec<ResponseTemplate>) {
         Mock::given(method("DELETE"))
-            .and(path(async_path(id)))
+            .and(path(async_path(id).unwrap()))
             .respond_with(sequence(responses))
             .mount(server)
             .await;
@@ -266,6 +267,62 @@ mod tests {
     fn assert_private_text_absent(error: &elasticctl_core::Error, server: &MockServer) {
         for private in ["a1", "private.example.internal", "operator@", &server.uri()] {
             assert!(!error.message.contains(private), "{}", error.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn hostile_async_ids_stay_inside_the_async_route() {
+        for id in ["", ".", "..", "../../victim-index", "a/b?c#d%"] {
+            let server = MockServer::start().await;
+            mount_start(&server, vec![running(id)]).await;
+            Mock::given(method("GET"))
+                .respond_with(ok(complete()))
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .respond_with(acknowledged())
+                .mount(&server)
+                .await;
+            let (result, _) = record(&server).await;
+            let sent = requests(&server).await;
+            if matches!(id, "" | "." | "..") {
+                assert_eq!(
+                    result.err().expect("invalid id").kind,
+                    elasticctl_core::ErrorKind::Http
+                );
+                assert_eq!(sent, ["POST /_query/async"]);
+            } else {
+                result.unwrap();
+                let encoded = elasticctl_core::urlencode(id);
+                assert_eq!(
+                    sent,
+                    [
+                        "POST /_query/async".to_string(),
+                        format!("GET /_query/async/{encoded}"),
+                        format!("DELETE /_query/async/{encoded}")
+                    ]
+                );
+            }
+            let t = mock_transport(&server);
+            let mut session = RecordingSession {
+                transport: &t,
+                ownership: CleanupOwnership::default(),
+            };
+            session.ownership.esql_async_ids.push(id.into());
+            let before = sent.len();
+            let mut errors = Vec::new();
+            session.cleanup_esql_async(&mut errors).await;
+            let sent = requests(&server).await;
+            if matches!(id, "" | "." | "..") {
+                assert_eq!(errors.len(), 1);
+                assert_eq!(sent.len(), before);
+            } else {
+                assert!(errors.is_empty());
+                assert_eq!(
+                    sent.last().unwrap(),
+                    &format!("DELETE /_query/async/{}", elasticctl_core::urlencode(id))
+                );
+            }
         }
     }
 
