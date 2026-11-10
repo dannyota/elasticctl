@@ -436,10 +436,12 @@ pub(super) async fn record_cases(
     alert: &SessionAlert,
     interval: Duration,
 ) -> elasticctl_core::Result<()> {
+    elasticctl_api::compose::require_path_segment(&alert.id)?;
     let t = compose.session.transport;
     let created = create_case(compose).await?;
     let case = elasticctl_api::cases::decode_case(&created)
         .map_err(|_| recording_error("case create response failed decoding"))?;
+    elasticctl_api::compose::require_path_segment(&case.id)?;
     placeholders.insert(case.id.clone(), CASE_ID_PLACEHOLDER.to_string());
     let mut next_comment = 0usize;
     register_case_extras(&created, placeholders, &mut next_comment);
@@ -503,4 +505,124 @@ pub(super) async fn record_cases(
     exchanges.response("cases_by_alert_none", &planned, rows);
 
     measure_case_ids(t, log, &alert.id, interval).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recorder::compose::provision::case_body;
+    use crate::recorder::test_support::mock_transport;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn reserved_case_and_alert_ids_are_encoded_as_one_segment() {
+        let server = MockServer::start().await;
+        let id = "../../case?x#y%";
+        let alert_id = "../../alert?x#y%";
+        let mut created: Value = serde_json::from_str::<Value>(include_str!(
+            "../../../../tests/fixtures/traditional-9.5.1/case_create.json"
+        ))
+        .unwrap()["response"]
+            .clone();
+        for (key, value) in case_body().as_object().unwrap() {
+            created[key] = value.clone();
+        }
+        created["id"] = json!(id);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(created))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        let t = mock_transport(&server);
+        let mut compose = ComposeSession::new(&t);
+        let alert = SessionAlert {
+            id: alert_id.into(),
+            index: "index".into(),
+            rule_uuid: "rule".into(),
+            rule_name: "rule".into(),
+        };
+        assert!(
+            record_cases(
+                &mut compose,
+                &mut Exchanges::default(),
+                &mut PrivateLog::default(),
+                &mut Placeholders::new(),
+                &alert,
+                Duration::ZERO
+            )
+            .await
+            .is_err()
+        );
+        let requests = server.received_requests().await.unwrap();
+        let paths: Vec<_> = requests.iter().map(|r| r.url.path()).collect();
+        assert_eq!(paths[0], "/api/cases");
+        assert_eq!(
+            paths[1],
+            format!("/api/cases/{}/comments", elasticctl_core::urlencode(id))
+        );
+        assert_eq!(paths.len(), 5);
+        for path in &paths[2..] {
+            assert_eq!(
+                *path,
+                format!("/api/cases/alerts/{}", elasticctl_core::urlencode(alert_id))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hostile_case_and_alert_ids_send_no_off_prefix_requests() {
+        for (case_id, alert_id) in [
+            ("..", "alert"),
+            (".", "alert"),
+            ("", "alert"),
+            ("case", ".."),
+            ("case", "."),
+            ("case", ""),
+        ] {
+            let server = MockServer::start().await;
+            let mut created: Value = serde_json::from_str::<Value>(include_str!(
+                "../../../../tests/fixtures/traditional-9.5.1/case_create.json"
+            ))
+            .unwrap()["response"]
+                .clone();
+            for (key, value) in case_body().as_object().unwrap() {
+                created[key] = value.clone();
+            }
+            created["id"] = json!(case_id);
+            Mock::given(method("POST"))
+                .and(path("/api/cases"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(created))
+                .mount(&server)
+                .await;
+            let t = mock_transport(&server);
+            let mut compose = ComposeSession::new(&t);
+            let alert = SessionAlert {
+                id: alert_id.into(),
+                index: "index".into(),
+                rule_uuid: "rule".into(),
+                rule_name: "rule".into(),
+            };
+            let result = record_cases(
+                &mut compose,
+                &mut Exchanges::default(),
+                &mut PrivateLog::default(),
+                &mut Placeholders::new(),
+                &alert,
+                Duration::ZERO,
+            )
+            .await;
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Http);
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                requests
+                    .iter()
+                    .all(|r| r.method == "POST" && r.url.path() == "/api/cases")
+            );
+            assert!(requests.len() <= 1);
+        }
+    }
 }

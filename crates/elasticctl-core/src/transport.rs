@@ -223,6 +223,7 @@ impl Transport {
 
     /// Build a transport with opt-in response and request restrictions.
     pub fn with_options(profile: &Profile, options: TransportOptions) -> Result<Transport> {
+        crate::config::validate_space(&profile.space)?;
         // Scrub URL userinfo before deriving any base URL or logging, so a
         // credential embedded in a URL never reaches a request or debug line.
         let mut profile = profile.clone();

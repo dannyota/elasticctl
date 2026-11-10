@@ -60,6 +60,9 @@ long.
 ### 3.1 elasticctl-core
 
 Does not know about detection rules.
+Space ids must match `[a-z0-9_-]+`; profile resolution and transport
+construction refuse any other value with kind `error` and the static message
+`invalid space id`.
 
 - **`config`** — profiles in `~/.elasticctl/config.toml`, `0600` enforced on
   write and warned on read. Writes go through a same-directory temporary file

@@ -458,12 +458,11 @@ fn proven_id(
             "{object} create response did not prove the fixed marker identity"
         )));
     }
-    created
+    let id = created
         .get("id")
         .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| recording_error(format!("{object} create response is missing id")))
+        .ok_or_else(|| recording_error(format!("{object} create response is missing id")))?;
+    elasticctl_api::compose::require_path_segment(id).map(str::to_owned)
 }
 
 /// Create the list, its two items, and both rules, in that order, keeping
