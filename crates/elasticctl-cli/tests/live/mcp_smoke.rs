@@ -171,7 +171,13 @@ fn offline_children_drop_every_target_override() {
             .filter(|(_, value)| value.is_none())
             .map(|(name, _)| name.to_owned())
             .collect();
-        for name in TARGET_OVERRIDES {
+        for name in [
+            "ELASTICCTL_KIBANA_URL",
+            "ELASTICCTL_ES_URL",
+            "ELASTICCTL_API_KEY",
+            "ELASTICCTL_SPACE",
+            "ELASTICCTL_TIMEOUT",
+        ] {
             assert!(
                 removed.iter().any(|removed| removed == name),
                 "{name} stays inherited"
