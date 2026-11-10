@@ -75,6 +75,7 @@ enum Act {
     Json(u16, Value),
     Drop,
     Hang,
+    Oversized,
 }
 
 fn step_of(r: &Req) -> Option<Step> {
@@ -114,16 +115,22 @@ impl Stack {
         Stack { url, log }
     }
     fn transport(&self, timeout_secs: u64) -> Transport {
-        Transport::new(&Profile {
-            kibana_url: self.url.clone(),
-            es_url: None,
-            api_key: Some("test".into()),
-            username: None,
-            password: None,
-            space: "default".into(),
-            verify: true,
-            timeout_secs,
-        })
+        Transport::with_options(
+            &Profile {
+                kibana_url: self.url.clone(),
+                es_url: None,
+                api_key: Some("test".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs,
+            },
+            elasticctl_core::TransportOptions {
+                response_body_limit: Some(16_777_216),
+                ..Default::default()
+            },
+        )
         .unwrap()
     }
     /// Every request in arrival order, without the cached capability probe.
@@ -192,6 +199,13 @@ async fn serve(mut stream: TcpStream, route: Route, log: Log) {
             let _ = stream.write_all(head.as_bytes()).await;
             let _ = stream.write_all(&body).await;
             let _ = stream.flush().await;
+        }
+        Act::Oversized => {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 16777217\r\nconnection: close\r\n\r\n",
+                )
+                .await;
         }
         Act::Drop => drop(stream),
         Act::Hang => tokio::time::sleep(Duration::from_secs(30)).await,
@@ -777,4 +791,139 @@ async fn since_reaches_the_activity_window() {
         panic!("activity part")
     };
     assert_eq!(a.window, "9999w");
+}
+
+#[tokio::test]
+async fn nonfatal_errors_at_each_part_continue_the_plan() {
+    for failing in [Rule, List, Count, Cases, Case, Activity] {
+        for (status, expected_kind) in [
+            (403, ErrorKind::Permission),
+            (404, ErrorKind::NotFound),
+            (409, ErrorKind::Conflict),
+            (400, ErrorKind::Http),
+            (200, ErrorKind::Unsupported),
+            (201, ErrorKind::Error),
+        ] {
+            if status == 201 && !matches!(failing, Rule | List) {
+                continue;
+            }
+            let base = recorded(2, 2);
+            let s = Stack::start(move |step, req| {
+                if step != failing
+                    || (step == List || step == Count)
+                        && !req.query("list_id").unwrap().ends_with("-0")
+                    || step == Case && !req.path().ends_with("case-0")
+                {
+                    return base(step, req);
+                }
+                if status == 201 {
+                    let mut body = if failing == Rule {
+                        rule_with_refs(2)
+                    } else {
+                        fixture("exception_list_get.json")
+                    };
+                    body.as_object_mut().unwrap().remove(if failing == Rule {
+                        "rule_id"
+                    } else {
+                        "list_id"
+                    });
+                    Act::Json(200, body)
+                } else if status == 200 {
+                    Act::Oversized
+                } else {
+                    Act::Json(status, error_body())
+                }
+            })
+            .await;
+            let c = alert_context::alert_context(&s.transport(5), ALERT_ID, "24h")
+                .await
+                .unwrap();
+            let expected = match failing {
+                Rule => vec![Alert, Rule, Cases, Case, Case],
+                List => vec![Alert, Rule, List, List, Count, Cases, Case, Case, Activity],
+                Cases => vec![Alert, Rule, List, Count, List, Count, Cases, Activity],
+                _ => vec![
+                    Alert, Rule, List, Count, List, Count, Cases, Case, Case, Activity,
+                ],
+            };
+            assert_eq!(s.steps(), expected, "{failing:?} {expected_kind:?}");
+            let error = match failing {
+                Rule => kind(&c.rule),
+                Cases => kind(&c.cases),
+                Activity => kind(&c.activity),
+                List | Count => {
+                    let Part::Ok(ex) = &c.exceptions else {
+                        panic!("exceptions")
+                    };
+                    assert!(ex.lists[1].facts.is_ok());
+                    Some(ex.lists[0].facts.as_ref().unwrap_err().kind)
+                }
+                Case => {
+                    let Part::Ok(cs) = &c.cases else {
+                        panic!("cases")
+                    };
+                    assert!(cs.cases[1].detail.is_ok());
+                    Some(cs.cases[0].detail.as_ref().unwrap_err().kind)
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(error, Some(expected_kind));
+            if failing == Rule {
+                assert_eq!(
+                    skipped(&c.exceptions),
+                    Some(SkipReason::DependencyUnavailable)
+                );
+                assert_eq!(
+                    skipped(&c.activity),
+                    Some(SkipReason::DependencyUnavailable)
+                );
+            }
+            assert!(c.partial());
+            let mut findings = Vec::new();
+            if expected_kind == ErrorKind::NotFound {
+                if failing == Rule {
+                    findings.push(AlertFinding::RuleMissing);
+                }
+                if matches!(failing, List | Count) {
+                    findings.push(AlertFinding::ExceptionListMissing);
+                }
+            }
+            if failing != Cases {
+                findings.push(AlertFinding::HasRelatedCase);
+            }
+            assert_eq!(c.findings(), findings);
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_rule_degrades_before_dependent_reads() {
+    let base = recorded(1, 1);
+    let s = Stack::start(move |step, req| {
+        if step == Rule {
+            let mut rule = rule_with_refs(1);
+            rule["enabled"] = json!("false");
+            Act::Json(200, rule)
+        } else {
+            base(step, req)
+        }
+    })
+    .await;
+    let c = alert_context::alert_context(&s.transport(5), ALERT_ID, "24h")
+        .await
+        .unwrap();
+    assert_eq!(kind(&c.rule), Some(ErrorKind::Http));
+    assert_eq!(
+        skipped(&c.exceptions),
+        Some(SkipReason::DependencyUnavailable)
+    );
+    assert_eq!(
+        skipped(&c.activity),
+        Some(SkipReason::DependencyUnavailable)
+    );
+    assert_eq!(c.alert.id, ALERT_ID);
+    assert!(matches!(c.cases, Part::Ok(_)));
+    assert!(c.partial());
+    assert_eq!(c.findings(), [AlertFinding::HasRelatedCase]);
+    assert_eq!(s.steps(), [Alert, Rule, Cases, Case]);
 }

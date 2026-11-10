@@ -682,3 +682,437 @@ async fn deadline_on_the_third_request_frees_the_permit() {
     h.close_input();
     h.join().await.unwrap();
 }
+
+#[tokio::test]
+async fn malformed_rule_fields_preserve_alert_and_cases() {
+    for (field, value) in [
+        ("enabled", json!("false")),
+        ("name", json!(7)),
+        ("type", json!(7)),
+        ("severity", json!(7)),
+        ("risk_score", json!("7")),
+        ("tags", json!([7])),
+        ("description", json!(7)),
+        ("language", json!(7)),
+        ("query", json!(7)),
+        ("index", json!([7])),
+        ("from", json!(7)),
+        ("interval", json!(7)),
+        ("exceptions_list", json!([7])),
+        ("exceptions_list", json!({})),
+        ("exceptions_list", json!([{"list_id": 7}])),
+        ("exceptions_list", json!([{"namespace_type": 7}])),
+        ("exceptions_list", json!([{"type": 7}])),
+    ] {
+        let server = stack(move |step, _| {
+            (step == Rule).then(|| {
+                let mut rule = fixture("rule_get_executed.json");
+                rule[field] = value.clone();
+                ok(rule)
+            })
+        })
+        .await;
+        let mut h = Harness::start(target_for(&server), options());
+        let schema = tool(&mut h).await["outputSchema"].clone();
+        let reply = call(&mut h, 1, json!({"alert_id": ALERT_ID})).await;
+        assert_eq!(reply["result"]["isError"], false, "{field}: {reply}");
+        assert_schema(&schema, structured(&reply));
+        let data = &structured(&reply)["data"];
+        assert_eq!(data["alert"]["id"], ALERT_ID);
+        assert_eq!(data["rule"]["status"], "unavailable");
+        assert_eq!(data["rule"]["error"]["kind"], "http");
+        for part in ["exceptions", "activity"] {
+            assert_eq!(
+                data[part],
+                json!({"status":"skipped","skip_reason":"dependency_unavailable"})
+            );
+        }
+        assert_eq!(data["cases"]["value"]["total"], 1);
+        assert_eq!(data["partial"], true);
+        assert_eq!(data["findings"], json!(["has_related_case"]));
+        assert_eq!(steps(&server).await, [Alert, Rule, Cases, Case]);
+        h.close_input();
+        h.join().await.unwrap();
+    }
+}
+
+mod failure_matrix {
+    use super::{
+        ALERT_ID, Harness, assert_schema, assert_text_copy, call, error_body, fixture, options,
+        structured, tool,
+    };
+    use elasticctl_core::ErrorKind;
+    use serde_json::{Value, json};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Step {
+        Alert,
+        Rule,
+        List,
+        Count,
+        Cases,
+        Case,
+        Activity,
+        Other,
+    }
+    use Step::*;
+
+    #[derive(Clone, Debug)]
+    struct Req {
+        method: String,
+        target: String,
+        body: Value,
+    }
+    impl Req {
+        fn path(&self) -> &str {
+            self.target.split('?').next().unwrap()
+        }
+        fn query(&self, key: &str) -> Option<String> {
+            let q = self.target.split_once('?')?.1;
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_owned())
+        }
+    }
+
+    enum Act {
+        Json(u16, Value),
+        Drop,
+        Hang,
+        Oversized,
+    }
+
+    fn step_of(r: &Req) -> Option<Step> {
+        Some(match (r.method.as_str(), r.path()) {
+            ("GET", "/api/status") => return None,
+            ("POST", "/api/detection_engine/signals/search") if r.body["size"] == 0 => Activity,
+            ("POST", "/api/detection_engine/signals/search") => Alert,
+            ("GET", "/api/detection_engine/rules") => Rule,
+            ("GET", "/api/exception_lists") => List,
+            ("GET", "/api/exception_lists/items/_find") => Count,
+            ("GET", p) if p.starts_with("/api/cases/alerts/") => Cases,
+            ("GET", p) if p.starts_with("/api/cases/") => Case,
+            _ => Other,
+        })
+    }
+
+    type Route = Arc<dyn Fn(Step, &Req) -> Act + Send + Sync>;
+    type Log = Arc<Mutex<Vec<Req>>>;
+
+    struct Stack {
+        url: String,
+        log: Log,
+    }
+
+    impl Stack {
+        async fn start(route: impl Fn(Step, &Req) -> Act + Send + Sync + 'static) -> Stack {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let log: Log = Arc::default();
+            let route: Route = Arc::new(route);
+            let shared = Arc::clone(&log);
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(serve(stream, Arc::clone(&route), Arc::clone(&shared)));
+                }
+            });
+            Stack { url, log }
+        }
+        /// Every request in arrival order, without the cached capability probe.
+        fn requests(&self) -> Vec<Req> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| step_of(r).is_some())
+                .cloned()
+                .collect()
+        }
+        fn steps(&self) -> Vec<Step> {
+            self.requests().iter().filter_map(step_of).collect()
+        }
+    }
+
+    async fn serve(mut stream: TcpStream, route: Route, log: Log) {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let head_end = loop {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let mut first = lines.next().unwrap().split(' ');
+        let method = first.next().unwrap().to_owned();
+        let target = first.next().unwrap().to_owned();
+        let len = lines
+            .filter_map(|l| l.split_once(':'))
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .map_or(0, |(_, v)| v.trim().parse::<usize>().unwrap());
+        while buf.len() < head_end + len {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let body = serde_json::from_slice(&buf[head_end..head_end + len]).unwrap_or(Value::Null);
+        let req = Req {
+            method,
+            target,
+            body,
+        };
+        log.lock().unwrap().push(req.clone());
+        let act = match step_of(&req) {
+            None => Act::Json(200, fixture("status.json")),
+            Some(step) => route(step, &req),
+        };
+        match act {
+            Act::Json(status, body) => {
+                let body = serde_json::to_vec(&body).unwrap();
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+                let _ = stream.flush().await;
+            }
+            Act::Oversized => {
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 16777217\r\nconnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+            Act::Drop => drop(stream),
+            Act::Hang => tokio::time::sleep(Duration::from_secs(30)).await,
+        }
+    }
+
+    /// The recorded alert as a one-hit search page, with `edit` applied to it.
+    fn alert_page(edit: impl FnOnce(&mut Value)) -> Value {
+        let mut page = fixture("signals_search_rule_activity.json");
+        let mut hit = page["hits"]["hits"][0].clone();
+        assert_eq!(hit["_id"], ALERT_ID);
+        edit(&mut hit);
+        page["hits"]["hits"] = json!([hit]);
+        page["hits"]["total"]["value"] = json!(1);
+        page.as_object_mut().unwrap().remove("aggregations");
+        page
+    }
+    /// The recorded rule with `n` exception references derived from its first.
+    fn rule_with_refs(n: usize) -> Value {
+        let mut rule = fixture("rule_get_executed.json");
+        let first = rule["exceptions_list"][0].clone();
+        rule["exceptions_list"] = json!(
+            (0..n)
+                .map(|i| {
+                    let mut r = first.clone();
+                    r["list_id"] = json!(format!("{}-{i}", first["list_id"].as_str().unwrap()));
+                    r
+                })
+                .collect::<Vec<_>>()
+        );
+        rule
+    }
+    /// The recorded cases-by-alert answer with `n` rows derived from its first.
+    fn case_refs(n: usize) -> Value {
+        let row = fixture("cases_by_alert.json")[0].clone();
+        json!(
+            (0..n)
+                .map(|i| {
+                    let mut r = row.clone();
+                    r["id"] = json!(format!("case-{i}"));
+                    r["title"] = json!(format!("title-{i}"));
+                    r
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+    fn case_detail(req: &Req) -> Value {
+        let mut case = fixture("case_get.json");
+        case["id"] = json!(req.path().trim_start_matches("/api/cases/"));
+        case
+    }
+    /// The recorded activity answer as a `size: 0` search returns it.
+    fn activity() -> Value {
+        let mut body = fixture("signals_search_rule_activity.json");
+        body["hits"]["hits"] = json!([]);
+        body
+    }
+
+    /// Recorded answers for a rule with `refs` exception references and an
+    /// alert in `cases` cases.
+    fn recorded(refs: usize, cases: usize) -> impl Fn(Step, &Req) -> Act + Send + Sync + Clone {
+        move |step, req| match step {
+            Alert => Act::Json(200, alert_page(|_| ())),
+            Rule => Act::Json(200, rule_with_refs(refs)),
+            List => Act::Json(200, fixture("exception_list_get.json")),
+            Count => Act::Json(200, fixture("exception_items_count.json")),
+            Cases => Act::Json(200, case_refs(cases)),
+            Case => Act::Json(200, case_detail(req)),
+            Activity => Act::Json(200, activity()),
+            Other => Act::Json(404, error_body()),
+        }
+    }
+
+    fn target(s: &Stack) -> elasticctl_core::Resolved {
+        let mut target = crate::support::target();
+        target.profile.kibana_url = s.url.clone();
+        target.profile.es_url = Some(s.url.clone());
+        target.profile.timeout_secs = 1;
+        target.profile.api_key = Some("test".into());
+        target
+    }
+
+    #[tokio::test]
+    async fn fatal_errors_at_each_step_return_failure_envelopes() {
+        let plan = [Alert, Rule, List, Count, Cases, Case, Activity];
+        for (at, failing) in plan.into_iter().enumerate() {
+            for fatal in [ErrorKind::Auth, ErrorKind::Connection, ErrorKind::Timeout] {
+                let base = recorded(1, 1);
+                let s = Stack::start(move |step, req| {
+                    if step != failing {
+                        return base(step, req);
+                    }
+                    match fatal {
+                        ErrorKind::Auth => Act::Json(401, error_body()),
+                        ErrorKind::Connection => Act::Drop,
+                        _ => Act::Hang,
+                    }
+                })
+                .await;
+                let mut h = Harness::start(target(&s), options());
+                let schema = tool(&mut h).await["outputSchema"].clone();
+                let reply = call(&mut h, 1, json!({"alert_id": ALERT_ID})).await;
+                assert_eq!(reply["result"]["isError"], true, "{reply}");
+                let out = structured(&reply);
+                assert_eq!(out["error"]["kind"], fatal.as_str(), "{failing:?}");
+                assert!(out.get("data").is_none());
+                assert_schema(&schema, out);
+                assert_text_copy(&reply);
+                assert_eq!(s.steps(), plan[..=at]);
+                h.close_input();
+                h.join().await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nonfatal_errors_at_each_part_return_partial_envelopes() {
+        for failing in [Rule, List, Count, Cases, Case, Activity] {
+            for (status, kind) in [
+                (403, "permission"),
+                (404, "not_found"),
+                (409, "conflict"),
+                (400, "http"),
+                (200, "unsupported"),
+                (201, "error"),
+            ] {
+                if status == 201 && !matches!(failing, Rule | List) {
+                    continue;
+                }
+                let base = recorded(2, 2);
+                let s = Stack::start(move |step, req| {
+                    if step != failing
+                        || (step == List || step == Count)
+                            && !req.query("list_id").unwrap().ends_with("-0")
+                        || step == Case && !req.path().ends_with("case-0")
+                    {
+                        return base(step, req);
+                    }
+                    if status == 201 {
+                        let mut body = if failing == Rule {
+                            rule_with_refs(2)
+                        } else {
+                            fixture("exception_list_get.json")
+                        };
+                        body.as_object_mut().unwrap().remove(if failing == Rule {
+                            "rule_id"
+                        } else {
+                            "list_id"
+                        });
+                        Act::Json(200, body)
+                    } else if status == 200 {
+                        Act::Oversized
+                    } else {
+                        Act::Json(status, error_body())
+                    }
+                })
+                .await;
+                let mut h = Harness::start(target(&s), options());
+                let schema = tool(&mut h).await["outputSchema"].clone();
+                let reply = call(&mut h, 1, json!({"alert_id": ALERT_ID})).await;
+                assert_eq!(
+                    reply["result"]["isError"], false,
+                    "{failing:?} {kind}: {reply}"
+                );
+                assert_schema(&schema, structured(&reply));
+                assert_text_copy(&reply);
+                let data = &structured(&reply)["data"];
+                let part = match failing {
+                    Rule => &data["rule"],
+                    Cases => &data["cases"],
+                    Activity => &data["activity"],
+                    List | Count => &data["exceptions"]["value"]["lists"][0],
+                    Case => &data["cases"]["value"]["cases"][0],
+                    _ => unreachable!(),
+                };
+                assert_eq!(part["status"], "unavailable");
+                assert_eq!(part["error"]["kind"], kind);
+                assert_eq!(data["partial"], true);
+                if failing == Rule {
+                    for part in ["exceptions", "activity"] {
+                        assert_eq!(
+                            data[part],
+                            json!({"status":"skipped","skip_reason":"dependency_unavailable"})
+                        );
+                    }
+                }
+                if matches!(failing, List | Count) {
+                    assert_eq!(data["exceptions"]["value"]["lists"][1]["status"], "ok");
+                }
+                if failing == Case {
+                    assert_eq!(data["cases"]["value"]["cases"][1]["status"], "ok");
+                }
+                let mut findings = Vec::new();
+                if kind == "not_found" {
+                    if failing == Rule {
+                        findings.push("rule_missing");
+                    }
+                    if matches!(failing, List | Count) {
+                        findings.push("exception_list_missing");
+                    }
+                }
+                if failing != Cases {
+                    findings.push("has_related_case");
+                }
+                assert_eq!(data["findings"], json!(findings));
+                let expected = match failing {
+                    Rule => vec![Alert, Rule, Cases, Case, Case],
+                    List => vec![Alert, Rule, List, List, Count, Cases, Case, Case, Activity],
+                    Cases => vec![Alert, Rule, List, Count, List, Count, Cases, Activity],
+                    _ => vec![
+                        Alert, Rule, List, Count, List, Count, Cases, Case, Case, Activity,
+                    ],
+                };
+                assert_eq!(s.steps(), expected);
+                h.close_input();
+                h.join().await.unwrap();
+            }
+        }
+    }
+}

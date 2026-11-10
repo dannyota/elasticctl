@@ -145,6 +145,50 @@ async fn related_cases(t: &Transport, alert_id: &str) -> Result<RelatedCases> {
     })
 }
 
+fn validate_rule_context(snapshot: RuleSnapshot) -> Result<RuleSnapshot> {
+    let invalid = || Error::new(ErrorKind::Http, "invalid rule context field");
+    fn optional<T: serde::de::DeserializeOwned>(
+        map: &serde_json::Map<String, Value>,
+        key: &str,
+    ) -> Result<()> {
+        if let Some(value) = map.get(key).filter(|v| !v.is_null()) {
+            serde_json::from_value::<T>(value.clone())
+                .map_err(|_| Error::new(ErrorKind::Http, "invalid rule context field"))?;
+        }
+        Ok(())
+    }
+    let map = snapshot.rule.as_map();
+    if !map.get("rule_id").is_some_and(Value::is_string) {
+        return Err(invalid());
+    }
+    for key in [
+        "name",
+        "type",
+        "severity",
+        "description",
+        "language",
+        "query",
+        "from",
+        "interval",
+    ] {
+        optional::<String>(map, key)?;
+    }
+    optional::<bool>(map, "enabled")?;
+    optional::<serde_json::Number>(map, "risk_score")?;
+    for key in ["tags", "index"] {
+        optional::<Vec<String>>(map, key)?;
+    }
+    if let Some(value) = map.get("exceptions_list").filter(|v| !v.is_null()) {
+        for entry in value.as_array().ok_or_else(invalid)? {
+            let entry = entry.as_object().ok_or_else(invalid)?;
+            for key in ["list_id", "namespace_type", "type"] {
+                optional::<String>(entry, key)?;
+            }
+        }
+    }
+    Ok(snapshot)
+}
+
 /// Read the alert, then its rule, the rule's exception coverage, the cases
 /// that contain the alert, and the rule's alert activity, one request at a
 /// time. The alert read is primary; every later read is a part.
@@ -156,7 +200,7 @@ pub async fn alert_context(t: &Transport, alert_id: &str, since: &str) -> Result
     let alert = alerts_ops::get_one(t, alert_id).await?;
     let rule_id = source_str(&alert.source, "kibana.alert.rule.rule_id").map(str::to_owned);
     let rule = match &rule_id {
-        Some(id) => degrade(snapshot_by_id(t, id).await)?,
+        Some(id) => degrade(snapshot_by_id(t, id).await.and_then(validate_rule_context))?,
         None => Part::Skipped(SkipReason::NotApplicable),
     };
     let exceptions = match &rule {
