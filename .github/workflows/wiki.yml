@@ -1,6 +1,7 @@
 name: Wiki
 
-# Publication is disabled. Every event renders a read-only preview.
+# A pull request renders a read-only preview. A push to master, or a manual run
+# on master, publishes docs/wiki/ to the GitHub wiki.
 on:
   pull_request:
     branches: [master]
@@ -34,3 +35,25 @@ jobs:
         with:
           persist-credentials: false
       - run: bash scripts/wiki-sync.sh --dry-run
+
+  publish:
+    needs: preview
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # One publish at a time. Each run publishes the current master tip, so a
+    # run that starts late cannot put older pages back.
+    concurrency:
+      group: wiki-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Publish the wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/wiki-sync.sh
