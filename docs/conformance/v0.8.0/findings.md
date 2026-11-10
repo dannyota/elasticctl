@@ -9,21 +9,24 @@ including the new `mcp_answers_across_verticals`.
 | Elastic Cloud Hosted | 9.5.6 | 12 pass | [ech-9.5.6.json](ech-9.5.6.json) |
 | Self-managed | 9.5.1 | 12 pass | [traditional-9.5.1.json](traditional-9.5.1.json) |
 
-Every leg ran at source commit `0881ee38a5e0dc9c7e5d422a4acc8f97001b9691`.
-The Serverless and Hosted legs ran together from the development host from
-`2026-11-10T09:30:40Z` to `09:58:15Z`, with the client built at optimization
-level 3. The self-managed leg is the Live lab run on the release branch from
-`2026-11-10T09:30:41Z` to `09:42:51Z`, against a disposable 9.5.1 lab.
+Every leg ran at source commit `b330988203b986c83c767778fcf3a4a696f71d13`,
+the release head, with the client built at optimization level 3 on the
+development host. Serverless ran from `2026-11-10T11:39:50Z` to `12:03:34Z`.
+Hosted ran alone from `12:03:58Z` to `12:18:48Z`. The self-managed leg is the
+Live lab run on the release branch from `11:37:07Z` to `11:51:51Z`, against a
+disposable 9.5.1 lab.
 
 ## Earlier runs
 
-The same contracts ran earlier the same day at `afe1479` and `5ae79e3`. In
-the first of those, Serverless failed one contract, `content`: a dashboard
-delete answered with a connection error before any response. Cleanup and the
-baseline audit passed, an independent check found no marker object left, and
-the rerun passed all twelve. The release commit adds refusals for an invalid
-Kibana space and for response ids that would leave their URL path segment,
-so all three legs ran again on it.
+The same contracts ran earlier the same day at `afe1479`, `5ae79e3`, and
+`0881ee3`. Two runs failed one contract each, both `content`, with cleanup
+and the baseline audit passing: at `afe1479` a Serverless dashboard delete
+answered with a connection error, and at `b330988` a Hosted leg run alongside
+Serverless could not start the `elasticctl` binary while the other leg's
+build relinked it. Hosted then ran alone and passed all twelve. Later commits
+added refusals for an invalid Kibana space and for response ids that would
+leave their URL path segment, and a sentence in the `detection_coverage`
+description, so all three legs ran again at the release head.
 
 ## Latency gate M9
 
@@ -32,36 +35,36 @@ The gate is 15 seconds for `alert_context`, `rule_health`, and
 deadline for one eight-page pass over 4,000 rules, the rule the owner set on
 2026-11-10 (tasks design section 11.1).
 
-Slowest maximum-work call of each tool, current protocol:
+Slowest maximum-work call of each tool at the release head, current
+protocol:
 
 | Tool | Serverless 9.7.0 | Hosted 9.5.6 | Self-managed 9.5.1 | Gate |
 | --- | --- | --- | --- | --- |
-| `alert_context` (19 requests) | 2.9 s | 4.1 s | 1 s | pass |
-| `rule_health` (14 requests) | 2.6 s | 2.0 s | 1 s | pass |
-| `rule_readiness` (29 requests) | 8.6 s | 7.2 s | 2 s | pass |
+| `alert_context` (19 requests) | 1.8 s | 2.4 s | 1 s | pass |
+| `rule_health` (14 requests) | 1.5 s | 1.4 s | 1 s | pass |
+| `rule_readiness` (29 requests) | 5.3 s | 4.8 s | 1 s | pass |
 
 Self-managed values are the public whole-second lines; the Cloud values come
 from the private timing log.
 
-`detection_coverage` with default arguments, two calls in a row:
+`detection_coverage` with default arguments, two calls in a row, at the
+release head:
 
 | Flavor | Rules | Pages | Call 1 | Call 2 | Worst per page |
 | --- | --- | --- | --- | --- | --- |
-| Serverless 9.7.0 | 2,263 | 5 | 10.3 s | 11.0 s | 2.20 s |
-| Hosted 9.5.6 | 2,263 | 5 | 14.9 s | 9.1 s | 2.99 s |
-| Self-managed 9.5.1 | 4,000 | 8 | 2 s | 2 s | 0.25 s |
+| Serverless 9.7.0 | 2,263 | 5 | 3.9 s | 3.7 s | 0.78 s |
+| Hosted 9.5.6 | 2,263 | 5 | 3.8 s | 3.7 s | 0.76 s |
+| Self-managed 9.5.1 | 4,000 | 8 | 3 s | 2 s | 0.38 s |
 
-The worst per-page time is 2.99 seconds, from the first Hosted call. Eight
-pages at that rate take 23.9 seconds, inside the 30-second deadline, so one
-pass over 4,000 rules passes. Sixteen pages, two passes, take 47.8 seconds;
-the second pass runs only when the rules change during the first, and the
-tool description tells the caller that a call near the limit can need a
-longer `--timeout`, up to 120 seconds.
-
-Page time on the Cloud stacks is network transfer of about 4.4 MB a page
-from the development host. It ranged from 1.2 to 3.0 seconds a page across
-the day's runs and by-hand timings, with debug and optimized builds alike;
-the lab on the CI runner read a page in 0.25 to 0.38 seconds.
+At the release head the worst per-page time is 0.78 seconds: 6.2 seconds for
+eight pages and 12.5 for sixteen, inside even the 15-second gate. Page time
+on the Cloud stacks is network transfer of about 4.4 MB a page from the
+development host and varied through the day. The slowest read, at
+`0881ee3`, was a Hosted call of 14.9 seconds for five pages, 2.99 seconds a
+page: 23.9 seconds for eight pages, still inside the 30-second deadline, and
+47.8 seconds for sixteen. The second pass runs only when the rules change
+during the first, and the tool description tells the caller that a call
+near the limit can need a longer `--timeout`, up to 120 seconds.
 
 ## Frames
 
