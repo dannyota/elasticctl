@@ -49,6 +49,25 @@ only on Hosted and only in that period. The probes do not show whether the
 write or the default order caused them. The design relies on neither: it
 sorts explicitly and verifies.
 
+### 11.2 Recorded measurements M1 to M8
+
+`cargo xtask record-compose` measured these on 2026-11-10 with marker
+objects on the trial Serverless project (9.7.0) and the trial Hosted
+deployment (9.5.6). Both answered alike unless a cell says otherwise. The
+fixtures are in `tests/fixtures/serverless-9.7.0/` and
+`tests/fixtures/ech-9.5.6/`. The lab (9.5.1) column is open.
+
+| ID | Result on Serverless 9.7.0 and Hosted 9.5.6 |
+| --- | --- |
+| M1 | `GET /api/cases/alerts/{id}` answers 200 with an array of cases. Each element has `id`, `title`, `description`, `status`, `createdAt`, and `totals`; `id` and `title` are strings. An absent id answers `[]`. |
+| M2 | The alert's source holds `kibana.alert.case_ids` once the alert is attached. |
+| M3 | The section 4.2 body answers `hits.total.relation: "eq"`, terms buckets keyed by workflow status (`open`, `closed`), `sum_other_doc_count: 0`, and the five newest hits. |
+| M4 | A successful run reports `status: "succeeded"`, `status_order: 0`, and integer metrics `total_search_duration_ms` and `total_indexing_duration_ms`. A run over a missing index reports `status: "partial failure"`, `status_order: 20`, a message of about 195 bytes, and empty `metrics`; it is not `failed`. |
+| M5 | `_resolve/index` answers 200 with one index for the marker index, 200 with three empty arrays for a no-match wildcard and for a lone exclusion pattern, and 404 `not_found` for a missing concrete name. |
+| M6 | `_find` sorted by `created_at` ascending returns the marker rules in creation order. The technique, subtechnique, and tactic clauses each select the one marker rule that carries them. The 500-rule page sizes are in the table above. |
+| M7 | Exception item `_find` with `per_page=1` on a two-item list answers `total: 2` and one row. |
+| M8 | A custom rule keeps `related_integrations` (`package`, `version`) and `threat` (tactic, technique, subtechnique) as created. Package status reads `installed` for `system` and `not_installed` for `apache`. |
+
 ### 11.1 Required measurements
 
 Each row must be measured on all three flavors and recorded in the named

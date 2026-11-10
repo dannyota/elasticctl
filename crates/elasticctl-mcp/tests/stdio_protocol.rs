@@ -448,7 +448,7 @@ async fn startup_accepts_query_tools_before_opening_the_protocol() {
     assert_eq!(reply["id"], 27);
     assert_eq!(
         reply["result"]["tools"].as_array().expect("tools").len(),
-        22
+        26
     );
     harness.close_input();
     harness.join().await.expect("clean EOF");
@@ -602,7 +602,7 @@ async fn malformed_frames_are_rejected_and_the_next_valid_request_is_served() {
         .unwrap();
     let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(reply["id"], 91);
-    assert_eq!(reply["result"]["tools"].as_array().unwrap().len(), 20);
+    assert_eq!(reply["result"]["tools"].as_array().unwrap().len(), 24);
     drop(input);
     tokio::time::timeout(timeout, &mut task)
         .await

@@ -1,5 +1,6 @@
 //! Typed agent-policy models and public Fleet route wrappers.
 
+use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
@@ -346,10 +347,19 @@ pub async fn list_page(transport: &Transport, page: u64) -> Result<AgentPolicyPa
     })
 }
 
-/// Read one policy by its stable id.
+/// Read one policy by a stable id read from a response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<AgentPolicy> {
+    get_selector(transport, require_path_segment(id)?).await
+}
+
+/// Read one policy by the caller's own selector, which keeps the caller's
+/// validation.
+pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Result<AgentPolicy> {
     transport.require_feature(Feature::FleetPolicies).await?;
-    decode_item(&transport.get(&policy_path(id)).await?, "agent policy get")
+    decode_item(
+        &transport.get(&policy_path(selector)).await?,
+        "agent policy get",
+    )
 }
 
 /// Create a policy with its explicit id and no implicit System integration.
@@ -369,6 +379,7 @@ pub async fn create(transport: &Transport, spec: &AgentPolicySpec) -> Result<Age
 /// Replace a policy. `body` is the complete desired spec without `id`, plus
 /// explicit nulls; `agent_policy_ops::build_replace_body` builds it.
 pub async fn update(transport: &Transport, id: &str, body: &Value) -> Result<AgentPolicy> {
+    let id = require_path_segment(id)?;
     transport.require_feature(Feature::FleetPolicies).await?;
     decode_item(
         &transport.put(&policy_path(id), body).await?,
@@ -402,6 +413,7 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
 /// Read a package's installation state. The full item is registry metadata;
 /// only the installation facts are kept.
 pub async fn package_status(transport: &Transport, name: &str) -> Result<PackageStatus> {
+    let name = require_path_segment(name)?;
     transport.require_feature(Feature::FleetPolicies).await?;
     let body = transport
         .get(&format!("{PACKAGES}/{}", elasticctl_core::urlencode(name)))

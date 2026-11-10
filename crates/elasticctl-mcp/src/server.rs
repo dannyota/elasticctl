@@ -185,6 +185,14 @@ pub(crate) fn validate_text(field: &'static str, value: &str, max_bytes: usize) 
     Ok(())
 }
 
+pub(crate) fn validate_path_id(field: &'static str, value: &str) -> Result<()> {
+    validate_text(field, value, 1_024)?;
+    if !elasticctl_api::compose::is_path_segment(value) {
+        return Err(Error::new(ErrorKind::Error, "invalid path id"));
+    }
+    Ok(())
+}
+
 /// Validate a list page size.
 #[allow(dead_code)] // Called by list adapters added after the foundation runtime.
 pub(crate) fn validate_limit(value: usize) -> Result<()> {
@@ -1214,5 +1222,18 @@ mod tests {
             shutdown_started.load(Ordering::SeqCst),
             "the bounded close path owns stalled shutdown"
         );
+    }
+}
+
+#[cfg(test)]
+mod path_id_tests {
+    #[test]
+    fn path_ids_validate_text_and_segments() {
+        for value in ["", " ", ".", "..", &"x".repeat(1025)] {
+            assert!(super::validate_path_id("id", value).is_err());
+        }
+        for value in ["...", "a/b", "%2e%2e", &"é".repeat(512)] {
+            assert!(super::validate_path_id("id", value).is_ok());
+        }
     }
 }

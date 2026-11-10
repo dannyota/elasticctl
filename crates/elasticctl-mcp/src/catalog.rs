@@ -2,9 +2,10 @@
 
 use rmcp::model::Tool;
 
-/// The complete 0.7 MCP tool namespace.
+/// The complete MCP tool namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolId {
+    AlertContext,
     AlertsGet,
     AlertsList,
     CasesGet,
@@ -14,12 +15,15 @@ pub enum ToolId {
     DataViewsDefaultGet,
     DataViewsGet,
     DataViewsList,
+    DetectionCoverage,
     ExceptionsGet,
     ExceptionsList,
     FleetAgentPoliciesGet,
     FleetAgentPoliciesList,
     FleetIntegrationPoliciesGet,
     FleetIntegrationPoliciesList,
+    RuleHealth,
+    RuleReadiness,
     RulesGet,
     RulesList,
     RulesPrebuiltStatus,
@@ -30,7 +34,8 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 26] = [
+        Self::AlertContext,
         Self::AlertsGet,
         Self::AlertsList,
         Self::CasesGet,
@@ -40,12 +45,15 @@ impl ToolId {
         Self::DataViewsDefaultGet,
         Self::DataViewsGet,
         Self::DataViewsList,
+        Self::DetectionCoverage,
         Self::ExceptionsGet,
         Self::ExceptionsList,
         Self::FleetAgentPoliciesGet,
         Self::FleetAgentPoliciesList,
         Self::FleetIntegrationPoliciesGet,
         Self::FleetIntegrationPoliciesList,
+        Self::RuleHealth,
+        Self::RuleReadiness,
         Self::RulesGet,
         Self::RulesList,
         Self::RulesPrebuiltStatus,
@@ -57,6 +65,10 @@ impl ToolId {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::RuleReadiness => "rule_readiness",
+            Self::RuleHealth => "rule_health",
+            Self::DetectionCoverage => "detection_coverage",
+            Self::AlertContext => "alert_context",
             Self::AlertsGet => "alerts_get",
             Self::AlertsList => "alerts_list",
             Self::CasesGet => "cases_get",

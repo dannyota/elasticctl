@@ -7,8 +7,8 @@
 mod list_endpoints;
 mod value_lists;
 pub use list_endpoints::{
-    ListFilter, create_item, create_list, delete_item, delete_list, export_lists, find_items,
-    find_lists, get_list, import_lists, resolve_ids, update_item, update_list,
+    ListFilter, count_items, create_item, create_list, delete_item, delete_list, export_lists,
+    find_items, find_lists, get_list, import_lists, resolve_ids, update_item, update_list,
 };
 pub(crate) use value_lists::{ValueListRef, value_list_exists, value_lists_bootstrapped};
 

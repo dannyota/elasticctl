@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{PageInfo, ServerState, catalog::ToolId};
 
+mod compose;
 mod content;
 mod exceptions;
 mod fleet;
@@ -55,6 +56,10 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::AlertContext
+        | ToolId::DetectionCoverage
+        | ToolId::RuleHealth
+        | ToolId::RuleReadiness => Some(compose::adapter()),
         ToolId::DashboardsGet
         | ToolId::DashboardsList
         | ToolId::DataViewsDefaultGet
@@ -87,5 +92,7 @@ pub(crate) fn definitions(allow_query_tools: bool) -> Vec<Tool> {
         definitions.extend(query::definitions());
     }
     definitions.extend(stack::definitions());
+    definitions.extend(compose::definitions());
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
     definitions
 }

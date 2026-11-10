@@ -1,6 +1,7 @@
 //! ES|QL responses and the sync/async `/_query` runners.
 
-use elasticctl_core::{Error, ErrorKind, Result, Transport};
+use crate::compose::require_path_segment;
+use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::{Map, Value};
 use std::time::Duration;
 
@@ -187,13 +188,22 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
     // The start response can also carry both an `id` and an inline result.
     // Clean the id up before decoding either way.
     if start.get("is_running").and_then(Value::as_bool) == Some(false) {
-        let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+        let _ = t.delete_absolute_es(&async_path(&id)?).await;
         return decode_columnar(&start);
     }
 
     // Poll once a second for up to five minutes: a bulk export may legitimately
     // run that long, but a query that never finishes must still fail closed.
     poll_until_complete(t, &id, 300, Duration::from_secs(1)).await
+}
+
+/// The async query route for an id the server returned. Encoding keeps the
+/// id one path segment, and `.` or `..` is refused.
+fn async_path(id: &str) -> Result<String> {
+    Ok(format!(
+        "/_query/async/{}",
+        urlencode(require_path_segment(id)?)
+    ))
 }
 
 /// Poll `GET /_query/async/{id}` until it reports completion, cleaning up on
@@ -205,21 +215,22 @@ pub async fn poll_until_complete(
     max_polls: usize,
     interval: Duration,
 ) -> Result<EsqlResponse> {
+    let path = async_path(id)?;
     for _ in 0..max_polls {
-        let resp = match t.get_absolute_es(&format!("/_query/async/{id}")).await {
+        let resp = match t.get_absolute_es(&path).await {
             Ok(resp) => resp,
             Err(err) => {
-                let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+                let _ = t.delete_absolute_es(&path).await;
                 return Err(err);
             }
         };
         if resp.get("is_running").and_then(Value::as_bool) == Some(false) {
-            let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+            let _ = t.delete_absolute_es(&path).await;
             return decode_columnar(&resp);
         }
         tokio::time::sleep(interval).await;
     }
-    let _ = t.delete_absolute_es(&format!("/_query/async/{id}")).await;
+    let _ = t.delete_absolute_es(&path).await;
     Err(Error::new(
         ErrorKind::Timeout,
         format!("async query {id} still running after {max_polls} polls"),

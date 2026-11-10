@@ -219,7 +219,7 @@ struct ExceptionReferenceData {
 
 /// The explicit detailed rule projection.
 #[derive(Debug, Serialize, JsonSchema)]
-struct RuleGetData {
+pub(crate) struct RuleGetData {
     rule_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -396,7 +396,7 @@ fn project_summary(rule: &Rule) -> Result<RuleSummaryData, Error> {
     })
 }
 
-fn project_detail(rule: &Rule) -> Result<RuleGetData, Error> {
+pub(crate) fn project_detail(rule: &Rule) -> Result<RuleGetData, Error> {
     let summary = project_summary(rule)?;
     let map = rule.as_map();
     Ok(RuleGetData {

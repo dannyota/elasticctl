@@ -71,3 +71,5 @@ pub use rules_ops::{PreviewReport, RuleListReport, SetEnabledOutcome, ValidateRe
 pub use state::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, PullReport, PushPlan, PushReport,
 };
+
+pub mod compose;

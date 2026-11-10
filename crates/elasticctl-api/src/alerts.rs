@@ -294,3 +294,50 @@ pub async fn set_assignees(
     });
     decode_outcome(&t.post(ASSIGNEES_PATH, Some(&body)).await?)
 }
+
+#[derive(Debug)]
+pub struct ActivityPage {
+    pub total: u64,
+    pub buckets: Vec<(String, u64)>,
+    pub other: u64,
+    pub hits: Vec<AlertHit>,
+}
+pub async fn search_activity(t: &Transport, body: &Value) -> Result<ActivityPage> {
+    let v = t.post(SEARCH_PATH, Some(body)).await?;
+    let invalid = || Error::new(ErrorKind::Http, "invalid alert activity response");
+    if v.pointer("/hits/total/relation").and_then(Value::as_str) != Some("eq") {
+        return Err(invalid());
+    }
+    let total = v
+        .pointer("/hits/total/value")
+        .and_then(Value::as_u64)
+        .ok_or_else(invalid)?;
+    let status = v.pointer("/aggregations/status").ok_or_else(invalid)?;
+    let buckets = status
+        .get("buckets")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|b| {
+            Ok((
+                b.get("key")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?
+                    .to_owned(),
+                b.get("doc_count")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(invalid)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let other = status
+        .get("sum_other_doc_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(invalid)?;
+    Ok(ActivityPage {
+        total,
+        buckets,
+        other,
+        hits: decode_page(&v)?.hits,
+    })
+}
