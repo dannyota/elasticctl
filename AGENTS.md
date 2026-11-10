@@ -44,9 +44,10 @@ Dependency direction is one way; API/core never depend on a frontend:
 elasticctl-cli  →  elasticctl-mcp  →  elasticctl-api  →  elasticctl-core
 ```
 CLI also calls API directly; both frontends may use core.
-`-mcp` owns stdio, schemas, projections, and call limits; it never uses CLI rendering.
-`-core` owns config, transport, auth, and errors; `-api` owns the model and the
-rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and the dry-run guard.
+`-mcp` owns stdio, schemas, projections, call limits, and (from 0.9) the plan store and
+confirmation; it never uses CLI rendering. `-core` owns config, transport, auth, and errors;
+`-api` owns the model, the rules/exceptions/state orchestration, and (from 0.8) cross-vertical
+composition in `compose`; `-cli` owns `clap` parsing, `render`, and the dry-run guard.
 - **API orchestration returns typed values.** CLI adapters handle command context and mutation
   guards, then serialize values for `elasticctl-cli::render`. MCP calls the same API functions
   and projects their typed data. A command that prints gives MCP only a string to re-parse.
@@ -70,6 +71,9 @@ rules/exceptions/state orchestration; `-cli` owns `clap` parsing, `render`, and 
 - State rule identity is **always `rule_id`**, never display name or volatile saved-object `id`.
   Exception list identity is **always `list_id` plus `namespace_type`**. Pull strips a rule's
   `exceptions_list[].id`; push re-resolves it. Spec 4.5.
+- **MCP mutations (from 0.9) are stored plans.** `plan_apply` takes a plan id only and applies
+  after a form elicitation answered `accept` with `apply: true`. No tool argument confirms,
+  `--yes` never crosses MCP, and `mcp serve --allow-mutations` alone enables classes.
 - Never put credentials in URLs. Debug logs complete URLs, but exclude authorization headers and
   bodies.
 - Never print, commit, or copy `.env` values. See [live stacks](instructions/live-stacks.md).
