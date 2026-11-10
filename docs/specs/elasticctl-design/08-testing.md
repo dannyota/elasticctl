@@ -297,3 +297,16 @@ checks found zero lab containers and volumes. The
 [findings](../../conformance/v0.7.2/findings.md) record the two product clients,
 the corrected harness failure, and evidence limits.
 
+The 0.7.5 measured matrix reruns the eleven contracts on the current trial
+stacks; all pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 11 pass | Verified | [report](../../conformance/v0.7.5/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 11 pass | Verified | [report](../../conformance/v0.7.5/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 11 pass | Verified | [report](../../conformance/v0.7.5/traditional-9.5.1.json) |
+
+Both Cloud targets held the full prebuilt pack, 2,263 rules, so the MCP
+contract read `rules_list` against a corpus larger than the response body
+cap. The [findings](../../conformance/v0.7.5/findings.md) record the scope and
+one Serverless 9.7.0 behavior change.
