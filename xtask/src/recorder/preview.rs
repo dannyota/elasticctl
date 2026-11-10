@@ -39,12 +39,32 @@ pub(crate) const ESQL_VOLATILE_FIELDS: &[&str] = &[
     "expiration_time_in_millis",
     "cpu_nanos",
     "read_nanos",
+    "read_cpu_nanos",
+    "driver_nanos",
     "bytes_read",
     "values_loaded",
     "documents_found",
     "rows_emitted",
     "is_partial",
     "is_running",
+];
+
+/// Async ES|QL response fields that vary per run. `is_running` and
+/// `is_partial` stay because they decide whether a client polls; the async id
+/// is replaced separately.
+pub(crate) const ESQL_ASYNC_VOLATILE_FIELDS: &[&str] = &[
+    "took",
+    "start_time_in_millis",
+    "completion_time_in_millis",
+    "expiration_time_in_millis",
+    "cpu_nanos",
+    "read_nanos",
+    "read_cpu_nanos",
+    "driver_nanos",
+    "bytes_read",
+    "values_loaded",
+    "documents_found",
+    "rows_emitted",
 ];
 
 /// Query DSL response fields that vary per run (spec §8).

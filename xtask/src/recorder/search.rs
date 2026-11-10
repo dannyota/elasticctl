@@ -2,6 +2,7 @@
 
 use crate::diagnostics::recording_error;
 use crate::fixtures::{Recording, exchange_fixture, response_fixture};
+use crate::recorder::esql_async::{POLL_INTERVAL, record_esql_async};
 use crate::recorder::ownership::{owns_search_index, require_absent_search_index};
 use crate::recorder::preview::{
     DSL_VOLATILE_FIELDS, ESQL_VOLATILE_FIELDS, SEARCH_MARKER, SEARCH_PROBE_INDEX,
@@ -11,8 +12,8 @@ use crate::scrub::{redact_data_views, strip_pit_token, strip_volatile};
 use serde_json::json;
 
 /// Record the search probe: a marker-scoped scratch index seeded with three
-/// documents, the ES|QL and Query DSL exchanges over them, then the Kibana
-/// data-view and default-index lookups. The index is deleted by `cleanup`.
+/// documents, the sync and async ES|QL and Query DSL exchanges over them, then
+/// the Kibana data-view and default-index lookups. The index is deleted by `cleanup`.
 pub(super) async fn record_search(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -56,6 +57,9 @@ pub(super) async fn record_search(
         esql_response,
         None,
     ));
+    recording
+        .fixtures
+        .extend(record_esql_async(t, &esql_query, flavor, version, POLL_INTERVAL).await?);
 
     let mut pit_open = t
         .post_absolute_es(

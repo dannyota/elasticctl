@@ -152,13 +152,23 @@ deletes the index and verifies it is gone. The `require_absent_*` guard pattern
 extends to the scratch index: recording refuses to run if it already exists and
 is not cleanup-owned.
 
+The ES|QL exchanges include one async columnar query sent with the exact
+`search esql --out` body: its start, its completed poll, and its delete. A
+start that completes inside the 1 ms wait has no poll to record, so the
+recorder deletes any stored result and retries. It deletes the async result on
+every path that obtained an id.
+
 Volatile fields are normalized away before a fixture is written, the same rule
 that strips `execution_summary` from rule exports:
 
 - **ES|QL** — `took`, `start_time_in_millis`, `completion_time_in_millis`,
-  `expiration_time_in_millis`, `cpu_nanos`, `read_nanos`, `bytes_read`,
-  `values_loaded`, `documents_found`, `rows_emitted`, `is_partial`,
-  `is_running`.
+  `expiration_time_in_millis`, `cpu_nanos`, `read_nanos`, `read_cpu_nanos`,
+  `driver_nanos`, `bytes_read`, `values_loaded`, `documents_found`,
+  `rows_emitted`, `is_partial`, `is_running`.
+- **Async ES|QL**: the same fields except `is_running` and `is_partial`,
+  which decide whether a client polls and stay. The async `id` encodes the
+  coordinating node and task, so it is replaced by the fixed placeholder
+  `elasticctl-fixture-esql-async`.
 - **DSL** — `took`, `_shards`, `_score`, `sort` (contains the per-run
   `_shard_doc`), and any `pit_id` (opaque per run).
 - **Status** — the `metrics` object (a runtime snapshot: load, memory, uptime,
@@ -196,6 +206,16 @@ Elasticsearch API key.
 | Refresh lag | Newly indexed documents are not searchable until refresh. The probe observed 0 hits immediately after indexing; an explicit `POST /<index>/_refresh` made them visible. Live tests must refresh or poll before asserting a hit count |
 | Direct ES auth | `Authorization: ApiKey <key>` alone is sufficient for `/_query` and `/_search`; no `kbn-xsrf`, no `elastic-api-version` |
 | Hosted parity | Elastic Cloud Hosted 9.5.1 (`build_flavor: "default"`) returns the same default alerts index, the same data-view `{id, name, title}` shape, and the same ES|QL sync/async contract (no cursor; body `wait_for_completion_timeout` → `{id, is_running: true}`) |
+
+Measured again with the `search esql --out` start body: on Serverless 9.7.0
+by the recorder's async probe, and on Hosted 9.5.6 by the same requests sent
+by hand. Every measured 1 ms start returned the running state. A Serverless
+poll right after the start can report `is_running: true` with `took` and
+`completion_time_in_millis` set and empty `columns` and `values`; a poll one
+second later returns the result. A completed Serverless poll omits `id`,
+while Hosted returns it. The client keeps polling while `is_running` is true
+and ignores the poll `id`, so both shapes decode. Serverless 9.7.0 adds the
+per-run counter `driver_nanos` to ES|QL responses.
 
 ## 10. Resolution notes
 
