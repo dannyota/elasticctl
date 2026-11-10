@@ -89,10 +89,10 @@ feeds `execution`, taken from `execution_summary.last_execution`:
 | `message_truncated` | boolean | always; `true` when the cut removed text |
 | `metrics` | object | always; holds only the optional numbers `total_search_duration_ms`, `total_indexing_duration_ms`, `total_enrichment_duration_ms`, `execution_gap_duration_s` |
 
-`execution` is `null` when the rule has no `execution_summary`. A present
-summary without string `status` and `date` is a projection error of kind
-`http`. A named metric of the wrong type is the same error; other metric keys
-are dropped.
+`execution` is `null` when the rule has no `execution_summary` or it is
+`null`. A present summary without string `status` and `date` is a projection
+error of kind `http`. A named metric of the wrong type is the same error;
+other metric keys are dropped.
 
 A snapshot by exact `rule_id` is one request,
 `GET /api/detection_engine/rules?rule_id=`. A response whose `rule_id`

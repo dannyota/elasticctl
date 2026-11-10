@@ -115,6 +115,21 @@ async fn snapshot_existing_and_mismatch() {
     );
 }
 #[tokio::test]
+async fn a_null_execution_summary_reads_as_never_run() {
+    let s = MockServer::start().await;
+    let t = transport(&s);
+    let mut body = fixture("rules_get.json");
+    let id = body["rule_id"].as_str().unwrap().to_owned();
+    body["execution_summary"] = Value::Null;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&s)
+        .await;
+    let snap = snapshot_by_id(&t, &id).await.unwrap();
+    assert!(snap.execution.is_none());
+    assert!(!snap.rule.as_map().contains_key("execution_summary"));
+}
+#[tokio::test]
 async fn execution_variants() {
     let s = MockServer::start().await;
     let t = transport(&s);
