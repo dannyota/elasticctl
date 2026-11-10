@@ -140,6 +140,14 @@ pub(crate) fn success_with_truncated_rows(
     fitting.ok_or(LocalError::ResultTooLarge)
 }
 
+pub(crate) fn text_of(result: &CallToolResult) -> Option<&str> {
+    result
+        .content
+        .first()?
+        .as_text()
+        .map(|content| content.text.as_str())
+}
+
 fn result(
     value: serde_json::Value,
     is_error: bool,
@@ -243,5 +251,18 @@ mod tests {
             &NumberOrString::Number(1),
         );
         assert_eq!(result, Err(LocalError::ResultTooLarge));
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::text_of;
+    use rmcp::model::{CallToolResult, ContentBlock};
+
+    #[test]
+    fn extracts_the_matching_tool_text() {
+        let result = CallToolResult::success(vec![ContentBlock::text("{\"data\":null}")]);
+        assert_eq!(text_of(&result), Some("{\"data\":null}"));
+        assert_eq!(text_of(&CallToolResult::default()), None);
     }
 }

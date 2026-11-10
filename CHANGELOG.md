@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.1 — 2026-11-11
+
+### Added
+
+- MCP resources. `resources/list` returns five fixed URIs under
+  `elasticctl://stack/`: coverage by ATT&CK tactic and by technique, stack
+  diagnostics, stack info, and prebuilt rule status. `resources/templates/list`
+  returns four templates: an alert, a case, an exception list, and a rule by
+  `rule_id`. A read is one call of the matching read-only tool with fixed
+  arguments: its text equals that tool's text, it takes one of the four call
+  slots, and it obeys `--timeout`. Listing sends no Elastic request and needs
+  no credential.
+- MCP prompts `check_rule_readiness`, `review_detection_coverage`,
+  `review_rule_health`, and `triage_alert`. Each validates its arguments and
+  returns fixed text that asks the model to call one task tool. A prompt reads
+  nothing from Elastic.
+- The server advertises exactly the `prompts`, `resources`, and `tools`
+  capabilities. The tool catalogs are unchanged: twenty-four tools by default
+  and twenty-six with `--allow-query-tools`.
+
+### Changed
+
+- MCP `completion/complete` fails with `-32601` instead of returning an empty
+  result, because the server advertises no completions.
+
 ## 0.8.0 — 2026-11-10
 
 ### Added

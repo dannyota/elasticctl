@@ -381,7 +381,8 @@ fn current_calls(child: &mut McpChild, e: &Expected<'_>, timings: &mut Timings) 
         expect::rules_list_threat(&content, e)?;
     }
     let content = s.call("rules_list", "default", other, json!({}))?;
-    expect::rules_list_default(&content)
+    expect::rules_list_default(&content)?;
+    super::resources::current_checks(s.child, e)
 }
 
 /// One call of each task tool on the legacy protocol.
@@ -419,7 +420,8 @@ fn legacy_calls(child: &mut McpChild, e: &Expected<'_>, timings: &mut Timings) -
         Measure::Other,
         arguments,
     )?;
-    expect::coverage_custom(&content, "index_pattern", e)
+    expect::coverage_custom(&content, "index_pattern", e)?;
+    super::resources::not_found_checks(s.child)
 }
 
 #[cfg(test)]

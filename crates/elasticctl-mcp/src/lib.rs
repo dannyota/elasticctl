@@ -3,6 +3,8 @@
 mod bounded_io;
 pub mod catalog;
 mod error;
+mod prompts;
+mod resources;
 pub mod result;
 pub mod server;
 pub mod tools;
