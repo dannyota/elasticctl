@@ -19,12 +19,6 @@ expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
         "path": "/api/detection_engine/rules",
         "query": "rule_id=elasticctl-fixture-probe",
         "body": ""
-      },
-      {
-        "method": "GET",
-        "path": "/api/detection_engine/rules",
-        "query": "rule_id=elasticctl-fixture-probe",
-        "body": ""
       }
     ],
     "out": null,
@@ -42,12 +36,6 @@ expression: "json!({\"dry_run\": dry_result, \"apply\": applied})"
     "stdout": "{\n  \"applied\": true,\n  \"succeeded\": 1,\n  \"failed\": 0,\n  \"skipped\": 0,\n  \"total\": 1\n}\n",
     "stderr": "Applying: Disable 1 rule(s) (profile: default @ HOST, space: default)\n  elasticctl-fixture-probe  elasticctl fixture probe  disabled -> disabled\n",
     "requests": [
-      {
-        "method": "GET",
-        "path": "/api/detection_engine/rules",
-        "query": "rule_id=elasticctl-fixture-probe",
-        "body": ""
-      },
       {
         "method": "GET",
         "path": "/api/detection_engine/rules",
