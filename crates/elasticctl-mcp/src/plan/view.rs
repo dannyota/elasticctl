@@ -27,8 +27,18 @@ mod tests {
     #[test]
     fn ordered_view_and_list() {
         let now = tokio::time::Instant::now();
-        let p = super::super::store::tests::sample(now);
+        let mut p = super::super::store::tests::sample(now);
+        p.id = "pln_test".into();
+        p.hash = "b".repeat(64);
         let v = view(&p, true, false, now);
+        assert_eq!(
+            v.to_string(),
+            r#"{"plan":{"plan_id":"pln_test","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","kind":"rules_set_enabled","class":"rules-toggle","state":"open","expires_in_secs":900,"credential":"aaaaaaaaaaaa","action":"secret-action","details":["secret-detail"],"targets":["r"],"operation":{"enabled":false,"rule_ids":["r"]},"confirmation":"elicitation","cli_equivalent":null},"outcome":null,"replayed":false}"#
+        );
+        assert_eq!(
+            list_row(&p, now).to_string(),
+            r#"{"plan_id":"pln_test","kind":"rules_set_enabled","class":"rules-toggle","state":"open","action":"secret-action","expires_in_secs":900}"#
+        );
         assert_eq!(
             v.as_object()
                 .unwrap()
@@ -83,9 +93,10 @@ mod tests {
     #[test]
     fn outcome_and_list_wire_values() {
         use super::super::store::{Outcome, PlanState};
-        use serde_json::json;
         let now = tokio::time::Instant::now();
         let mut p = super::super::store::tests::sample(now);
+        p.id = "pln_test".into();
+        p.hash = "b".repeat(64);
         p.state = PlanState::Applied;
         p.outcome = Some(Outcome {
             requested: 2,
@@ -104,7 +115,14 @@ mod tests {
             r#"{"requested":2,"updated":1,"unchanged":0,"failed":1,"complete":false,"created":null}"#
         );
         assert_eq!(v["replayed"], true);
-        assert_eq!(list(&[p.clone()], now), json!({"plans":[list_row(&p,now)]}));
+        assert_eq!(
+            v.to_string(),
+            r#"{"plan":{"plan_id":"pln_test","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","kind":"rules_set_enabled","class":"rules-toggle","state":"applied","expires_in_secs":0,"credential":"aaaaaaaaaaaa","action":"secret-action","details":["secret-detail"],"targets":["r"],"operation":{"enabled":false,"rule_ids":["r"]},"confirmation":"unavailable","cli_equivalent":null},"outcome":{"requested":2,"updated":1,"unchanged":0,"failed":1,"complete":false,"created":null},"replayed":true}"#
+        );
+        assert_eq!(
+            list(&[p.clone()], now).to_string(),
+            r#"{"plans":[{"plan_id":"pln_test","kind":"rules_set_enabled","class":"rules-toggle","state":"applied","action":"secret-action","expires_in_secs":0}]}"#
+        );
         p.state = PlanState::Failed;
         assert!(view(&p, true, true, now)["outcome"].is_null());
     }

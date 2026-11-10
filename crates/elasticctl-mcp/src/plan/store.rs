@@ -152,21 +152,37 @@ impl<P> Plan<P> {
     }
 }
 #[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) struct ClosedPlan {
+    pub(crate) id: String,
+    pub(crate) hash: String,
+    pub(crate) kind: &'static str,
+    pub(crate) class: &'static str,
+    pub(crate) target: TargetContext,
+    pub(crate) credential: String,
+    pub(crate) state: PlanState,
+}
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct PlanStore<P = Value> {
     plans: Vec<Plan<P>>,
     finals: VecDeque<String>,
+    closed: Vec<ClosedPlan>,
 }
 impl<P> Default for PlanStore<P> {
     fn default() -> Self {
         Self {
             plans: Vec::new(),
             finals: VecDeque::new(),
+            closed: Vec::new(),
         }
     }
 }
 #[allow(dead_code)]
 impl<P: Clone> PlanStore<P> {
+    pub(crate) fn take_closed(&mut self) -> Vec<ClosedPlan> {
+        std::mem::take(&mut self.closed)
+    }
     fn expire(&mut self, now: Instant) {
         let mut closed = Vec::new();
         for p in &mut self.plans {
@@ -175,6 +191,15 @@ impl<P: Clone> PlanStore<P> {
             {
                 p.state = PlanState::Expired;
                 p.handle = None;
+                self.closed.push(ClosedPlan {
+                    id: p.id.clone(),
+                    hash: p.hash.clone(),
+                    kind: p.content.kind,
+                    class: p.content.class,
+                    target: p.content.target.clone(),
+                    credential: p.content.credential.chars().take(12).collect(),
+                    state: p.state,
+                });
                 closed.push(p.id.clone());
             }
         }
@@ -206,13 +231,7 @@ impl<P: Clone> PlanStore<P> {
     }
     pub(crate) fn insert(&mut self, plan: Plan<P>, now: Instant) -> Result<()> {
         self.expire(now);
-        if self
-            .plans
-            .iter()
-            .filter(|p| p.state == PlanState::Open)
-            .count()
-            >= MAX_OPEN_PLANS
-        {
+        if self.plans.iter().filter(|p| !p.state.is_final()).count() >= MAX_OPEN_PLANS {
             return Err(PlanError::TooManyPlans.tool_error());
         }
         if self.plans.iter().any(|p| p.id == plan.id) || plan.state != PlanState::Open {
@@ -358,6 +377,80 @@ pub(crate) mod tests {
         );
         assert!(s.insert(sample(Instant::now()), Instant::now()).is_ok());
     }
+    #[tokio::test(start_paused = true)]
+    async fn expiry_snapshots_survive_eviction_and_drain_once() {
+        let now = Instant::now();
+        let mut s = PlanStore::default();
+        let mut ids = Vec::new();
+        let mut hashes = Vec::new();
+        for _ in 0..8 {
+            let p = sample(now);
+            ids.push(p.id.clone());
+            hashes.push(p.hash.clone());
+            s.insert(p, now).unwrap();
+        }
+        tokio::time::advance(Duration::from_secs(900)).await;
+        let later = Instant::now();
+        s.insert(sample(later), later).unwrap();
+        assert_eq!(s.closed.len(), 8);
+        for _ in 0..32 {
+            let p = sample(later);
+            let id = p.id.clone();
+            s.insert(p, later).unwrap();
+            s.close(&id, PlanState::Discarded, later).unwrap();
+        }
+        for id in &ids {
+            assert_eq!(s.get(id, later).unwrap_err().code, "plan_not_found");
+        }
+        let closed = s.take_closed();
+        assert_eq!(closed.len(), 8);
+        for ((snapshot, id), hash) in closed.iter().zip(ids).zip(hashes) {
+            assert_eq!(snapshot.id, id);
+            assert_eq!(snapshot.hash, hash);
+            assert_eq!(snapshot.kind, "rules_set_enabled");
+            assert_eq!(snapshot.class, "rules-toggle");
+            assert_eq!(snapshot.state, PlanState::Expired);
+            assert_eq!(snapshot.credential, "aaaaaaaaaaaa");
+        }
+        assert!(s.take_closed().is_empty());
+    }
+    #[test]
+    fn pending_writes_reserve_capacity() {
+        let now = Instant::now();
+        let mut s = PlanStore::default();
+        for _ in 0..32 {
+            let p = sample(now);
+            let id = p.id.clone();
+            s.insert(p, now).unwrap();
+            s.close(&id, PlanState::Discarded, now).unwrap();
+            assert!(s.plans.len() <= 40);
+        }
+        let mut pending = Vec::new();
+        for _ in 0..8 {
+            let p = sample(now);
+            let id = p.id.clone();
+            s.insert(p, now).unwrap();
+            s.begin_apply(&id, now).unwrap();
+            pending.push(id);
+            assert!(s.plans.len() <= 40);
+        }
+        let later = now + Duration::from_secs(900);
+        assert_eq!(
+            s.insert(sample(later), later).unwrap_err().code,
+            "too_many_plans"
+        );
+        assert_eq!(s.plans.len(), 40);
+        for id in pending {
+            s.finish(&id, PlanState::Applied, None, later).unwrap();
+            assert!(s.plans.len() <= 40);
+            let p = sample(later);
+            let id = p.id.clone();
+            s.insert(p, later).unwrap();
+            s.begin_apply(&id, later).unwrap();
+            assert!(s.plans.len() <= 40);
+        }
+        assert_eq!(s.plans.len(), 40);
+    }
     #[test]
     fn transitions() {
         let now = Instant::now();
@@ -403,11 +496,17 @@ pub(crate) mod tests {
         let h = s.issue_prompt(&id, true, now).unwrap().unwrap();
         s.take_handle(&id, Some(&h), now).unwrap();
         assert!(s.take_handle(&id, Some(&h), now).is_err());
-        s.issue_prompt(&id, false, now).unwrap();
+        s.issue_prompt(&id, true, now).unwrap();
+        assert!(s.get(&id, now).unwrap().handle.is_some());
         assert_eq!(
             s.issue_prompt(&id, true, now).unwrap_err().code,
             "plan_declined"
         );
+        let p = s.get(&id, now).unwrap();
+        assert_eq!(p.state, PlanState::Declined);
+        assert_eq!(p.prompt_count(), 3);
+        assert_eq!(p.handle, None);
+        assert_eq!(p.outcome, None);
     }
     #[test]
     fn final_eviction_and_race() {
@@ -465,6 +564,17 @@ pub(crate) mod tests {
                     let mut s = PlanStore::default();
                     let mut p = sample(now);
                     p.state = from;
+                    p.prompts = 2;
+                    p.handle = Some("pending-handle".into());
+                    p.outcome = Some(Outcome {
+                        requested: 2,
+                        updated: 1,
+                        unchanged: 0,
+                        failed: 1,
+                        complete: false,
+                        created: None,
+                    });
+                    let before = p.clone();
                     let id = p.id.clone();
                     s.plans.push(p);
                     let legal = if finish {
@@ -493,11 +603,28 @@ pub(crate) mod tests {
                         s.get(&id, now).unwrap().state,
                         if legal { to } else { from }
                     );
+                    if !legal {
+                        let after = s.get(&id, now).unwrap();
+                        assert_eq!(after.outcome, before.outcome);
+                        assert_eq!(after.prompt_count(), before.prompt_count());
+                        assert_eq!(after.handle, before.handle);
+                    }
                 }
             }
             let mut s = PlanStore::default();
             let mut p = sample(now);
             p.state = from;
+            p.prompts = 2;
+            p.handle = Some("pending-handle".into());
+            p.outcome = Some(Outcome {
+                requested: 2,
+                updated: 1,
+                unchanged: 0,
+                failed: 1,
+                complete: false,
+                created: None,
+            });
+            let before = p.clone();
             let id = p.id.clone();
             s.plans.push(p);
             assert_eq!(s.begin_apply(&id, now).is_ok(), from == PlanState::Open);
@@ -509,17 +636,27 @@ pub(crate) mod tests {
                     from
                 }
             );
-            assert_eq!(
-                from.replayed().is_ok(),
-                matches!(
-                    from,
-                    PlanState::Open
-                        | PlanState::Applying
-                        | PlanState::Applied
-                        | PlanState::Failed
-                        | PlanState::Unknown
-                )
-            );
+            if from != PlanState::Open {
+                let after = s.get(&id, now).unwrap();
+                assert_eq!(after.outcome, before.outcome);
+                assert_eq!(after.prompt_count(), before.prompt_count());
+                assert_eq!(after.handle, before.handle);
+            }
+            match from {
+                PlanState::Open => assert!(!from.replayed().unwrap()),
+                PlanState::Applying
+                | PlanState::Applied
+                | PlanState::Failed
+                | PlanState::Unknown => assert!(from.replayed().unwrap()),
+                PlanState::Declined => {
+                    assert_eq!(from.replayed().unwrap_err().code, "plan_declined")
+                }
+                PlanState::Stale => assert_eq!(from.replayed().unwrap_err().code, "plan_stale"),
+                PlanState::Expired => assert_eq!(from.replayed().unwrap_err().code, "plan_expired"),
+                PlanState::Discarded => {
+                    assert_eq!(from.replayed().unwrap_err().code, "plan_discarded")
+                }
+            }
         }
     }
     #[test]

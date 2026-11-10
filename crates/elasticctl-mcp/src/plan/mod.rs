@@ -64,7 +64,11 @@ impl PlanError {
                 "unsupported",
                 "The plan or its consent text exceeds a limit.",
             ),
-            Self::TooManyPlans => ("too_many_plans", "error", "Eight plans are open."),
+            Self::TooManyPlans => (
+                "too_many_plans",
+                "error",
+                "Eight plans are open or applying.",
+            ),
             Self::NotConfirmed => (
                 "not_confirmed",
                 "permission",

@@ -1,4 +1,4 @@
-use super::store::Plan;
+use super::store::{ClosedPlan, Plan};
 use serde_json::{Value, json};
 use std::sync::Arc;
 #[allow(dead_code)]
@@ -58,6 +58,14 @@ pub(crate) fn line<P>(ts: u64, p: &Plan<P>, protocol: &str, event: Event) -> Str
     }
     json!({"audit":v}).to_string()
 }
+/// Formats an expiry snapshot after its plan record may have been evicted.
+#[allow(dead_code)]
+pub(crate) fn closed_line(ts: u64, p: &ClosedPlan, protocol: &str) -> String {
+    json!({"audit":{"ts":ts,"event":"plan_closed","plan_id":p.id,"hash":p.hash,
+        "kind":p.kind,"class":p.class,"profile":p.target.profile,"host":p.target.host,
+        "space":p.target.space,"credential":p.credential,"protocol":protocol,"state":p.state}})
+    .to_string()
+}
 #[allow(dead_code)]
 pub(crate) fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
@@ -95,6 +103,25 @@ type CollectedLines = Arc<std::sync::Mutex<Vec<String>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expiry_snapshot_formats_complete_audit_line() {
+        use super::super::store::PlanStore;
+        use std::time::Duration;
+        let now = tokio::time::Instant::now();
+        let mut p = super::super::store::tests::sample(now);
+        p.id = "pln_test".into();
+        p.hash = "b".repeat(64);
+        let mut store = PlanStore::default();
+        store.insert(p, now).unwrap();
+        store.list(now + Duration::from_secs(900));
+        let snapshots = store.take_closed();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            closed_line(123, &snapshots[0], "2026-07-28"),
+            r#"{"audit":{"ts":123,"event":"plan_closed","plan_id":"pln_test","hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","kind":"rules_set_enabled","class":"rules-toggle","profile":"analyst","host":"kibana.example.test","space":"default","credential":"aaaaaaaaaaaa","protocol":"2026-07-28","state":"expired"}}"#
+        );
+        assert!(store.take_closed().is_empty());
+    }
     #[test]
     fn event_keys_and_escaping() {
         let now = tokio::time::Instant::now();
