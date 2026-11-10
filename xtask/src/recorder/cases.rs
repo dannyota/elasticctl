@@ -34,7 +34,9 @@ async fn find_marker_cases(
     elasticctl_api::cases::find_page(t, &query).await
 }
 
-async fn require_no_marker_cases(t: &elasticctl_core::Transport) -> elasticctl_core::Result<()> {
+pub(super) async fn require_no_marker_cases(
+    t: &elasticctl_core::Transport,
+) -> elasticctl_core::Result<()> {
     let (cases, total) = find_marker_cases(t).await?;
     if total > 0 || !cases.is_empty() {
         return Err(recording_error(format!(
@@ -77,7 +79,7 @@ pub(crate) async fn sweep_delete_marker_cases(
 /// so this step's own fixture and every later one scrub consistently.
 /// Comment ids are discovered, not assumed: whatever shape the live
 /// `comments` array actually carries is what gets a placeholder.
-fn register_case_extras(
+pub(super) fn register_case_extras(
     value: &Value,
     case_map: &mut BTreeMap<String, String>,
     next_comment: &mut usize,

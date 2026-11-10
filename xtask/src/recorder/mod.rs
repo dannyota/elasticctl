@@ -3,6 +3,7 @@
 mod agent_policies;
 pub(crate) mod alerts;
 pub(crate) mod cases;
+pub(crate) mod compose;
 pub(crate) mod dashboards;
 pub(crate) mod data_views;
 mod esql_async;

@@ -24,6 +24,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("record") => record().await,
+        Some("record-compose") => recorder::compose::record_compose().await,
         Some("seed") => seed().await,
         Some("conformance") => {
             if let Err(error) = conformance::run(&args[1..]).await {
@@ -38,7 +39,9 @@ async fn main() {
             }
         }
         _ => {
-            eprintln!("usage: cargo xtask [record|seed|conformance|conformance-matrix]");
+            eprintln!(
+                "usage: cargo xtask [record|record-compose|seed|conformance|conformance-matrix]"
+            );
             std::process::exit(2);
         }
     }
