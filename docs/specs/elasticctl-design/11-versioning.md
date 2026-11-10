@@ -59,8 +59,8 @@ review completed on 2026-09-06. The 0.7.2 implementation, live proof, gates,
 and final evidence review completed on 2026-09-06.
 None grants release or publication approval.
 
-The temporary trial-deployment window changes execution order, not capability
-boundaries. The near-term evidence ladder is:
+Trial deployments are temporary. Their lifetime changes execution order, not
+capability boundaries. The evidence ladder is:
 
 1. 0.2.2 hardens locked CI, declared-toolchain proof, Windows smoke coverage,
    and non-publishing package preflight.
@@ -80,10 +80,14 @@ boundaries. The near-term evidence ladder is:
 8. 0.6.0 delivers complete Fleet agent-policy administration and transfer;
    0.6.1 adds integration-policy administration and exact package dependency
    checks; 0.6.2 publishes the Fleet matrix and bounded review patch.
+9. 0.7.0 and 0.7.1 deliver the read-only MCP server; 0.7.2 publishes its
+   cross-flavor proof. A later 0.7 patch re-proves it when new trial stacks
+   report newer Elastic versions.
 
 Later minor capability areas begin only after the current area is complete.
-The trial window now prioritizes live 0.6 measurements before 2026-09-08
-08:56 UTC; it does not weaken a release gate.
+While trial stacks exist, live measurements for the current area run first.
+Trial end dates stay with the owner, not in this repository. A short trial
+never weakens a release gate.
 
 The privacy, cleanup, evidence, and release gates for this sequence are defined
 in §8.3, §11.2, and §12.
