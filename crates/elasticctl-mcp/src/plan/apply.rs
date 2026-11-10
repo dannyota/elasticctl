@@ -195,6 +195,9 @@ async fn run(
         return projection(&s, c, &p, true, &context.id)
             .map_err(|_| PlanError::Randomness.tool_error());
     }
+    if !c.form_elicitation {
+        read_answer(&s, c, &id, Answer::Unavailable)?;
+    }
     if matches!(c.protocol, CallProtocol::Current) && request.input_responses.is_some() {
         let taken = store(&s, c, |st| {
             st.take_handle(&id, request.request_state.as_deref(), Instant::now())
@@ -211,9 +214,6 @@ async fn run(
         };
         read_answer(&s, c, &id, answer)?;
     } else {
-        if !c.form_elicitation {
-            read_answer(&s, c, &id, Answer::Unavailable)?;
-        }
         if p.prompt_count() >= super::MAX_PROMPTS_PER_PLAN {
             close(&s, c, &id, PlanState::Declined)?;
             return Err(PlanError::Declined.tool_error());

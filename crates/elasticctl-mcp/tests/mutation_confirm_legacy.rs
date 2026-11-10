@@ -57,15 +57,6 @@ async fn legacy_answer_rows_pending_reads_cancellation_and_timeout() {
             r["result"]["structuredContent"]["error"]["code"],
             "confirmation_pending"
         );
-        for n in 20..24 {
-            h.send_json(json!({"jsonrpc":"2.0","id":n,"method":"tools/call","params":{"name":"plan_get","arguments":{"plan_id":id}}})).await;
-        }
-        for _ in 20..24 {
-            assert_eq!(
-                h.receive_json().await["result"]["structuredContent"]["data"]["plan"]["state"],
-                "open"
-            );
-        }
         if answer.get("error").is_some() {
             h.send_json(json!({"jsonrpc":"2.0","id":q["id"],"error":{"code":-32603,"message":"name-sentinel"}})).await;
         } else {
@@ -256,4 +247,49 @@ async fn rmcp_both_protocols_scripted_answers() {
             server.await.unwrap().unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn legacy_wait_releases_all_four_permits_for_blocked_reads() {
+    let _serial = LEGACY.lock().await;
+    let mut s = common::RawResponder::start().await;
+    let mut h = s.harness(Duration::from_secs(30));
+    h.initialize(true).await;
+    let id = common::plan(&mut h).await;
+    begin(&mut h, &id).await;
+    s.gated.store(true, std::sync::atomic::Ordering::SeqCst);
+    for n in 20..24 {
+        h.send_json(json!({"jsonrpc":"2.0","id":n,"method":"tools/call","params":{"name":"rules_get","arguments":{"selector":"r"}}})).await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for _ in 0..4 {
+            s.arrived.recv().await.unwrap();
+        }
+    })
+    .await
+    .expect("all four upstream reads arrive before any release");
+    s.release.add_permits(4);
+    for _ in 0..4 {
+        let r = h.receive_json().await;
+        assert!((20..24).contains(&r["id"].as_u64().unwrap()), "{r}");
+        assert_ne!(r["result"]["isError"], true, "{r}");
+    }
+    h.send_json(
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":10}}),
+    )
+    .await;
+    let r = common::call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+    assert_eq!(
+        r["result"]["structuredContent"]["data"]["plan"]["state"],
+        "open"
+    );
+    assert!(
+        s.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, line)| line.starts_with("GET "))
+    );
+    h.close_input();
+    h.join().await.unwrap();
 }

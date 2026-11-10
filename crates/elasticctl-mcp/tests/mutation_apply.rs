@@ -439,3 +439,57 @@ async fn pending_call_later_returns_recorded_applied_view() {
     h.close_input();
     h.join().await.unwrap();
 }
+
+#[tokio::test]
+async fn keep_alive_reads_closed_before_apply_use_fresh_write_connection() {
+    keep_alive_write(true).await;
+}
+#[tokio::test]
+async fn keep_alive_reads_stay_usable_apply_uses_fresh_write_connection() {
+    keep_alive_write(false).await;
+}
+async fn keep_alive_write(close: bool) {
+    let mut s = common::RawResponder::start().await;
+    let mut h = s.harness(Duration::from_secs(30));
+    let id = common::plan(&mut h).await;
+    let q = common::question(&mut h, &id).await;
+    {
+        let reads = s.requests.lock().unwrap();
+        assert!(reads.len() >= 4);
+        assert!(reads.iter().all(|(connection, _)| *connection == 1));
+    }
+    if close {
+        s.close_reads().await;
+    }
+    let r = accept(&mut h, &id, &q).await;
+    assert_eq!(
+        r["result"]["structuredContent"]["data"]["plan"]["state"], "applied",
+        "{r}"
+    );
+    {
+        let requests = s.requests.lock().unwrap();
+        let reads: Vec<_> = requests
+            .iter()
+            .filter(|(_, line)| line.starts_with("GET "))
+            .collect();
+        let writes: Vec<_> = requests
+            .iter()
+            .filter(|(_, line)| line.starts_with("POST "))
+            .collect();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].1,
+            "POST /api/detection_engine/rules/_bulk_action HTTP/1.1"
+        );
+        assert!(
+            reads
+                .iter()
+                .all(|(connection, _)| *connection != writes[0].0)
+        );
+        let last = reads[reads.len() - 1].0;
+        assert_eq!(reads[reads.len() - 2].0, last);
+        assert_eq!(last, if close { 2 } else { 1 });
+    }
+    h.close_input();
+    h.join().await.unwrap();
+}

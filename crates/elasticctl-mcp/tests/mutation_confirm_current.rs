@@ -366,3 +366,157 @@ async fn concurrent_fourth_prompt_audits_one_closure() {
     h.close_input();
     h.join().await.unwrap();
 }
+
+#[tokio::test]
+async fn round_two_requires_current_form_capability_without_consuming_handle() {
+    for capabilities in [json!({}), json!({"elicitation":{"url":{}}})] {
+        let (s, mut h) = setup().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fixture("rules_bulk_disable")))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let id = plan(&mut h).await;
+        let q = question(&mut h, &id).await;
+        let count = s.received_requests().await.unwrap().len();
+        let answer = json!({"requestState":q["requestState"],"inputResponses":{"confirm":{"action":"accept","content":{"apply":true}}}});
+        let mut withdrawn = answer.clone();
+        withdrawn["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":capabilities});
+        let r = call(&mut h, "plan_apply", json!({"plan_id":id}), withdrawn).await;
+        assert_eq!(
+            r["result"]["structuredContent"]["error"]["code"], "confirmation_unavailable",
+            "{r}"
+        );
+        assert_eq!(s.received_requests().await.unwrap().len(), count);
+        let r = call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+        assert_eq!(
+            r["result"]["structuredContent"]["data"]["plan"]["state"],
+            "open"
+        );
+        assert_eq!(
+            h.audit
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| v["audit"]["event"] == "confirmation_answered")
+                .count(),
+            1
+        );
+        let r = call(&mut h, "plan_apply", json!({"plan_id":id}), answer).await;
+        assert_eq!(
+            r["result"]["structuredContent"]["data"]["plan"]["state"], "applied",
+            "{r}"
+        );
+        h.close_input();
+        h.join().await.unwrap();
+    }
+}
+
+pub struct RawResponder {
+    pub target: elasticctl_core::Resolved,
+    pub requests: Arc<Mutex<Vec<(usize, String)>>>,
+    pub gated: Arc<std::sync::atomic::AtomicBool>,
+    pub release: Arc<tokio::sync::Semaphore>,
+    pub arrived: tokio::sync::mpsc::UnboundedReceiver<()>,
+    close: tokio::sync::broadcast::Sender<()>,
+    closed: tokio::sync::mpsc::UnboundedReceiver<usize>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for RawResponder {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl RawResponder {
+    pub async fn start() -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut target = support::target();
+        target.profile.kibana_url = format!("http://{}", listener.local_addr().unwrap());
+        target.profile.es_url = Some(target.profile.kibana_url.clone());
+        target.profile.api_key = Some("test-key".into());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let gated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = gated.clone();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let released = release.clone();
+        let (arrival, arrived) = tokio::sync::mpsc::unbounded_channel();
+        let (close, _) = tokio::sync::broadcast::channel(8);
+        let closing = close.clone();
+        let (closed_tx, closed) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            let mut tasks = tokio::task::JoinSet::new();
+            let mut connection = 0;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                connection += 1;
+                let requests = recorded.clone();
+                let gate = gate.clone();
+                let release = released.clone();
+                let arrival = arrival.clone();
+                let mut closing = closing.subscribe();
+                let closed = closed_tx.clone();
+                tasks.spawn(async move {
+                    loop {
+                        let mut bytes = Vec::new();
+                        let read = async {
+                            let mut byte = [0];
+                            while !bytes.ends_with(b"\r\n\r\n") {
+                                stream.read_exact(&mut byte).await?;
+                                bytes.push(byte[0]);
+                            }
+                            Ok::<_, std::io::Error>(())
+                        };
+                        tokio::select! {
+                            r = read => if r.is_err() { return; },
+                            _ = closing.recv() => {
+                                stream.shutdown().await.unwrap();
+                                drop(stream);
+                                closed.send(connection).unwrap();
+                                return;
+                            }
+                        }
+                        let headers = String::from_utf8(bytes).unwrap();
+                        let line = headers.lines().next().unwrap().to_owned();
+                        requests.lock().unwrap().push((connection, line.clone()));
+                        let length = headers.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                        stream.read_exact(&mut vec![0; length]).await.unwrap();
+                        if line.starts_with("GET ") && gate.load(std::sync::atomic::Ordering::SeqCst) {
+                            arrival.send(()).unwrap();
+                            release.acquire().await.unwrap().forget();
+                        }
+                        let mut body = if line.starts_with("POST ") { fixture("rules_bulk_disable") }
+                            else if line.contains("/_security/_authenticate") { fixture("authenticate") }
+                            else { fixture("rules_get") };
+                        if body.get("rule_id").is_some() { body["rule_id"] = json!("r"); }
+                        let body = body.to_string();
+                        if stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).as_bytes()).await.is_err() { return; }
+                    }
+                });
+            }
+        });
+        Self {
+            target,
+            requests,
+            gated,
+            release,
+            arrived,
+            close,
+            closed,
+            task,
+        }
+    }
+    pub async fn close_reads(&mut self) {
+        self.close.send(()).unwrap();
+        assert_eq!(self.closed.recv().await, Some(1));
+    }
+    pub fn harness(&self, timeout: std::time::Duration) -> Harness {
+        let o = elasticctl_mcp::ServerOptions {
+            call_timeout: timeout,
+            allow_mutations: elasticctl_mcp::MutationClasses::parse(["rules-toggle"]).unwrap(),
+            ..Default::default()
+        };
+        Harness::start(self.target.clone(), o, None)
+    }
+}
