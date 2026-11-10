@@ -153,7 +153,10 @@ final cleanup audit. The only allowed keys are `flavor`, `version`,
 `contracts`, `contract`, `result`, and `error_class`. Raw output stays under
 the ignored `target/conformance-private/` directory. Reports never contain a
 target URL, deployment or account identifier, credential, location, user
-identity, live object content, or raw failure.
+identity, live object content, or raw failure. The one line a passing
+contract may add to public output is a whole-second timing line in the
+exact form `mcp_answers_across_verticals timing <tool> <N>s ...`, which the
+runner checks word by word before printing.
 
 The release matrix is Elastic Cloud Serverless, Elastic Cloud Hosted, and a
 disposable self-managed 9.5.1 lab. The Cloud targets come from ignored local

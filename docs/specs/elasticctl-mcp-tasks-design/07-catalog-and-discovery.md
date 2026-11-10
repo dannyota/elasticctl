@@ -123,10 +123,11 @@ the body cap; a page above the cap fails closed with `elastic_unsupported`.
 
 The 4,000-rule limit comes from the latency gate of section 11.1. Five
 500-rule pages took 4.1 seconds on Serverless and 2.9 on Hosted, at most
-0.82 seconds a page, so 16 pages are expected near 13 seconds. That is the
-planning estimate; measurement M9 reads 16 pages of a 4,000-rule corpus on
-the lab and gates on the worst per-page time seen on any flavor. Raising
-the limit needs a new measurement.
+0.82 seconds a page. Measurement M9 through the MCP server on the trial
+stacks found 1.2 to 1.65 seconds a page, so one eight-page pass over 4,000
+rules takes about 13 seconds and two passes about 26 seconds. One pass is
+held to the 15-second gate and two passes to the 30-second default deadline
+(section 11.1). Raising the limit needs a new measurement.
 
 0.8.0 changes `rules_ops.rs` in one place: `is_unselected_source_query`
 learns the two new fields. `rules_ops::list`, `rules_ops::list_page`,
