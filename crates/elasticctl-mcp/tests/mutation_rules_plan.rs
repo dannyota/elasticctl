@@ -21,7 +21,7 @@ impl Harness {
             options,
             server_input,
             server_output,
-            move |line| captured.lock().unwrap().push(line.to_owned()),
+            move |line: &str| captured.lock().unwrap().push(line.to_owned()),
         ));
         Self {
             input: Some(input),
