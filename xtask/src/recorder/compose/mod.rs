@@ -514,6 +514,10 @@ mod fake_stack {
         /// execution writes it late.
         pub(super) late_alert: bool,
         late_alert_written: bool,
+        /// Close requests answered 409 before one is applied, as Serverless
+        /// does while the rule or a case attachment is still updating an
+        /// alert.
+        pub(super) close_conflicts: u32,
         /// An inventory, `rules`, `lists`, or `indices`, whose reads after
         /// the first report one more marker object.
         pub(super) inventory_change: Option<&'static str>,
@@ -728,6 +732,14 @@ mod fake_stack {
 
     fn close_alerts(state: &mut State, body: &Value) -> ResponseTemplate {
         state.status_requests.push(body.clone());
+        if state.close_conflicts > 0 {
+            state.close_conflicts -= 1;
+            return json_response(
+                409,
+                json!({"statusCode": 409, "error": "Conflict",
+                    "message": "version conflict on a session alert"}),
+            );
+        }
         let ids: Vec<&str> = body["signal_ids"]
             .as_array()
             .into_iter()
@@ -2572,6 +2584,42 @@ mod tests {
             state.status_requests[1],
             json!({"signal_ids": ["zz-alert-6"], "status": "closed"})
         );
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_close_is_retried_with_the_ids_still_open() {
+        let (server, state) = fake_stack(|s| s.close_conflicts = 1).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_with(&t, short_settle(60)).await;
+
+        assert!(outcome.succeeded, "{:?}", outcome.lines);
+        assert!(!outcome.alerts_after_cleanup);
+        assert_clean_lines(&outcome.lines);
+        let state = state.lock().expect("state");
+        assert_eq!(state.open_alerts(SESSION_RULE_UUID), 0);
+        assert_eq!(state.status_requests.len(), 2);
+        assert_eq!(state.status_requests[0], state.status_requests[1]);
+    }
+
+    #[tokio::test]
+    async fn a_close_that_keeps_conflicting_fails_cleanup_and_names_the_alerts() {
+        let (server, state) = fake_stack(|s| s.close_conflicts = u32::MAX).await;
+        let t = mock_transport(&server);
+
+        let outcome = record_with(&t, short_settle(60)).await;
+
+        assert!(!outcome.succeeded && outcome.written.is_none());
+        assert!(
+            outcome
+                .failures
+                .iter()
+                .any(|failure| failure.contains("still open")),
+            "{:?}",
+            outcome.failures
+        );
+        assert_clean_lines(&outcome.lines);
+        assert!(state.lock().expect("state").open_alerts(SESSION_RULE_UUID) > 0);
     }
 
     #[tokio::test]

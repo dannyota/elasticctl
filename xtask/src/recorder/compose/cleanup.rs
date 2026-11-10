@@ -362,12 +362,20 @@ async fn close_session_alerts(
             return Err(Failure(format!("{ALERTS} are still open")));
         }
         closes += 1;
-        t.post(
-            elasticctl_api::alerts::STATUS_PATH,
-            Some(&close_alerts_body(&open.ids)),
-        )
-        .await
-        .map_err(|error| Failure::request("closing", ALERTS, &error))?;
+        // A 409 means another writer, the rule's last execution or a case
+        // attachment, updated an alert first. The next round searches again
+        // and closes the ids still open.
+        match t
+            .post(
+                elasticctl_api::alerts::STATUS_PATH,
+                Some(&close_alerts_body(&open.ids)),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.kind == ErrorKind::Conflict => {}
+            Err(error) => return Err(Failure::request("closing", ALERTS, &error)),
+        }
         tokio::time::sleep(timing.poll).await;
     }
 }
