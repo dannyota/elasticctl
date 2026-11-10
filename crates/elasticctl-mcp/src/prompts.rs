@@ -1,7 +1,6 @@
 use rmcp::model::{GetPromptResult, JsonObject, Prompt, PromptArgument, PromptMessage, Role};
 use serde::Serialize;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptError {
     UnknownPrompt,
@@ -78,7 +77,6 @@ fn arg_description(name: &str) -> &'static str {
         _ => unreachable!(),
     }
 }
-#[allow(dead_code)]
 pub(crate) fn list() -> Vec<Prompt> {
     DEFINITIONS
         .iter()
@@ -120,7 +118,6 @@ struct Coverage<'a> {
     group_by: &'a str,
     limit: u32,
 }
-#[allow(dead_code)]
 pub(crate) fn render(
     name: &str,
     arguments: Option<&JsonObject>,

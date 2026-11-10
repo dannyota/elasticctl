@@ -1,6 +1,5 @@
 //! The resource URI parser.
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResourceRef {
     CoverageTactic,
@@ -23,10 +22,8 @@ pub(crate) enum ResourceRef {
     },
 }
 
-#[allow(dead_code)]
 pub(crate) const MAX_URI_BYTES: usize = 4_096;
 
-#[allow(dead_code)]
 pub(crate) fn parse(uri: &str) -> Option<ResourceRef> {
     if uri.len() > MAX_URI_BYTES || uri.contains(['?', '#', '@']) {
         return None;
@@ -59,7 +56,6 @@ pub(crate) fn parse(uri: &str) -> Option<ResourceRef> {
     })
 }
 
-#[allow(dead_code)]
 fn decode(segment: &str) -> Option<String> {
     let mut decoded = Vec::with_capacity(segment.len());
     let mut bytes = segment.bytes();
@@ -82,7 +78,6 @@ fn decode(segment: &str) -> Option<String> {
     Some(decoded)
 }
 
-#[allow(dead_code)]
 fn hex(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

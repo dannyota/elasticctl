@@ -140,7 +140,6 @@ pub(crate) fn success_with_truncated_rows(
     fitting.ok_or(LocalError::ResultTooLarge)
 }
 
-#[allow(dead_code)]
 pub(crate) fn text_of(result: &CallToolResult) -> Option<&str> {
     result
         .content

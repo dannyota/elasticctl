@@ -7,14 +7,12 @@ use rmcp::model::{JsonObject, Resource, ResourceTemplate};
 use serde_json::json;
 use uri::ResourceRef;
 
-#[allow(dead_code)]
 pub(crate) struct ResourceCall {
     pub tool: ToolId,
     pub arguments: JsonObject,
     pub expect_rule_id: Option<String>,
 }
 
-#[allow(dead_code)]
 pub(crate) fn call_for(reference: &ResourceRef) -> ResourceCall {
     let (tool, arguments) = match reference {
         ResourceRef::CoverageTactic => (
@@ -52,7 +50,6 @@ pub(crate) fn call_for(reference: &ResourceRef) -> ResourceCall {
     }
 }
 
-#[allow(dead_code)]
 const LISTED: [(&str, &str, &str, ToolId); 5] = [
     (
         "elasticctl://stack/coverage/tactic",
@@ -86,7 +83,6 @@ const LISTED: [(&str, &str, &str, ToolId); 5] = [
     ),
 ];
 
-#[allow(dead_code)]
 const TEMPLATES: [(&str, &str, &str, ToolId); 4] = [
     (
         "elasticctl://stack/alerts/{alert_id}",
@@ -114,7 +110,6 @@ const TEMPLATES: [(&str, &str, &str, ToolId); 4] = [
     ),
 ];
 
-#[allow(dead_code)]
 fn description(tool: ToolId) -> String {
     crate::catalog::definitions()
         .into_iter()
@@ -125,7 +120,6 @@ fn description(tool: ToolId) -> String {
         .into_owned()
 }
 
-#[allow(dead_code)]
 pub(crate) fn list() -> Vec<Resource> {
     LISTED
         .into_iter()
@@ -138,7 +132,6 @@ pub(crate) fn list() -> Vec<Resource> {
         .collect()
 }
 
-#[allow(dead_code)]
 pub(crate) fn templates() -> Vec<ResourceTemplate> {
     TEMPLATES
         .into_iter()
