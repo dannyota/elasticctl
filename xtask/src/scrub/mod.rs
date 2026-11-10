@@ -50,8 +50,43 @@ pub(crate) fn scrub(v: &mut Value) {
             }
         }
         Value::Array(a) => a.iter_mut().for_each(scrub),
+        Value::String(text) => {
+            if let Some(redacted) = redact_backing_index_date(text) {
+                *text = redacted;
+            }
+        }
         _ => {}
     }
+}
+
+/// Data stream backing indices are named `.ds-<stream>-<yyyy.MM.dd>-<generation>`.
+/// The date is when the stream rolled over, so it dates the recording stack.
+/// Replace only the date; the stream name and generation keep their shape.
+fn redact_backing_index_date(name: &str) -> Option<String> {
+    let rest = name.strip_prefix(".ds-")?;
+    let (head, generation) = rest.rsplit_once('-')?;
+    let (stream, date) = head.rsplit_once('-')?;
+    let is_date = date.len() == 10
+        && date.bytes().enumerate().all(|(i, byte)| {
+            if i == 4 || i == 7 {
+                byte == b'.'
+            } else {
+                byte.is_ascii_digit()
+            }
+        });
+    let is_generation = !generation.is_empty() && generation.bytes().all(|b| b.is_ascii_digit());
+    // Elastic index and data stream names are lowercase and exclude exactly
+    // these characters, so a comma-joined list or prose never matches as one
+    // name.
+    let is_stream = !stream.is_empty()
+        && stream.to_lowercase() == stream
+        && !stream.chars().any(|c| {
+            matches!(
+                c,
+                ' ' | '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|' | ',' | '#' | ':'
+            )
+        });
+    (is_stream && is_date && is_generation).then(|| format!(".ds-{stream}-REDACTED-{generation}"))
 }
 
 /// Match both full keys and their final dot-separated segment. Alert documents
@@ -304,6 +339,58 @@ mod tests {
     use crate::recorder::markers::ALERT_FIXTURE_TIMESTAMP;
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn scrub_redacts_only_the_backing_index_date() {
+        let mut value = json!({
+            "_index": ".ds-.alerts-security.alerts-default-2026.11.09-000001",
+            "indices": [
+                ".ds-logs-system.auth-default-2026.01.31-000012",
+                ".ds-logs@prod-2026.11.09-000001",
+                ".ds-logs-café-2026.11.09-000001",
+                ".ds-logs\u{a0}prod-2026.11.09-000001",
+                ".ds-logs\u{2102}-2026.11.09-000001"
+            ],
+            "keep": [
+                ".alerts-security.alerts-default",
+                ".ds-no-date-000001",
+                ".ds-x-2026.11.09-",
+                ".ds--2026.11.09-000001",
+                "logs-2026.11.09-000001",
+                ".ds-a-2026.11.09-000001,.ds-b-2026.11.10-000002",
+                ".ds-a b-2026.11.09-000001",
+                ".ds-Upper-2026.11.09-000001",
+                "https://host.invalid/.ds-a-2026.11.09-000001"
+            ]
+        });
+
+        scrub(&mut value);
+
+        assert_eq!(
+            value,
+            json!({
+                "_index": ".ds-.alerts-security.alerts-default-REDACTED-000001",
+                "indices": [
+                    ".ds-logs-system.auth-default-REDACTED-000012",
+                    ".ds-logs@prod-REDACTED-000001",
+                    ".ds-logs-café-REDACTED-000001",
+                    ".ds-logs\u{a0}prod-REDACTED-000001",
+                    ".ds-logs\u{2102}-REDACTED-000001"
+                ],
+                "keep": [
+                    ".alerts-security.alerts-default",
+                    ".ds-no-date-000001",
+                    ".ds-x-2026.11.09-",
+                    ".ds--2026.11.09-000001",
+                    "logs-2026.11.09-000001",
+                    ".ds-a-2026.11.09-000001,.ds-b-2026.11.10-000002",
+                    ".ds-a b-2026.11.09-000001",
+                    ".ds-Upper-2026.11.09-000001",
+                    "https://host.invalid/.ds-a-2026.11.09-000001"
+                ]
+            })
+        );
+    }
 
     #[test]
     fn status_scrub_removes_instance_identity_and_runtime_metrics() {

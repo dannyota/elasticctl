@@ -20,6 +20,11 @@ the public capability evidence. Recorder progress and retry diagnostics use
 static labels plus error class and HTTP status only; they never print a
 server-provided message or response body.
 
+A data stream backing index name, `.ds-<stream>-<yyyy.MM.dd>-<generation>`,
+carries the date its stream rolled over, which dates the recording stack. The
+scrub replaces that date with `REDACTED` in every string that is exactly such a
+name and keeps the stream and generation.
+
 Fixture scrubbing treats every configured recording authority as sensitive.
 Matching is ASCII case-insensitive, including exact authorities in plain text.
 For HTTP port 80 and HTTPS port 443, zero-padded forms included, the matching
