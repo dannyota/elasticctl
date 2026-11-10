@@ -42,12 +42,8 @@ pub enum AdapterError {
     Tool(crate::ToolError),
 }
 
-/// Metadata for one tool call.
-#[derive(Clone, Debug, Default)]
-pub struct CallContext {
-    pub form_elicitation: bool,
-    pub protocol: String,
-}
+mod context;
+pub use context::{CallContext, CallProtocol};
 
 /// One vertical's explicit MCP allowlist and typed dispatch entry point.
 pub trait ToolAdapter: Send + Sync {

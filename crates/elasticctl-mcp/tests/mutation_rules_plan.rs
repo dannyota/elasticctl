@@ -1,7 +1,100 @@
 #[allow(dead_code)]
 mod support;
 use serde_json::{Value, json};
-use support::Harness;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+struct Harness {
+    input: Option<tokio::io::DuplexStream>,
+    output: tokio::io::BufReader<tokio::io::DuplexStream>,
+    task: tokio::task::JoinHandle<elasticctl_core::Result<()>>,
+    audit: Arc<Mutex<Vec<String>>>,
+}
+impl Harness {
+    fn start(target: elasticctl_core::Resolved, options: elasticctl_mcp::ServerOptions) -> Self {
+        let (input, server_input) = tokio::io::duplex(1_048_576);
+        let (server_output, output) = tokio::io::duplex(1_048_576);
+        let audit = Arc::new(Mutex::new(Vec::new()));
+        let captured = audit.clone();
+        let task = tokio::spawn(elasticctl_mcp::server::serve_io_with_audit(
+            target,
+            options,
+            server_input,
+            server_output,
+            move |line| captured.lock().unwrap().push(line.to_owned()),
+        ));
+        Self {
+            input: Some(input),
+            output: tokio::io::BufReader::new(output),
+            task,
+            audit,
+        }
+    }
+    async fn send_json(&mut self, value: Value) {
+        let mut frame = serde_json::to_vec(&value).unwrap();
+        frame.push(b'\n');
+        self.input
+            .as_mut()
+            .unwrap()
+            .write_all(&frame)
+            .await
+            .unwrap();
+    }
+    async fn receive_json(&mut self) -> Value {
+        let mut line = String::new();
+        self.output.read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+    fn close_input(&mut self) {
+        self.input.take();
+    }
+    async fn join(self) -> elasticctl_core::Result<()> {
+        self.task.await.unwrap()
+    }
+    fn assert_audit(&self, events: &[&str], protocol: &str) {
+        let lines = self.audit.lock().unwrap();
+        assert_eq!(lines.len(), events.len(), "{lines:?}");
+        for (line, event) in lines.iter().zip(events) {
+            assert!(!line.contains("credential-sentinel"), "{line}");
+            let value: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                value.as_object().unwrap().keys().collect::<Vec<_>>(),
+                ["audit"]
+            );
+            let audit = &value["audit"];
+            assert_eq!(audit["event"], *event);
+            assert_eq!(audit["protocol"], protocol);
+            assert!(["2025-11-25", "2026-07-28"].contains(&audit["protocol"].as_str().unwrap()));
+            let keys = vec![
+                "ts",
+                "event",
+                "plan_id",
+                "hash",
+                "kind",
+                "class",
+                "profile",
+                "host",
+                "space",
+                "credential",
+                "protocol",
+                if *event == "plan_created" {
+                    "targets"
+                } else {
+                    "state"
+                },
+            ];
+            assert_eq!(
+                audit
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                keys
+            );
+        }
+    }
+}
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -144,9 +237,7 @@ async fn confirmation_follows_request_capabilities_on_both_paths() {
             ] {
                 meta["io.modelcontextprotocol/clientCapabilities"] = caps.clone();
                 let mut params = json!({"name":"rules_set_enabled_plan","arguments":{"selectors":["r"],"enabled":true}});
-                if !legacy {
-                    params["_meta"] = meta.clone();
-                }
+                params["_meta"] = meta.clone();
                 h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":params}))
                     .await;
                 let result = h.receive_json().await;
@@ -176,10 +267,53 @@ async fn confirmation_follows_request_capabilities_on_both_paths() {
                     }
                 );
             }
+            h.assert_audit(
+                &["plan_created"; 3],
+                if legacy { "2025-11-25" } else { "2026-07-28" },
+            );
             h.close_input();
             h.join().await.unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn hostile_legacy_protocol_metadata_never_enters_results_or_audit() {
+    let (_server, mut h) = setup("ech-9.5.2").await;
+    h.send_json(support::legacy_initialize(100)).await;
+    h.receive_json().await;
+    h.send_json(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+        .await;
+    for name in [
+        "rules_set_enabled_plan",
+        "plan_get",
+        "plan_list",
+        "plan_discard",
+    ] {
+        h.send_json(
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+            "_meta":{"io.modelcontextprotocol/protocolVersion":"credential-sentinel"},
+            "name":name,"arguments":{"selectors":["r"],"enabled":true}}}),
+        )
+        .await;
+        let response = h.receive_json().await;
+        assert_eq!(response["error"]["code"], -32022, "{response}");
+        assert!(!response.to_string().contains("credential-sentinel"));
+        h.assert_audit(&[], "2025-11-25");
+    }
+    let plan = call(
+        &mut h,
+        "rules_set_enabled_plan",
+        json!({"selectors":["r"],"enabled":true}),
+    )
+    .await;
+    let id = plan["data"]["plan"]["plan_id"].clone();
+    call(&mut h, "plan_get", json!({"plan_id":id})).await;
+    call(&mut h, "plan_list", json!({})).await;
+    call(&mut h, "plan_discard", json!({"plan_id":id})).await;
+    h.assert_audit(&["plan_created", "plan_closed"], "2025-11-25");
+    h.close_input();
+    h.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -330,6 +464,7 @@ async fn credential_and_size_refusals_leave_store_empty() {
             call(&mut h, "plan_list", json!({})).await["data"]["plans"],
             json!([])
         );
+        h.assert_audit(&[], "2026-07-28");
         if refusal == "realm" || refusal == "identity" {
             assert_eq!(server.received_requests().await.unwrap().len(), 1);
         }
@@ -556,6 +691,7 @@ async fn sentinel_name_stays_in_details_and_large_canonical_body_is_refused() {
         .unwrap()
         .remove("details");
     assert!(!rest.to_string().contains("credential-sentinel"));
+    h.assert_audit(&["plan_created"], "2026-07-28");
     rule["description"] = json!("x".repeat(262_144));
     Mock::given(path("/api/detection_engine/rules"))
         .respond_with(ResponseTemplate::new(200).set_body_json(rule))
@@ -570,6 +706,7 @@ async fn sentinel_name_stays_in_details_and_large_canonical_body_is_refused() {
     .await;
     assert_eq!(result["error"]["code"], "plan_too_large");
     assert!(!result.to_string().contains("credential-sentinel"));
+    h.assert_audit(&["plan_created"], "2026-07-28");
     h.close_input();
     h.join().await.unwrap();
 }

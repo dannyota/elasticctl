@@ -16,7 +16,7 @@ mod handler;
 mod lifecycle;
 mod runtime;
 
-pub use runtime::{serve_io, serve_stdio};
+pub use runtime::{serve_io, serve_io_with_audit, serve_stdio};
 
 /// MCP runtime settings supplied by the caller after configuration resolution.
 #[derive(Clone, Debug)]

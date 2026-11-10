@@ -378,16 +378,7 @@ impl ServerHandler for McpServer {
         ) else {
             return Err(unknown_tool_error());
         };
-        let call_context = tools::CallContext {
-            form_elicitation: context
-                .client_capabilities()
-                .and_then(|c| c.elicitation)
-                .is_some_and(|e| e.form.is_some() || e.url.is_none()),
-            protocol: context
-                .protocol_version()
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        };
+        let call_context = tools::CallContext::from_request(&context)?;
         let cancellation = context.ct.clone();
         let target = self.state.target().clone();
         let request_id = context.id.clone();

@@ -92,7 +92,7 @@ fn read<P: Clone>(
     use crate::plan::{audit, store::PlanState, view};
     let result = if let Some(id) = id {
         let before = store.get(&id, now).map(|p| p.state);
-        drain_closed(sink, store, &context.protocol);
+        drain_closed(sink, store, context.protocol.as_str());
         let result = if tool == ToolId::PlanDiscard {
             store.discard(&id, now)
         } else {
@@ -103,7 +103,7 @@ fn read<P: Clone>(
                 sink.emit(&audit::line(
                     audit::unix_seconds(),
                     p,
-                    &context.protocol,
+                    context.protocol.as_str(),
                     audit::Event::PlanClosed,
                 ));
             }
@@ -112,7 +112,7 @@ fn read<P: Clone>(
     } else {
         Ok(view::list(&store.list(now), now))
     };
-    drain_closed(sink, store, &context.protocol);
+    drain_closed(sink, store, context.protocol.as_str());
     result.map(output).map_err(local_error)
 }
 
@@ -414,7 +414,7 @@ mod tests {
         let (sink, lines) = AuditSink::collecting();
         let context = CallContext {
             form_elicitation: true,
-            protocol: "2026-07-28".into(),
+            protocol: crate::tools::CallProtocol::Current,
         };
         tokio::time::advance(Duration::from_secs(900)).await;
         let now = Instant::now();

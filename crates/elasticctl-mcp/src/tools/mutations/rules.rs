@@ -128,12 +128,12 @@ async fn create(
     let plan = Plan::new(content, now).map_err(local_error)?;
     let mut store = state.plans.lock().expect("plan store lock");
     let result = store.insert(plan.clone(), now);
-    drain_closed(&state.audit, &mut store, &context.protocol);
+    drain_closed(&state.audit, &mut store, context.protocol.as_str());
     result.map_err(local_error)?;
     state.audit.emit(&audit::line(
         audit::unix_seconds(),
         &plan,
-        &context.protocol,
+        context.protocol.as_str(),
         audit::Event::PlanCreated,
     ));
     Ok(output(view::view(
