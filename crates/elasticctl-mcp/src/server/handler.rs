@@ -379,6 +379,13 @@ impl ServerHandler for McpServer {
             return Err(unknown_tool_error());
         };
         let call_context = tools::CallContext::from_request(&context)?;
+        if matches!(
+            dispatch,
+            DispatchTarget::Adapter(crate::catalog::ToolId::PlanApply, _)
+        ) {
+            return crate::plan::apply::handle(self.state.clone(), request, context, call_context)
+                .await;
+        }
         let cancellation = context.ct.clone();
         let target = self.state.target().clone();
         let request_id = context.id.clone();

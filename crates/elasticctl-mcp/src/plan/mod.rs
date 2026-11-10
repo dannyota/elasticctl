@@ -1,4 +1,6 @@
+pub(crate) mod apply;
 pub(crate) mod audit;
+pub(crate) mod confirm;
 pub(crate) mod consent;
 pub(crate) mod hash;
 pub(crate) mod kind;

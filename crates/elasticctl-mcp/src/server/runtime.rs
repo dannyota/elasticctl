@@ -86,26 +86,42 @@ where
     .await
 }
 
-/// Serve a routed session with an injected audit writer for integration tests.
+/// Options available only through the integration test entry point.
+#[doc(hidden)]
+pub struct TestOptions {
+    pub audit_writer: Box<dyn Fn(&str) + Send + Sync>,
+    pub legacy_wait: Option<std::time::Duration>,
+}
+impl<F: Fn(&str) + Send + Sync + 'static> From<F> for TestOptions {
+    fn from(writer: F) -> Self {
+        Self {
+            audit_writer: Box::new(writer),
+            legacy_wait: None,
+        }
+    }
+}
+
+/// Serve a routed session with integration test options.
 #[doc(hidden)]
 pub async fn serve_io_with_audit<R, W>(
     target: Resolved,
     options: ServerOptions,
     input: R,
     output: W,
-    writer: impl Fn(&str) + Send + Sync + 'static,
+    options_for_test: impl Into<TestOptions>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let test = options_for_test.into();
     serve_io_with_root(
         target,
         options,
         input,
         output,
         CancellationToken::new(),
-        Some(crate::plan::audit::AuditSink::production(writer)),
+        Some(test),
     )
     .await
 }
@@ -116,7 +132,7 @@ async fn serve_io_with_root<R, W>(
     input: R,
     output: W,
     root: CancellationToken,
-    audit: Option<crate::plan::audit::AuditSink>,
+    test: Option<TestOptions>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -130,8 +146,11 @@ where
         options.allow_query_tools,
     );
     state.allow_mutations = options.allow_mutations;
-    if let Some(audit) = audit {
-        state.audit = audit;
+    if let Some(test) = test {
+        state.audit = crate::plan::audit::AuditSink::production(test.audit_writer);
+        if let Some(wait) = test.legacy_wait {
+            state.legacy_wait = wait;
+        }
     }
     let state = Arc::new(state);
     let mut cancel_on_drop = CancelSessionOnDrop::new(root.clone());
@@ -146,7 +165,7 @@ where
                         .enable_time()
                         .build()
                         .map_err(|_| mcp_runtime_error("MCP session runtime could not start"))?;
-                    let result = runtime.block_on(serve_session(state, input, output, root));
+                    let result = runtime.block_on(serve_with_writes(state, input, output, root));
                     runtime.shutdown_background();
                     result
                 })
@@ -242,4 +261,61 @@ where
         }
     }
     Ok(())
+}
+
+// The mutation design section 8.1 bounds pending writes at shutdown.
+const APPLY_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+async fn serve_with_writes<R, W>(
+    state: Arc<ServerState>,
+    input: R,
+    output: W,
+    root: CancellationToken,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let session = serve_session(state.clone(), input, output, root.clone());
+    tokio::pin!(session);
+    let (result, deadline) = tokio::select! { biased;
+        _ = root.cancelled() => {
+            let deadline = tokio::time::Instant::now() + APPLY_SHUTDOWN_GRACE;
+            let result = session.await;
+            (result, deadline)
+        }
+        result = &mut session => (result, tokio::time::Instant::now() + APPLY_SHUTDOWN_GRACE),
+    };
+    let mut tasks = std::mem::take(
+        &mut state
+            .pending_writes
+            .lock()
+            .expect("pending writes lock")
+            .tasks,
+    );
+    let _ = tokio::time::timeout_at(deadline, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    let pending = state.pending_writes.lock().expect("pending writes lock");
+    let mut plans = state.plans.lock().expect("plan store lock");
+    for (id, protocol) in &pending.protocols {
+        if let Ok(plan) = plans.get(id, tokio::time::Instant::now())
+            && plan.state == crate::plan::store::PlanState::Applying
+        {
+            state.audit.emit(&crate::plan::audit::line(
+                crate::plan::audit::unix_seconds(),
+                plan,
+                protocol,
+                crate::plan::audit::Event::ApplyInterrupted,
+            ));
+        }
+        for p in plans.take_closed() {
+            state.audit.emit(&crate::plan::audit::closed_line(
+                crate::plan::audit::unix_seconds(),
+                &p,
+                protocol,
+            ));
+        }
+    }
+    result
 }

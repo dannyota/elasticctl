@@ -44,6 +44,21 @@ where
     }
 }
 
+pub(crate) fn acquire(state: &Arc<ServerState>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    state.try_admit()
+}
+pub(crate) async fn reacquire(
+    state: &Arc<ServerState>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    time::timeout(state.call_timeout, state.permits.clone().acquire_owned())
+        .await
+        .ok()?
+        .ok()
+}
+pub(crate) fn timeout(state: &ServerState) -> std::time::Duration {
+    state.call_timeout
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Admitted, run_admitted};

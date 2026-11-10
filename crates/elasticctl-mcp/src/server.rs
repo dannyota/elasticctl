@@ -11,12 +11,12 @@ use crate::{
     result::{self, TargetContext},
 };
 
-mod admission;
+pub(crate) mod admission;
 mod handler;
 mod lifecycle;
 mod runtime;
 
-pub use runtime::{serve_io, serve_io_with_audit, serve_stdio};
+pub use runtime::{TestOptions, serve_io, serve_io_with_audit, serve_stdio};
 
 /// MCP runtime settings supplied by the caller after configuration resolution.
 #[derive(Clone, Debug)]
@@ -40,6 +40,8 @@ impl Default for ServerOptions {
 pub struct ServerState {
     pub(crate) plans: Mutex<crate::plan::store::PlanStore<crate::plan::kind::Operation>>,
     pub(crate) audit: crate::plan::audit::AuditSink,
+    pub(crate) pending_writes: Mutex<crate::plan::apply::PendingWrites>,
+    pub(crate) legacy_wait: Duration,
     target: TargetContext,
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
@@ -60,6 +62,8 @@ impl ServerState {
     ) -> Self {
         Self {
             plans: Mutex::new(crate::plan::store::PlanStore::default()),
+            pending_writes: Mutex::new(crate::plan::apply::PendingWrites::default()),
+            legacy_wait: crate::plan::confirm::LEGACY_CONFIRM_WAIT,
             audit: crate::plan::audit::AuditSink::production(|line| {
                 use std::io::Write;
                 let _ = std::io::stderr().lock().write_all(line.as_bytes());
