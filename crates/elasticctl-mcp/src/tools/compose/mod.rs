@@ -14,48 +14,6 @@ use rmcp::{
 use serde::Serialize;
 use std::{future::Future, pin::Pin};
 use tokio_util::sync::CancellationToken;
-
-/// The success data of a task tool that is registered but not implemented.
-#[allow(dead_code)] // Schema-only.
-#[derive(JsonSchema)]
-struct PlaceholderData {}
-
-#[allow(dead_code)] // Schema-only alternatives are never instantiated.
-#[derive(JsonSchema)]
-#[serde(untagged)]
-enum PlaceholderOutput {
-    Success(crate::result::ToolSuccess<PlaceholderData>),
-    Failure(crate::result::ToolFailure),
-}
-
-#[allow(dead_code)] // Schema-only.
-#[derive(serde::Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct PlaceholderInput {}
-
-/// The catalog entry of a registered task tool before its implementation:
-/// a closed empty input, the shared result envelope, and the read-only
-/// annotations every task tool carries.
-fn placeholder_definition(name: &'static str) -> Tool {
-    let tool = Tool::new(name, "Read-only composition report.", JsonObject::new())
-        .with_input_schema::<PlaceholderInput>()
-        .with_output_schema::<PlaceholderOutput>()
-        .with_annotations(
-            ToolAnnotations::new()
-                .read_only(true)
-                .destructive(false)
-                .idempotent(true)
-                .open_world(true),
-        );
-    let mut schema = tool
-        .output_schema
-        .as_ref()
-        .expect("typed schema")
-        .as_ref()
-        .clone();
-    schema.insert("type".into(), serde_json::Value::String("object".into()));
-    tool.with_raw_output_schema(std::sync::Arc::new(schema))
-}
 mod alert_context;
 mod coverage;
 mod readiness;
