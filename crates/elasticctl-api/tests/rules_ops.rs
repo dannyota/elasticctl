@@ -1,6 +1,7 @@
 //! The rules orchestration's contract, independent of the CLI.
 
 use elasticctl_api::model::Rule;
+use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_api::{codec, rules_ops};
 use elasticctl_api_test_support::MockStack;
 use elasticctl_core::{ErrorKind, Profile, Transport};
@@ -348,4 +349,122 @@ async fn get_one_rereads_a_rule_whose_rule_id_differs_from_the_selector() {
 
     let rule = rules_ops::get_one(&transport, r"r\\n").await.unwrap();
     assert_eq!(rule.name(), "Stored rule");
+}
+
+/// MCP's list reads one page of `limit` rules ordered by name, so its response
+/// stays bounded at any corpus size, and still reports the server total.
+#[tokio::test]
+async fn list_page_reads_one_bounded_page_ordered_by_name() {
+    let rules = ["e", "d", "c", "b", "a"]
+        .iter()
+        .map(|id| json!({"rule_id": id, "name": id.to_uppercase(), "type": "query"}))
+        .collect();
+    let stack = MockStack::with_rules(rules).await;
+    let page = rules_ops::list_page(stack.transport(), &RuleFilter::default(), 2)
+        .await
+        .unwrap();
+
+    let names: Vec<&str> = page.rules.iter().map(|r| r.name()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert_eq!(page.total, 5);
+    let finds: Vec<_> = stack
+        .requests()
+        .await
+        .into_iter()
+        .filter(|r| r.path == "/api/detection_engine/rules/_find")
+        .collect();
+    assert_eq!(finds.len(), 1);
+    for (key, value) in [
+        ("page", "1"),
+        ("per_page", "2"),
+        ("sort_field", "name"),
+        ("sort_order", "asc"),
+    ] {
+        assert_eq!(finds[0].query.get(key).map(String::as_str), Some(value));
+    }
+}
+
+/// An empty source-only page proves the source partition like `rules list`:
+/// the page plus three total reads.
+#[tokio::test]
+async fn list_page_proves_the_source_partition_on_an_empty_source_page() {
+    let custom = RuleFilter {
+        source: RuleSource::Custom,
+        ..Default::default()
+    };
+    let refused = MockStack::with_source_totals(0, 2, 3).await;
+    let err = rules_ops::list_page(refused.transport(), &custom, 50)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unsupported);
+
+    let partitioned = MockStack::with_source_totals(0, 2, 2).await;
+    let page = rules_ops::list_page(partitioned.transport(), &custom, 50)
+        .await
+        .unwrap();
+    assert!(page.rules.is_empty());
+    assert_eq!(page.total, 0);
+    let finds = partitioned
+        .requests()
+        .await
+        .into_iter()
+        .filter(|r| r.path == "/api/detection_engine/rules/_find")
+        .count();
+    assert_eq!(finds, 4);
+}
+
+fn find_server_transport(server: &MockServer) -> Transport {
+    Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("essu_test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 5,
+    })
+    .unwrap()
+}
+
+async fn serve_find(server: &MockServer, rows: usize, per_page: u64, total: u64) {
+    let data: Vec<_> = (0..rows)
+        .map(|i| json!({"rule_id": format!("r{i}"), "name": format!("R{i}")}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": per_page, "total": total, "data": data
+        })))
+        .mount(server)
+        .await;
+}
+
+/// A page shorter than both the request and the total is a short read; a page
+/// holding every match is complete even below `limit`, whatever `perPage` says.
+#[tokio::test]
+async fn list_page_refuses_only_a_short_page() {
+    for (rows, per_page, total, ok) in [
+        (2, 3, 5, false),
+        (2, 10, 5, false),
+        (3, 3, 5, true),
+        (3, 10, 5, true),
+        (2, 3, 2, true),
+        (2, 1000, 2, true),
+    ] {
+        let server = MockServer::start().await;
+        serve_find(&server, rows, per_page, total).await;
+        let result =
+            rules_ops::list_page(&find_server_transport(&server), &RuleFilter::default(), 3).await;
+        match result {
+            Ok(page) => {
+                assert!(ok, "rows={rows} perPage={per_page} total={total}");
+                assert_eq!((page.rules.len(), page.total), (rows, total));
+            }
+            Err(err) => {
+                assert!(!ok, "rows={rows} perPage={per_page} total={total}: {err:?}");
+                assert_eq!(err.kind, ErrorKind::Http);
+            }
+        }
+    }
 }

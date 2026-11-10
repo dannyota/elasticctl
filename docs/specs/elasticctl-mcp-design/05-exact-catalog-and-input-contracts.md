@@ -17,7 +17,7 @@ those rules; schema constraints preserve optional and explicit-null behavior.
 | --- | --- | --- | --- |
 | 0.7.0 | `stack_info` | None | `health::info` |
 | 0.7.0 | `stack_doctor` | None | `health::doctor` |
-| 0.7.0 | `rules_list` | `enabled`, `rule_type`, `severity`, `tag`, `search`, `source` (default `all`) | `rules_ops::list` |
+| 0.7.0 | `rules_list` | `enabled`, `rule_type`, `severity`, `tag`, `search`, `source` (default `all`) | `rules_ops::list_page` |
 | 0.7.0 | `rules_get` | `selector` | `rules_ops::get_one` |
 | 0.7.0 | `rules_prebuilt_status` | None | `prebuilt::status` |
 | 0.7.0 | `exceptions_list` | `list_type`, `tag`, `namespace`, `search` | `exceptions::list_op` |
@@ -41,6 +41,14 @@ those rules; schema constraints preserve optional and explicit-null behavior.
 There are seven tools in 0.7.0, twenty by default in 0.7.1, and twenty-two
 when queries are enabled. An unsupported Elastic feature remains listed and
 returns `unsupported`; availability does not change catalog discovery.
+
+`rules_list` reads one page: a single `_find` request with `per_page` equal
+to `limit`, ordered by rule name ascending. `page.total` is the server total;
+`has_more` and `truncated` are true when it exceeds `returned`. An empty
+source-filtered page runs the same source-partition proof as `rules list`,
+which keeps its complete read. Through 0.7.4 the tool read the whole corpus in
+one request; at 2,263 rules that response was 19.3 MB, over the 16 MiB body
+cap, so the call failed with `unsupported`.
 
 Rule and Fleet selectors retain their existing exact-id/name behavior.
 Exception namespace ambiguity remains a conflict. Alert and case ids never

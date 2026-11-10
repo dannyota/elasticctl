@@ -636,9 +636,14 @@ async fn rules_list_uses_complete_collection_before_the_requested_row_cap() {
         !requests[0].query.contains_key("filter"),
         "all omits source filter"
     );
+    assert_eq!(requests[0].query.get("per_page"), Some(&"50".to_string()));
     assert_eq!(
-        requests[0].query.get("per_page"),
-        Some(&"10000".to_string())
+        requests[0].query.get("sort_field"),
+        Some(&"name".to_string())
+    );
+    assert_eq!(
+        requests[0].query.get("sort_order"),
+        Some(&"asc".to_string())
     );
     harness.close_input();
     harness.join().await.expect("clean EOF");
@@ -1233,6 +1238,30 @@ async fn rule_api_failures_use_each_tool_schema_and_redact_remote_sentinels() {
         requests
             .iter()
             .all(|request| is_allowed_read_path(request.url.path()))
+    );
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
+}
+
+/// A short `_find` page fails closed as an Elastic HTTP error rather than
+/// reporting fewer rules than the server total claims.
+#[tokio::test]
+async fn rules_list_refuses_a_short_server_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 50, "total": 5,
+            "data": [rule("a", "A"), rule("b", "B")]
+        })))
+        .mount(&server)
+        .await;
+    let mut harness = Harness::start(target_for_server(&server), options());
+    let reply = call(&mut harness, 1, "rules_list", json!({})).await;
+    assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(
+        reply["result"]["structuredContent"]["error"]["code"],
+        "elastic_http"
     );
     harness.close_input();
     harness.join().await.expect("clean EOF");

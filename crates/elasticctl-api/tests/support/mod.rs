@@ -476,7 +476,7 @@ impl Respond for FilteredRules {
             .url
             .query_pairs()
             .find_map(|(k, v)| (k.as_ref() == "filter").then(|| v.into_owned()));
-        let data: Vec<Value> = match filter.as_deref() {
+        let mut data: Vec<Value> = match filter.as_deref() {
             None => self.rules.clone(),
             Some(filter) => self
                 .rules
@@ -485,8 +485,26 @@ impl Respond for FilteredRules {
                 .cloned()
                 .collect(),
         };
+        let param = |key: &str| {
+            request
+                .url
+                .query_pairs()
+                .find_map(|(k, v)| (k.as_ref() == key).then(|| v.into_owned()))
+        };
+        // Honor the name sort and paging the API requests, like Kibana.
+        if param("sort_field").as_deref() == Some("name") {
+            data.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        }
+        let total = data.len();
+        let page: usize = param("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+        let per_page: usize = param("per_page").and_then(|v| v.parse().ok()).unwrap_or(20);
+        let data: Vec<Value> = data
+            .into_iter()
+            .skip(page.saturating_sub(1) * per_page)
+            .take(per_page)
+            .collect();
         ResponseTemplate::new(200).set_body_json(json!({
-            "page": 1, "perPage": 10000, "total": data.len(), "data": data
+            "page": page, "perPage": per_page, "total": total, "data": data
         }))
     }
 }

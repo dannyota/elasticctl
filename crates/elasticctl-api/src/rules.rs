@@ -149,10 +149,34 @@ pub async fn find_page(
     page: u32,
     per_page: u32,
 ) -> Result<(Vec<Rule>, u64)> {
+    find(t, filter, page, per_page, "").await
+}
+
+/// The first `per_page` matching rules ordered by name, and the match total.
+/// A short page is an error, so callers can trust `total > returned`.
+pub async fn find_first_by_name(
+    t: &Transport,
+    filter: &RuleFilter,
+    per_page: u32,
+) -> Result<(Vec<Rule>, u64)> {
+    let (rules, total) = find(t, filter, 1, per_page, "&sort_field=name&sort_order=asc").await?;
+    if (rules.len() as u64) < total.min(u64::from(per_page)) {
+        return Err(short_read(total, rules.len()));
+    }
+    Ok((rules, total))
+}
+
+async fn find(
+    t: &Transport,
+    filter: &RuleFilter,
+    page: u32,
+    per_page: u32,
+    sort: &str,
+) -> Result<(Vec<Rule>, u64)> {
     if filter.source != RuleSource::All {
         t.require_feature(Feature::RuleSourceScoping).await?;
     }
-    let mut path = format!("{BASE}/_find?page={page}&per_page={per_page}");
+    let mut path = format!("{BASE}/_find?page={page}&per_page={per_page}{sort}");
     if let Some(kql) = filter.to_kql() {
         path.push_str(&format!("&filter={}", urlencode(&kql)));
     }
