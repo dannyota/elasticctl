@@ -186,13 +186,14 @@ async fn query_catalog_input_schemas_are_closed_and_bounded() {
     harness.send_json(json!({"jsonrpc":"2.0","id":60,"method":"tools/list","params":{"_meta":current_metadata()}})).await;
     let reply = harness.receive_json().await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 22);
+    assert_eq!(tools.len(), 26);
     let names = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("name"))
         .collect::<Vec<_>>();
     let mut expected = EXPECTED_TOOL_NAMES.to_vec();
-    expected.splice(18..18, ["search_dsl", "search_esql"]);
+    expected.extend(["search_dsl", "search_esql"]);
+    expected.sort_unstable();
     assert_eq!(names, expected);
     assert_eq!(
         elasticctl_mcp::catalog::definitions()
@@ -335,7 +336,7 @@ async fn catalog_output_schemas_check_all_envelopes_and_query_projections() {
     harness.send_json(json!({"jsonrpc":"2.0","id":63,"method":"tools/list","params":{"_meta":current_metadata()}})).await;
     let reply = harness.receive_json().await;
     let tools = reply["result"]["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), 22);
+    assert_eq!(tools.len(), 26);
     for tool in tools {
         let schema = &tool["outputSchema"];
         assert_eq!(schema["type"], "object");

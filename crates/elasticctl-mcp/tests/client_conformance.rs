@@ -426,7 +426,7 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
         .filter_map(|tool| tool["name"].as_str())
         .filter(|name| name.starts_with("search_"))
         .collect::<Vec<_>>();
-    assert_eq!(query_tools.len(), 22);
+    assert_eq!(query_tools.len(), 26);
     assert_eq!(additions, ["search_dsl", "search_esql"]);
     assert_eq!(
         Value::Array(
@@ -491,13 +491,22 @@ async fn sdk_current_and_legacy_paths_agree_on_catalog_and_stack_info() {
         .expect("legacy server cleanly exits");
 }
 
+/// Task tools registered before their implementation. Each answers every
+/// call with an error, so only the router error is checked for them.
+const PLACEHOLDER_TOOLS: [&str; 4] = [
+    "alert_context",
+    "detection_coverage",
+    "rule_health",
+    "rule_readiness",
+];
+
 #[tokio::test]
 async fn catalog_schema_accepts_each_declared_success_and_router_error() {
     let mock = MockServer::start().await;
     mount_catalog_success_routes(&mock).await;
     let mut harness = Harness::start(target_for(&mock), options());
     let default_catalog = raw_catalog(&mut harness, 1).await;
-    assert_eq!(default_catalog.as_array().expect("catalog array").len(), 20);
+    assert_eq!(default_catalog.as_array().expect("catalog array").len(), 24);
     for (offset, tool) in default_catalog
         .as_array()
         .expect("catalog array")
@@ -506,16 +515,18 @@ async fn catalog_schema_accepts_each_declared_success_and_router_error() {
     {
         let name = tool["name"].as_str().expect("tool name");
         let schema = &tool["outputSchema"];
-        let success = raw_call(
-            &mut harness,
-            10 + offset as u64,
-            name,
-            success_arguments(name),
-        )
-        .await;
-        assert_eq!(success["result"]["isError"], false, "{name}");
-        assert_text_copy(&success);
-        assert_schema(schema, structured(&success));
+        if !PLACEHOLDER_TOOLS.contains(&name) {
+            let success = raw_call(
+                &mut harness,
+                10 + offset as u64,
+                name,
+                success_arguments(name),
+            )
+            .await;
+            assert_eq!(success["result"]["isError"], false, "{name}");
+            assert_text_copy(&success);
+            assert_schema(schema, structured(&success));
+        }
         let reply = raw_call(
             &mut harness,
             100 + offset as u64,
@@ -539,7 +550,7 @@ async fn catalog_schema_accepts_each_declared_success_and_router_error() {
     enabled.allow_query_tools = true;
     let mut harness = Harness::start(target_for(&mock), enabled);
     let query_catalog = raw_catalog(&mut harness, 2).await;
-    assert_eq!(query_catalog.as_array().expect("catalog array").len(), 22);
+    assert_eq!(query_catalog.as_array().expect("catalog array").len(), 26);
     let query_names = query_catalog
         .as_array()
         .expect("catalog array")
@@ -733,7 +744,7 @@ async fn sdk_cancellation_keeps_the_session_usable() {
         .list_tools(None)
         .await
         .expect("cancelled session remains usable");
-    assert_eq!(listed.tools.len(), 20);
+    assert_eq!(listed.tools.len(), 24);
     client.cancel().await.expect("client closes");
     server.await.expect("server task").expect("server exits");
     let frames = frames.lock().expect("tap lock").clone();

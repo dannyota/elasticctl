@@ -1,28 +1,6 @@
 use super::*;
 pub(super) fn definition() -> Tool {
-    Tool::new(
-        "alert_context",
-        "Read-only composition report.",
-        serde_json::json!({"type":"object","properties":{},"additionalProperties":false})
-            .as_object()
-            .unwrap()
-            .clone(),
-    )
-    // Every catalog entry declares an object output schema; the tool's own
-    // schema replaces this one when the tool is implemented.
-    .with_raw_output_schema(std::sync::Arc::new(
-        serde_json::json!({"type":"object"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    ))
-    .with_annotations(
-        ToolAnnotations::new()
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(true),
-    )
+    placeholder_definition("alert_context")
 }
 pub(super) async fn call(
     arguments: Option<&JsonObject>,
