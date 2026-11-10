@@ -8,7 +8,9 @@
 # stops the input relay; bytes the client writes after the command has exited
 # may be missing from in.jsonl. After any TERM, INT, or HUP, it stops both
 # relays without waiting, so output still in the pipe may be missing from
-# stdout and out.jsonl.
+# stdout and out.jsonl. The shim exits with the command's status, except when
+# a signal arrives as the command exits: then it may exit with 128 plus the
+# signal number instead.
 set -euo pipefail
 
 refuse() { printf 'mcp-stdio-shim: %s\n' "$1" >&2; exit 2; }
