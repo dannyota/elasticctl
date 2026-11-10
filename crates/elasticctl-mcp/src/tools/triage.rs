@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     PageInfo, ServerState, ToolFailure, ToolSuccess,
     catalog::ToolId,
-    server::{validate_limit, validate_text},
+    server::{validate_limit, validate_path_id, validate_text},
     tools::{AdapterError, AdapterResult, ToolAdapter},
 };
 
@@ -236,7 +236,7 @@ struct CasesGetInput {
 
 impl CasesGetInput {
     fn id(self) -> Result<String, AdapterError> {
-        validate_text("id", &self.id, MAX_TEXT_BYTES).map_err(|_| AdapterError::InvalidArgument)?;
+        validate_path_id("id", &self.id).map_err(|_| AdapterError::InvalidArgument)?;
         Ok(self.id)
     }
 }
@@ -283,7 +283,7 @@ struct AlertSourceData {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct AlertData {
+pub(crate) struct AlertData {
     id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     index: Option<String>,
@@ -296,7 +296,7 @@ struct AlertsListData {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct CaseData {
+pub(crate) struct CaseData {
     id: String,
     title: String,
     status: String,
@@ -440,7 +440,7 @@ fn parse_input<T: DeserializeOwned>(arguments: Option<&JsonObject>) -> Result<T,
         .map_err(|_| AdapterError::InvalidArgument)
 }
 
-fn project_alert(alert: &AlertHit) -> Result<AlertData, Error> {
+pub(crate) fn project_alert(alert: &AlertHit) -> Result<AlertData, Error> {
     Ok(AlertData {
         id: alert.id.clone(),
         index: alert.index.clone(),
@@ -470,7 +470,7 @@ fn source_field<T: DeserializeOwned>(source: &Value, key: &str) -> Result<Option
     }
 }
 
-fn project_case(case: &Case) -> CaseData {
+pub(crate) fn project_case(case: &Case) -> CaseData {
     CaseData {
         id: case.id.clone(),
         title: case.title.clone(),

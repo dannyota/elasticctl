@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     PageInfo, ServerState, ToolFailure, ToolSuccess,
     catalog::ToolId,
-    server::{validate_limit, validate_text},
+    server::{validate_limit, validate_path_id, validate_text},
     tools::{AdapterError, AdapterResult, ToolAdapter},
 };
 
@@ -124,8 +124,7 @@ struct DataViewsGetInput {
 }
 impl DataViewsGetInput {
     fn selector(self) -> Result<String, AdapterError> {
-        validate_text("selector", &self.selector, MAX_TEXT_BYTES)
-            .map_err(|_| AdapterError::InvalidArgument)?;
+        validate_path_id("selector", &self.selector).map_err(|_| AdapterError::InvalidArgument)?;
         Ok(self.selector)
     }
 }
@@ -177,8 +176,7 @@ struct DashboardsGetInput {
 }
 impl DashboardsGetInput {
     fn selector(self) -> Result<String, AdapterError> {
-        validate_text("selector", &self.selector, MAX_TEXT_BYTES)
-            .map_err(|_| AdapterError::InvalidArgument)?;
+        validate_path_id("selector", &self.selector).map_err(|_| AdapterError::InvalidArgument)?;
         Ok(self.selector)
     }
 }

@@ -272,8 +272,8 @@ fn tools_list_rejects_a_nonempty_next_cursor() {
 #[test]
 fn default_catalog_rejects_opt_in_query_tools() {
     let mut tools = required_catalog();
-    tools.insert(18, json!({"name": "search_dsl"}));
-    tools.insert(19, json!({"name": "search_esql"}));
+    tools.insert(22, json!({"name": "search_dsl"}));
+    tools.insert(23, json!({"name": "search_esql"}));
     let catalog = json!({"result": {"tools": tools, "nextCursor": null}});
 
     let error = validate_catalog(&catalog, false, McpProtocolPath::Legacy)
@@ -290,12 +290,12 @@ fn default_catalog_rejects_opt_in_query_tools() {
 #[test]
 fn query_catalog_requires_both_opt_in_query_tools_in_order() {
     let mut tools = required_catalog();
-    tools.insert(18, json!({"name": "search_dsl"}));
-    tools.insert(19, json!({"name": "search_esql"}));
+    tools.insert(22, json!({"name": "search_dsl"}));
+    tools.insert(23, json!({"name": "search_esql"}));
     let catalog = json!({"result": {"tools": tools, "nextCursor": null}});
 
     validate_catalog(&catalog, true, McpProtocolPath::Legacy)
-        .expect("the query-enabled catalog must contain the exact 22 tools");
+        .expect("the query-enabled catalog must contain the exact 26 tools");
 }
 
 #[test]
@@ -2488,6 +2488,7 @@ fn normalize_protocol_result(response: &mut Value, protocol_path: McpProtocolPat
 
 fn required_catalog() -> Vec<Value> {
     [
+        "alert_context",
         "alerts_get",
         "alerts_list",
         "cases_get",
@@ -2497,12 +2498,15 @@ fn required_catalog() -> Vec<Value> {
         "data_views_default_get",
         "data_views_get",
         "data_views_list",
+        "detection_coverage",
         "exceptions_get",
         "exceptions_list",
         "fleet_agent_policies_get",
         "fleet_agent_policies_list",
         "fleet_integration_policies_get",
         "fleet_integration_policies_list",
+        "rule_health",
+        "rule_readiness",
         "rules_get",
         "rules_list",
         "rules_prebuilt_status",
@@ -2561,6 +2565,7 @@ fn validate_catalog(
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "MCP tools/list response has an invalid tool catalog.".to_string())?;
     let mut required = vec![
+        "alert_context",
         "alerts_get",
         "alerts_list",
         "cases_get",
@@ -2570,12 +2575,15 @@ fn validate_catalog(
         "data_views_default_get",
         "data_views_get",
         "data_views_list",
+        "detection_coverage",
         "exceptions_get",
         "exceptions_list",
         "fleet_agent_policies_get",
         "fleet_agent_policies_list",
         "fleet_integration_policies_get",
         "fleet_integration_policies_list",
+        "rule_health",
+        "rule_readiness",
         "rules_get",
         "rules_list",
         "rules_prebuilt_status",
@@ -2583,7 +2591,8 @@ fn validate_catalog(
         "stack_info",
     ];
     if allow_query_tools {
-        required.splice(18..18, ["search_dsl", "search_esql"]);
+        required.extend(["search_dsl", "search_esql"]);
+        required.sort_unstable();
     }
     if names != required {
         return Err("MCP tools/list catalog differs from the required read catalog.".to_string());

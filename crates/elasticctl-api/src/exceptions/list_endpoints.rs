@@ -410,6 +410,19 @@ pub async fn import_lists(t: &Transport, ndjson: &str, overwrite: bool) -> Resul
         .await
 }
 
+pub async fn count_items(t: &Transport, key: &ListKey) -> Result<u64> {
+    t.require_feature(Feature::ExceptionLists).await?;
+    t.get(&format!(
+        "{ITEMS}/_find?list_id={}&namespace_type={}&page=1&per_page=1",
+        urlencode(&key.list_id),
+        urlencode(&key.namespace_type)
+    ))
+    .await?
+    .get("total")
+    .and_then(Value::as_u64)
+    .ok_or_else(|| Error::new(ErrorKind::Http, "invalid exception item count"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

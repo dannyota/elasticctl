@@ -225,3 +225,35 @@ pub async fn attach_alerts(
     });
     decode_case(&t.post(&comments_path(case_id), Some(&body)).await?)
 }
+
+#[derive(Debug)]
+pub struct CaseRef {
+    pub id: String,
+    pub title: Option<String>,
+}
+pub async fn by_alert(t: &Transport, alert_id: &str) -> Result<Vec<CaseRef>> {
+    if !crate::compose::is_path_segment(alert_id) {
+        return Err(Error::new(ErrorKind::Error, "invalid alert id"));
+    }
+    let body = t
+        .get(&format!("/api/cases/alerts/{}", urlencode(alert_id)))
+        .await?;
+    let invalid = || Error::new(ErrorKind::Http, "invalid cases by alert response");
+    body.as_array()
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|row| {
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| crate::compose::is_path_segment(id))
+                .ok_or_else(invalid)?
+                .to_owned();
+            let title = row
+                .get("title")
+                .map(|v| v.as_str().map(str::to_owned).ok_or_else(invalid))
+                .transpose()?;
+            Ok(CaseRef { id, title })
+        })
+        .collect()
+}

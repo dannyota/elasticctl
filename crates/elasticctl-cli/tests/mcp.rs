@@ -21,6 +21,7 @@ const TARGET_SENTINEL: &str = "target-sentinel.invalid";
 const ARGUMENT_SENTINEL: &str = "argument-sentinel";
 
 const DEFAULT_TOOL_NAMES: &[&str] = &[
+    "alert_context",
     "alerts_get",
     "alerts_list",
     "cases_get",
@@ -30,12 +31,15 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "data_views_default_get",
     "data_views_get",
     "data_views_list",
+    "detection_coverage",
     "exceptions_get",
     "exceptions_list",
     "fleet_agent_policies_get",
     "fleet_agent_policies_list",
     "fleet_integration_policies_get",
     "fleet_integration_policies_list",
+    "rule_health",
+    "rule_readiness",
     "rules_get",
     "rules_list",
     "rules_prebuilt_status",
@@ -46,6 +50,7 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
 const QUERY_TOOL_NAMES: &[&str] = &["search_dsl", "search_esql"];
 
 const QUERY_ENABLED_TOOL_NAMES: &[&str] = &[
+    "alert_context",
     "alerts_get",
     "alerts_list",
     "cases_get",
@@ -55,12 +60,15 @@ const QUERY_ENABLED_TOOL_NAMES: &[&str] = &[
     "data_views_default_get",
     "data_views_get",
     "data_views_list",
+    "detection_coverage",
     "exceptions_get",
     "exceptions_list",
     "fleet_agent_policies_get",
     "fleet_agent_policies_list",
     "fleet_integration_policies_get",
     "fleet_integration_policies_list",
+    "rule_health",
+    "rule_readiness",
     "rules_get",
     "rules_list",
     "rules_prebuilt_status",
@@ -594,6 +602,7 @@ fn router_probe_rejects_non_validation_tool_errors() {
 #[test]
 fn both_binaries_serve_current_and_legacy_catalog_discovery() {
     let expected = vec![
+        "alert_context",
         "alerts_get",
         "alerts_list",
         "cases_get",
@@ -603,12 +612,15 @@ fn both_binaries_serve_current_and_legacy_catalog_discovery() {
         "data_views_default_get",
         "data_views_get",
         "data_views_list",
+        "detection_coverage",
         "exceptions_get",
         "exceptions_list",
         "fleet_agent_policies_get",
         "fleet_agent_policies_list",
         "fleet_integration_policies_get",
         "fleet_integration_policies_list",
+        "rule_health",
+        "rule_readiness",
         "rules_get",
         "rules_list",
         "rules_prebuilt_status",
@@ -655,6 +667,7 @@ fn both_binaries_serve_current_and_legacy_catalog_discovery() {
 #[test]
 fn query_startup_flag_adds_only_the_two_query_tools_for_both_binaries() {
     let expected = vec![
+        "alert_context",
         "alerts_get",
         "alerts_list",
         "cases_get",
@@ -664,12 +677,15 @@ fn query_startup_flag_adds_only_the_two_query_tools_for_both_binaries() {
         "data_views_default_get",
         "data_views_get",
         "data_views_list",
+        "detection_coverage",
         "exceptions_get",
         "exceptions_list",
         "fleet_agent_policies_get",
         "fleet_agent_policies_list",
         "fleet_integration_policies_get",
         "fleet_integration_policies_list",
+        "rule_health",
+        "rule_readiness",
         "rules_get",
         "rules_list",
         "rules_prebuilt_status",
