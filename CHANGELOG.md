@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2 — Unreleased
+
+### Changed
+
+- The MCP server is checked with two product clients, Claude Code and Codex
+  CLI, against a local lab, and protocol tests now cover the whole 0.8
+  surface at once: every tool against its output schema, the request maxima,
+  mixed tool and resource admission, and credential sentinels.
+
 ## 0.8.1 — 2026-11-11
 
 ### Added
