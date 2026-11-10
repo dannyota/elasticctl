@@ -135,6 +135,6 @@ pass taken from its documents.
 - A missing live or client measurement keeps its gate open. It is never
   inferred, lowered, or moved to a later version.
 - A release ends at the tag and the GitHub Release. Publishing to crates.io
-  follows [releasing](../../releasing.md) and needs its own approval. The
-  `ServerOptions` field makes 0.9.0 a breaking change for the `elasticctl-mcp`
-  crate, which the minor version already signals.
+  follows [releasing](../../releasing.md) and needs its own approval. The new
+  `ServerOptions` field is a Rust source change in the `elasticctl-mcp` crate,
+  outside the compatibility promise of shared design 11.1.

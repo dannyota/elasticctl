@@ -42,7 +42,7 @@ against the same observed state have the same hash and different ids.
 | `rules_set_enabled` | `{"enabled": bool, "rule_ids": [...]}` |
 | `alerts_set_status` | `{"status": "...", "reason": "..." or null, "alert_ids": [...]}` |
 | `alerts_set_tags` | `{"add": [...], "remove": [...], "alert_ids": [...]}` |
-| `cases_create` | `{"title": "...", "description": "..." or null, "tags": [...], "severity": "..." or null}` |
+| `cases_create` | `{"title": "...", "description": "..." or null, "tags": [...], "severity": "..." or null, "sync_alerts": false}` |
 | `cases_comment` | `{"case_id": "...", "message": "..."}` |
 | `cases_set_status` | `{"status": "...", "updates": [{"id": "...", "version": "..."}], "resolved": n}` |
 | `rules_create` | `{"rule": {...}}`, the stored rule with `enabled: false` |
