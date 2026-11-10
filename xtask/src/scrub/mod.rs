@@ -75,11 +75,17 @@ fn redact_backing_index_date(name: &str) -> Option<String> {
             }
         });
     let is_generation = !generation.is_empty() && generation.bytes().all(|b| b.is_ascii_digit());
-    // Index names are lowercase and carry no delimiter or whitespace, so a
-    // comma-joined list or prose never matches as one name.
+    // Elastic index and data stream names are lowercase and exclude these
+    // characters and whitespace, so a comma-joined list or prose never
+    // matches as one name.
     let is_stream = !stream.is_empty()
-        && stream.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-' | b'+')
+        && stream.chars().all(|c| {
+            !c.is_whitespace()
+                && !c.is_uppercase()
+                && !matches!(
+                    c,
+                    '\\' | '/' | '*' | '?' | '"' | '<' | '>' | '|' | ',' | '#' | ':'
+                )
         });
     (is_stream && is_date && is_generation).then(|| format!(".ds-{stream}-REDACTED-{generation}"))
 }
@@ -339,7 +345,11 @@ mod tests {
     fn scrub_redacts_only_the_backing_index_date() {
         let mut value = json!({
             "_index": ".ds-.alerts-security.alerts-default-2026.11.09-000001",
-            "indices": [".ds-logs-system.auth-default-2026.01.31-000012"],
+            "indices": [
+                ".ds-logs-system.auth-default-2026.01.31-000012",
+                ".ds-logs@prod-2026.11.09-000001",
+                ".ds-logs-café-2026.11.09-000001"
+            ],
             "keep": [
                 ".alerts-security.alerts-default",
                 ".ds-no-date-000001",
@@ -359,7 +369,11 @@ mod tests {
             value,
             json!({
                 "_index": ".ds-.alerts-security.alerts-default-REDACTED-000001",
-                "indices": [".ds-logs-system.auth-default-REDACTED-000012"],
+                "indices": [
+                    ".ds-logs-system.auth-default-REDACTED-000012",
+                    ".ds-logs@prod-REDACTED-000001",
+                    ".ds-logs-café-REDACTED-000001"
+                ],
                 "keep": [
                     ".alerts-security.alerts-default",
                     ".ds-no-date-000001",
