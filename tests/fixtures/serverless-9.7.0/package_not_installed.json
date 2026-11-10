@@ -1,0 +1,17 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "package_not_installed",
+  "request": {
+    "method": "GET",
+    "path": "/api/fleet/epm/packages/apache"
+  },
+  "response": {
+    "item": {
+      "name": "apache",
+      "version": "3.0.2",
+      "status": "not_installed",
+      "latestVersion": "3.0.2"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "exception_items_count",
+  "request": {
+    "method": "GET",
+    "path": "/api/exception_lists/items/_find",
+    "query": "list_id=elasticctl-sample-exceptions&namespace_type=single&page=1&per_page=1"
+  },
+  "response": {
+    "data": [
+      {
+        "item_id": "elasticctl-sample-exception-item",
+        "list_id": "elasticctl-sample-exceptions",
+        "type": "simple",
+        "name": "elasticctl sample exception item elasticctl-sample-1.exe",
+        "description": "Recorded by cargo xtask record-compose. Safe to delete.",
+        "entries": [
+          {
+            "type": "match",
+            "field": "process.name",
+            "value": "elasticctl-sample-1.exe",
+            "operator": "included"
+          }
+        ],
+        "namespace_type": "single",
+        "os_types": [],
+        "tags": [
+          "elasticctl",
+          "fixture",
+          "elasticctl-sample"
+        ],
+        "comments": [],
+        "_version": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_by": "REDACTED",
+        "updated_by": "REDACTED"
+      }
+    ],
+    "page": 1,
+    "per_page": 1,
+    "total": 2
+  }
+}
