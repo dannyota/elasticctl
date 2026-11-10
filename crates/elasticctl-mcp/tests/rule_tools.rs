@@ -1242,3 +1242,27 @@ async fn rule_api_failures_use_each_tool_schema_and_redact_remote_sentinels() {
     harness.close_input();
     harness.join().await.expect("clean EOF");
 }
+
+/// A short `_find` page fails closed as an Elastic HTTP error rather than
+/// reporting fewer rules than the server total claims.
+#[tokio::test]
+async fn rules_list_refuses_a_short_server_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "page": 1, "perPage": 50, "total": 5,
+            "data": [rule("a", "A"), rule("b", "B")]
+        })))
+        .mount(&server)
+        .await;
+    let mut harness = Harness::start(target_for_server(&server), options());
+    let reply = call(&mut harness, 1, "rules_list", json!({})).await;
+    assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(
+        reply["result"]["structuredContent"]["error"]["code"],
+        "elastic_http"
+    );
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
+}

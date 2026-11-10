@@ -28,7 +28,8 @@ projections retain their own required sets.
 Each tool defines its own typed `data` schema. List results, exception items,
 and query rows carry `page` with `limit`, `returned`, nullable exact `total`,
 nullable `has_more`, and boolean `truncated`. Other gets have `page: null`.
-Set `truncated` when the adapter omits fetched rows; set `has_more` only when
+Set `truncated` when the adapter omits fetched rows, or, for `rules_list`'s
+server page, when the server total exceeds `returned`; set `has_more` only when
 known, otherwise null. Do not turn a lower-bound server count into an exact
 total. In particular, DSL totals are null because the existing decoder drops
 the total relation. Fleet list operations currently count before their local
