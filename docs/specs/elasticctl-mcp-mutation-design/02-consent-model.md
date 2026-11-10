@@ -56,7 +56,9 @@ What the server never accepts as consent:
 ### 2.1 What happens without elicitation
 
 "Without elicitation" means the request's client capabilities have no
-`elicitation` entry, or have one that names `url` only.
+`elicitation` entry, or have one that names `url` only. On protocol
+`2026-07-28` they are the capabilities carried in that request's metadata;
+on the legacy path they are the ones the client sent with `initialize`.
 
 1. Planners work. They are reads. The plan result carries
    `confirmation: "unavailable"` so the model knows before it tries.

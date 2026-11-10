@@ -330,6 +330,7 @@ impl ServerHandler for McpServer {
                         resource_not_found()
                     }
                     AdapterError::Core(core) => resource_failure(error::core(&core)),
+                    AdapterError::Tool(error) => resource_failure(error),
                 })?;
             if call.expect_rule_id.as_ref().is_some_and(|expected| {
                 output
@@ -377,6 +378,16 @@ impl ServerHandler for McpServer {
         ) else {
             return Err(unknown_tool_error());
         };
+        let call_context = tools::CallContext {
+            form_elicitation: context
+                .client_capabilities()
+                .and_then(|c| c.elicitation)
+                .is_some_and(|e| e.form.is_some() || e.url.is_none()),
+            protocol: context
+                .protocol_version()
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        };
         let cancellation = context.ct.clone();
         let target = self.state.target().clone();
         let request_id = context.id.clone();
@@ -385,11 +396,12 @@ impl ServerHandler for McpServer {
             let outcome = match dispatch {
                 DispatchTarget::Adapter(tool, adapter) => {
                     adapter
-                        .call(
+                        .call_with_context(
                             tool,
                             request.arguments.as_ref(),
                             &state,
                             cancellation.clone(),
+                            call_context,
                         )
                         .await
                 }
@@ -404,6 +416,7 @@ impl ServerHandler for McpServer {
                     target,
                     error::local(LocalError::InvalidArgument),
                 ))),
+                Err(AdapterError::Tool(tool_error)) => Err(Box::new((target, tool_error))),
                 Err(AdapterError::Core(core_error)) => {
                     Err(Box::new((target, error::core(&core_error))))
                 }

@@ -38,12 +38,34 @@ pub enum AdapterError {
     InvalidArgument,
     /// Existing API/core operation failure. Its message remains untrusted.
     Core(Error),
+    /// Static local failure from a stored plan operation.
+    Tool(crate::ToolError),
+}
+
+/// Metadata for one tool call.
+#[derive(Clone, Debug, Default)]
+pub struct CallContext {
+    pub form_elicitation: bool,
+    pub protocol: String,
 }
 
 /// One vertical's explicit MCP allowlist and typed dispatch entry point.
 pub trait ToolAdapter: Send + Sync {
     /// Static public definitions for this adapter's tools.
     fn definitions(&self) -> Vec<Tool>;
+
+    /// Execute a call with request metadata, preserving existing adapters.
+    fn call_with_context<'a>(
+        &'a self,
+        tool: ToolId,
+        arguments: Option<&'a rmcp::model::JsonObject>,
+        state: &'a ServerState,
+        cancellation: CancellationToken,
+        _context: CallContext,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<AdapterResult, AdapterError>> + Send + 'a>>
+    {
+        self.call(tool, arguments, state, cancellation)
+    }
 
     /// Execute one already name-resolved tool.
     fn call<'a>(

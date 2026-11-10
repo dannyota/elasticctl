@@ -275,10 +275,10 @@ async fn gated_catalog_and_instructions_on_both_protocols() {
                     h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"unexpected":true},"_meta":current_metadata()}})).await;
                     let r = h.receive_json().await;
                     if enabled {
-                        assert_eq!(
-                            r["result"]["structuredContent"]["error"]["kind"],
-                            "unsupported"
-                        );
+                        // Reachable through the gate: a tool error, not a
+                        // protocol error. Which error depends on the tool.
+                        assert!(r.get("error").is_none(), "{name}: {r}");
+                        assert_eq!(r["result"]["isError"], true, "{name}: {r}");
                     } else {
                         assert_eq!(
                             r["error"],

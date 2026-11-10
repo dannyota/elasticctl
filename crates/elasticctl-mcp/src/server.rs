@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::sync::Mutex;
 use std::{sync::Arc, time::Duration};
 
@@ -39,6 +38,8 @@ impl Default for ServerOptions {
 
 /// Shared state passed to every vertical adapter.
 pub struct ServerState {
+    pub(crate) plans: Mutex<crate::plan::store::PlanStore<crate::plan::kind::Operation>>,
+    pub(crate) audit: crate::plan::audit::AuditSink,
     target: TargetContext,
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
@@ -58,6 +59,11 @@ impl ServerState {
         allow_query_tools: bool,
     ) -> Self {
         Self {
+            plans: Mutex::new(crate::plan::store::PlanStore::default()),
+            audit: crate::plan::audit::AuditSink::production(|line| {
+                use std::io::Write;
+                let _ = std::io::stderr().lock().write_all(line.as_bytes());
+            }),
             target,
             resolved,
             transport: tokio::sync::OnceCell::new(),
@@ -123,6 +129,16 @@ impl ServerState {
                 )
             })
             .await
+    }
+
+    /// Return the resolved target fields bound into a stored plan.
+    pub(crate) fn plan_binding(&self) -> serde_json::Value {
+        serde_json::json!({
+            "profile": self.resolved.name,
+            "kibana_url": self.resolved.profile.kibana_url,
+            "es_url": self.resolved.profile.es_url,
+            "space": self.resolved.profile.space,
+        })
     }
 
     /// Return only the target identity safe for MCP output.
