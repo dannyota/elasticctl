@@ -266,28 +266,15 @@ async fn current_lifecycle_rejects_legacy_and_unsupported_metadata_versions() {
 }
 
 #[tokio::test]
-async fn resources_and_prompts_are_not_advertised_or_served() {
-    for (id, method) in [
-        (20, "resources/list"),
-        (21, "resources/templates/list"),
-        (22, "prompts/list"),
-    ] {
-        let mut harness = Harness::start(target(), options());
-        harness
-            .send_json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": { "_meta": current_metadata() },
-            }))
-            .await;
-        let reply = harness.receive_json().await;
-        assert_eq!(reply["id"], id);
-        assert_eq!(reply["error"]["code"], -32601);
-        assert_eq!(reply["error"]["message"], "Unknown MCP tool");
-        harness.close_input();
-        harness.join().await.expect("clean EOF");
-    }
+async fn resources_and_prompts_are_advertised() {
+    let mut h = Harness::start(target(), options());
+    let got = support::request(&mut h, true, 20, "server/discover", json!({})).await;
+    assert_eq!(
+        got["result"]["capabilities"],
+        json!({"prompts":{},"resources":{},"tools":{}})
+    );
+    h.close_input();
+    h.join().await.unwrap();
 }
 
 #[tokio::test]

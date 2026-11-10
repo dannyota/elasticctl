@@ -57,7 +57,7 @@ fn current_request_builder_adds_metadata_to_tool_requests_but_legacy_omits_it() 
     }
 }
 
-fn mcp_subprocess_config(dir: &Path, endpoint: &str) -> PathBuf {
+pub(super) fn mcp_subprocess_config(dir: &Path, endpoint: &str) -> PathBuf {
     let config = dir.join("mcp-subprocess.toml");
     std::fs::write(
         &config,
@@ -74,8 +74,8 @@ async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
     let config = mcp_subprocess_config(dir.path(), &server.uri());
-    let mut current = McpChild::spawn(&config, false).expect("start current MCP child");
-    let mut legacy = McpChild::spawn(&config, true).expect("start legacy MCP child");
+    let mut current = McpChild::spawn_offline(&config, false).expect("start current MCP child");
+    let mut legacy = McpChild::spawn_offline(&config, true).expect("start legacy MCP child");
 
     let discovery = current
         .request("server/discover", json!({}))
@@ -124,6 +124,66 @@ async fn mcp_protocol_result_discriminator_matches_selected_cli_path() {
             .is_empty(),
         "schema validation must reject both calls before transport access"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn raw_requests_keep_resource_errors_and_success_requests_stay_strict() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
+    let config = mcp_subprocess_config(dir.path(), &server.uri());
+    for (allow_query_tools, code) in [(false, -32602), (true, -32002)] {
+        let mut child =
+            McpChild::spawn_offline(&config, allow_query_tools).expect("start MCP child");
+        if allow_query_tools {
+            initialize_child(&mut child, true).expect("initialize legacy child");
+        }
+        let params = json!({"uri":"elasticctl://plans/x"});
+        let response = child
+            .request_raw("resources/read", params.clone())
+            .expect("raw request retains error frame");
+        assert!(response.get("result").is_none());
+        assert_eq!(
+            response["error"],
+            json!({"code":code,"message":"Resource not found"})
+        );
+        assert_eq!(
+            child.request("resources/read", params).unwrap_err(),
+            "MCP resources/read request returned an error."
+        );
+        child.shutdown().expect("shutdown MCP child");
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server requests")
+            .is_empty()
+    );
+}
+
+#[test]
+fn offline_children_drop_every_target_override() {
+    let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
+    for allow_query_tools in [false, true] {
+        let command = offline_child_command(&dir.path().join("config.toml"), allow_query_tools);
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        for name in [
+            "ELASTICCTL_KIBANA_URL",
+            "ELASTICCTL_ES_URL",
+            "ELASTICCTL_API_KEY",
+            "ELASTICCTL_SPACE",
+            "ELASTICCTL_TIMEOUT",
+        ] {
+            assert!(
+                removed.iter().any(|removed| removed == name),
+                "{name} stays inherited"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1253,7 +1313,7 @@ fn exercise_query_protocol(child: &mut McpChild, index: &str) -> TestResult {
     validate_dsl_empty(&dsl_empty)
 }
 
-fn initialize_child(child: &mut McpChild, allow_query_tools: bool) -> TestResult {
+pub(super) fn initialize_child(child: &mut McpChild, allow_query_tools: bool) -> TestResult {
     let initialize = child.request("initialize", json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"elasticctl-live-smoke","version":env!("CARGO_PKG_VERSION")}}))?;
     if initialize
         .pointer("/result/protocolVersion")
@@ -2186,19 +2246,59 @@ impl Drop for ChildOwner {
     }
 }
 
+/// Variables that take precedence over the configuration file. An offline
+/// child drops them so an exported shell target cannot replace the mock.
+pub(super) const TARGET_OVERRIDES: [&str; 5] = [
+    "ELASTICCTL_KIBANA_URL",
+    "ELASTICCTL_ES_URL",
+    "ELASTICCTL_API_KEY",
+    "ELASTICCTL_SPACE",
+    "ELASTICCTL_TIMEOUT",
+];
+
+fn child_command(config: &Path, allow_query_tools: bool) -> std::process::Command {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
+    command
+        .arg("--config")
+        .arg(config)
+        .args(["mcp", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if allow_query_tools {
+        command.arg("--allow-query-tools");
+    }
+    command
+}
+
+pub(super) fn offline_child_command(
+    config: &Path,
+    allow_query_tools: bool,
+) -> std::process::Command {
+    let mut command = child_command(config, allow_query_tools);
+    for name in TARGET_OVERRIDES {
+        command.env_remove(name);
+    }
+    command
+}
+
 impl McpChild {
     pub(super) fn spawn(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
-        let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
-        command
-            .arg("--config")
-            .arg(config)
-            .args(["mcp", "serve"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if allow_query_tools {
-            command.arg("--allow-query-tools");
-        }
+        Self::spawn_command(child_command(config, allow_query_tools), allow_query_tools)
+    }
+
+    /// Starts a child for an offline test, against the mock target only.
+    pub(super) fn spawn_offline(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
+        Self::spawn_command(
+            offline_child_command(config, allow_query_tools),
+            allow_query_tools,
+        )
+    }
+
+    fn spawn_command(
+        mut command: std::process::Command,
+        allow_query_tools: bool,
+    ) -> TestResult<Self> {
         let child = command
             .spawn()
             .map_err(|_| "MCP child could not be started.".to_string())?;
@@ -2262,7 +2362,7 @@ impl McpChild {
         Ok(owner.into_child(replies))
     }
 
-    pub(super) fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+    pub(super) fn request_raw(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(protocol_request(self.protocol_path, id, method, params))?;
@@ -2275,6 +2375,11 @@ impl McpChild {
                 "MCP {method} response id did not match its request."
             ));
         }
+        Ok(response)
+    }
+
+    pub(super) fn request(&mut self, method: &'static str, params: Value) -> TestResult<Value> {
+        let response = self.request_raw(method, params)?;
         if response.get("error").is_some() || response.get("result").is_none() {
             return Err(format!("MCP {method} request returned an error."));
         }

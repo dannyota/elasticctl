@@ -126,3 +126,55 @@ pub fn legacy_initialize(id: u64) -> Value {
         },
     })
 }
+
+#[allow(dead_code)]
+pub const EXPECTED_RESOURCE_URIS: &[&str] = &[
+    "elasticctl://stack/coverage/tactic",
+    "elasticctl://stack/coverage/technique",
+    "elasticctl://stack/doctor",
+    "elasticctl://stack/info",
+    "elasticctl://stack/prebuilt-rules/status",
+];
+#[allow(dead_code)]
+pub const EXPECTED_TEMPLATE_URIS: &[&str] = &[
+    "elasticctl://stack/alerts/{alert_id}",
+    "elasticctl://stack/cases/{case_id}",
+    "elasticctl://stack/exception-lists/{namespace_type}/{list_id}",
+    "elasticctl://stack/rules/{rule_id}",
+];
+#[allow(dead_code)]
+pub const EXPECTED_PROMPT_NAMES: &[&str] = &[
+    "check_rule_readiness",
+    "review_detection_coverage",
+    "review_rule_health",
+    "triage_alert",
+];
+#[allow(dead_code)]
+pub async fn request(
+    h: &mut Harness,
+    current: bool,
+    id: u64,
+    method: &str,
+    mut params: Value,
+) -> Value {
+    if current {
+        params["_meta"] = current_metadata();
+    }
+    h.send_json(serde_json::json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+        .await;
+    let reply = tokio::time::timeout(Duration::from_secs(5), h.receive_json())
+        .await
+        .expect("response deadline");
+    assert_eq!(reply["id"], id);
+    reply
+}
+#[allow(dead_code)]
+pub async fn initialize(h: &mut Harness, current: bool) {
+    if !current {
+        h.send_json(legacy_initialize(1000)).await;
+        assert_eq!(
+            h.receive_json().await["result"]["capabilities"],
+            serde_json::json!({"prompts":{},"resources":{},"tools":{}})
+        );
+    }
+}

@@ -114,6 +114,18 @@ ES|QL and Query DSL tools. No tool changes the stack, selects local files, or
 changes the target. See [MCP][mcp] for the client stanza, limits, and tested
 clients.
 
+The server also offers five resources, four resource templates, and four
+prompts. Their lists are fixed: listing them sends no Elastic request and
+needs no credential. Reading a resource such as `elasticctl://stack/info` runs
+one read-only tool with fixed arguments and returns that tool's JSON, under the
+same call limit and `--timeout`. A prompt such as `triage_alert` reads nothing;
+it returns fixed text that asks the model to call one task tool. In Claude
+Code, with the server registered as `elasticctl`, type `@` to pick a resource
+or write `@elasticctl:elasticctl://stack/info`, and type `/` to run a prompt
+such as `/mcp__elasticctl__triage_alert <alert_id>`. See Claude Code's
+[resources][cc-resources] and [prompts][cc-prompts] pages, and
+[MCP][mcp-resources] for the full lists.
+
 ## Scripts and AI agents
 
 - **Stable output:** a table by default, in a terminal and in a script alike.
@@ -168,5 +180,8 @@ Licensed under [Apache 2.0](LICENSE).
 [content]: https://github.com/dannyota/elasticctl/wiki/Data-Views-and-Dashboards
 [fleet]: https://github.com/dannyota/elasticctl/wiki/Fleet
 [mcp]: https://github.com/dannyota/elasticctl/wiki/MCP
+[mcp-resources]: https://github.com/dannyota/elasticctl/wiki/MCP#resources-and-prompts
+[cc-resources]: https://code.claude.com/docs/en/mcp#use-mcp-resources
+[cc-prompts]: https://code.claude.com/docs/en/mcp#use-mcp-prompts-as-commands
 [security]: https://github.com/dannyota/elasticctl/wiki/Security
 [limitations]: https://github.com/dannyota/elasticctl/wiki/Limitations

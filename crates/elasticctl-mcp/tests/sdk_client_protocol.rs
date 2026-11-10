@@ -5,7 +5,9 @@ use elasticctl_core::{Profile, Resolved, Source};
 use elasticctl_mcp::ServerOptions;
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt, RoleClient,
-    model::{CallToolRequestParams, ProtocolVersion},
+    model::{
+        CallToolRequestParams, GetPromptRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    },
     transport::async_rw::AsyncRwTransport,
 };
 use serde_json::{Value, json};
@@ -51,6 +53,8 @@ async fn stack(set: &'static str) -> MockServer {
         .respond_with(move |request: &Request| {
             let file = match (request.method.as_str(), request.url.path()) {
                 ("GET", "/api/status") => "status.json",
+                ("GET", "/_license") => "license.json",
+                ("GET", "/api/spaces/space") => "spaces.json",
                 ("GET", "/api/detection_engine/rules") => "rule_get_executed.json",
                 ("GET", "/api/detection_engine/rules/_find") => "rules_find_sorted_page.json",
                 ("GET", "/api/exception_lists") => "exception_list_get.json",
@@ -114,7 +118,44 @@ async fn exercise(uri: String, lifecycle: ClientLifecycleMode, set: &str) -> Vec
         .collect::<Vec<_>>();
     assert_eq!(names.len(), 24);
     assert_eq!(names, EXPECTED_TOOL_NAMES);
+    let resources = client.list_resources(None).await.unwrap();
+    let templates = client.list_resource_templates(None).await.unwrap();
+    let prompts = client.list_prompts(None).await.unwrap();
+    assert_eq!(resources.resources.len(), 5);
+    assert_eq!(templates.resource_templates.len(), 4);
+    assert_eq!(prompts.prompts.len(), 4);
+    let prompt = client
+        .get_prompt(GetPromptRequestParams::new("review_detection_coverage"))
+        .await
+        .unwrap();
+    assert_eq!(prompt.messages.len(), 1);
     let rule = fixture(set, "rule_get_executed.json")["rule_id"].clone();
+    for (uri, name, args) in [
+        (
+            "elasticctl://stack/info".to_string(),
+            "stack_info",
+            json!({}),
+        ),
+        (
+            format!("elasticctl://stack/rules/{}", rule.as_str().unwrap()),
+            "rules_get",
+            json!({"selector": rule}),
+        ),
+    ] {
+        let resource = client
+            .read_resource(ReadResourceRequestParams::new(uri))
+            .await
+            .unwrap();
+        let tool = client
+            .call_tool(
+                CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        let resource = serde_json::to_value(resource).unwrap();
+        let tool = serde_json::to_value(tool).unwrap();
+        assert_eq!(resource["contents"][0]["text"], tool["content"][0]["text"]);
+    }
     let alert = fixture(set, "signals_search_rule_activity.json")["hits"]["hits"][0]["_id"].clone();
     let mut data = Vec::new();
     for (name, arguments) in [
