@@ -6,8 +6,15 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 mod common;
 
 fn fixture(name: &str) -> Value {
+    // The async ES|QL exchange is recorded on Serverless only.
+    let set = if name.starts_with("esql_async_") {
+        "serverless-9.7.0"
+    } else {
+        "traditional-9.5.1"
+    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/traditional-9.5.1")
+        .join("../../tests/fixtures")
+        .join(set)
         .join(format!("{name}.json"));
     serde_json::from_slice::<Value>(&fs::read(path).unwrap()).unwrap()["response"].clone()
 }
@@ -103,6 +110,9 @@ async fn server(state: bool, reopen_case: bool) -> MockServer {
                 }
                 ("DELETE", "/_pit") => "search_pit_close",
                 ("POST", "/_query") => "esql_query",
+                ("POST", "/_query/async") => "esql_async_start",
+                ("GET", p) if p.starts_with("/_query/async/") => "esql_async_get",
+                ("DELETE", p) if p.starts_with("/_query/async/") => "esql_async_delete",
                 ("POST", p) if p.ends_with("/_search") => "search_pit_page",
                 _ => {
                     return ResponseTemplate::new(404)
@@ -621,6 +631,32 @@ async fn bulk_out() {
             &["alerts", "list", "--limit", "2", "--out", "ROOT/out"],
             &["cases", "list", "--out", "ROOT/out"],
             &["cases", "list", "--limit", "0", "--out", "ROOT/out"],
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn esql_out() {
+    pin(
+        "esql_out",
+        &[
+            &[
+                "search",
+                "esql",
+                "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2",
+                "--out",
+                "ROOT/out",
+            ],
+            &[
+                "search",
+                "esql",
+                "FROM elasticctl-sample-search | SORT seq ASC | LIMIT 2",
+                "--out",
+                "ROOT/out",
+                "--format",
+                "csv",
+            ],
         ],
     )
     .await;
