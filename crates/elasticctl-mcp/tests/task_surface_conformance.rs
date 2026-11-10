@@ -146,7 +146,6 @@ struct Stack {
     retry: bool,
     finds: AtomicUsize,
     empty_source: bool,
-    delay: bool,
     error_package: bool,
 }
 impl Stack {
@@ -191,7 +190,6 @@ impl Stack {
             retry: false,
             finds: AtomicUsize::new(0),
             empty_source: false,
-            delay: false,
             error_package: false,
         }
     }
@@ -291,12 +289,7 @@ impl Stack {
                 body.as_object_mut().unwrap().remove("aggregations");
             }
         }
-        let response = ResponseTemplate::new(status).set_body_json(body);
-        if self.delay && p == "/api/detection_engine/rules" {
-            response.set_delay(Duration::from_secs(2))
-        } else {
-            response
-        }
+        ResponseTemplate::new(status).set_body_json(body)
     }
 }
 async fn stack(config: Stack) -> MockServer {
@@ -325,17 +318,62 @@ fn seed_excluded(value: &mut Value, kept: &[&str]) {
     }
 }
 
+fn assert_poisoned(value: &Value, pointers: &[&str]) {
+    for pointer in pointers {
+        assert!(
+            value
+                .pointer(pointer)
+                .unwrap()
+                .to_string()
+                .contains(SENTINEL),
+            "unpoisoned field: {pointer}"
+        );
+    }
+}
+
 async fn sweep(query: bool, sentinel: bool) {
     let mut config = Stack::new();
     if sentinel {
         config.rule["execution_summary"]["last_execution"]["message"] =
             json!(format!("{}{SENTINEL}", "x".repeat(2048)));
         config.rule["execution_summary"]["last_execution"]["metrics"]["excluded"] = json!(SENTINEL);
+        config.rule["author"] = json!([SENTINEL]);
         for field in ["created_by", "updated_by", "author", "setup"] {
             seed_strings(&mut config.rule[field]);
         }
         config.rule["exceptions_list"][0]["id"] = json!(SENTINEL);
+        assert_poisoned(
+            &config.rule,
+            &[
+                "/execution_summary/last_execution/message",
+                "/execution_summary/last_execution/metrics/excluded",
+                "/created_by",
+                "/updated_by",
+                "/author",
+                "/setup",
+                "/exceptions_list/0/id",
+            ],
+        );
         config.corpus = vec![config.rule.clone()];
+        let case = config.bodies.get_mut("case_get").unwrap();
+        let mut user = case["created_by"].clone();
+        user["full_name"] = json!(SENTINEL);
+        seed_strings(&mut user);
+        for field in ["created_by", "updated_by", "closed_by"] {
+            case[field] = user.clone();
+        }
+        case["category"] = json!(SENTINEL);
+        case["customFields"] = json!([{"key": SENTINEL, "type": "text", "value": SENTINEL}]);
+        case["observables"] = json!([{
+            "id": SENTINEL, "typeKey": "hostname", "value": SENTINEL,
+            "description": SENTINEL, "createdAt": case["created_at"], "updatedAt": null
+        }]);
+        case["external_service"] = json!({
+            "connector_id": SENTINEL, "connector_name": SENTINEL,
+            "external_id": SENTINEL, "external_title": SENTINEL,
+            "external_url": format!("https://example.invalid/{SENTINEL}"),
+            "pushed_at": case["created_at"], "pushed_by": user
+        });
         seed_excluded(
             config.bodies.get_mut("case_get").unwrap(),
             &[
@@ -350,6 +388,29 @@ async fn sweep(query: bool, sentinel: bool) {
                 "totalComment",
             ],
         );
+        let case = config.bodies.get_mut("case_get").unwrap();
+        case["customFields"][0]["type"] = json!("text");
+        case["observables"][0]["typeKey"] = json!("hostname");
+        case["observables"][0]["createdAt"] = case["created_at"].clone();
+        case["external_service"]["pushed_at"] = case["created_at"].clone();
+        case["external_service"]["external_url"] =
+            json!(format!("https://example.invalid/{SENTINEL}"));
+        assert_poisoned(
+            &config.bodies["case_get"],
+            &[
+                "/created_by",
+                "/updated_by",
+                "/closed_by",
+                "/external_service",
+                "/assignees",
+                "/category",
+                "/customFields",
+                "/observables",
+                "/connector",
+                "/owner",
+                "/version",
+            ],
+        );
         for row in config
             .bodies
             .get_mut("cases_by_alert")
@@ -358,6 +419,7 @@ async fn sweep(query: bool, sentinel: bool) {
             .unwrap()
         {
             seed_excluded(row, &["id", "title"]);
+            assert_poisoned(row, &["/description", "/status", "/createdAt"]);
         }
         for hit in config
             .bodies
@@ -381,30 +443,40 @@ async fn sweep(query: bool, sentinel: bool) {
             );
         }
         let mut package = fixture("package_system_metadata");
+        package["item"]["vars"] =
+            package["item"]["policy_templates"][0]["inputs"][0]["vars"].clone();
         package["item"]["installationInfo"] =
             config.bodies["package_system"]["item"]["installationInfo"].clone();
         seed_excluded(
             &mut package["item"],
             &["name", "version", "status", "installationInfo"],
         );
+        assert_poisoned(
+            &package,
+            &["/item/vars", "/item/policy_templates", "/item/data_streams"],
+        );
         config.bodies.insert("package_system", package);
         for row in config.bodies.get_mut("integration_policies_list").unwrap()["items"]
             .as_array_mut()
             .unwrap()
         {
+            row["vars"] = json!({"excluded": {"type": "text", "value": SENTINEL}});
             seed_strings(&mut row["inputs"]);
             seed_strings(&mut row["vars"]);
+            assert_poisoned(row, &["/inputs", "/vars"]);
         }
         for name in ["exception_list_get", "exception_list_items_find"] {
             let body = config.bodies.get_mut(name).unwrap();
             if name == "exception_list_get" {
                 for key in ["created_by", "updated_by"] {
                     seed_strings(&mut body[key]);
+                    assert_poisoned(body, &[&format!("/{key}")]);
                 }
             } else {
                 for row in body["data"].as_array_mut().unwrap() {
                     for key in ["created_by", "updated_by", "_version", "tie_breaker_id"] {
                         seed_strings(&mut row[key]);
+                        assert_poisoned(row, &[&format!("/{key}")]);
                     }
                 }
             }
@@ -412,6 +484,7 @@ async fn sweep(query: bool, sentinel: bool) {
         for key in ["indices", "aliases", "data_streams"] {
             config.bodies.get_mut("resolve_index_match").unwrap()[key] =
                 json!([{ "name": SENTINEL }]);
+            assert_poisoned(&config.bodies["resolve_index_match"], &[&format!("/{key}")]);
         }
         config.rule["related_integrations"]
             .as_array_mut()
@@ -925,12 +998,49 @@ async fn oversized_line_after_resource_has_static_diagnostic_on_both_paths() {
 
 #[tokio::test]
 async fn mixed_admission_keeps_lists_and_prompts_available() {
-    let mut config = Stack::new();
-    config.delay = true;
-    let mock = stack(config).await;
+    tokio::time::timeout(Duration::from_secs(30), mixed_admission())
+        .await
+        .expect("mixed admission watchdog expired");
+}
+
+async fn mixed_admission() {
+    let mock = stack(Stack::new()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = *mock.address();
+    let (release, gate) = tokio::sync::watch::channel(false);
+    // Forward requests for wiremock recording, but hold responses until explicitly released.
+    let proxy = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (socket, _) = accepted.unwrap();
+                    let mut gate = gate.clone();
+                    connections.spawn(async move {
+                        let mut socket = BufReader::new(socket);
+                        let mut header = String::new();
+                        loop {
+                            let mut line = String::new();
+                            assert_ne!(socket.read_line(&mut line).await.unwrap(), 0);
+                            header.push_str(&line);
+                            if line == "\r\n" { break; }
+                        }
+                        let mut remote = tokio::net::TcpStream::connect(upstream).await.unwrap();
+                        remote.write_all(header.as_bytes()).await.unwrap();
+                        gate.wait_for(|released| *released).await.unwrap();
+                        tokio::io::copy_bidirectional(&mut socket, &mut remote).await.unwrap();
+                    });
+                }
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    result.unwrap();
+                }
+            }
+        }
+    });
     let (cw, sr) = tokio::io::duplex(1_048_576);
     let (sw, cr) = tokio::io::duplex(1_048_576);
-    let task = tokio::spawn(elasticctl_mcp::serve_io(target(&mock), options(), sr, sw));
+    let task = tokio::spawn(elasticctl_mcp::serve_io(target_uri(uri), options(), sr, sw));
     let client = ()
         .serve_with_lifecycle(
             AsyncRwTransport::<RoleClient, _, _>::new_client(cr, cw),
@@ -966,7 +1076,7 @@ async fn mixed_admission_keeps_lists_and_prompts_available() {
             }
         });
     }
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if mock
                 .received_requests()
@@ -985,7 +1095,7 @@ async fn mixed_admission_keeps_lists_and_prompts_available() {
     .await
     .unwrap();
     let before = mock.received_requests().await.unwrap().len();
-    tokio::time::timeout(Duration::from_millis(500), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         let busy = client
             .call_tool(
                 CallToolRequestParams::new("rules_get")
@@ -1032,6 +1142,7 @@ async fn mixed_admission_keeps_lists_and_prompts_available() {
         held.try_join_next().is_none(),
         "admitted calls remain held through every assertion"
     );
+    release.send(true).unwrap();
     while let Some(reply) = held.join_next().await {
         let reply = reply.unwrap();
         assert!(reply.get("contents").is_some() || reply["isError"] == false);
@@ -1043,4 +1154,6 @@ async fn mixed_admission_keeps_lists_and_prompts_available() {
     assert_eq!(recovered.is_error, Some(false));
     client.cancel().await.unwrap();
     task.await.unwrap().unwrap();
+    proxy.abort();
+    proxy.await.unwrap_err();
 }
