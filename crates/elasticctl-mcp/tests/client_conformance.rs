@@ -776,6 +776,16 @@ async fn sdk_cancellation_keeps_the_session_usable() {
     }
 }
 
+fn allow_closed_pipe(result: std::io::Result<()>, context: &str) {
+    if let Err(error) = result {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "{context}: {error}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn oversized_input_child() {
     let Ok(uri) = env::var("ELASTICCTL_MCP_OVERSIZED_INPUT_CHILD_URI") else {
@@ -802,15 +812,11 @@ async fn oversized_input_child() {
         successful["result"]["isError"], false,
         "first response is a successful tools/call result"
     );
-    write
-        .write_all(&vec![b'x'; 262_145])
-        .await
-        .expect("write oversized line");
-    write
-        .write_all(b"\n")
-        .await
-        .expect("terminate oversized line");
-    write.shutdown().await.expect("close input");
+    // The server stops reading once the line passes the limit, so a closed pipe here is expected.
+    let mut oversized = vec![b'x'; 262_145];
+    oversized.push(b'\n');
+    allow_closed_pipe(write.write_all(&oversized).await, "write oversized line");
+    allow_closed_pipe(write.shutdown().await, "close input");
     server
         .await
         .expect("server task")

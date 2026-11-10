@@ -11,14 +11,20 @@ findings are fixed. No Codex designer runs by default.
 |Role|Who|Duty|
 |-|-|-|
 |Primary|The session the owner talks to|Designs, writes documentation, decides, verifies, owns Git and releases|
-|Astra|Codex `--model gpt-6-astra --effort high`, no `--write` (read-only)|Independently reviews every architecture design and every code diff|
-|Implementer|Codex Sol (`--model gpt-6.1-sol --effort high --write`) or a Claude subagent|Implements and writes the tests, troubleshoots, and runs QA; never commits|
+|Implementer|Codex Terra (`--model gpt-6.1-terra --effort high --write`) for routine work, Codex Sol (`--model gpt-6.1-sol --effort high --write`) for hard work, or a Claude Opus subagent|Implements and writes the tests, troubleshoots, and runs QA; never commits|
+|Reviewer|Codex without `--write` (read-only), chosen by the author's model|Independently reviews a design or code diff it did not write|
 
-Documentation and prose the primary wrote need no independent review. An architecture or
-contract design and all code get an independent Astra review before merge. Without Codex, keep
-the same separation with available models: an agent assigned review must not implement the same
-slice, each brief says so, and no model reviews its own work. Mutation paths, credential
-handling, and release workflows always get an independent adversarial review.
+Reviews follow the author's model, so no model reviews its own work:
+
+|Author|Reviewer|
+|-|-|
+|Terra|Sol (`--model gpt-6.1-sol --effort high`)|
+|Sol|Astra (`--model gpt-6-astra --effort high`)|
+|The primary or a Claude subagent|Sol|
+
+Pick Terra by default and Sol when the work is hard or Terra stalls on it; Astra reviews only Sol's work.
+
+Documentation and prose need no independent review. An architecture or contract design and all code get an independent review before merge. Without Codex, keep the same separation with available models: an agent assigned review must not implement the same slice, each brief says so, and no model reviews its own work. Mutation paths, credential handling, and release workflows always get an independent adversarial review.
 
 Plans live in tracked `docs/plans/vX.Y.Z.md` files that the spec links. Mark a step done only
 with its evidence.
@@ -39,17 +45,12 @@ with its evidence.
 ## Flow
 
 1. One worktree per task under `.worktrees/` (git-ignored). The implementer runs there.
-2. Design: the primary writes the goal, the constraints (contracts and what must not change),
-   and file:line for every hook. An architecture or contract design goes to Astra for review
-   before implementation; small changes skip the design review.
+2. Design: the primary writes the goal, the constraints (contracts and what must not change), and file:line for every hook. An architecture or contract design goes to Sol for review before implementation; small changes skip the design review.
 3. Implementer brief: the design plus numbered decisions where it was open ("decision wins over
    design"), test requirements, "run the full gate set", "report files changed, results, and
    deviations", and "Do NOT commit".
 4. Verify yourself: run the full gates, read the risky parts of the diff, then commit.
-5. Astra review brief: the commit SHA, the design and its decisions, bugs already known, and a
-   checklist that includes regressions in existing behavior. Ask for file:line, severity, a
-   failure scenario, a fix, and a MERGE, MERGE-WITH-FIXES, or BLOCK verdict. A change that is
-   only documentation or prose skips this step.
+5. Review brief, to the reviewer the author's model selects: the commit SHA, the design and its decisions, bugs already known, and a checklist that includes regressions in existing behavior. Ask for file:line, severity, a failure scenario, a fix, and a MERGE, MERGE-WITH-FIXES, or BLOCK verdict. A change that is only documentation or prose skips this step.
 6. Paste the findings verbatim into a new implementer brief and repeat from step 4 until MERGE.
 7. If new facts arrive while an implementer runs, cancel it and start a new job with the full
    brief, telling it to review its own uncommitted partial changes.

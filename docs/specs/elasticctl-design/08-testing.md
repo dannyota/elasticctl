@@ -153,7 +153,10 @@ final cleanup audit. The only allowed keys are `flavor`, `version`,
 `contracts`, `contract`, `result`, and `error_class`. Raw output stays under
 the ignored `target/conformance-private/` directory. Reports never contain a
 target URL, deployment or account identifier, credential, location, user
-identity, live object content, or raw failure.
+identity, live object content, or raw failure. The one line a passing
+contract may add to public output is a whole-second timing line in the
+exact form `mcp_answers_across_verticals timing <tool> <N>s ...`, which the
+runner checks word by word before printing.
 
 The release matrix is Elastic Cloud Serverless, Elastic Cloud Hosted, and a
 disposable self-managed 9.5.1 lab. The Cloud targets come from ignored local
@@ -315,3 +318,16 @@ Both Cloud targets held the full prebuilt pack, 2,263 rules, so the MCP
 contract read `rules_list` against a corpus larger than the response body
 cap. The [findings](../../conformance/v0.7.5/findings.md) record the scope and
 one Serverless 9.7.0 behavior change.
+
+The 0.8.0 measured matrix adds `mcp_answers_across_verticals`; all twelve
+contracts pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 12 pass | Verified | [report](../../conformance/v0.8.0/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 12 pass | Verified | [report](../../conformance/v0.8.0/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 12 pass | Verified | [report](../../conformance/v0.8.0/traditional-9.5.1.json) |
+
+The self-managed leg filled the lab to 4,000 rules for the coverage
+measurement and removed the fill. The
+[findings](../../conformance/v0.8.0/findings.md) record the latency gate M9.

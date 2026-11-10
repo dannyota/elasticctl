@@ -26,7 +26,7 @@ const NAME: &str = "detection_coverage";
 const FIND: &str = "/api/detection_engine/rules/_find";
 const RULE: &str = "/api/detection_engine/rules";
 const STATUS_PATH: &str = "/api/status";
-const DESCRIPTION: &str = "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Read-only.";
+const DESCRIPTION: &str = "Detection coverage across Elastic Security rules, grouped by MITRE ATT&CK technique, tactic, index pattern, or integration package. Each row counts enabled and disabled rules. Use rules_list with technique or tactic to see the rules behind a row. Reads at most 4,000 rules; near that size a call can need a longer server --timeout. Read-only.";
 const TAG_DESCRIPTION: &str = "Exact rule-tag filter. When supplied, it must contain non-whitespace text and be no more than 1,024 UTF-8 bytes; the supplied value is used unchanged.";
 const STRUCTURED_CAP: usize = 262_144;
 
