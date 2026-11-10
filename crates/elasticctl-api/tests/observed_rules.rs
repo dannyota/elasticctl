@@ -609,3 +609,73 @@ async fn empty_and_duplicate_observations_preserve_requested_order() {
     assert_eq!(requests.len(), 3);
     assert!(requests.iter().all(|r| r.method == "GET"));
 }
+
+async fn assert_mutated_plan_refused(key: &str, value: Option<Value>, kind: ErrorKind) {
+    let (mut plan, _) = plan(create_rule()).await;
+    match value {
+        Some(value) => {
+            plan.rule.as_map_mut().insert(key.into(), value);
+        }
+        None => {
+            plan.rule.as_map_mut().remove(key);
+        }
+    }
+    let server = MockServer::start().await;
+    let err = rules_ops::apply_create(&transport(&server), &plan)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, kind);
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn apply_refuses_mutated_actions() {
+    assert_mutated_plan_refused("actions", Some(json!([{}])), ErrorKind::Unsupported).await;
+}
+
+#[tokio::test]
+async fn apply_refuses_mutated_response_actions() {
+    assert_mutated_plan_refused(
+        "response_actions",
+        Some(json!([{}])),
+        ErrorKind::Unsupported,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_refuses_mutated_exceptions_list() {
+    assert_mutated_plan_refused("exceptions_list", Some(json!([{}])), ErrorKind::Unsupported).await;
+}
+
+#[tokio::test]
+async fn apply_refuses_mutated_volatile_field() {
+    assert_mutated_plan_refused(VOLATILE_FIELDS[0], Some(Value::Null), ErrorKind::Error).await;
+}
+
+#[tokio::test]
+async fn apply_refuses_removed_enabled() {
+    assert_mutated_plan_refused("enabled", None, ErrorKind::Error).await;
+}
+
+#[tokio::test]
+async fn preview_escapes_keys_and_sorts_original_bytes() {
+    let mut rule = create_rule();
+    for key in ["extra\nfield", "extra field", "q\"uote"] {
+        rule.as_map_mut().insert(key.into(), json!(42));
+    }
+    let (result, _) = plan(rule).await;
+    let lines = &result.preview.preview_details;
+    assert_eq!(lines.len(), result.rule.as_map().len());
+    assert!(lines.iter().all(|line| !line.contains('\n')));
+    let newline = lines
+        .iter()
+        .position(|line| line == "extra\\nfield: 42")
+        .unwrap();
+    let space = lines
+        .iter()
+        .position(|line| line == "extra field: 42")
+        .unwrap();
+    assert!(newline < space);
+    assert!(lines.iter().any(|line| line == "q\\\"uote: 42"));
+}
