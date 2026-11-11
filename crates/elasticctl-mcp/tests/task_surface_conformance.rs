@@ -918,6 +918,16 @@ async fn structured_resource_text_at_cap_and_one_byte_above_on_both_paths() {
     }
 }
 
+fn allow_closed_pipe(result: std::io::Result<()>, context: &str) {
+    if let Err(error) = result {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "{context}: {error}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn oversized_after_resource_child() {
     let Ok(uri) = std::env::var("SURFACE_OVERSIZE_URI") else {
@@ -951,8 +961,10 @@ async fn oversized_after_resource_child() {
     assert!(
         serde_json::from_str::<Value>(&line).unwrap()["result"]["contents"][0]["text"].is_string()
     );
-    cw.write_all(&vec![b'x'; 262_145]).await.unwrap();
-    cw.write_all(b"\n").await.unwrap();
+    // The server stops reading once the line passes the limit, so a closed pipe here is expected.
+    let mut oversized = vec![b'x'; 262_145];
+    oversized.push(b'\n');
+    allow_closed_pipe(cw.write_all(&oversized).await, "write oversized line");
     tokio::time::timeout(Duration::from_secs(3), task)
         .await
         .expect("oversized input terminates without caller EOF")
