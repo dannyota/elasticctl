@@ -365,3 +365,7 @@ mod extension_tests;
 
 #[path = "mcp_mutations/extension.rs"]
 mod extension;
+
+#[cfg(test)]
+#[path = "mcp_mutations/extension_conformance.rs"]
+mod extension_conformance;

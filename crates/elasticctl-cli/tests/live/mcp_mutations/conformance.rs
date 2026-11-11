@@ -3,7 +3,7 @@ use super::*;
 const SET: &str = "traditional-9.5.1";
 const RULE: &str = "elasticctl-live-conformance";
 
-fn fixture(name: &str) -> Value {
+pub(super) fn fixture(name: &str) -> Value {
     let file = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(SET)
@@ -12,8 +12,8 @@ fn fixture(name: &str) -> Value {
 }
 
 // Retain real frames so a failed shared validator reports the wire evidence.
-struct Observed {
-    child: McpChild,
+pub(super) struct Observed {
+    pub(super) child: McpChild,
     frames: Vec<Value>,
 }
 impl Child for Observed {
@@ -27,11 +27,11 @@ impl Child for Observed {
         Ok(frame)
     }
 }
-fn checked<T>(result: TestResult<T>, session: &Session<Observed>) -> T {
+pub(super) fn checked<T>(result: TestResult<T>, session: &Session<Observed>) -> T {
     result.unwrap_or_else(|error| panic!("{error}; frames: {:?}", session.child.frames))
 }
 
-async fn setup() -> (MockServer, tempfile::TempDir, PathBuf) {
+pub(super) async fn setup() -> (MockServer, tempfile::TempDir, PathBuf) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/_security/_authenticate"))
@@ -64,7 +64,12 @@ async fn setup() -> (MockServer, tempfile::TempDir, PathBuf) {
     );
     (server, dir, config)
 }
-fn spawn(config: &Path, path: McpProtocolPath, form: bool, mutations: bool) -> Session<Observed> {
+pub(super) fn spawn(
+    config: &Path,
+    path: McpProtocolPath,
+    form: bool,
+    mutations: bool,
+) -> Session<Observed> {
     let s = Session::spawn(config, path, form, mutations).unwrap();
     Session {
         child: Observed {

@@ -37,6 +37,56 @@ impl<C: Child> Session<C> {
     }
 }
 
+// Both offline and live checks use these inputs and exact expected views.
+pub(super) fn change_view(tool: &str, args: &Value, version: Option<&str>) -> (Vec<String>, Value) {
+    let strings = |key: &str| {
+        args[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect()
+    };
+    match tool {
+        "alerts_set_tags_plan" => (strings("alert_ids"), args.clone()),
+        "alerts_set_status_plan" => {
+            let mut operation = args.clone();
+            operation["reason"] = args.get("reason").cloned().unwrap_or(Value::Null);
+            (strings("alert_ids"), operation)
+        }
+        "cases_create_plan" => {
+            let mut operation = args.clone();
+            operation["sync_alerts"] = json!(false);
+            (vec![], operation)
+        }
+        "cases_comment_plan" => (
+            vec![args["id"].as_str().unwrap().into()],
+            json!({"case_id":args["id"],"message":args["message"]}),
+        ),
+        "cases_set_status_plan" => (
+            strings("ids"),
+            json!({"status":args["status"],"updates":[{"id":args["ids"][0],"version":version.unwrap()}],"resolved":1}),
+        ),
+        "rules_create_plan" => (
+            vec![args["rule"]["rule_id"].as_str().unwrap().into()],
+            args.clone(),
+        ),
+        _ => unreachable!(),
+    }
+}
+impl<C: Child> Session<C> {
+    pub(super) fn extension_change(
+        &mut self,
+        tool: &str,
+        args: Value,
+        owner: &str,
+        version: Option<&str>,
+    ) -> TestResult<Value> {
+        let (targets, operation) = change_view(tool, &args, version);
+        self.change(tool, args, owner, targets, operation)
+    }
+}
+
 async fn alert(
     t: &Transport,
     registry: &Registry,
@@ -128,13 +178,7 @@ pub(super) fn run<C: Child>(
             (vec![], vec![tag.clone()])
         };
         let args = json!({"alert_ids":[id],"add":adds,"remove":removes});
-        s.change(
-            "alerts_set_tags_plan",
-            args.clone(),
-            id,
-            vec![id.clone()],
-            args,
-        )?;
+        s.extension_change("alerts_set_tags_plan", args, id, None)?;
         let after = rt.block_on(alert(t, registry, id))?;
         let mut expected = before.source["kibana.alert.workflow_tags"]
             .as_array()
@@ -158,12 +202,11 @@ pub(super) fn run<C: Child>(
     }
     for status in ["acknowledged", "open", "closed"] {
         rt.block_on(alert(t, registry, id))?;
-        s.change(
+        s.extension_change(
             "alerts_set_status_plan",
             json!({"alert_ids":[id],"status":status}),
             id,
-            vec![id.clone()],
-            json!({"alert_ids":[id],"status":status,"reason":null}),
+            None,
         )?;
         require(
             rt.block_on(alert(t, registry, id))?.source["kibana.alert.workflow_status"] == status,
@@ -174,9 +217,7 @@ pub(super) fn run<C: Child>(
     s.owned.insert(token.clone());
     let args =
         json!({"title":token,"description":LIVE_TAG,"tags":[LIVE_TAG,token],"severity":"low"});
-    let mut op = args.clone();
-    op["sync_alerts"] = json!(false);
-    let result = s.change("cases_create_plan", args, &token, vec![], op)?;
+    let result = s.extension_change("cases_create_plan", args, &token, None)?;
     let case_id = result["data"]["outcome"]["created"]["case_id"]
         .as_str()
         .ok_or("contract")?
@@ -190,12 +231,11 @@ pub(super) fn run<C: Child>(
             && c.severity.as_deref() == Some("low")
             && c.extra["settings"]["syncAlerts"] == false,
     )?;
-    s.change(
+    s.extension_change(
         "cases_comment_plan",
         json!({"id":case_id,"message":LIVE_TAG}),
         &case_id,
-        vec![case_id.clone()],
-        json!({"case_id":case_id,"message":LIVE_TAG}),
+        None,
     )?;
     let after = rt.block_on(case(t, registry, &case_id))?;
     require(after.total_comment == c.total_comment.unwrap_or(0).checked_add(1))?;
@@ -206,20 +246,19 @@ pub(super) fn run<C: Child>(
     }))?;
     for status in ["closed", "open"] {
         let before = rt.block_on(case(t, registry, &case_id))?;
-        s.change("cases_set_status_plan", json!({"ids":[case_id],"status":status}), &case_id, vec![case_id.clone()], json!({"status":status,"updates":[{"id":case_id,"version":before.version}],"resolved":1}))?;
+        s.extension_change(
+            "cases_set_status_plan",
+            json!({"ids":[case_id],"status":status}),
+            &case_id,
+            Some(&before.version),
+        )?;
         require(rt.block_on(case(t, registry, &case_id))?.status == status)?;
     }
     let new_rule = unique_name("mutation-created-rule");
     marker(&new_rule)?;
     s.owned.insert(new_rule.clone());
     let body = rule_body(&new_rule, index)?;
-    let result = s.change(
-        "rules_create_plan",
-        json!({"rule":body}),
-        &new_rule,
-        vec![new_rule.clone()],
-        json!({"rule":body}),
-    )?;
+    let result = s.extension_change("rules_create_plan", json!({"rule":body}), &new_rule, None)?;
     let created = rt.block_on(owned_rule(t, &new_rule))?;
     registry.rules.insert(new_rule.clone());
     let canonical = rule_state(&created);
