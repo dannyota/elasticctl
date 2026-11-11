@@ -125,7 +125,11 @@ SemVer is written for library consumers, but users depend on elasticctl's CLI
 and MCP surfaces, not its Rust types. Those two surfaces are the public API
 that the version number describes. The library crates are published so
 `cargo install` resolves; in `0.x` their Rust items are not a compatibility
-promise, and a patch release may change them.
+promise, and a patch release may change them. For example, 0.9.0 adds
+`ServerOptions::allow_mutations` in `elasticctl-mcp` and
+`TransportOptions::disable_connection_pool` in `elasticctl-core`. A struct
+literal that names every field of either type must add the new field. These
+are Rust source changes outside this promise.
 
 Breaking, requiring a minor bump:
 

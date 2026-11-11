@@ -40,6 +40,19 @@ Failures emit one JSON object on stderr:
 {"error": {"kind": "permission", "http_status": 403, "message": "..."}}
 ```
 
+From 0.9.0 the error for a version conflict on `cases close` or `cases open`
+carries Kibana's status, 409, in `http_status`. Its message wraps Kibana's:
+
+```json
+{"error":{"kind":"conflict","message":"a case changed since the preview (<Kibana message>); re-run the command","http_status":409}}
+```
+
+The MCP apply path needs that status to classify the conflict
+([mutation design 7](../elasticctl-mcp-mutation-design/07-api-reuse.md#cases)).
+It is the one change to existing command output in 0.9.0. The other CLI
+changes are the `mcp` description and the `--allow-mutations` flag in help and
+the command tree.
+
 Kinds: `auth`, `permission`, `not_found`, `conflict`, `unsupported`, `http`,
 `connection`, `timeout`, `error`.
 
