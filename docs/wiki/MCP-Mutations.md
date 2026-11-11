@@ -390,10 +390,11 @@ It cannot check that a person gave it.
   eight plans are open. That bounds the rate; it does not stop it.
 - **The last check is not atomic.** A change between the last read and the
   write is not seen.
-- **A toggled rule runs with the server's credential.** Kibana assigns the
-  caller's API key to every rule a bulk action touches. After a toggle through
-  MCP, the rule runs with this credential's privileges and stops if the key is
-  deleted. Toggling it back assigns the same key again, not the earlier one.
+- **A rule without a key takes the server's credential.** Kibana gives a rule
+  an API key when it is first enabled. A rule enabled through MCP that had no
+  key then runs with this credential's privileges, stops if the key is
+  deleted, and keeps that key when it is disabled. A rule that already has a
+  key keeps it.
 
 MCP deletes nothing, changes no rule content or exception list, and never
 runs `state push`. To limit what the server can change, start it with a

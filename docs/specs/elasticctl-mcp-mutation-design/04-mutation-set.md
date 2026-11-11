@@ -21,7 +21,7 @@ reversible. The "not restored" column says what a second call leaves behind.
 
 | Rank | Mutation | Class | Since | Corrected by | Not restored | Re-check |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Rule enable and disable | `rules-toggle` | 0.9.0 | The same tool with the opposite value sets `enabled` back | The rule's API key. Kibana assigns the caller's key to every rule a bulk action touches, so the rule then runs with this credential's privileges, and stops if that key is deleted. A second toggle assigns the same key again, not the earlier one | Real-time read by `rule_id` |
+| 1 | Rule enable and disable | `rules-toggle` | 0.9.0 | The same tool with the opposite value sets `enabled` back | The rule's API key, for a rule that had none. Kibana gives a rule the enabler's key on its first enable, and a later disable or enable by another credential keeps that owner (M13). Such a rule then runs with this credential's privileges and stops if that key is deleted | Real-time read by `rule_id` |
 | 2 | Alert status by id (open, acknowledged, closed) | `alerts-triage` | 0.9.1 | The same tool sets the status back | The workflow user, time, and reason | Search; can lag by a refresh |
 | 3 | Alert tags by id | `alerts-triage` | 0.9.1 | A second plan can add or remove named tags | Prior membership. The plan does not record which tags an alert already had. Adding a tag that was present and then removing it loses it | Presence only, through a search |
 | 4 | Case status (close, reopen) | `cases` | 0.9.1 | The same tool sets the status back | Close time and closing user | Kibana rejects a stale `version` |
