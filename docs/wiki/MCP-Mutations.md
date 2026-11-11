@@ -109,9 +109,9 @@ each rule, and sends no write.
 - A rule already in the requested state stays in the plan and shows as
   `enabled -> enabled` or `disabled -> disabled`.
 - An organization-level Elastic Cloud API key is refused with
-  `credential_unsuitable` before anyone is asked, because it cannot enable a
-  rule or apply a disable; see
-  [Which API key to use](Configuration.md#which-api-key-to-use).
+  `credential_unsuitable` before anyone is asked: it reaches the whole
+  organization and its role scope cannot be read, so the plan cannot show what
+  it may do. Use a scoped key ([which key](Configuration.md#which-api-key-to-use)).
 - A read that returns a rule with another `rule_id` than the one asked for
   fails with `elastic_conflict`, and no plan is stored.
 
