@@ -16,6 +16,8 @@ enum Fault {
     WrongCreate,
     Panic,
     Cleanup,
+    CancelAlerts,
+    LateAlerts,
 }
 struct Stack {
     fault: Fault,
@@ -30,6 +32,22 @@ impl wiremock::Respond for Responder {
         if path.ends_with("/_find") {
             return ResponseTemplate::new(200).set_body_json(
                 json!({"total":if matches!(s.fault, Fault::Dirty) {1} else {0},"data":[]}),
+            );
+        }
+        if path.ends_with("/signals/search") {
+            let body = request.body_json::<Value>().unwrap();
+            let ids = body.pointer("/query/ids/values").and_then(Value::as_array);
+            let hits: Vec<_> = if matches!(s.fault, Fault::CancelAlerts | Fault::LateAlerts) {
+                (0..12).filter(|n| ids.is_none_or(|ids| ids.contains(&json!(format!("alert-{n}"))))).map(|n| json!({"_id":format!("alert-{n}"),"_source":{"kibana.alert.rule.rule_id":ID,"kibana.alert.rule.tags":[LIVE_TAG,ID]}})).collect()
+            } else {
+                vec![]
+            };
+            return ResponseTemplate::new(200)
+                .set_body_json(json!({"hits":{"total":{"value":hits.len()},"hits":hits}}));
+        }
+        if path.ends_with("/signals/status") {
+            return ResponseTemplate::new(200).set_body_json(
+                json!({"total":1,"updated":1,"version_conflicts":0,"noops":0,"failures":[]}),
             );
         }
         let mut rule = fixture("rules_get");
@@ -91,6 +109,17 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
         || Ok(()),
         |r| {
             rt.block_on(create_rule(&t, r, ID, INDEX))?;
+            if matches!(fault, Fault::CancelAlerts | Fault::LateAlerts) {
+                if matches!(fault, Fault::LateAlerts) {
+                    for n in 0..10 {
+                        r.alerts.insert(format!("alert-{n}"), ID.into());
+                    }
+                }
+                CANCELLATION.with(|f| {
+                    *f.borrow_mut() = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+                });
+                check_cancelled()?;
+            }
             panic!("body fault")
         },
     );
@@ -98,7 +127,7 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
         .block_on(server.received_requests())
         .unwrap()
         .into_iter()
-        .filter(|r| r.method != "GET")
+        .filter(|r| r.method != "GET" && !r.url.path().ends_with("/signals/search"))
         .map(|r| {
             (
                 r.method.to_string(),
@@ -228,7 +257,7 @@ fn unrelated_case_response_never_enters_cleanup_trace() {
         .block_on(server.received_requests())
         .unwrap()
         .into_iter()
-        .filter(|r| r.method != "GET")
+        .filter(|r| r.method != "GET" && !r.url.path().ends_with("/signals/search"))
         .map(|r| (r.method.to_string(), r.url.path().to_owned()))
         .collect();
     assert_eq!(writes, vec![("POST".into(), "/api/cases".into())]);
@@ -251,4 +280,34 @@ fn alert_readback_requires_both_rule_marker_and_token() {
         .is_err()
     );
     assert!(verify_alert(&json!({"kibana.alert.rule.rule_id":"unrelated","kibana.alert.rule.tags":[LIVE_TAG, ID]}), ID).is_err());
+}
+
+#[test]
+fn mcp_mutations_cleanup_discovers_alerts_on_early_cancellation_and_after_ten_hits() {
+    for fault in [Fault::CancelAlerts, Fault::LateAlerts] {
+        let (class, trace, _) = exercise(fault);
+        assert_eq!(class, "contract");
+        let closed: Vec<_> = trace
+            .iter()
+            .filter(|(_, p, _)| p.ends_with("/signals/status"))
+            .collect();
+        assert_eq!(closed.len(), 12);
+        for n in 0..12 {
+            assert!(
+                closed
+                    .iter()
+                    .any(|(_, _, b)| b["signal_ids"] == json!([format!("alert-{n}")]))
+            );
+        }
+        let disable = trace
+            .iter()
+            .position(|(_, p, _)| p.ends_with("/_bulk_action"))
+            .unwrap();
+        let close = trace
+            .iter()
+            .position(|(_, p, _)| p.ends_with("/signals/status"))
+            .unwrap();
+        let delete = trace.iter().position(|(m, _, _)| m == "DELETE").unwrap();
+        assert!(disable < close && close < delete);
+    }
 }

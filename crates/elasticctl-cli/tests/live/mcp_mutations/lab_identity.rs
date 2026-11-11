@@ -6,6 +6,7 @@ pub(super) struct Lease {
     user: String,
     key_attempted: bool,
     key: Option<String>,
+    basic: Transport,
 }
 fn transport(profile: &Profile) -> TestResult<Transport> {
     safe(Transport::with_options(
@@ -96,6 +97,7 @@ pub(super) async fn provision(
     registry: &mut Registry,
 ) -> TestResult<(Transport, String)> {
     require(measure::lab::lab_target(opt_in, profile) && registry.lab.is_none())?;
+    measure::lab::fingerprint(profile, opt_in).await?;
     let admin = transport(profile)?;
     let owner = safe(elasticctl_api::health::credential_identity(&admin).await)?;
     require(owner.username == "elastic" && owner.api_key_id.is_none())?;
@@ -112,17 +114,19 @@ pub(super) async fn provision(
     let mut basic_profile = profile.clone();
     basic_profile.username = Some(user.clone());
     basic_profile.password = Some(random_hex(32)?);
-    let created = safe(admin.put_absolute_es_once(&format!("/_security/user/{user}"),
-        &json!({"password":basic_profile.password,"roles":["superuser"],"enabled":true,"metadata":metadata(&user)})).await)?;
-    require(created["created"] == true)?;
-    verify_user(&admin, &user).await?;
+    let basic = transport(&basic_profile)?;
     registry.lab = Some(Lease {
         admin,
         user: user.clone(),
         key_attempted: false,
         key: None,
+        basic: transport(&basic_profile)?,
     });
-    let basic = transport(&basic_profile)?;
+    let lease = registry.lab.as_mut().ok_or("contract")?;
+    let created = safe(lease.admin.put_absolute_es_once(&format!("/_security/user/{user}"),
+        &json!({"password":basic_profile.password,"roles":["superuser"],"enabled":true,"metadata":metadata(&user)})).await)?;
+    require(created["created"] == true)?;
+    verify_user(&lease.admin, &user).await?;
     let identity = safe(elasticctl_api::health::credential_identity(&basic).await)?;
     require(identity.username == user && identity.api_key_id.is_none())?;
     check_cancelled()?;
@@ -149,8 +153,8 @@ pub(super) async fn provision(
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
         .ok_or("contract")?;
-    require(key_info(lease, id).await?["invalidated"] == false)?;
     lease.key = Some(id.into());
+    require(key_info(lease, id).await?["invalidated"] == false)?;
     basic_profile.api_key = Some(key["encoded"].as_str().ok_or("contract")?.into());
     basic_profile.username = None;
     let other = transport(&basic_profile)?;
@@ -158,26 +162,64 @@ pub(super) async fn provision(
     require(identity.username == user && identity.api_key_id.as_deref() == Some(id))?;
     Ok((other, user))
 }
+async fn recover_user(lease: &Lease) -> TestResult {
+    for _ in 0..3 {
+        if verify_user(&lease.admin, &lease.user).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err("cleanup_failed".into())
+}
+async fn recover_keys(lease: &Lease) -> TestResult<Vec<Value>> {
+    for _ in 0..3 {
+        if let Ok(v) = lease
+            .basic
+            .get_absolute_es(&format!(
+                "/_security/api_key?name={}&owner=true",
+                lease.user
+            ))
+            .await
+            && let Some(keys) = v["api_keys"].as_array()
+        {
+            require(keys.iter().all(|k| {
+                k["name"] == lease.user
+                    && k["username"] == lease.user
+                    && k["metadata"] == metadata(&lease.user)
+                    && k["invalidated"].is_boolean()
+            }))?;
+            return Ok(keys.clone());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err("cleanup_failed".into())
+}
 pub(super) async fn clean(lease: &Lease) -> TestResult {
+    // Read retries are bounded; a failed mutation stops all later writes.
     if lease.key_attempted {
-        // An uncertain key create cannot authorize invalidation or user deletion.
-        let id = lease.key.as_deref().ok_or("cleanup_failed")?;
-        let before = key_info(lease, id).await?;
-        if before["invalidated"] == false {
+        let before = recover_keys(lease).await?;
+        if before.iter().any(|k| k["invalidated"] == false) {
+            // name + owner uses the retained native-user transport, including
+            // when creation completed but its response or id was lost.
             let v = safe(
                 lease
-                    .admin
-                    .delete_absolute_es_json("/_security/api_key", &json!({"ids":[id]}))
+                    .basic
+                    .delete_absolute_es_json(
+                        "/_security/api_key",
+                        &json!({"name":lease.user,"owner":true}),
+                    )
                     .await,
             )?;
-            require(v["error_count"] == 0 && v["invalidated_api_keys"] == json!([id]))?;
-            require(key_info(lease, id).await?["invalidated"] == true)?;
+            require(v["error_count"] == 0)?;
+            require(
+                recover_keys(lease)
+                    .await?
+                    .iter()
+                    .all(|k| k["invalidated"] == true),
+            )?;
         }
     }
-    match verify_user(&lease.admin, &lease.user).await {
-        Ok(()) => {}
-        Err(_) => return Err("cleanup_failed".into()),
-    }
+    recover_user(lease).await?;
     let v = safe(
         lease
             .admin

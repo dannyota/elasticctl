@@ -6,10 +6,15 @@ use std::sync::{Arc, Mutex};
 struct State {
     user: Option<String>,
     metadata: Value,
+    key_metadata: Value,
     invalidated: bool,
     fail_invalidation: bool,
     wrong_key: bool,
     wrong_owner: bool,
+    foreign: u8,
+    lost_user: bool,
+    lost_key: bool,
+    read_failures: usize,
     rules: BTreeMap<String, Value>,
     owners: BTreeMap<String, String>,
 }
@@ -38,6 +43,24 @@ impl wiremock::Respond for Stack {
         } else {
             s.user.clone().unwrap_or_default()
         };
+        if p == "/" || p == "/api/console/proxy" {
+            let v = json!({"cluster_name":if s.foreign == 2 {"foreign"} else {"docker-cluster"},"cluster_uuid":if s.foreign == 5 && p != "/" {"other"} else {"local"}});
+            let mut response = ResponseTemplate::new(200).set_body_json(v);
+            if s.foreign == 1 && p == "/" {
+                response = response.insert_header("x-found-handling-cluster", "foreign");
+            }
+            return response;
+        }
+        if p == "/_nodes/_local/settings" {
+            return ResponseTemplate::new(200).set_body_json(json!({"cluster_name":"docker-cluster","nodes":{"local":{"settings":{"discovery":{"type":if s.foreign == 3 {"multi-node"} else {"single-node"}}}}}}));
+        }
+        if p == "/api/status" {
+            let mut response = ResponseTemplate::new(200).set_body_json(fixture("status"));
+            if s.foreign == 4 {
+                response = response.insert_header("x-found-handling-cluster", "foreign");
+            }
+            return response;
+        }
         if p == "/_security/_authenticate" {
             let mut v = fixture("authenticate");
             v["username"] = json!(owner);
@@ -61,6 +84,9 @@ impl wiremock::Respond for Stack {
             if method == "PUT" {
                 s.user = Some(user.into());
                 s.metadata = body["metadata"].clone();
+                if s.lost_user {
+                    return ResponseTemplate::new(200).set_body_string("lost response");
+                }
                 return ResponseTemplate::new(200).set_body_json(json!({"created":true}));
             }
             if s.user.as_deref() != Some(user) {
@@ -70,10 +96,18 @@ impl wiremock::Respond for Stack {
                 s.user = None;
                 return ResponseTemplate::new(200).set_body_json(json!({"found":true}));
             }
+            if s.read_failures > 0 {
+                s.read_failures -= 1;
+                return ResponseTemplate::new(503);
+            }
             return ResponseTemplate::new(200).set_body_json(json!({user:{"username":user,"metadata":s.metadata,"roles":["superuser"],"enabled":true}}));
         }
         if p == "/_security/api_key" {
             if method == "POST" {
+                s.key_metadata = s.metadata.clone();
+                if s.lost_key {
+                    return ResponseTemplate::new(200).set_body_string("lost response");
+                }
                 return ResponseTemplate::new(200)
                     .set_body_json(json!({"id":"owned-key","encoded":"b2ZmbGluZQ=="}));
             }
@@ -85,8 +119,12 @@ impl wiremock::Respond for Stack {
                 return ResponseTemplate::new(200)
                     .set_body_json(json!({"error_count":0,"invalidated_api_keys":["owned-key"]}));
             }
-            let keys = s.user.as_ref().map(|u| json!([{"id":"owned-key","name":u,"username":if s.wrong_key {"unrelated"} else {u},"metadata":s.metadata,"invalidated":s.invalidated}])).unwrap_or(json!([]));
+            let keys = s.user.as_ref().map(|u| json!([{"id":"owned-key","name":u,"username":if s.wrong_key {"unrelated"} else {u},"metadata":s.key_metadata,"invalidated":s.invalidated}])).unwrap_or(json!([]));
             return ResponseTemplate::new(200).set_body_json(json!({"api_keys":keys}));
+        }
+        if p.ends_with("/signals/search") {
+            return ResponseTemplate::new(200)
+                .set_body_json(json!({"hits":{"hits":[],"total":{"value":0}}}));
         }
         if p.ends_with("/_find") {
             return ResponseTemplate::new(200).set_body_json(json!({"total":0}));
@@ -157,7 +195,11 @@ fn writes(rt: &tokio::runtime::Runtime, server: &MockServer) -> Vec<(String, Str
     rt.block_on(server.received_requests())
         .unwrap()
         .into_iter()
-        .filter(|r| r.method != "GET")
+        .filter(|r| {
+            r.method != "GET"
+                && r.url.path() != "/api/console/proxy"
+                && r.url.path() != "/api/detection_engine/signals/search"
+        })
         .map(|r| (r.method.to_string(), r.url.path().into()))
         .collect()
 }
@@ -275,4 +317,81 @@ fn mcp_mutations_lab_unverified_rule_owners_prevent_measurement_toggles() {
             .all(|(_, p)| !p.ends_with("/_bulk_action"))
     );
     rt.block_on(clean(&t, &registry)).unwrap();
+}
+
+#[test]
+fn mcp_mutations_lab_foreign_loopback_fingerprints_skip_without_writes() {
+    for foreign in 1..=5 {
+        let rt = runtime().unwrap();
+        let (server, stack, profile, t) = setup(&rt);
+        stack.0.lock().unwrap().foreign = foreign;
+        let mut registry = Registry::default();
+        rt.block_on(measure::lab::measure_with_basic(
+            &t,
+            &profile,
+            "elasticctl-live-index",
+            &mut registry,
+            true,
+        ))
+        .unwrap();
+        assert!(writes(&rt, &server).is_empty());
+        assert!(registry.lab.is_none());
+    }
+}
+#[test]
+fn mcp_mutations_lab_lost_create_responses_are_recovered() {
+    for lost_user in [true, false] {
+        let rt = runtime().unwrap();
+        let (server, stack, profile, t) = setup(&rt);
+        {
+            let mut s = stack.0.lock().unwrap();
+            s.lost_user = lost_user;
+            s.lost_key = !lost_user;
+        }
+        let mut registry = Registry::default();
+        assert!(
+            rt.block_on(lab_identity::provision(&profile, true, &mut registry))
+                .is_err()
+        );
+        assert!(registry.lab.is_some());
+        rt.block_on(clean(&t, &registry)).unwrap();
+        assert!(stack.0.lock().unwrap().user.is_none());
+        if !lost_user {
+            assert!(stack.0.lock().unwrap().invalidated);
+        }
+        assert!(
+            writes(&rt, &server)
+                .last()
+                .unwrap()
+                .1
+                .starts_with("/_security/user/")
+        );
+    }
+}
+#[test]
+fn mcp_mutations_lab_cleanup_retries_readback_but_retains_foreign_user() {
+    for foreign in [false, true] {
+        let rt = runtime().unwrap();
+        let (server, stack, profile, t) = setup(&rt);
+        let mut registry = Registry::default();
+        rt.block_on(lab_identity::provision(&profile, true, &mut registry))
+            .unwrap();
+        {
+            let mut s = stack.0.lock().unwrap();
+            s.read_failures = 2;
+            if foreign {
+                s.metadata = json!({"token":"foreign"});
+            }
+        }
+        let result = rt.block_on(clean(&t, &registry));
+        assert_eq!(result.is_err(), foreign);
+        assert_eq!(stack.0.lock().unwrap().user.is_some(), foreign);
+        if foreign {
+            assert!(
+                !writes(&rt, &server)
+                    .iter()
+                    .any(|(m, p)| m == "DELETE" && p.starts_with("/_security/user/"))
+            );
+        }
+    }
 }

@@ -119,9 +119,19 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
             Err(_) => return Err("cleanup_failed".into()),
         }
     }
-    for (id, rule) in &registry.alerts {
+    let mut alerts = registry.alerts.clone();
+    for rule in &registry.rules {
+        let hits = safe(elasticctl_api::alerts::search_all(t,
+            &json!({"bool":{"filter":[{"term":{"kibana.alert.rule.rule_id":rule}},{"term":{"kibana.alert.workflow_status":"open"}}]}}),
+            &elasticctl_api::alerts_ops::default_sort(), None).await)?;
+        for hit in hits {
+            verify_alert(&hit.source, rule)?;
+            alerts.insert(hit.id, rule.clone());
+        }
+    }
+    for (id, rule) in &alerts {
         let hit = safe(elasticctl_api::alerts_ops::get_one(t, id).await)?;
-        require(registry.rules.contains(rule))?;
+        require(hit.id == *id && registry.rules.contains(rule))?;
         verify_alert(&hit.source, rule)?;
         safe(
             elasticctl_api::alerts::status_by_ids(
@@ -197,7 +207,7 @@ pub(super) fn orchestrate(
         _ => Err("contract".into()),
     }
 }
-thread_local! { static CANCELLATION: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
+thread_local! { pub(super) static CANCELLATION: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
 pub(super) fn check_cancelled() -> TestResult {
     require(!CANCELLATION.with(|f| {
         f.borrow()

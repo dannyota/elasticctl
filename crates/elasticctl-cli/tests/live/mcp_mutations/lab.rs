@@ -21,6 +21,57 @@ pub(in crate::mcp_mutations) fn lab_target(opt_in: bool, profile: &Profile) -> b
     }
     opt_in && loopback(&profile.kibana_url) && profile.es_url.as_deref().is_some_and(loopback)
 }
+// Status has no Elasticsearch UUID. Console's GET / read compares the
+// cluster behind Kibana directly, without provisioning a probe object.
+pub(in crate::mcp_mutations) async fn fingerprint(profile: &Profile, opt_in: bool) -> TestResult {
+    require(lab_target(opt_in, profile))?;
+    let options = || elasticctl_core::transport::TransportOptions {
+        disable_retries: true,
+        disable_redirects: true,
+        ..Default::default()
+    };
+    let kibana = safe(Transport::with_options(profile, options()))?;
+    let mut es_profile = profile.clone();
+    es_profile.kibana_url = profile.es_url.clone().ok_or("contract")?;
+    es_profile.space = "default".into();
+    let es = safe(Transport::with_options(&es_profile, options()))?;
+    let root = safe(es.get_with_headers("/").await)?;
+    let nodes = safe(es.get_with_headers("/_nodes/_local/settings").await)?;
+    let status = safe(kibana.get_with_headers("/api/status").await)?;
+    for response in [&root, &nodes, &status] {
+        require(
+            response.header("x-found-handling-cluster").is_none()
+                && response.header("x-found-handling-instance").is_none(),
+        )?;
+    }
+    require(
+        root.body["cluster_name"] == "docker-cluster"
+            && nodes.body["cluster_name"] == "docker-cluster",
+    )?;
+    let local = nodes.body["nodes"].as_object().ok_or("contract")?;
+    require(
+        local.len() == 1
+            && local.values().all(|n| {
+                n.pointer("/settings/discovery/type")
+                    .and_then(Value::as_str)
+                    == Some("single-node")
+            }),
+    )?;
+    require(status.body["version"]["build_flavor"] == "traditional")?;
+    let uuid = root.body["cluster_uuid"]
+        .as_str()
+        .filter(|v| !v.is_empty() && *v != "_na_")
+        .ok_or("contract")?;
+    let through_kibana = safe(
+        kibana
+            .post("/api/console/proxy?path=%2F&method=GET", None)
+            .await,
+    )?;
+    require(
+        through_kibana["cluster_uuid"] == uuid
+            && through_kibana["cluster_name"] == "docker-cluster",
+    )
+}
 pub(super) async fn measure(
     t: &Transport,
     profile: &Profile,
@@ -55,7 +106,10 @@ pub(in crate::mcp_mutations) async fn measure_with_basic(
     cleanup: &mut Registry,
     opt_in: bool,
 ) -> TestResult {
-    require(lab_target(opt_in, basic_profile))?;
+    if fingerprint(basic_profile, opt_in).await.is_err() {
+        println!("M13 skipped");
+        return Ok(());
+    }
     let start = Instant::now();
     let Ok(basic) = Transport::new(basic_profile) else {
         report("M13", "inconclusive", start);
