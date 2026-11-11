@@ -13,4 +13,6 @@ pub mod tools;
 
 pub use mutation::{MutationClass, MutationClasses};
 pub use result::{PageInfo, TargetContext, ToolError, ToolFailure, ToolSuccess};
-pub use server::{ServerOptions, ServerState, serve_io, serve_stdio, validate_startup};
+pub use server::{
+    MUTATION_TARGET_MESSAGE, ServerOptions, ServerState, serve_io, serve_stdio, validate_startup,
+};

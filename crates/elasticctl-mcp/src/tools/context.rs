@@ -30,6 +30,17 @@ impl CallContext {
     pub(crate) fn from_request(
         context: &RequestContext<RoleServer>,
     ) -> Result<Self, rmcp::ErrorData> {
+        if let Some(info) = context.peer.peer_info()
+            && context
+                .meta
+                .protocol_version()
+                .is_some_and(|v| v != info.protocol_version)
+        {
+            return Err(rmcp::ErrorData::invalid_request(
+                "MCP protocol does not match the session",
+                None,
+            ));
+        }
         // The SDK stores negotiated initialize data in peer_info. Direct startup has none.
         let (version, capabilities) = if let Some(info) = context.peer.peer_info() {
             (

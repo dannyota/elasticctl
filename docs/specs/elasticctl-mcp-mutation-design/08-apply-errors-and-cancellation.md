@@ -37,7 +37,10 @@ task.
 
 The deadline covers steps A to D. On the current protocol it starts with the
 round 2 request. On the legacy protocol it starts again after the person's
-answer.
+answer and also covers the wait for a call permit
+([section 6.3](06-confirmation-protocol.md#63-legacy-protocol)), so with the
+defaults the call ends within 270 seconds after the question, below the 300
+second default tool timeout of Codex CLI.
 
 ### 8.2 Classifying the write
 

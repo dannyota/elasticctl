@@ -39,11 +39,9 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-#[allow(dead_code)]
 pub(crate) fn new_plan_id() -> Result<String> {
     random_id("pln_")
 }
-#[allow(dead_code)]
 pub(crate) fn new_handle() -> Result<String> {
     random_id("cfm_")
 }
@@ -58,7 +56,6 @@ fn random_id_with(
     fill(&mut bytes).map_err(|_| Error::new(ErrorKind::Error, "OS randomness is unavailable."))?;
     Ok(format!("{prefix}{}", hex(&bytes)))
 }
-#[allow(dead_code)]
 pub(crate) fn credential_hash(identity: &CredentialIdentity) -> String {
     sha256_hex(
         format!(

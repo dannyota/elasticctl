@@ -9,6 +9,7 @@ struct Harness {
     output: tokio::io::BufReader<tokio::io::DuplexStream>,
     task: tokio::task::JoinHandle<elasticctl_core::Result<()>>,
     audit: Arc<Mutex<Vec<String>>>,
+    legacy: bool,
 }
 impl Harness {
     fn start(target: elasticctl_core::Resolved, options: elasticctl_mcp::ServerOptions) -> Self {
@@ -28,9 +29,13 @@ impl Harness {
             output: tokio::io::BufReader::new(output),
             task,
             audit,
+            legacy: false,
         }
     }
     async fn send_json(&mut self, value: Value) {
+        if value["method"] == "initialize" {
+            self.legacy = true;
+        }
         let mut frame = serde_json::to_vec(&value).unwrap();
         frame.push(b'\n');
         self.input
@@ -122,7 +127,7 @@ async fn call(h: &mut Harness, name: &str, args: Value) -> Value {
         .iter()
         .find(|t| t["name"] == name)
         .unwrap();
-    h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":support::current_metadata(),"name":name,"arguments":args}})).await;
+    h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":if h.legacy { json!({}) } else { support::current_metadata() },"name":name,"arguments":args}})).await;
     let result = h.receive_json().await;
     let content = result["result"]["structuredContent"].clone();
     assert_eq!(result["result"]["isError"], content.get("error").is_some());
@@ -227,6 +232,9 @@ async fn confirmation_follows_request_capabilities_on_both_paths() {
                     .await;
             }
             let mut meta = support::current_metadata();
+            if legacy {
+                meta["io.modelcontextprotocol/protocolVersion"] = json!("2025-11-25");
+            }
             meta["io.modelcontextprotocol/clientCapabilities"] = capabilities.clone();
             h.send_json(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":if legacy { json!({}) } else {json!({"_meta":meta})}})).await;
             let catalog = h.receive_json().await;

@@ -214,8 +214,10 @@ pub async fn credential_identity(t: &Transport) -> Result<CredentialIdentity>;
 
 It reads `/_security/_authenticate` and keeps the existing fail-closed decode
 of `username` and `authentication_realm.type`. `api_key.id` is optional; a
-present value of the wrong type is an `http` error. The private `identity`
-that `doctor` uses becomes a call to it. `doctor` output does not change.
+present value of the wrong type is an `http` error. `doctor` keeps its own
+decode of `username` and `authentication_realm.type` and ignores `api_key`,
+so `doctor` output does not change. Only planners and checks call
+`credential_identity`.
 
 ### What stays in `-mcp`
 

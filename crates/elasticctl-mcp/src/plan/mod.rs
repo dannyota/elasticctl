@@ -7,22 +7,14 @@ pub(crate) mod kind;
 pub(crate) mod store;
 pub(crate) mod view;
 
-#[allow(dead_code)]
 pub(crate) const MAX_OPEN_PLANS: usize = 8;
-#[allow(dead_code)]
 pub(crate) const MAX_FINAL_RECORDS: usize = 32;
-#[allow(dead_code)]
 pub(crate) const PLAN_LIFE_SECS: u64 = 900;
-#[allow(dead_code)]
 pub(crate) const MAX_OBJECTS_PER_PLAN: usize = 20;
-#[allow(dead_code)]
 pub(crate) const MAX_PLAN_BODY_BYTES: usize = 262_144;
-#[allow(dead_code)]
 pub(crate) const MAX_CONSENT_TEXT_BYTES: usize = 8_192;
-#[allow(dead_code)]
 pub(crate) const MAX_PROMPTS_PER_PLAN: u8 = 3;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlanError {
     NotFound,
@@ -38,13 +30,13 @@ pub(crate) enum PlanError {
     ConfirmationPending,
     ConfirmationTimeout,
     CredentialUnsuitable,
+    #[allow(dead_code)] // Reserved for the specified case sync guard.
     CaseSyncAlerts,
     ApplyPending,
     ApplyOutcomeUnknown(elasticctl_core::ErrorKind),
     InvalidArgument,
     Randomness,
 }
-#[allow(dead_code)]
 impl PlanError {
     pub(crate) fn tool_error(self) -> crate::ToolError {
         let (code, kind, message) = match self {

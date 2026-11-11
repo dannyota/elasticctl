@@ -67,12 +67,14 @@ elkctl --profile analyst --space default mcp serve \
 
 Every plan reads the credential identity from Elasticsearch, so mutation
 classes need the profile's Elasticsearch URL; see
-[Configuration](Configuration.md#environment-variables). Without `es_url`,
-startup exits 1 before the protocol starts, with this line and no Elastic
-request. Without the flag, such a profile still serves the read-only catalog.
+[Configuration](Configuration.md#environment-variables). The form names the
+target on one line, so the profile name, host, and space need no line break or
+control character. Otherwise startup exits 1 before the protocol, with one of
+these lines; without the flag, such a profile serves the read-only tools.
 
 ```json
 {"error":{"kind":"error","message":"MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL."}}
+{"error":{"kind":"error","message":"MCP mutation tools need a profile name, host, and space without line breaks or control characters."}}
 ```
 
 With at least one class enabled, startup writes this warning line to stderr
@@ -85,10 +87,9 @@ that cannot perform a class is found when a plan is made.
 
 ## Tools
 
-The catalog has 29 tools with `--allow-mutations rules-toggle`, or 31 with
-`--allow-query-tools` too, against 24 and 26 without it. Without the flag the
-five tools below are unknown to the server: a call is the protocol error for
-an unknown tool.
+With `--allow-mutations rules-toggle` the catalog has 29 tools, or 31 with
+`--allow-query-tools`. Without the flag the five tools below are unknown: a
+call is the protocol error for an unknown tool.
 
 | Tool | Inputs | Returns |
 | --- | --- | --- |
@@ -97,9 +98,6 @@ an unknown tool.
 | `plan_get` | `plan_id` | The plan and its outcome |
 | `plan_list` | None | `{"plans": [...]}`: open plans, then final records, newest first, each with `plan_id`, `kind`, `class`, `state`, `action`, and `expires_in_secs` |
 | `plan_discard` | `plan_id` | The plan. An open plan is closed as `discarded`, a final plan is returned unchanged, and a plan that is applying returns `plan_not_open` |
-
-Names ending in `_plan` are planners. Names starting with `plan_` act on
-stored plans; all but `plan_apply` touch only server memory.
 
 `rules_set_enabled_plan` resolves each selector to a `rule_id` as `rules_get`
 does; see [Selectors](CLI.md#selectors). It reads the credential identity and
@@ -219,9 +217,12 @@ The question travels differently on the two supported revisions:
   `plan_apply` call waits, for up to 240 seconds. No answer in time is
   `confirmation_timeout`, and the plan stays open. One such wait runs per
   process; another `plan_apply` meanwhile returns `confirmation_pending`. The
-  waiting call frees its call slot, and the `--timeout` deadline starts again
-  after the answer. If no call slot frees within that deadline, the call
-  returns `busy` and the plan stays open.
+  waiting call frees its call slot. The `--timeout` deadline starts again
+  after the answer and covers the slot, the check, and the write; if no slot
+  frees within it, the call returns `busy` and the plan stays open.
+- **A mismatched shape:** another version in `_meta` after `initialize`, or
+  `requestState` or `inputResponses` on `2025-11-25`, makes a mutation call
+  the protocol error `invalid_request`, before any read.
 
 ## Plan lifecycle
 
@@ -268,8 +269,7 @@ the write. Each check reads the credential identity and each rule again.
 - If a read fails, the call returns the Elastic error and the plan stays
   open. After a failed second check the person is asked again.
 - A change made between the second check and the write is not seen: the stack
-  has no conditional rule toggle. The window is one request long; the CLI's
-  window between its preview and `--yes` is longer.
+  has no conditional rule toggle, so the window is one request long.
 
 ### Replay
 

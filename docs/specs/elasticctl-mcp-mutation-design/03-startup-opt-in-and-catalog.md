@@ -56,6 +56,21 @@ with this static line and no other detail:
 The library makes the same check in `serve_io`. A profile without `es_url`
 still serves the read-only catalog when the flag is absent.
 
+The consent text names the target on one line, so the first three lines hold
+the action, the target, and the first object
+([section 6.1](06-confirmation-protocol.md#61-consent-text)). A non-empty
+class set therefore also requires the profile name, the host, and the space
+to hold no line feed and no character that rendering rule 1 replaces.
+Otherwise the server exits 1 before the protocol starts, with this static
+line, in the CLI and in `serve_io`:
+
+```json
+{"error":{"kind":"error","message":"MCP mutation tools need a profile name, host, and space without line breaks or control characters."}}
+```
+
+A space that configuration resolution already refuses keeps the existing
+configuration error; the check adds no second resolution.
+
 `mcp serve` stays `mutates: false` in the command tree and stays out of
 `guard::MUTATING`. The command itself changes nothing; the `--allow-mutations`
 help text says what it enables. The `mcp` command description drops the word

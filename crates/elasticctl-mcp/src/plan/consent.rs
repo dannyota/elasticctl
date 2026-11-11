@@ -6,7 +6,6 @@ use crate::TargetContext;
 fn replaced(c: char) -> bool {
     matches!(c, '\0'..='\u{9}' | '\u{b}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
-#[allow(dead_code)]
 pub(crate) fn displays_exactly(text: &str) -> bool {
     !text.chars().any(replaced)
 }
@@ -16,7 +15,6 @@ fn display(text: &str) -> String {
         .collect::<String>()
         .replace('\n', "\n  | ")
 }
-#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     target: &TargetContext,
@@ -44,7 +42,6 @@ pub(crate) fn render(
     text.push_str(&format!("Plan: {}\nHash: {}\nExpires in {minutes} min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes.",display(plan_id),display(&short_hash)));
     text
 }
-#[allow(dead_code)]
 pub(crate) fn validate(text: &str) -> Result<(), PlanError> {
     if text.len() > MAX_CONSENT_TEXT_BYTES {
         Err(PlanError::TooLarge)

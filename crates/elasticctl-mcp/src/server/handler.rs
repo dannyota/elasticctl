@@ -378,7 +378,22 @@ impl ServerHandler for McpServer {
         ) else {
             return Err(unknown_tool_error());
         };
-        let call_context = tools::CallContext::from_request(&context)?;
+        let mutation = matches!(
+            dispatch,
+            DispatchTarget::Adapter(
+                crate::catalog::ToolId::RulesSetEnabledPlan
+                    | crate::catalog::ToolId::PlanApply
+                    | crate::catalog::ToolId::PlanGet
+                    | crate::catalog::ToolId::PlanList
+                    | crate::catalog::ToolId::PlanDiscard,
+                _
+            )
+        );
+        let call_context = if mutation {
+            tools::CallContext::from_request(&context)?
+        } else {
+            tools::CallContext::default()
+        };
         if matches!(
             dispatch,
             DispatchTarget::Adapter(crate::catalog::ToolId::PlanApply, _)

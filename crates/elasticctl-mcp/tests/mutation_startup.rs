@@ -272,7 +272,7 @@ async fn gated_catalog_and_instructions_on_both_protocols() {
                     })
                 );
                 for name in NEW_NAMES {
-                    h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"unexpected":true},"_meta":current_metadata()}})).await;
+                    h.send_json(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"unexpected":true},"_meta":if legacy { json!({}) } else { current_metadata() }}})).await;
                     let r = h.receive_json().await;
                     if enabled {
                         // Reachable through the gate: a tool error, not a
@@ -429,4 +429,44 @@ async fn empty_classes_allow_no_es_url_on_both_protocols() {
         h.join().await.unwrap();
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mutation_target_must_display_on_one_line() {
+    for field in ["profile", "host", "space"] {
+        for control in [
+            '\n', '\r', '\t', '\u{7f}', '\u{85}', '\u{2028}', '\u{202e}', '\u{2066}',
+        ] {
+            let mut resolved = target();
+            resolved.profile.es_url = Some("https://es.example.test".into());
+            match field {
+                "profile" => resolved.name = format!("test{control}continued"),
+                "host" => {
+                    resolved.profile.kibana_url =
+                        format!("https://test{control}continued.example.test")
+                }
+                _ => resolved.profile.space = format!("test{control}continued"),
+            }
+            let mut opts = options();
+            opts.allow_mutations =
+                elasticctl_mcp::MutationClasses::parse(["rules-toggle"]).unwrap();
+            let (input, si) = tokio::io::duplex(128);
+            drop(input);
+            let (so, mut output) = tokio::io::duplex(128);
+            let error = elasticctl_mcp::serve_io(resolved.clone(), opts, si, so)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.message,
+                "MCP mutation tools need a profile name, host, and space without line breaks or control characters."
+            );
+            use tokio::io::AsyncReadExt;
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).await.unwrap();
+            assert!(bytes.is_empty());
+            if field != "host" || matches!(control, '\n' | '\r' | '\t') {
+                assert!(elasticctl_mcp::validate_startup(&resolved, &options()).is_ok());
+            }
+        }
+    }
 }

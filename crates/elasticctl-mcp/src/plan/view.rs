@@ -1,7 +1,6 @@
 use super::store::{Plan, PlanState};
 use serde_json::{Value, json};
 use tokio::time::Instant;
-#[allow(dead_code)]
 pub(crate) fn view<P>(p: &Plan<P>, elicitation: bool, replayed: bool, now: Instant) -> Value {
     json!({"plan":{
         "plan_id":p.id,"hash":p.hash,"kind":p.content.kind,"class":p.content.class,
@@ -12,11 +11,9 @@ pub(crate) fn view<P>(p: &Plan<P>, elicitation: bool, replayed: bool, now: Insta
         "cli_equivalent":p.content.cli_equivalent},
         "outcome":if p.state==PlanState::Applied {p.outcome.as_ref()} else {None},"replayed":replayed})
 }
-#[allow(dead_code)]
 pub(crate) fn list_row<P>(p: &Plan<P>, now: Instant) -> Value {
     json!({"plan_id":p.id,"kind":p.content.kind,"class":p.content.class,"state":p.state,"action":p.content.action,"expires_in_secs":p.expires_in_secs(now)})
 }
-#[allow(dead_code)]
 pub(crate) fn list<P>(plans: &[Plan<P>], now: Instant) -> Value {
     json!({"plans":plans.iter().map(|p|list_row(p,now)).collect::<Vec<_>>()})
 }

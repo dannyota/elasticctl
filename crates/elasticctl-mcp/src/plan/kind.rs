@@ -56,13 +56,11 @@ impl Operation {
             .concat(),
         }
     }
-    #[allow(dead_code)]
     pub(crate) async fn observe(&self, t: &Transport) -> Result<Preconditions> {
         match self {
             Self::RulesSetEnabled { plan, .. } => rules_ops::observe_rules(t, &plan.targets).await,
         }
     }
-    #[allow(dead_code)]
     pub(crate) async fn apply(&self, t: &Transport) -> Result<rules_ops::SetEnabledOutcome> {
         match self {
             Self::RulesSetEnabled { plan, enable } => {
