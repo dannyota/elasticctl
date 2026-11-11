@@ -50,7 +50,10 @@ pub(crate) fn answer(value: Option<&Value>) -> Answer {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    // Legacy confirmation has one process-wide slot.
+    pub(crate) static LEGACY_SESSION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[test]
     fn production_wait_is_240_seconds() {
         assert_eq!(super::LEGACY_CONFIRM_WAIT.as_secs(), 240);
