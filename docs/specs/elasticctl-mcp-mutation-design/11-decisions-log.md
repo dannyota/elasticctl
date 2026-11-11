@@ -45,6 +45,8 @@ Each row is final for 0.9. Sources are in
 | D36 | The server rejects a mutation call whose protocol shape does not match the session, before any read: another version in `_meta` after `initialize`, and current answer fields on a legacy request. | The SDK checks neither, so a mixed request ran drift reads and used a prompt on the wrong path. Read tools keep the 0.8 behavior. |
 | D37 | On the legacy path, one call deadline starts at the answer and covers the permit wait, the second check, and the write. | Two budgets allowed a write at 300 seconds, the Codex CLI default tool timeout. |
 | D38 | A class set requires a single-line profile name, host, and space. | A line break in the target pushed the first object out of the three lines Claude Code shows. |
+| D39 | The consent action line holds one line: a written case title with a line feed is refused, and a line feed in stack text on that line shows as U+FFFD. A rule create plan shows its `rule_id` line first. | Owner decision for 0.9.1. A model-written or stack-read title with line breaks could push the target and the first object past the three lines Claude Code shows. |
+| D40 | A rule create plan carries its own note: the rule is created disabled and without an API key, and the credential that first enables it gives it one. | M13: a rule created disabled has no key until its first enable, so the toggle note is wrong for a create. Owner decision for 0.9.1. |
 
 ### Owner decisions, 2026-11-10
 
