@@ -195,6 +195,8 @@ pub(super) fn run(
             org.username = None;
             org.password = None;
             let org = safe(Transport::new(&org))?;
+            // Start from a disabled rule, so an enable is a real change and not a skip.
+            toggle(t, cleanup, id, false).await?;
             let plan = safe(rules_ops::plan_set_enabled(t, &[id.into()], true).await)?;
             exact_targets(&plan.targets, &[id.into()])?;
             check_cancelled()?;
@@ -208,11 +210,19 @@ pub(super) fn run(
                     },
                     start,
                 ),
-                Ok(o) => report(
-                    "M9",
-                    if o.failed > 0 { "failed" } else { "succeeded" },
-                    start,
-                ),
+                Ok(o) => {
+                    let enabled = owned_rule(t, id).await?.enabled();
+                    report(
+                        "M9",
+                        match (o.succeeded, o.failed, o.skipped, enabled) {
+                            (1, 0, 0, true) => "enabled",
+                            (_, f, _, false) if f > 0 => "failed",
+                            (0, 0, s, false) if s > 0 => "skipped",
+                            _ => "inconclusive",
+                        },
+                        start,
+                    )
+                }
             }
             owned_rule(t, id).await?;
         } else {
