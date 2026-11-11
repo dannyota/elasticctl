@@ -132,3 +132,89 @@ jobs:
           name: live-lab-public
           path: target/live-lab-public/traditional-9.5.1.json
           if-no-files-found: error
+
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RUST_LOG: 'off'
+      ELASTICCTL_RECORD_TRACE: '0'
+    steps:
+      - name: Initialize budget and masked passwords
+        shell: bash
+        run: |
+          set +x
+          echo "LAB_DEADLINE=$(( $(date +%s) + 22 * 60 ))" >> "$GITHUB_ENV"
+          elastic_password=$(openssl rand -hex 32)
+          kibana_password=$(openssl rand -hex 32)
+          echo "::add-mask::$elastic_password"
+          echo "::add-mask::$kibana_password"
+          echo "ELASTIC_PASSWORD=$elastic_password" >> "$GITHUB_ENV"
+          echo "KIBANA_SYSTEM_PASSWORD=$kibana_password" >> "$GITHUB_ENV"
+          sudo sysctl -w vm.max_map_count=1048576
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          remaining=$(( LAB_DEADLINE - $(date +%s) ))
+          test "$remaining" -gt 0
+          timeout --signal=INT --kill-after=30s "${remaining}s" \
+            rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Pull images and prebuild concurrently
+        shell: bash
+        run: |
+          remaining=$(( LAB_DEADLINE - $(date +%s) ))
+          test "$remaining" -gt 0
+          timeout --signal=INT --kill-after=30s "${remaining}s" bash -euo pipefail <<'BUILD'
+          docker compose -f lab/compose.yaml pull &
+          pull_pid=$!
+          trap 'kill "$pull_pid" 2>/dev/null || true' EXIT
+          cargo build --locked -p xtask
+          cargo test --locked -p elasticctl --test live --no-run
+          wait "$pull_pid"
+          BUILD
+
+      # The lab scripts handle credentials, so their output is never shown.
+      - name: Boot and seed the lab
+        shell: bash
+        run: |
+          set +x
+          remaining=$(( LAB_DEADLINE - $(date +%s) ))
+          test "$remaining" -gt 0
+          timeout --signal=INT --kill-after=30s "${remaining}s" \
+            bash lab/up.sh > /dev/null 2>&1 || { echo "lab up failed"; exit 1; }
+          key=$(grep '^ELASTICCTL_API_KEY=' lab/.env | cut -d= -f2-)
+          echo "::add-mask::$key"
+          remaining=$(( LAB_DEADLINE - $(date +%s) ))
+          timeout --signal=INT --kill-after=30s "${remaining}s" \
+            bash lab/seed.sh > /dev/null 2>&1 || { echo "lab seed failed"; exit 1; }
+          echo "lab ready"
+
+      # The contract prints only static classes; show only the result lines.
+      - name: Run the MCP mutation contract
+        shell: bash
+        run: |
+          set +x
+          set -a; . lab/.env; set +a
+          remaining=$(( LAB_DEADLINE - $(date +%s) ))
+          test "$remaining" -gt 0
+          set -o pipefail
+          ELASTICCTL_LIVE=1 timeout --signal=INT --kill-after=30s "${remaining}s" \
+            cargo test --locked -p elasticctl --test live -- --ignored --exact \
+            mcp_mutations_plan_and_confirm --test-threads=1 2>&1 \
+            | grep -E '^test |^test result|panicked|^(contract|cleanup_failed|baseline_failed)$'
+
+      - name: Tear down lab
+        if: always()
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          ELASTIC_PASSWORD=unused KIBANA_SYSTEM_PASSWORD=unused \
+            timeout --signal=INT --kill-after=15s 90s \
+            docker compose --env-file /dev/null -f lab/compose.yaml down -v --remove-orphans
