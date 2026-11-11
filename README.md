@@ -55,8 +55,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/dannyota/elasticct
 
 Create a profile from `ELASTICCTL_*` environment variables;
 [`.env.example`](.env.example) documents them. Use an Elasticsearch API key
-created inside Kibana. An organization-level Cloud key can read and create
-disabled rules but cannot enable one.
+created inside Kibana, scoped to the project or deployment. An
+organization-level Cloud key is not supported: Hosted refuses it, and MCP
+planning refuses it on every flavor, though Serverless 9.7.0 accepts it for
+CLI rule changes.
 
 ```bash
 export ELASTICCTL_KIBANA_URL=https://YOUR-PROJECT.kb.YOUR-REGION.aws.elastic.cloud

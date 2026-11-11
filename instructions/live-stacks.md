@@ -8,12 +8,12 @@
 - Never commit `.env`, copy its contents into tracked files, or echo a key into output, logs, or
   commits. Write a new key straight into `.env`; never print it to read it back.
 - A worktree has no `.env`. Source the main checkout's file instead of copying it.
-- An **organization-level** Cloud API key is not enough. Every key type carries the `essu_`
-  prefix, so the prefix does not indicate scope. Only `GET /_security/_authenticate` (or
-  `elasticctl doctor`) reports the realm. An organization key can read and create *disabled*
-  rules, but **cannot enable a rule**: the alerting framework refuses to mint a rule API key on
-  its behalf. Enable, disable-apply, and `state push` need a **project-scoped Elasticsearch API
-  key** created inside Kibana.
+- Use a **project- or deployment-scoped Elasticsearch API key** created inside Kibana. Every
+  key type carries the `essu_` prefix, so the prefix does not indicate scope. Only
+  `GET /_security/_authenticate` (or `elasticctl doctor`) reports the realm. An
+  **organization-level** key (realm `_cloud_api_key`) is not supported: Serverless 9.7.0
+  accepts it for CLI rule changes, Hosted answers 401 at `_authenticate`, and MCP planning
+  refuses it as policy (shared design 7.2, mutation design 5.2).
 - Recording reads the generic `ELASTICCTL_*` target and `ELASTICCTL_FIXTURE_FLAVOR`. Map the
   `ELASTICCTL_ECH_*` target to those generic names for the recorder; `.env.example` shows how.
   `cargo xtask conformance-matrix` reads the `ELASTICCTL_ECH_*` names itself.
