@@ -319,3 +319,214 @@ where
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn audit_writer_options_leave_legacy_wait_unset() {
+        let options = super::TestOptions::from(|_: &str| {});
+        assert_eq!(options.legacy_wait, None);
+    }
+
+    use serde_json::{Value, json};
+    use std::{sync::Arc, time::Duration};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    fn fixture(name: &str) -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/traditional-9.5.1")
+            .join(format!("{name}.json"));
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["response"].clone()
+    }
+
+    async fn send(writer: &mut tokio::io::DuplexStream, frame: Value) {
+        writer
+            .write_all(format!("{frame}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    async fn receive(reader: &mut BufReader<tokio::io::DuplexStream>) -> Value {
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            if frame["method"] != "notifications/cancelled" {
+                return frame;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_confirmation_waits_production_240_seconds() {
+        let _serial = crate::plan::confirm::tests::LEGACY_SESSION.lock().await;
+        // Keep paused time from auto-advancing while TCP I/O is pending.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let upstream = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                connections.spawn(async move {
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        headers.push(stream.read_u8().await.unwrap());
+                    }
+                    let headers = String::from_utf8(headers).unwrap();
+                    let request = headers.lines().next().unwrap();
+                    let body = if request == "GET /_security/_authenticate HTTP/1.1" {
+                        fixture("authenticate")
+                    } else {
+                        assert!(request.starts_with("GET /api/detection_engine/rules?"), "{request}");
+                        fixture("rules_get")
+                    }.to_string();
+                    stream.write_all(format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()
+                    ).as_bytes()).await.unwrap();
+                });
+            }
+        });
+        let target = elasticctl_core::Resolved {
+            name: "test".into(),
+            source: elasticctl_core::Source::Profile,
+            profile: elasticctl_core::Profile {
+                kibana_url: url.clone(),
+                es_url: Some(url),
+                api_key: Some("test-key".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            },
+        };
+        let options = super::ServerOptions {
+            allow_mutations: crate::MutationClasses::parse(["rules-toggle"]).unwrap(),
+            ..Default::default()
+        };
+        let context = super::validate_target(&target, &options).unwrap();
+        let mut state = super::ServerState::new(context, target, options.call_timeout, false);
+        state.allow_mutations = options.allow_mutations;
+        let (mut input, server_input) = tokio::io::duplex(1_048_576);
+        let (server_output, output) = tokio::io::duplex(1_048_576);
+        let mut output = BufReader::new(output);
+        let server = tokio::spawn(super::serve_with_writes(
+            Arc::new(state),
+            server_input,
+            server_output,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},
+                "clientInfo":{"name":"test","version":"0"}
+            }}),
+        )
+        .await;
+        let initialized = receive(&mut output).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        let rule_id = fixture("rules_get")["rule_id"].clone();
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name":"rules_set_enabled_plan","arguments":{"selectors":[rule_id],"enabled":false}
+            }}),
+        )
+        .await;
+        let planned = receive(&mut output).await;
+        let id = planned["result"]["structuredContent"]["data"]["plan"]["plan_id"]
+            .as_str()
+            .expect("plan created");
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                "name":"plan_apply","arguments":{"plan_id":id}
+            }}),
+        )
+        .await;
+        let question = receive(&mut output).await;
+        assert_eq!(question["method"], "elicitation/create", "{question}");
+        assert_eq!(question["params"]["mode"], "form");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+        let last_pending = deadline - Duration::from_millis(1);
+        tokio::time::advance(last_pending - tokio::time::Instant::now()).await;
+        // A read round trip lets the server process expired timers before checking pending output.
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+                "name":"plan_get","arguments":{"plan_id":id}
+            }}),
+        )
+        .await;
+        let pending = receive(&mut output).await;
+        assert_eq!(
+            pending["id"], 4,
+            "plan_apply must still be pending at 239.999 s: {pending}"
+        );
+        assert_eq!(
+            pending["result"]["structuredContent"]["data"]["plan"]["state"],
+            "open"
+        );
+        // Poll without a timer so the pending assertion cannot advance paused time.
+        let mut next = Box::pin(receive(&mut output));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(next.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        assert_eq!(tokio::time::Instant::now(), last_pending);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let mut timed_out = None;
+        for _ in 0..1024 {
+            if let Some(frame) = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(match next.as_mut().poll(cx) {
+                    std::task::Poll::Ready(frame) => Some(frame),
+                    std::task::Poll::Pending => None,
+                })
+            })
+            .await
+            {
+                timed_out = Some(frame);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        drop(next);
+        let timed_out = timed_out.expect(
+            "plan_apply must return confirmation_timeout at 240 s within 1024 scheduler yields",
+        );
+        assert_eq!(tokio::time::Instant::now(), deadline);
+        assert_eq!(timed_out["id"], 3);
+        assert_eq!(
+            timed_out["result"]["structuredContent"]["error"]["code"],
+            "confirmation_timeout"
+        );
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+                "name":"plan_get","arguments":{"plan_id":id}
+            }}),
+        )
+        .await;
+        let reopened = receive(&mut output).await;
+        assert_eq!(reopened["id"], 5);
+        assert_eq!(
+            reopened["result"]["structuredContent"]["data"]["plan"]["state"],
+            "open"
+        );
+        drop(input);
+        server.await.unwrap().unwrap();
+        upstream.abort();
+        clock_guard.abort();
+    }
+}

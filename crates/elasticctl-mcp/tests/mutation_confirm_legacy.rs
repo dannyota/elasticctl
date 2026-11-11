@@ -114,17 +114,25 @@ async fn legacy_answer_rows_pending_reads_cancellation_and_timeout() {
 }
 #[tokio::test]
 async fn legacy_missing_form() {
-    let (_s, mut h) = common::setup().await;
+    let (s, mut h) = common::setup().await;
     h.initialize(false).await;
     let id = common::plan(&mut h).await;
+    let count = s.received_requests().await.unwrap().len();
     let r = common::call(&mut h, "plan_apply", json!({"plan_id":id}), json!({})).await;
     assert_eq!(
         r["result"]["structuredContent"]["error"]["code"],
         "confirmation_unavailable"
     );
+    assert_eq!(s.received_requests().await.unwrap().len(), count);
+    let r = common::call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+    assert_eq!(
+        r["result"]["structuredContent"]["data"]["plan"]["state"],
+        "open"
+    );
     h.close_input();
     h.join().await.unwrap();
 }
+
 struct Scripted(serde_json::Value);
 impl rmcp::ClientHandler for Scripted {
     fn get_info(&self) -> rmcp::model::ClientConfig {

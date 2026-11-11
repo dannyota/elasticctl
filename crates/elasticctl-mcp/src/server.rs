@@ -374,6 +374,22 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn new_state_uses_production_legacy_confirmation_wait() {
+        let base = "http://127.0.0.1:9200";
+        let mut target = resolved(base, Some(base));
+        target.profile.api_key = Some("test-key".to_string());
+        let options = ServerOptions {
+            allow_mutations: crate::MutationClasses::parse(["rules-toggle"])
+                .expect("rules-toggle parses"),
+            ..Default::default()
+        };
+        let context = validate_target(&target, &options).expect("target validates");
+        let state = super::ServerState::new(context, target, options.call_timeout, false);
+        assert_eq!(state.legacy_wait, crate::plan::confirm::LEGACY_CONFIRM_WAIT);
+        assert_eq!(state.legacy_wait, Duration::from_secs(240));
+    }
+
     /// The write transport is built on first use, follows no redirect,
     /// retries nothing, and opens a fresh connection for every request.
     #[tokio::test]

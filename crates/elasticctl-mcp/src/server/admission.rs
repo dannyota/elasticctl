@@ -185,6 +185,7 @@ mod tests {
     }
     #[tokio::test]
     async fn legacy_confirmed_reacquisition_is_busy_and_cancellation_recovers_permits() {
+        let _serial = crate::plan::confirm::tests::LEGACY_SESSION.lock().await;
         use rmcp::ServiceExt;
         use serde_json::{Value, json};
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
