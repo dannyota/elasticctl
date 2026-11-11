@@ -797,3 +797,35 @@ async fn stack_diagnostics_remain_available_on_an_older_target() {
     harness.close_input();
     harness.join().await.expect("clean EOF");
 }
+
+#[tokio::test]
+async fn stack_doctor_organization_key_keeps_the_complete_detail_free_report() {
+    let server = MockServer::start().await;
+    mount_status(&server, "/api/status", recorded("status")).await;
+    let mut identity = recorded("authenticate");
+    identity["authentication_realm"]["type"] = json!("_cloud_api_key");
+    mount_json(&server, "/_security/_authenticate", identity).await;
+    mount_json(
+        &server,
+        "/api/detection_engine/rules/_find",
+        recorded("rules_find"),
+    )
+    .await;
+    mount_recorded_absent_list_index(&server, "/api/lists/index").await;
+    let mut harness = Harness::start(target_for(&server, Some("test-api-key")), options());
+    let reply = call(&mut harness, 4, "stack_doctor", json!({})).await;
+    assert_eq!(
+        reply["result"]["structuredContent"],
+        json!({
+            "target": {"profile":"test", "host":server.uri().strip_prefix("http://").unwrap(), "space":"default"},
+            "data": {"ok":true, "checks":[
+                {"check":"connectivity", "status":"ok"},
+                {"check":"flavor", "status":"ok"},
+                {"check":"auth", "status":"ok"},
+                {"check":"key_scope", "status":"warn"},
+                {"check":"rules_access", "status":"ok"},
+                {"check":"value_list_index", "status":"warn"}
+            ]}, "page":null
+        })
+    );
+}
