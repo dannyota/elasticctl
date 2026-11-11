@@ -11,7 +11,7 @@ pub(super) fn run(
     profile: &Profile,
     id: &str,
     index: &str,
-    cleanup: &mut LiveCleanup,
+    cleanup: &mut Registry,
 ) -> TestResult {
     rt.block_on(async {
         let start = Instant::now();
@@ -26,40 +26,43 @@ pub(super) fn run(
             },
             start,
         );
-        cleanup.index(index.to_owned());
-        cleanup.alert_rule(id.to_owned());
+        create_index(t, cleanup, index).await?;
         for n in 0..2 {
+            check_cancelled()?;
+            require(cleanup.indices.contains(index))?;
             safe(
                 t.post_absolute_es(
-                    &format!("/{index}/_doc?refresh=wait_for"),
+                    &format!("/{index}/_doc/{n}?refresh=wait_for"),
                     &json!({"@timestamp":current_rfc3339(),"marker":LIVE_TAG,"seq":n}),
                 )
                 .await,
             )?;
         }
         let start = Instant::now();
-        toggle(t, id, true).await?;
+        toggle(t, cleanup, id, true).await?;
         let before = normalize::canonical(&owned_rule(t, id).await?);
         tokio::time::sleep(Duration::from_secs(60)).await;
         require(before == normalize::canonical(&owned_rule(t, id).await?))?;
         report("M2", "equal", start);
         let start = Instant::now();
-        toggle(t, id, false).await?;
-        toggle(t, id, true).await?;
+        toggle(t, cleanup, id, false).await?;
+        toggle(t, cleanup, id, true).await?;
         let gone = unique_name("mutation-deleted");
         marker(&gone)?;
-        cleanup.rule(gone.clone());
-        safe(rules::create(t, &rule_body(&gone, index)?).await)?;
-        owned_rule(t, &gone).await?;
+        create_rule(t, cleanup, &gone, index).await?;
+        check_cancelled()?;
+        require(cleanup.rules.contains(&gone))?;
         safe(rules::delete(t, &gone).await)?;
         let plan = safe(rules_ops::plan_set_enabled(t, &[id.into()], false).await)?;
+        exact_targets(&plan.targets, &[id.into()])?;
         let mut missing = plan;
         missing.targets.push(gone);
+        check_cancelled()?;
         let outcome = safe(rules_ops::apply_set_enabled(t, &missing, false).await)?;
         require(outcome.total == 1 && outcome.failed == 0 && outcome.succeeded == 1)?;
         report("M3", "missing_excluded", start);
         let start = Instant::now();
-        toggle(t, id, true).await?;
+        toggle(t, cleanup, id, true).await?;
         let mut hits = Vec::new();
         for _ in 0..TRIAGE_POLL_ATTEMPTS {
             hits = safe(
@@ -80,10 +83,18 @@ pub(super) fn run(
         for hit in &hits {
             require(hit.source["kibana.alert.rule.rule_id"] == id)?;
         }
+        for hit in &hits {
+            let read = safe(alerts_ops::get_one(t, &hit.id).await)?;
+            require(cleanup.rules.contains(id))?;
+            verify_alert(&read.source, id)?;
+            cleanup.alerts.insert(hit.id.clone(), id.into());
+        }
         let ids: Vec<_> = hits.iter().map(|h| h.id.clone()).collect();
         let p = safe(
             alerts_ops::plan_status_by_ids(t, &ids, alerts::AlertStatus::Acknowledged, None).await,
         )?;
+        exact_targets(&p.targets, &ids)?;
+        check_cancelled()?;
         let o = safe(alerts_ops::apply_status_by_ids(t, &p).await)?;
         require(o.failed == 0)?;
         for alert in &ids {
@@ -91,6 +102,8 @@ pub(super) fn run(
             require(h.source["kibana.alert.workflow_status"] == "acknowledged")?;
         }
         let p = safe(alerts_ops::plan_tags(t, &ids, vec![LIVE_TAG.into()], vec![]).await)?;
+        exact_targets(&p.targets, &ids)?;
+        check_cancelled()?;
         safe(alerts_ops::apply_tags(t, &p).await)?;
         for alert in &ids {
             let h = safe(alerts_ops::get_one(t, alert).await)?;
@@ -103,28 +116,13 @@ pub(super) fn run(
         report("M4", "visible", start);
         let title = unique_name("mutation-case");
         marker(&title)?;
-        cleanup.case_scope(title.clone(), LIVE_TAG);
-        let p = safe(
-            cases_ops::plan_create(
-                t,
-                &title,
-                Some(LIVE_TAG.into()),
-                vec![LIVE_TAG.into()],
-                Some("low".into()),
-                &[],
-            )
-            .await,
-        )?;
-        let created = safe(cases_ops::apply_create(t, &p).await)?;
-        let case_id = created["id"]
-            .as_str()
-            .ok_or("missing case identity")?
-            .to_owned();
-        cleanup.case(case_id.clone());
+        let case_id = create_case(t, cleanup, &title).await?;
         let case = safe(cases::get(t, &case_id).await)?;
         require(case.title == title && case.tags.contains(&LIVE_TAG.to_owned()))?;
         let start = Instant::now();
         let p = safe(cases_ops::plan_comment(t, &case_id, LIVE_TAG).await)?;
+        require(p.case_id == case_id && cleanup.cases.contains_key(&case_id))?;
+        check_cancelled()?;
         safe(cases_ops::apply_comment(t, &p).await)?;
         let after = safe(cases::get(t, &case_id).await)?;
         report(
@@ -137,6 +135,8 @@ pub(super) fn run(
             start,
         );
         let start = Instant::now();
+        check_cancelled()?;
+        require(cleanup.cases.contains_key(&case_id))?;
         safe(
             cases::patch_status(
                 t,
@@ -148,14 +148,17 @@ pub(super) fn run(
             )
             .await,
         )?;
+        check_cancelled()?;
         let error = cases::patch_status(t, &[(case_id, after.version, cases::CaseStatus::Open)])
             .await
             .err()
             .ok_or("stale case accepted")?;
         require(error.http_status == Some(409))?;
         report("M6", "conflict", start);
-        toggle(t, id, false).await?;
+        toggle(t, cleanup, id, false).await?;
         let start = Instant::now();
+        check_cancelled()?;
+        require(cleanup.rules.contains(id))?;
         let error = rules::create(t, &rule_body(id, index)?)
             .await
             .err()
@@ -166,10 +169,7 @@ pub(super) fn run(
         for _ in 1..20 {
             let next = unique_name("mutation-timing");
             marker(&next)?;
-            cleanup.rule(next.clone());
-            let (p, _) = safe(rules_ops::plan_create(t, rule_body(&next, index)?).await)?;
-            safe(rules_ops::apply_create(t, &p).await)?;
-            require(!owned_rule(t, &next).await?.enabled())?;
+            create_rule(t, cleanup, &next, index).await?;
             ids.push(next);
         }
         let start = Instant::now();
@@ -180,6 +180,8 @@ pub(super) fn run(
         require(seen == check)?;
         report("M8_check", "equal", start);
         let start = Instant::now();
+        exact_targets(&p.targets, &ids)?;
+        check_cancelled()?;
         let outcome = safe(rules_ops::apply_set_enabled(t, &p, false).await)?;
         require(outcome.failed == 0 && outcome.total == 20)?;
         for id in &ids {
@@ -194,6 +196,8 @@ pub(super) fn run(
             org.password = None;
             let org = safe(Transport::new(&org))?;
             let plan = safe(rules_ops::plan_set_enabled(t, &[id.into()], true).await)?;
+            exact_targets(&plan.targets, &[id.into()])?;
+            check_cancelled()?;
             match rules_ops::apply_set_enabled(&org, &plan, true).await {
                 Err(e) => report(
                     "M9",
@@ -218,4 +222,4 @@ pub(super) fn run(
     })
 }
 #[path = "lab.rs"]
-mod lab;
+pub(super) mod lab;

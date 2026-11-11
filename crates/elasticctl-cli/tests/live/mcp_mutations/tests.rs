@@ -37,26 +37,6 @@ fn current_answer_carries_response_and_opaque_state() {
     );
 }
 #[test]
-fn dirty_baseline_prevents_body_and_cleanup() {
-    guarded_run(
-        || Err("dirty".into()),
-        || panic!("body"),
-        || panic!("cleanup"),
-        || panic!("audit"),
-    )
-    .unwrap_err();
-}
-#[test]
-fn failed_cleanup_prevents_audit() {
-    guarded_run(
-        || Ok(()),
-        || Ok(()),
-        || Err("cleanup".into()),
-        || panic!("audit"),
-    )
-    .unwrap_err();
-}
-#[test]
 fn no_step_names_an_unmarked_object() {
     assert!(marker("prebuilt").is_err());
     assert!(marker(&unique_name("mutation")).is_ok());
@@ -86,9 +66,14 @@ fn complete(path: McpProtocolPath, id: u64) -> Value {
 }
 #[test]
 fn fake_current_child_receives_retry_outside_arguments() {
-    let question = json!({"jsonrpc":"2.0","id":10,"result":{"resultType":"input_required","inputRequests":{"confirm":{"method":"elicitation/create","params":{"mode":"form","message":"static","requestedSchema":frames::schema()}}},"requestState":"cfm_test"}});
+    let question = json!({"jsonrpc":"2.0","id":11,"result":{"resultType":"input_required","inputRequests":{"confirm":{"method":"elicitation/create","params":{"mode":"form","message":"static","requestedSchema":frames::schema()}}},"requestState":"cfm_test"}});
     let fake = FakeChild {
-        replies: [question, complete(McpProtocolPath::Current, 11)].into(),
+        replies: [
+            view(McpProtocolPath::Current),
+            question,
+            complete(McpProtocolPath::Current, 12),
+        ]
+        .into(),
         ..Default::default()
     };
     let mut s = Session {
@@ -96,17 +81,19 @@ fn fake_current_child_receives_retry_outside_arguments() {
         path: McpProtocolPath::Current,
         form: true,
         next: 10,
+        owned: ["elasticctl-live-test".into()].into(),
+        plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     frames::applied(&s.apply("pln_test", true).unwrap(), false).unwrap();
     let sent = &s.child.sent;
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 3);
     assert_eq!(
-        sent[1]["params"]["arguments"],
+        sent[2]["params"]["arguments"],
         json!({"plan_id":"pln_test"})
     );
-    assert_eq!(sent[1]["params"]["requestState"], "cfm_test");
+    assert_eq!(sent[2]["params"]["requestState"], "cfm_test");
     assert_eq!(
-        sent[1]["params"]["inputResponses"]["confirm"]["action"],
+        sent[2]["params"]["inputResponses"]["confirm"]["action"],
         "accept"
     );
 }
@@ -114,7 +101,12 @@ fn fake_current_child_receives_retry_outside_arguments() {
 fn fake_legacy_child_receives_elicitation_response() {
     let question = json!({"jsonrpc":"2.0","id":"server-request","method":"elicitation/create","params":{"mode":"form","message":"static","requestedSchema":frames::schema()}});
     let fake = FakeChild {
-        replies: [question, complete(McpProtocolPath::Legacy, 10)].into(),
+        replies: [
+            view(McpProtocolPath::Legacy),
+            question,
+            complete(McpProtocolPath::Legacy, 11),
+        ]
+        .into(),
         ..Default::default()
     };
     let mut s = Session {
@@ -122,10 +114,12 @@ fn fake_legacy_child_receives_elicitation_response() {
         path: McpProtocolPath::Legacy,
         form: true,
         next: 10,
+        owned: ["elasticctl-live-test".into()].into(),
+        plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     s.apply("pln_test", false).unwrap();
     assert_eq!(
-        s.child.sent[1],
+        s.child.sent[2],
         frames::legacy_answer(json!("server-request"), false)
     );
 }
@@ -136,6 +130,8 @@ fn missing_marker_stops_before_a_child_call() {
         path: McpProtocolPath::Current,
         form: true,
         next: 10,
+        owned: ["elasticctl-live-test".into()].into(),
+        plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     assert!(s.plan("unmarked", true).is_err());
     assert!(s.child.sent.is_empty());
@@ -145,4 +141,12 @@ fn missing_marker_stops_before_a_child_call() {
 fn malformed_questions_are_refused() {
     assert!(frames::answer(&json!({"result":{"resultType":"complete"}}), true).is_err());
     assert!(frames::form(&json!({"mode":"form","message":"text","requestedSchema":{}})).is_err());
+}
+
+fn view(path: McpProtocolPath) -> Value {
+    let mut f = complete(path, 10);
+    let c = json!({"data":{"plan":{"targets":["elasticctl-live-test"],"operation":{"rule_ids":["elasticctl-live-test"]}}}});
+    f["result"]["structuredContent"] = c.clone();
+    f["result"]["content"][0]["text"] = json!(c.to_string());
+    f
 }

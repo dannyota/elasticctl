@@ -55,9 +55,10 @@ Snapshots change only for the `mcp` description and the new flag.
 
 One ignored test, `mcp_mutations_plan_and_confirm`, runs per flavor on
 Serverless, Hosted, and the lab. The harness prepares and removes objects
-through reviewed test code outside MCP. Every object carries the
-`elasticctl-sample` marker of [live stacks](../../../instructions/live-stacks.md).
-No prebuilt or unmarked object is named in any call.
+through reviewed test code outside MCP. Every object carries the live
+contract marker of [live stacks](../../../instructions/live-stacks.md): the
+`elasticctl-live-` prefix and the `elasticctl-live-marker` tag, which the
+baseline audit checks. No prebuilt or unmarked object is named in any call.
 
 1. Verify the baseline. Create a disabled marker rule, a marker index with a
    marker rule that raises at least two alerts, and a marker case.

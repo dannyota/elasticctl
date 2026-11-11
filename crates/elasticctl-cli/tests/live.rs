@@ -715,17 +715,17 @@ impl LiveCleanup {
     }
 
     fn delete_rule(&self, rule_id: &str) -> TestResult {
-        let out = cli(&self.config)
-            .args(["rules", "delete"])
-            .arg(rule_id)
-            .arg("--yes")
-            .output()
-            .map_err(|e| format!("spawning rule cleanup for {rule_id}: {e}"))?;
-        if out.status.success() || command_is_not_found(&out) {
-            Ok(())
-        } else {
-            Err(format!("rule delete exited {}", out.status))
-        }
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|_| "rule cleanup runtime failed".to_string())?;
+        runtime.block_on(async {
+            let transport = Transport::new(&self.profile)
+                .map_err(|_| "rule cleanup transport failed".to_string())?;
+            match elasticctl_api::rules::delete(&transport, rule_id).await {
+                Ok(_) => Ok(()),
+                Err(error) if error.http_status == Some(404) => Ok(()),
+                Err(_) => Err("rule delete failed".to_string()),
+            }
+        })
     }
 
     fn delete_rule_fill(&self, prefix: &str, count: usize) -> TestResult {
@@ -4098,4 +4098,73 @@ fn triage_transitions_alerts_and_cases_and_leaves_only_closed_residue() {
         Ok(())
     })();
     conclude(result, &mut cleanup, baseline);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_rule_delete_never_resolves_another_rules_display_name() {
+    let server = MockServer::start().await;
+    let gone = "elasticctl-live-gone-rule";
+    // A selector lookup would find this unrelated rule by its display name.
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total":1,"page":1,"perPage":100,
+            "data":[{"rule_id":"unrelated-rule","name":gone,"type":"query","enabled":true}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", gone))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"message":"not found","status_code":404})),
+        )
+        .mount(&server)
+        .await;
+    let profile: Profile =
+        serde_json::from_value(json!({"kibana_url":server.uri(),"api_key":"offline"})).unwrap();
+    let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    cleanup.rule(gone);
+    let result = tokio::task::spawn_blocking(move || {
+        // Keep a failing implementation's Drop from adding another trace.
+        cleanup.finished = true;
+        cleanup.clean()
+    })
+    .await
+    .unwrap();
+    assert_eq!(result, Ok(()));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "DELETE");
+    assert_eq!(requests[0].url.path(), "/api/detection_engine/rules");
+    assert_eq!(
+        requests[0].url.query(),
+        Some("rule_id=elasticctl-live-gone-rule")
+    );
+    assert!(requests[0].body.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_exact_rule_delete_propagates_non_404_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "elasticctl-live-owned"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_json(json!({"message":"forbidden","status_code":403})),
+        )
+        .mount(&server)
+        .await;
+    let profile: Profile =
+        serde_json::from_value(json!({"kibana_url":server.uri(),"api_key":"offline"})).unwrap();
+    let cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
+    let result = tokio::task::spawn_blocking(move || cleanup.delete_rule("elasticctl-live-owned"))
+        .await
+        .unwrap();
+    assert!(result.is_err());
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "DELETE");
 }

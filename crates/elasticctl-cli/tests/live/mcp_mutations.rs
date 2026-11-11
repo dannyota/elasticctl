@@ -26,26 +26,10 @@ const MUTATION_TOOLS: &[&str] = &[
 ];
 
 fn require(ok: bool) -> TestResult {
-    if ok {
-        Ok(())
-    } else {
-        Err("mutation contract refused".into())
-    }
+    if ok { Ok(()) } else { Err("contract".into()) }
 }
 fn marker(id: &str) -> TestResult {
     require(id.starts_with(LIVE_PREFIX) && id.len() > LIVE_PREFIX.len())
-}
-fn guarded_run(
-    baseline: impl FnOnce() -> TestResult,
-    body: impl FnOnce() -> TestResult,
-    cleanup: impl FnOnce() -> TestResult,
-    audit: impl FnOnce() -> TestResult,
-) -> TestResult {
-    baseline()?;
-    let result = body();
-    cleanup()?;
-    audit()?;
-    result
 }
 
 trait Child {
@@ -57,12 +41,17 @@ impl Child for McpChild {
         McpChild::send(self, frame)
     }
     fn receive(&mut self) -> TestResult<Value> {
-        let bytes = self
-            .replies
-            .recv_timeout(Duration::from_secs(75))
-            .map_err(|_| "mutation reply unavailable")?
-            .map_err(|_| "mutation reply failed")?
-            .ok_or("mutation child closed")?;
+        check_cancelled()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(75);
+        let bytes = loop {
+            check_cancelled()?;
+            match self.replies.recv_timeout(Duration::from_millis(100)) {
+                Ok(reply) => break reply.map_err(|_| "contract")?.ok_or("contract")?,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if std::time::Instant::now() < deadline => {}
+                Err(_) => return Err("contract".into()),
+            }
+        };
         serde_json::from_slice(&bytes).map_err(|_| "mutation reply invalid".into())
     }
 }
@@ -71,9 +60,12 @@ struct Session<C> {
     path: McpProtocolPath,
     form: bool,
     next: u64,
+    owned: std::collections::BTreeSet<String>,
+    plans: std::collections::BTreeMap<String, String>,
 }
 impl<C: Child> Session<C> {
     fn call(&mut self, name: &str, args: Value) -> TestResult<Value> {
+        check_cancelled()?;
         let id = self.next;
         self.next += 1;
         self.child
@@ -84,13 +76,22 @@ impl<C: Child> Session<C> {
     }
     fn plan(&mut self, rule: &str, enabled: bool) -> TestResult<String> {
         marker(rule)?;
+        require(self.owned.contains(rule))?;
         let f = self.call(
             "rules_set_enabled_plan",
             json!({"selectors":[rule],"enabled":enabled}),
         )?;
-        frames::plan_id(&frames::content(f, self.path)?)
+        let content = frames::content(f, self.path)?;
+        verify_view(&content, rule)?;
+        let id = frames::plan_id(&content)?;
+        self.plans.insert(id.clone(), rule.into());
+        Ok(id)
     }
     fn apply(&mut self, plan: &str, accept: bool) -> TestResult<Value> {
+        let rule = self.plans.get(plan).ok_or("contract")?.clone();
+        require(self.owned.contains(&rule))?;
+        let view = self.call("plan_get", json!({"plan_id":plan}))?;
+        verify_view(&frames::content(view, self.path)?, &rule)?;
         let id = self.next;
         self.next += 1;
         let request = frames::request(
@@ -112,6 +113,7 @@ impl<C: Child> Session<C> {
                 for (key, value) in answer.as_object().ok_or("invalid answer")? {
                     retry["params"][key] = value.clone();
                 }
+                check_cancelled()?;
                 self.child.send(retry.clone())?;
                 let result = self.child.receive()?;
                 require(result["id"] == retry["id"])?;
@@ -122,6 +124,7 @@ impl<C: Child> Session<C> {
                     question["method"] == "elicitation/create" && question.get("id").is_some(),
                 )?;
                 frames::form(&question["params"])?;
+                check_cancelled()?;
                 self.child
                     .send(frames::legacy_answer(question["id"].clone(), accept))?;
                 let result = self.child.receive()?;
@@ -148,6 +151,8 @@ impl Session<McpChild> {
             path,
             form,
             next: 10,
+            owned: Default::default(),
+            plans: Default::default(),
         };
         if matches!(path, McpProtocolPath::Legacy) {
             s.child.send(
@@ -164,16 +169,17 @@ impl Session<McpChild> {
 }
 
 fn safe<T>(r: elasticctl_core::Result<T>) -> TestResult<T> {
-    r.map_err(|_| "mutation API failed".into())
+    r.map_err(|_| "contract".into())
 }
 fn runtime() -> TestResult<tokio::runtime::Runtime> {
-    tokio::runtime::Runtime::new().map_err(|_| "mutation runtime failed".into())
+    tokio::runtime::Runtime::new().map_err(|_| "contract".into())
 }
 fn rule_body(id: &str, index: &str) -> TestResult<elasticctl_api::model::Rule> {
     marker(id)?;
     marker(index)?;
-    let value = serde_json::from_str(&query_rule(id, index, "*", None))
+    let mut value: Value = serde_json::from_str(&query_rule(id, index, "*", None))
         .map_err(|_| "invalid marker rule")?;
+    value["tags"] = json!([LIVE_TAG, id]);
     safe(elasticctl_api::model::Rule::from_value(value))
 }
 async fn owned_rule(t: &Transport, id: &str) -> TestResult<elasticctl_api::model::Rule> {
@@ -183,22 +189,27 @@ async fn owned_rule(t: &Transport, id: &str) -> TestResult<elasticctl_api::model
         r.rule_id().ok() == Some(id)
             && r.as_map()["tags"]
                 .as_array()
-                .is_some_and(|a| a.contains(&json!(LIVE_TAG))),
+                .is_some_and(|a| a.contains(&json!(LIVE_TAG)) && a.contains(&json!(id))),
     )?;
     Ok(r)
 }
-async fn toggle(t: &Transport, id: &str, enabled: bool) -> TestResult {
+async fn toggle(t: &Transport, registry: &Registry, id: &str, enabled: bool) -> TestResult {
+    check_cancelled()?;
+    require(registry.rules.contains(id))?;
     owned_rule(t, id).await?;
     let p = safe(elasticctl_api::rules_ops::plan_set_enabled(t, &[id.into()], enabled).await)?;
+    exact_targets(&p.targets, &[id.into()])?;
     let o = safe(elasticctl_api::rules_ops::apply_set_enabled(t, &p, enabled).await)?;
     require(o.failed == 0 && o.total == 1)?;
     require(owned_rule(t, id).await?.enabled() == enabled)
 }
-fn contract(config: &Path, profile: &Profile, id: &str) -> TestResult {
+fn contract(config: &Path, profile: &Profile, registry: &Registry, id: &str) -> TestResult {
     let rt = runtime()?;
     let t = safe(Transport::new(profile))?;
+    require(registry.rules.contains(id))?;
     let read = || rt.block_on(owned_rule(&t, id));
     let mut a = Session::spawn(config, McpProtocolPath::Current, true, true)?;
+    a.owned = registry.rules.clone();
     for class in SHIPPED_CLASSES {
         require(*class == "rules-toggle")?;
         let before = read()?;
@@ -215,7 +226,7 @@ fn contract(config: &Path, profile: &Profile, id: &str) -> TestResult {
         frames::code(&a.apply(&plan, false)?, "plan_declined")?;
         require(read()? == after)?;
         let plan = a.plan(id, false)?;
-        rt.block_on(toggle(&t, id, false))?;
+        rt.block_on(toggle(&t, registry, id, false))?;
         let outside = read()?;
         let stale = a.call("plan_apply", json!({"plan_id":plan}))?;
         frames::code(&frames::content(stale, a.path)?, "plan_stale")?;
@@ -223,6 +234,7 @@ fn contract(config: &Path, profile: &Profile, id: &str) -> TestResult {
     }
     a.child.shutdown()?;
     let mut b = Session::spawn(config, McpProtocolPath::Legacy, true, true)?;
+    b.owned = registry.rules.clone();
     let before = read()?;
     let plan = b.plan(id, !before.enabled())?;
     require(read()? == before)?;
@@ -231,6 +243,7 @@ fn contract(config: &Path, profile: &Profile, id: &str) -> TestResult {
     b.child.shutdown()?;
     for path in [McpProtocolPath::Current, McpProtocolPath::Legacy] {
         let mut no = Session::spawn(config, path, false, true)?;
+        no.owned = registry.rules.clone();
         let before = read()?;
         let plan = no.plan(id, !before.enabled())?;
         let f = no.call("plan_apply", json!({"plan_id":plan}))?;
@@ -250,62 +263,44 @@ fn contract(config: &Path, profile: &Profile, id: &str) -> TestResult {
 
 fn live_run(measurements: bool) -> TestResult {
     let _serial = serialize_live();
-    let dir = tempfile::tempdir().map_err(|_| "mutation scratch failed")?;
+    let dir = tempfile::tempdir().map_err(|_| "contract")?;
     let config = write_live_config(dir.path());
     let profile = live_profile();
-    let baseline = capture_baseline(&config, &profile).map_err(|_| "mutation baseline failed")?;
-    let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
-    // The wrapper owns cleanup errors and keeps private details out of Drop.
-    cleanup.finished = true;
-    assert_clean_baseline(&config, &cleanup, baseline.clone())
-        .map_err(|_| "mutation baseline dirty")?;
-    let id = unique_name("mutation-rule");
-    let index = unique_name("mutation-index");
-    marker(&id)?;
-    marker(&index)?;
-    cleanup.rule(id.clone());
     let rt = runtime()?;
     let t = safe(Transport::new(&profile))?;
-    let run = (|| {
-        rt.block_on(async {
-            let body = rule_body(&id, &index)?;
-            let (p, _) = safe(elasticctl_api::rules_ops::plan_create(&t, body).await)?;
-            safe(elasticctl_api::rules_ops::apply_create(&t, &p).await)?;
-            require(!owned_rule(&t, &id).await?.enabled())
-        })?;
-        if measurements {
-            measure::run(&rt, &t, &profile, &id, &index, &mut cleanup)
-        } else {
-            contract(&config, &profile, &id)
-        }
-    })();
-    let mut auditor = LiveCleanup::new(config.clone(), profile.clone());
-    auditor.finished = true;
-    guarded_run(
-        || Ok(()),
-        || run,
+    let mut registry = Registry::default();
+    let signals = Signals::install(&rt)?;
+    let mut baseline = None;
+    let result = orchestrate(
+        &rt,
+        &t,
+        &mut registry,
         || {
-            rt.block_on(async {
-                for rule in &cleanup.rules {
-                    match elasticctl_api::rules::get(&t, rule).await {
-                        Ok(_) => {
-                            owned_rule(&t, rule).await?;
-                        }
-                        Err(e) if e.kind == ErrorKind::NotFound => {}
-                        Err(_) => return Err("mutation cleanup read failed".into()),
-                    }
-                }
-                Ok::<_, String>(())
-            })?;
-            cleanup
-                .finish()
-                .map_err(|_| "mutation cleanup failed".into())
+            rt.block_on(lab_identity::baseline(
+                &t,
+                &profile,
+                std::env::var("ELASTICCTL_MUTATION_LAB").as_deref() == Ok("1"),
+            ))?;
+            if baseline.is_none() {
+                baseline = Some(capture_baseline(&config, &profile)?);
+            }
+            let mut audit = LiveCleanup::new(config.clone(), profile.clone());
+            audit.finished = true;
+            assert_clean_baseline(&config, &audit, baseline.clone().ok_or("baseline_failed")?)
         },
-        || {
-            assert_clean_baseline(&config, &auditor, baseline)
-                .map_err(|_| "mutation final baseline failed".into())
+        |registry| {
+            let id = unique_name("mutation-rule");
+            let index = unique_name("mutation-index");
+            rt.block_on(create_rule(&t, registry, &id, &index))?;
+            if measurements {
+                measure::run(&rt, &t, &profile, &id, &index, registry)
+            } else {
+                contract(&config, &profile, registry, &id)
+            }
         },
-    )
+    );
+    drop(signals);
+    result
 }
 #[path = "mcp_mutations/measure.rs"]
 mod measure;
@@ -313,11 +308,30 @@ pub(super) fn run_contract() {
     if skip_unless_live() {
         return;
     }
-    assert!(live_run(false).is_ok(), "mutation contract failed");
+    if let Err(class) = live_run(false) {
+        panic!("{class}");
+    }
 }
 pub(super) fn run_measurements() {
     if skip_unless_live() {
         return;
     }
-    assert!(live_run(true).is_ok(), "mutation measurements failed");
+    if let Err(class) = live_run(true) {
+        panic!("{class}");
+    }
 }
+
+#[path = "mcp_mutations/ownership.rs"]
+mod ownership;
+use ownership::*;
+
+#[cfg(test)]
+#[path = "mcp_mutations/ownership_tests.rs"]
+mod ownership_tests;
+
+#[path = "mcp_mutations/lab_identity.rs"]
+mod lab_identity;
+
+#[cfg(test)]
+#[path = "mcp_mutations/lab_tests.rs"]
+mod lab_tests;

@@ -74,6 +74,8 @@ fn spawn(config: &Path, path: McpProtocolPath, form: bool, mutations: bool) -> S
         path: s.path,
         form: s.form,
         next: s.next,
+        owned: [RULE.into()].into(),
+        plans: Default::default(),
     }
 }
 async fn writes(server: &MockServer, expected: usize) {
@@ -182,6 +184,57 @@ async fn stale_plan_refuses_without_write() {
     let frame = checked(result, &s);
     let content = checked(frames::content(frame, s.path), &s);
     checked(frames::code(&content, "plan_stale"), &s);
+    s.child.child.shutdown().unwrap();
+    writes(&server, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redirected_resolved_target_never_reaches_confirmation_or_write() {
+    let (server, _dir, config) = setup().await;
+    let mut unrelated = fixture("rules_get");
+    unrelated["rule_id"] = json!("another-users-rule");
+    unrelated["name"] = json!(RULE);
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", RULE))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"message":"absent","status_code":404})),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules"))
+        .and(query_param("rule_id", "another-users-rule"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unrelated.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/detection_engine/rules/_find"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total":1,"page":1,"perPage":100,"data":[unrelated]})),
+        )
+        .mount(&server)
+        .await;
+    let mut s = spawn(&config, McpProtocolPath::Current, true, true);
+    assert!(s.plan(RULE, false).is_err());
+    assert!(s.plans.is_empty());
+    assert!(
+        s.child
+            .frames
+            .iter()
+            .any(|f| f.pointer("/result/structuredContent/data/plan/targets")
+                == Some(&json!(["another-users-rule"]))),
+        "{:?}",
+        s.child.frames
+    );
+    assert!(
+        s.child
+            .frames
+            .iter()
+            .all(|f| f.pointer("/params/name") != Some(&json!("plan_apply")))
+    );
     s.child.child.shutdown().unwrap();
     writes(&server, 0).await;
 }
