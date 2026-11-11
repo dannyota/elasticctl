@@ -78,14 +78,14 @@ target.
 The `Note:` line is present only for the two rule kinds. It is static text:
 
 ```text
-Note: Kibana ties each rule listed to this server's credential (<12 hex>). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.
+Note: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (<12 hex>) when it is enabled, and then runs with that credential's privileges.
 ```
 
-`<12 hex>` is the plan's credential value. Kibana documents that the
-caller's API key is assigned to the affected rules, for rule create and for
-bulk actions. The server cannot read which key a rule had before, so the
-text does not claim a difference; it states what will be true after the
-write.
+`<12 hex>` is the plan's credential value. M13 measured key ownership on
+the 9.5.1 lab ([research](../../plans/v0.9-research.md)): a rule without a
+key gets the key of the credential that enables it, and a later disable or
+enable by another credential keeps the existing owner. The planner does not
+read a rule's key owner, so the note states both cases.
 
 Rendering rules, applied to every filled-in value:
 

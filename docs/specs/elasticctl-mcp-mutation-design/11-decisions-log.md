@@ -32,7 +32,7 @@ Each row is final for 0.9. Sources are in
 | D23 | 0.9 uses no MCP tasks, no resources, and no prompts for plans. | Every apply is one request inside the deadline; `plan_get` and `plan_list` already read plans. |
 | D24 | All `-api` additions and all live measurements land in 0.9.0. | Live stacks are available briefly. |
 | D25 | No new CLI command. CLI output changes in one place: a case status conflict error gains `http_status: 409`. | 0.9 is an MCP capability area. Snapshots prove the rest is unchanged. |
-| D26 | The consent text of a rule toggle and a rule create states that Kibana ties the rule to this server's credential and that undo does not restore the earlier one. | Kibana documents the key assignment for both routes. It changes how the rule runs and no tool sets it back. |
+| D26 | The consent text of a rule toggle and a rule create states that Kibana ties the rule to this server's credential and that undo does not restore the earlier one. | Kibana documents the key assignment for both routes. It changes how the rule runs and no tool sets it back. D34 replaces the wording. |
 | D27 | Every object a plan writes to is named by identity in the consent text. A comment plan shows the case id. | Titles and names are not unique. |
 | D28 | Text that will be written must display exactly; input with a replaced character is refused. | What is shown must be what is stored. |
 | D29 | `--allow-mutations` with a profile that has no `es_url` fails at startup with a line naming `es_url`. | Every plan needs the credential read; a clear early error beats a failed planner. |
@@ -40,6 +40,7 @@ Each row is final for 0.9. Sources are in
 | D31 | A case status plan requires a strictly decoded `syncAlerts == false`, when planning and at both checks, and is refused with `case_sync_alerts` otherwise. A new case is created with `syncAlerts: false`, shown in the consent text. | With sync on, Kibana changes attached alerts that the plan does not list and nobody confirmed. |
 | D32 | A rule read must return the `rule_id` that was asked for, when planning and at both checks. Planning reuses `selection::to_rule`. | The route matches through KQL, which decodes escapes, so a read can return another rule than the one the write targets. |
 | D33 | The consent text opens with the action, the target, and the first detail line. `plan_declined` says the plan is closed. | Claude Code 2.1.322 shows only the first three lines of a form message (M10), with no key to show more, and a person must see what they confirm. After a decline, a model told the person the plan was still open. |
+| D34 | The key note says each rule keeps the credential it has, and a rule without one gets this server's credential when it is enabled. | M13 on the 9.5.1 lab: a keyless rule took the enabler's key, and a disable or an enable by another credential kept the existing owner. The earlier wording claimed every write reassigns the key. |
 
 ### Owner decisions, 2026-11-10
 
