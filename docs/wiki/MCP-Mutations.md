@@ -391,10 +391,9 @@ It cannot check that a person gave it.
 - **The last check is not atomic.** A change between the last read and the
   write is not seen.
 - **A rule without a key takes the server's credential.** Kibana gives a rule
-  an API key when it is first enabled. A rule enabled through MCP that had no
-  key then runs with this credential's privileges, stops if the key is
-  deleted, and keeps that key when it is disabled. A rule that already has a
-  key keeps it.
+  an API key on its first enable. Enabled through MCP, such a rule then runs
+  with this credential's privileges and stops if the key is deleted; a later
+  disable keeps the key. A rule that already has a key keeps it.
 
 MCP deletes nothing, changes no rule content or exception list, and never
 runs `state push`. To limit what the server can change, start it with a
