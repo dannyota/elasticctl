@@ -79,6 +79,13 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
         ToolId::PlanApply | ToolId::PlanDiscard | ToolId::PlanGet | ToolId::PlanList => {
             Some(plans::adapter())
         }
+        ToolId::AlertsSetStatusPlan | ToolId::AlertsSetTagsPlan => {
+            Some(mutations::alerts::adapter())
+        }
+        ToolId::CasesCommentPlan | ToolId::CasesCreatePlan | ToolId::CasesSetStatusPlan => {
+            Some(mutations::cases::adapter())
+        }
+        ToolId::RulesCreatePlan => Some(mutations::rules_create::adapter()),
         ToolId::RulesSetEnabledPlan => Some(mutations::rules::adapter()),
         ToolId::AlertContext
         | ToolId::DetectionCoverage

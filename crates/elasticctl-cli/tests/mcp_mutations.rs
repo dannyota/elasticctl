@@ -20,6 +20,27 @@ fn run_target(
     name: &str,
     space: &str,
 ) -> (std::process::Output, tempfile::TempDir) {
+    run_request(
+        bin,
+        flags,
+        es,
+        url,
+        name,
+        space,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_request(
+    bin: &str,
+    flags: &[&str],
+    es: bool,
+    url: &str,
+    name: &str,
+    space: &str,
+    request: Value,
+) -> (std::process::Output, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
     let quoted = |v: &str| {
@@ -77,7 +98,7 @@ fn run_target(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    writeln!(child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}})).ok();
+    writeln!(child.stdin.as_mut().unwrap(), "{request}").ok();
     let mut line = Vec::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_until(b'\n', &mut line)
@@ -134,9 +155,6 @@ async fn mutation_flag_process_contract() {
             "",
             "all",
             "*",
-            "alerts-triage",
-            "cases",
-            "rules-create",
             "rules-toggle,",
             ",rules-toggle",
             " rules-toggle",
@@ -255,5 +273,112 @@ fn mutation_target_process_contract() {
                 assert!(reply["result"]["tools"].is_array());
             }
         }
+    }
+}
+
+// Captured from unmodified a46f4c38a5de6405ff76824261d077c22e457dd2
+// (Task 0 on released 0.9.0), using this process test with
+// The capture-only test wrote compact result JSON from tools/list with
+// --allow-mutations rules-toggle, with and without --allow-query-tools.
+// The committed test only compares those frozen captures.
+#[test]
+fn toggle_catalog_snapshot() {
+    for query in [false, true] {
+        let mut flags = vec!["--allow-mutations", "rules-toggle"];
+        if query {
+            flags.push("--allow-query-tools");
+        }
+        let (out, _) = run(
+            env!("CARGO_BIN_EXE_elasticctl"),
+            &flags,
+            true,
+            "https://kibana.example.test",
+        );
+        assert!(out.status.success());
+        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let actual = serde_json::to_string(&reply["result"]).unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/snapshots/mcp_toggle_{query}.json"));
+        assert_eq!(actual, std::fs::read_to_string(path).unwrap());
+    }
+}
+
+#[test]
+fn new_class_process_contract() {
+    for value in [
+        "alerts-triage",
+        "cases",
+        "rules-create",
+        "rules-toggle,rules-create,cases,alerts-triage",
+    ] {
+        let (out, _) = run(
+            env!("CARGO_BIN_EXE_elasticctl"),
+            &["--allow-mutations", value],
+            true,
+            "https://kibana.example.test",
+        );
+        assert!(
+            out.status.success(),
+            "{value}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let warning: Value = serde_json::from_slice(&out.stderr).unwrap();
+        let mut names: Vec<_> = value.split(',').collect();
+        names.sort_unstable();
+        assert_eq!(warning["warning"]["classes"], json!(names));
+    }
+}
+
+// Read-only results/instructions: tag v0.8.2. Toggle: unmodified a46f4c38 (0.9.0 + Task 0).
+// Reproduce by git archive of that revision, cargo build --locked -p elasticctl
+// --bin elasticctl --jobs 2, and these direct-start JSON-RPC requests.
+#[test]
+fn compatibility_results_and_instructions() {
+    for toggle in [false, true] {
+        let flags = if toggle {
+            vec!["--allow-mutations", "rules-toggle"]
+        } else {
+            vec![]
+        };
+        let mut captures = Vec::new();
+        for method in [
+            "server/discover",
+            "plan_list",
+            "plan_get",
+            "plan_discard",
+            "plan_apply",
+            "rules_set_enabled_plan",
+        ] {
+            let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
+            let request = if method == "server/discover" {
+                json!({"jsonrpc":"2.0","id":1,"method":method,"params":{"_meta":meta}})
+            } else {
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":method,"arguments":{},"_meta":meta}})
+            };
+            let bin = env!("CARGO_BIN_EXE_elasticctl");
+            let (out, _) = run_request(
+                bin,
+                &flags,
+                true,
+                "https://kibana.example.test",
+                "test",
+                "default",
+                request,
+            );
+            assert!(out.status.success());
+            if method == "server/discover" {
+                let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+                captures.push(format!(
+                    "{}\n",
+                    serde_json::to_string(&response["result"]["instructions"]).unwrap()
+                ));
+            } else {
+                captures.push(String::from_utf8(out.stdout).unwrap());
+            }
+        }
+        let actual = captures.concat();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/snapshots/mcp_compatibility_{toggle}.jsonl"));
+        assert_eq!(actual, std::fs::read_to_string(path).unwrap());
     }
 }

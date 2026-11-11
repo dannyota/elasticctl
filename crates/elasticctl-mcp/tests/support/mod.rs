@@ -7,7 +7,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use elasticctl_mcp::{ServerOptions, serve_io};
+use elasticctl_mcp::ServerOptions;
 
 pub const EXPECTED_TOOL_NAMES: &[&str] = &[
     "alert_context",
@@ -37,6 +37,8 @@ pub const EXPECTED_TOOL_NAMES: &[&str] = &[
 ];
 
 pub struct Harness {
+    #[allow(dead_code)]
+    pub audit: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     input: Option<DuplexStream>,
     output: BufReader<DuplexStream>,
     task: JoinHandle<elasticctl_core::Result<()>>,
@@ -46,8 +48,17 @@ impl Harness {
     pub fn start(target: Resolved, options: ServerOptions) -> Self {
         let (input, server_input) = tokio::io::duplex(1_048_576);
         let (server_output, output) = tokio::io::duplex(1_048_576);
-        let task = tokio::spawn(serve_io(target, options, server_input, server_output));
+        let audit = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = audit.clone();
+        let task = tokio::spawn(elasticctl_mcp::server::serve_io_with_audit(
+            target,
+            options,
+            server_input,
+            server_output,
+            move |line: &str| sink.lock().unwrap().push(line.to_owned()),
+        ));
         Self {
+            audit,
             input: Some(input),
             output: BufReader::new(output),
             task,

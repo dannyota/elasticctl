@@ -276,36 +276,42 @@ pub struct StatusReport {
     pub failures: Vec<Value>,
 }
 
-fn failed_count(outcome: &SignalsOutcome, conflicts: Conflicts) -> u64 {
-    outcome.failures.len() as u64
-        + match conflicts {
+fn failed_count(outcome: &SignalsOutcome, conflicts: Conflicts) -> Result<u64> {
+    (outcome.failures.len() as u64)
+        .checked_add(match conflicts {
             Conflicts::Abort => outcome.version_conflicts,
             Conflicts::Proceed => 0,
-        }
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Http,
+                "decoding alert response: counters are unreadable (failure count overflows u64)",
+            )
+        })
 }
 
 fn status_report(
     status: AlertStatus,
     outcome: SignalsOutcome,
     conflicts: Conflicts,
-) -> StatusReport {
-    StatusReport {
+) -> Result<StatusReport> {
+    Ok(StatusReport {
         applied: true,
         status: status.as_str().to_string(),
         total: outcome.total,
         updated: outcome.updated,
         version_conflicts: outcome.version_conflicts,
         noops: outcome.noops,
-        failed: failed_count(&outcome, conflicts),
+        failed: failed_count(&outcome, conflicts)?,
         failures: outcome.failures,
-    }
+    })
 }
 
 pub async fn apply_status_by_ids(t: &Transport, plan: &StatusPlan) -> Result<StatusReport> {
     require_targets(&plan.targets)?;
     let outcome =
         alerts::status_by_ids(t, &plan.targets, plan.status, plan.reason.as_deref()).await?;
-    Ok(status_report(plan.status, outcome, Conflicts::Abort))
+    status_report(plan.status, outcome, Conflicts::Abort)
 }
 
 pub const QUERY_SAMPLE_SIZE: usize = 10;
@@ -401,7 +407,7 @@ pub async fn apply_status_by_query(t: &Transport, plan: &QueryStatusPlan) -> Res
         plan.reason.as_deref(),
     )
     .await?;
-    Ok(status_report(plan.status, outcome, plan.conflicts))
+    status_report(plan.status, outcome, plan.conflicts)
 }
 
 /// The tags/assignees report: the same counters without a target status.
@@ -416,16 +422,16 @@ pub struct EditReport {
     pub failures: Vec<Value>,
 }
 
-fn edit_report(outcome: SignalsOutcome) -> EditReport {
-    EditReport {
+fn edit_report(outcome: SignalsOutcome) -> Result<EditReport> {
+    Ok(EditReport {
         applied: true,
         total: outcome.total,
         updated: outcome.updated,
         version_conflicts: outcome.version_conflicts,
         noops: outcome.noops,
-        failed: failed_count(&outcome, Conflicts::Abort),
+        failed: failed_count(&outcome, Conflicts::Abort)?,
         failures: outcome.failures,
-    }
+    })
 }
 
 /// Refuse an empty target list before any resolution or request. The CLI's
@@ -491,9 +497,7 @@ pub async fn apply_tags(t: &Transport, plan: &TagsPlan) -> Result<EditReport> {
     require_targets(&plan.targets)?;
     require_edit(&plan.add, &plan.remove)?;
     require_disjoint(&plan.add, &plan.remove, "tags")?;
-    Ok(edit_report(
-        alerts::set_tags(t, &plan.targets, &plan.add, &plan.remove).await?,
-    ))
+    edit_report(alerts::set_tags(t, &plan.targets, &plan.add, &plan.remove).await?)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -549,7 +553,5 @@ pub async fn apply_assign(t: &Transport, plan: &AssignPlan) -> Result<EditReport
     require_targets(&plan.targets)?;
     require_edit(&plan.add, &plan.remove)?;
     require_disjoint(&plan.add, &plan.remove, "assignees")?;
-    Ok(edit_report(
-        alerts::set_assignees(t, &plan.targets, &plan.add, &plan.remove).await?,
-    ))
+    edit_report(alerts::set_assignees(t, &plan.targets, &plan.add, &plan.remove).await?)
 }

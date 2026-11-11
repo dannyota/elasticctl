@@ -31,3 +31,19 @@ pub(super) fn drain_closed<P: Clone>(
 pub(super) fn local_error(error: ToolError) -> super::AdapterError {
     super::AdapterError::Tool(error)
 }
+
+pub(crate) mod alerts;
+pub(crate) mod cases;
+pub(crate) mod rules_create;
+
+fn definition(name: &'static str, description: &'static str, input: Value) -> rmcp::model::Tool {
+    let mut tool = crate::tools::plans::definition(name, description, input, false);
+    tool.annotations = Some(
+        rmcp::model::ToolAnnotations::new()
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+    );
+    tool
+}

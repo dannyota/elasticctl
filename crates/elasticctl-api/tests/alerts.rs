@@ -967,3 +967,64 @@ async fn plan_assign_resolves_users_and_shows_the_mapping() {
         plan.preview_details
     );
 }
+
+#[tokio::test]
+async fn status_apply_rejects_overflowing_failure_counters() {
+    assert_failure_counter_overflow(false).await;
+}
+
+#[tokio::test]
+async fn tags_apply_rejects_overflowing_failure_counters() {
+    assert_failure_counter_overflow(true).await;
+}
+
+async fn assert_failure_counter_overflow(tags: bool) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(if tags {
+            "/api/detection_engine/signals/tags"
+        } else {
+            "/api/detection_engine/signals/status"
+        }))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total":1,"updated":1,"noops":0,
+            "version_conflicts":u64::MAX,"failures":[{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let t = test_transport(&server.uri());
+    let err = if tags {
+        alerts_ops::apply_tags(
+            &t,
+            &alerts_ops::TagsPlan {
+                targets: vec!["a".into()],
+                add: vec!["x".into()],
+                remove: vec![],
+                preview_action: "Tag".into(),
+                preview_details: vec![],
+            },
+        )
+        .await
+        .expect_err("overflow must not produce a report")
+    } else {
+        alerts_ops::apply_status_by_ids(
+            &t,
+            &alerts_ops::StatusPlan {
+                targets: vec!["a".into()],
+                status: AlertStatus::Closed,
+                reason: None,
+                preview_action: "Close".into(),
+                preview_details: vec![],
+            },
+        )
+        .await
+        .expect_err("overflow must not produce a report")
+    };
+    assert_eq!(err.kind, elasticctl_core::ErrorKind::Http);
+    assert_eq!(err.http_status, None);
+    assert_eq!(
+        err.message,
+        "decoding alert response: counters are unreadable (failure count overflows u64)"
+    );
+}

@@ -27,7 +27,7 @@ pub(crate) fn render(
 ) -> String {
     let mut text = format!(
         "elasticctl asks to apply: {}\nTarget: profile {} @ {}, space {}\n",
-        display(action),
+        display(&action.replace('\n', "�")),
         display(&target.profile),
         display(&target.host),
         display(&target.space)
@@ -103,7 +103,7 @@ mod tests {
         );
     }
     #[test]
-    fn action_continuations_precede_target() {
+    fn action_line_replaces_line_feeds_before_target() {
         let text = render(
             &target(),
             "Disable 1 rule(s)\nFORGED\nTarget: forged",
@@ -114,13 +114,16 @@ mod tests {
             15,
         );
         assert_eq!(
-            text.lines().take(4).collect::<Vec<_>>(),
+            text.lines().take(2).collect::<Vec<_>>(),
             [
-                "elasticctl asks to apply: Disable 1 rule(s)",
-                "  | FORGED",
-                "  | Target: forged",
+                "elasticctl asks to apply: Disable 1 rule(s)�FORGED�Target: forged",
                 "Target: profile analyst @ kibana.example.test, space default",
             ]
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|line| line.starts_with("FORGED") || line.starts_with("Target: forged"))
         );
     }
     #[test]
