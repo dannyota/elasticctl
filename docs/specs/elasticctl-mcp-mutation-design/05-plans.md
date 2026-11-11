@@ -77,10 +77,11 @@ with an empty `api_key_id` when the response has none. Rules:
   The owner accepted this requirement on 2026-11-10.
 - If the read fails at run time, the planner fails with the mapped Elastic
   error. No plan is stored.
-- `rules_set_enabled` is refused with `credential_unsuitable` when
-  `realm_type` is `_cloud_api_key`. An organization-level key reaches every
-  deployment and project of the organization, and `_authenticate` does not
-  show its role scope, so a plan cannot show what the key may do. The refusal
+- Every mutation kind is refused with `credential_unsuitable` when
+  `realm_type` is `_cloud_api_key`, before any other read (D41). An
+  organization-level key reaches every deployment and project of the
+  organization, and `_authenticate` does not show its role scope, so a plan
+  cannot show what the key may do. The refusal
   is policy: Serverless 9.7.0 accepts such a key for an enable, and Hosted
   refuses it at `_authenticate`
   ([shared design 7.2](../elasticctl-design/07-verified-api-facts.md#72-rule-mutation-requires-a-project-scoped-api-key)).

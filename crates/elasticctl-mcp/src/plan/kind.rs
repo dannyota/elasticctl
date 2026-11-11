@@ -40,8 +40,9 @@ impl PlanKind {
             Self::RulesCreate => "rules-create",
         }
     }
+    /// Refuse organization-level API keys for every mutation kind.
     pub(crate) fn credential_suitable(self, identity: &CredentialIdentity) -> bool {
-        !matches!(self, Self::RulesSetEnabled) || identity.realm_type != "_cloud_api_key"
+        identity.realm_type != "_cloud_api_key"
     }
     pub(crate) fn note(self, credential: &str) -> String {
         format!(
@@ -408,6 +409,36 @@ mod tests {
         },
     };
     use tokio::time::Instant;
+
+    #[test]
+    fn credential_suitable_refuses_cloud_api_keys_for_every_kind() {
+        for kind in [
+            PlanKind::RulesSetEnabled,
+            PlanKind::AlertsSetStatus,
+            PlanKind::AlertsSetTags,
+            PlanKind::CasesCreate,
+            PlanKind::CasesComment,
+            PlanKind::CasesSetStatus,
+            PlanKind::RulesCreate,
+        ] {
+            for (realm_type, suitable) in [
+                ("_cloud_api_key", false),
+                ("_es_api_key", true),
+                ("native", true),
+            ] {
+                let identity = CredentialIdentity {
+                    username: "test-user".into(),
+                    realm_type: realm_type.into(),
+                    api_key_id: None,
+                };
+                assert_eq!(
+                    kind.credential_suitable(&identity),
+                    suitable,
+                    "{kind:?} with realm {realm_type}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn rule_note_keeps_existing_credential_and_names_keyless_enabler() {
