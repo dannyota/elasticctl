@@ -92,10 +92,12 @@ before and after are the evidence that planners write nothing.
 
 ### 9.3 Real clients
 
-Model-driven clients run only against the lab, because tool results carry
-the target host and those clients send tool results to their providers.
-Client configuration lives in a scratch directory outside the repository. A
-shim records both stdio directions to private files.
+Model-driven clients run against the Hosted test deployment (D35). Tool
+results carry the target host, and these clients send tool results to their
+providers, so the target holds only test data. The 0.9.0 client runs used the
+local lab. Public evidence never records the host or an id. Client
+configuration lives in a scratch directory outside the repository. A shim
+records both stdio directions to private files.
 
 Confirming needs a person or a scripted terminal. A confirming run uses an
 interactive session in a terminal multiplexer; the keys that answer the

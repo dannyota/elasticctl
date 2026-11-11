@@ -41,6 +41,7 @@ Each row is final for 0.9. Sources are in
 | D32 | A rule read must return the `rule_id` that was asked for, when planning and at both checks. Planning reuses `selection::to_rule`. | The route matches through KQL, which decodes escapes, so a read can return another rule than the one the write targets. |
 | D33 | The consent text opens with the action, the target, and the first detail line. `plan_declined` says the plan is closed. | Claude Code 2.1.322 shows only the first three lines of a form message (M10), with no key to show more, and a person must see what they confirm. After a decline, a model told the person the plan was still open. |
 | D34 | The key note says each rule keeps the credential it has, and a rule without one gets this server's credential when it is enabled. | M13 on the 9.5.1 lab: a keyless rule took the enabler's key, and a disable or an enable by another credential kept the existing owner. The earlier wording claimed every write reassigns the key. |
+| D35 | Model-driven clients run against the Hosted test deployment, not only the local lab. | Owner decision. Hosted holds only test data and is a supported flavor, so its host reaching a model provider exposes nothing real, and the run tests a flavor users run. Tool results carry no secret; the credential appears only as a fingerprint. |
 
 ### Owner decisions, 2026-11-10
 
