@@ -60,13 +60,11 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[Strin
             "MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL.",
         );
     }
-    if !allow_mutations.is_empty() {
-        emit_warning(
-            "mutations_enabled",
-            "MCP mutation tools are enabled.",
-            Some(&allow_mutations.names()),
-        );
-    }
+    let options = elasticctl_mcp::ServerOptions {
+        call_timeout: Duration::from_secs(timeout_secs),
+        allow_query_tools,
+        allow_mutations,
+    };
 
     if Config::permission_warning(&config_path(global)).is_some() {
         emit_warning("insecure_config_permissions", INSECURE_PERMISSIONS, None);
@@ -75,15 +73,20 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[Strin
         emit_warning("insecure_tls_verification", INSECURE_TLS, None);
     }
 
-    let result = elasticctl_mcp::serve_stdio(
-        context.resolved,
-        elasticctl_mcp::ServerOptions {
-            call_timeout: Duration::from_secs(timeout_secs),
-            allow_query_tools,
-            allow_mutations,
-        },
-    )
-    .await;
+    // Validate before announcing mutations, so a failed start never claims
+    // they are enabled. The output of a failed start is the same as before.
+    if let Err(error) = elasticctl_mcp::validate_startup(&context.resolved, &options) {
+        finish_error(1, error.kind.as_str(), SERVER_FAILED);
+    }
+    if !options.allow_mutations.is_empty() {
+        emit_warning(
+            "mutations_enabled",
+            "MCP mutation tools are enabled.",
+            Some(&options.allow_mutations.names()),
+        );
+    }
+
+    let result = elasticctl_mcp::serve_stdio(context.resolved, options).await;
     let code = match result {
         Ok(()) => 0,
         Err(error) => {

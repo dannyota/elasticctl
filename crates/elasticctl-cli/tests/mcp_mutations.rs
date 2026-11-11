@@ -1,11 +1,14 @@
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn run(bin: &str, flags: &[&str], es: bool) -> (std::process::Output, tempfile::TempDir) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+fn run(
+    bin: &str,
+    flags: &[&str],
+    es: bool,
+    url: &str,
+) -> (std::process::Output, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
     std::fs::write(
@@ -55,15 +58,17 @@ fn run(bin: &str, flags: &[&str], es: bool) -> (std::process::Output, tempfile::
     drop(child.stdin.take());
     let mut output = child.wait_with_output().unwrap();
     output.stdout = line;
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
     (output, dir)
 }
 
-#[test]
-fn mutation_flag_process_contract() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mutation_flag_process_contract() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let url = server.uri();
     for bin in [
         env!("CARGO_BIN_EXE_elasticctl"),
         env!("CARGO_BIN_EXE_elkctl"),
@@ -79,17 +84,13 @@ fn mutation_flag_process_contract() {
             &["--allow-mutations", "rules-toggle,rules-toggle"],
             &["--allow-mutations", "rules-toggle", "--allow-query-tools"],
         ] {
-            let (out, _) = run(bin, flags, true);
+            let (out, _) = run(bin, flags, true, &url);
             assert!(
                 out.status.success(),
                 "{}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            let warning: Value = serde_json::from_slice(&out.stderr).unwrap();
-            assert_eq!(
-                warning,
-                json!({"warning":{"kind":"mutations_enabled","message":"MCP mutation tools are enabled.","classes":["rules-toggle"]}})
-            );
+            assert_eq!(out.stderr, b"{\"warning\":{\"kind\":\"mutations_enabled\",\"message\":\"MCP mutation tools are enabled.\",\"classes\":[\"rules-toggle\"]}}\n");
             let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
             let tools = reply["result"]["tools"].as_array().unwrap();
             for name in [
@@ -105,28 +106,50 @@ fn mutation_flag_process_contract() {
         for value in [
             "",
             "all",
+            "*",
+            "alerts-triage",
+            "cases",
+            "rules-create",
             "rules-toggle,",
             ",rules-toggle",
             " rules-toggle",
             "rules-toggle ",
             "sentinel",
         ] {
-            let (out, _) = run(bin, &["--allow-mutations", value], true);
+            let (out, _) = run(bin, &["--allow-mutations", value], true, &url);
             assert_eq!(out.status.code(), Some(2));
             assert!(out.stdout.is_empty());
             assert_eq!(
-                serde_json::from_slice::<Value>(&out.stderr).unwrap(),
-                json!({"error":{"kind":"error","message":"Invalid MCP serve arguments."}})
+                out.stderr,
+                b"{\"error\":{\"kind\":\"error\",\"message\":\"Invalid MCP serve arguments.\"}}\n"
             );
         }
-        let (out, _) = run(bin, &["--allow-mutations", "rules-toggle"], false);
+        let (out, _) = run(bin, &["--allow-mutations", "rules-toggle"], false, &url);
         assert_eq!(out.status.code(), Some(1));
         assert!(out.stdout.is_empty());
         assert_eq!(
-            serde_json::from_slice::<Value>(&out.stderr).unwrap(),
-            json!({"error":{"kind":"error","message":"MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL."}})
+            out.stderr,
+            b"{\"error\":{\"kind\":\"error\",\"message\":\"MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL.\"}}\n"
         );
-        let (out, _) = run(bin, &[], false);
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
+        let (out, _) = run(bin, &["--allow-mutations"], true, &url);
+        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(
+            out.stderr,
+            b"{\"error\":{\"kind\":\"error\",\"message\":\"Invalid MCP serve arguments.\"}}\n"
+        );
+        let (out, _) = run(
+            bin,
+            &["--allow-mutations", "rules-toggle"],
+            true,
+            "ftp://localhost",
+        );
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            out.stderr,
+            b"{\"error\":{\"kind\":\"error\",\"message\":\"MCP server failed.\"}}\n"
+        );
+        let (out, _) = run(bin, &[], false, &url);
         assert!(out.status.success());
         let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
         let tools = reply["result"]["tools"].as_array().unwrap();
@@ -139,7 +162,7 @@ fn mutation_flag_process_contract() {
         ] {
             assert!(!tools.iter().any(|tool| tool["name"] == name));
         }
-        let (out, _) = run(bin, &["--yes"], false);
+        let (out, _) = run(bin, &["--yes"], false, &url);
         assert_eq!(out.status.code(), Some(2));
     }
 }

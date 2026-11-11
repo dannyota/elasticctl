@@ -167,6 +167,11 @@ impl ServerState {
     }
 }
 
+/// Validate a target and options before starting the MCP server.
+pub fn validate_startup(target: &Resolved, options: &ServerOptions) -> elasticctl_core::Result<()> {
+    validate_target(target, options).map(|_| ())
+}
+
 /// Validate configuration that can be rejected before MCP startup or network I/O.
 fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetContext> {
     crate::MutationClasses::parse(options.allow_mutations.names())?;
