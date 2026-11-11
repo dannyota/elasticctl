@@ -70,6 +70,12 @@ async fn legacy_answer_rows_pending_reads_cancellation_and_timeout() {
         } else {
             assert_eq!(data["error"]["code"], expected, "{r}");
         }
+        if expected == "plan_declined" {
+            assert_eq!(
+                data["error"]["message"],
+                "The plan was declined and closed."
+            );
+        }
         let r = common::call(&mut h, "name-sentinel", json!({}), json!({})).await;
         assert_eq!(r["error"]["message"], "Unknown MCP tool");
         h.close_input();

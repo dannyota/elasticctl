@@ -165,10 +165,8 @@ The form message is this text. Values in angle brackets are filled in; every
 other character is fixed.
 
 ```text
-elasticctl asks to apply a change.
-
+elasticctl asks to apply: <action>
 Target: profile <profile> @ <host>, space <space>
-Change: <action>
   <detail>
   <detail>
 Note: <note>
@@ -180,6 +178,8 @@ Set "Apply this change" to true and accept to apply it.
 Decline, or leave it false, and nothing changes.
 ```
 
+- Claude Code shows only the first three lines of the form. Read the full
+  plan with `plan_get` before you accept.
 - A line at the left margin was written by elasticctl. An indented line is
   data. For a rule toggle each detail line is
   `<rule_id>  <name>  <from> -> <to>`, one per rule.

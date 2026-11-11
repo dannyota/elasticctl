@@ -59,7 +59,11 @@ impl PlanError {
                 "conflict",
                 "The target changed after the plan was made.",
             ),
-            Self::Declined => ("plan_declined", "permission", "The plan was declined."),
+            Self::Declined => (
+                "plan_declined",
+                "permission",
+                "The plan was declined and closed.",
+            ),
             Self::Discarded => ("plan_discarded", "conflict", "The plan was discarded."),
             Self::NotOpen => ("plan_not_open", "conflict", "The plan is not open."),
             Self::TooLarge => (

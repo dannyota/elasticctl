@@ -39,6 +39,7 @@ Each row is final for 0.9. Sources are in
 | D30 | Files that 0.8 and 0.9 both edit have one serialized owner task per version. | Parallel tasks own separate files. |
 | D31 | A case status plan requires a strictly decoded `syncAlerts == false`, when planning and at both checks, and is refused with `case_sync_alerts` otherwise. A new case is created with `syncAlerts: false`, shown in the consent text. | With sync on, Kibana changes attached alerts that the plan does not list and nobody confirmed. |
 | D32 | A rule read must return the `rule_id` that was asked for, when planning and at both checks. Planning reuses `selection::to_rule`. | The route matches through KQL, which decodes escapes, so a read can return another rule than the one the write targets. |
+| D33 | The consent text opens with the action, the target, and the first detail line. `plan_declined` says the plan is closed. | Claude Code 2.1.322 shows only the first three lines of a form message (M10), with no key to show more, and a person must see what they confirm. After a decline, a model told the person the plan was still open. |
 
 ### Owner decisions, 2026-11-10
 

@@ -199,11 +199,11 @@ pub async fn question(h: &mut Harness, id: &str) -> Value {
     let p = &before["result"]["structuredContent"]["data"]["plan"];
     let target = &before["result"]["structuredContent"]["target"];
     let text = format!(
-        "elasticctl asks to apply a change.\n\nTarget: profile {} @ {}, space {}\nChange: {}\n{}\nNote: Kibana ties each rule listed to this server's credential ({}). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.\nPlan: {}\nHash: {}\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes.",
+        "elasticctl asks to apply: {}\nTarget: profile {} @ {}, space {}\n{}\nNote: Kibana ties each rule listed to this server's credential ({}). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.\nPlan: {}\nHash: {}\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes.",
+        p["action"].as_str().unwrap(),
         target["profile"].as_str().unwrap(),
         target["host"].as_str().unwrap(),
         target["space"].as_str().unwrap(),
-        p["action"].as_str().unwrap(),
         p["details"]
             .as_array()
             .unwrap()
@@ -217,6 +217,38 @@ pub async fn question(h: &mut Harness, id: &str) -> Value {
     );
     assert_eq!(q["inputRequests"]["confirm"]["params"]["message"], text);
     q.clone()
+}
+#[tokio::test]
+async fn one_rule_question_first_three_lines() {
+    let (_s, mut h) = setup().await;
+    let id = plan(&mut h).await;
+    let before = call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+    let p = &before["result"]["structuredContent"]["data"]["plan"];
+    let target = &before["result"]["structuredContent"]["target"];
+    assert_eq!(p["details"].as_array().unwrap().len(), 1);
+    let q = call(&mut h, "plan_apply", json!({"plan_id":id}), json!({})).await;
+    assert_eq!(q["result"]["resultType"], "input_required");
+    let text = q["result"]["inputRequests"]["confirm"]["params"]["message"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        text.lines().take(3).collect::<Vec<_>>(),
+        [
+            format!(
+                "elasticctl asks to apply: {}",
+                p["action"].as_str().unwrap()
+            ),
+            format!(
+                "Target: profile {} @ {}, space {}",
+                target["profile"].as_str().unwrap(),
+                target["host"].as_str().unwrap(),
+                target["space"].as_str().unwrap()
+            ),
+            format!("  {}", p["details"][0].as_str().unwrap()),
+        ]
+    );
+    h.close_input();
+    h.join().await.unwrap();
 }
 #[tokio::test]
 async fn current_question_and_answers() {
@@ -315,6 +347,10 @@ async fn decline_closes_and_protocol_errors_stay_static() {
     assert_eq!(
         r["result"]["structuredContent"]["error"]["code"],
         "plan_declined"
+    );
+    assert_eq!(
+        r["result"]["structuredContent"]["error"]["message"],
+        "The plan was declined and closed."
     );
     let r = call(&mut h, "name-sentinel", json!({}), json!({})).await;
     assert_eq!(r["error"]["message"], "Unknown MCP tool");
