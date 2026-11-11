@@ -32,13 +32,19 @@ Each row is final for 0.9. Sources are in
 | D23 | 0.9 uses no MCP tasks, no resources, and no prompts for plans. | Every apply is one request inside the deadline; `plan_get` and `plan_list` already read plans. |
 | D24 | All `-api` additions and all live measurements land in 0.9.0. | Live stacks are available briefly. |
 | D25 | No new CLI command. CLI output changes in one place: a case status conflict error gains `http_status: 409`. | 0.9 is an MCP capability area. Snapshots prove the rest is unchanged. |
-| D26 | The consent text of a rule toggle and a rule create states that Kibana ties the rule to this server's credential and that undo does not restore the earlier one. | Kibana documents the key assignment for both routes. It changes how the rule runs and no tool sets it back. |
+| D26 | The consent text of a rule toggle and a rule create states that Kibana ties the rule to this server's credential and that undo does not restore the earlier one. | Kibana documents the key assignment for both routes. It changes how the rule runs and no tool sets it back. D34 replaces the wording. |
 | D27 | Every object a plan writes to is named by identity in the consent text. A comment plan shows the case id. | Titles and names are not unique. |
 | D28 | Text that will be written must display exactly; input with a replaced character is refused. | What is shown must be what is stored. |
 | D29 | `--allow-mutations` with a profile that has no `es_url` fails at startup with a line naming `es_url`. | Every plan needs the credential read; a clear early error beats a failed planner. |
 | D30 | Files that 0.8 and 0.9 both edit have one serialized owner task per version. | Parallel tasks own separate files. |
 | D31 | A case status plan requires a strictly decoded `syncAlerts == false`, when planning and at both checks, and is refused with `case_sync_alerts` otherwise. A new case is created with `syncAlerts: false`, shown in the consent text. | With sync on, Kibana changes attached alerts that the plan does not list and nobody confirmed. |
 | D32 | A rule read must return the `rule_id` that was asked for, when planning and at both checks. Planning reuses `selection::to_rule`. | The route matches through KQL, which decodes escapes, so a read can return another rule than the one the write targets. |
+| D33 | The consent text opens with the action, the target, and the first detail line. `plan_declined` says the plan is closed. | Claude Code 2.1.322 shows only the first three lines of a form message (M10), with no key to show more, and a person must see what they confirm. After a decline, a model told the person the plan was still open. |
+| D34 | The key note says each rule keeps the credential it has, and a rule without one gets this server's credential when it is enabled. | M13 on the 9.5.1 lab: a keyless rule took the enabler's key, and a disable or an enable by another credential kept the existing owner. The earlier wording claimed every write reassigns the key. |
+| D35 | Model-driven clients run against the Hosted test deployment, not only the local lab. | Owner decision. Hosted holds only test data and is a supported flavor, so its host reaching a model provider exposes nothing real, and the run tests a flavor users run. Tool results carry no secret; the credential appears only as a fingerprint. |
+| D36 | The server rejects a mutation call whose protocol shape does not match the session, before any read: another version in `_meta` after `initialize`, and current answer fields on a legacy request. | The SDK checks neither, so a mixed request ran drift reads and used a prompt on the wrong path. Read tools keep the 0.8 behavior. |
+| D37 | On the legacy path, one call deadline starts at the answer and covers the permit wait, the second check, and the write. | Two budgets allowed a write at 300 seconds, the Codex CLI default tool timeout. |
+| D38 | A class set requires a single-line profile name, host, and space. | A line break in the target pushed the first object out of the three lines Claude Code shows. |
 
 ### Owner decisions, 2026-11-10
 
@@ -49,7 +55,7 @@ Each row is final for 0.9. Sources are in
 | A reachable Elasticsearch URL for plans | Required. The error names `es_url` (D29) |
 | Two prompts per apply in Claude Code | Accepted |
 | Audit trail on stderr only | Accepted |
-| Organization-level key for measurement M9 | Pending. M9 stays a gated measurement and blocks no other work |
+| Organization-level key for measurement M9 | Supplied and measured on 2026-11-11 (M9): Serverless accepts it, Hosted refuses it at `_authenticate` |
 
 ### Alternatives where the trade-off matters
 
@@ -82,8 +88,9 @@ accepted stderr only.
 
 **Skipping the credential read (rejected for D15).** It would let profiles
 without an Elasticsearch URL make plans and save two requests per apply. The
-audit trail would then have no actor, and an organization-level key would
-fail after a person had already confirmed.
+audit trail would then have no actor, and a key the stack refuses, such as an
+organization-level key on Hosted (M9), would fail only after a person had
+already confirmed.
 
 **Typed confirmation code (rejected for D5).** See
 [section 2.2](02-consent-model.md#22-rejected-alternatives). It returns if a

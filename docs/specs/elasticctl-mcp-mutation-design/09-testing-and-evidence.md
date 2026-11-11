@@ -55,9 +55,10 @@ Snapshots change only for the `mcp` description and the new flag.
 
 One ignored test, `mcp_mutations_plan_and_confirm`, runs per flavor on
 Serverless, Hosted, and the lab. The harness prepares and removes objects
-through reviewed test code outside MCP. Every object carries the
-`elasticctl-sample` marker of [live stacks](../../../instructions/live-stacks.md).
-No prebuilt or unmarked object is named in any call.
+through reviewed test code outside MCP. Every object carries the live
+contract marker of [live stacks](../../../instructions/live-stacks.md): the
+`elasticctl-live-` prefix and the `elasticctl-live-marker` tag, which the
+baseline audit checks. No prebuilt or unmarked object is named in any call.
 
 1. Verify the baseline. Create a disabled marker rule, a marker index with a
    marker rule that raises at least two alerts, and a marker case.
@@ -91,10 +92,12 @@ before and after are the evidence that planners write nothing.
 
 ### 9.3 Real clients
 
-Model-driven clients run only against the lab, because tool results carry
-the target host and those clients send tool results to their providers.
-Client configuration lives in a scratch directory outside the repository. A
-shim records both stdio directions to private files.
+Model-driven clients run against the Hosted test deployment (D35). Tool
+results carry the target host, and these clients send tool results to their
+providers, so the target holds only test data. The 0.9.0 client runs used the
+local lab. Public evidence never records the host or an id. Client
+configuration lives in a scratch directory outside the repository. A shim
+records both stdio directions to private files.
 
 Confirming needs a person or a scripted terminal. A confirming run uses an
 interactive session in a terminal multiplexer; the keys that answer the

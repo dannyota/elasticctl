@@ -210,7 +210,13 @@ impl ServerHandler for McpServer {
                 .build(),
         );
         info.protocol_version = ProtocolVersion::V_2025_11_25;
-        info.instructions = Some(instructions(self.state.allows_query_tools()).to_owned());
+        info.instructions = Some(
+            catalog::instructions(
+                &self.state.options(),
+                instructions(self.state.allows_query_tools()),
+            )
+            .to_owned(),
+        );
         info.server_info = Implementation::new("elasticctl", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -226,7 +232,7 @@ impl ServerHandler for McpServer {
     ) -> std::result::Result<ListToolsResult, rmcp::ErrorData> {
         let _ = self.state.target();
         Ok(ListToolsResult {
-            tools: catalog::definitions_for(self.state.allows_query_tools()),
+            tools: catalog::definitions_for(&self.state.options()),
             ..Default::default()
         })
     }
@@ -324,6 +330,7 @@ impl ServerHandler for McpServer {
                         resource_not_found()
                     }
                     AdapterError::Core(core) => resource_failure(error::core(&core)),
+                    AdapterError::Tool(error) => resource_failure(error),
                 })?;
             if call.expect_rule_id.as_ref().is_some_and(|expected| {
                 output
@@ -365,11 +372,35 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
-        let Some(dispatch) =
-            dispatch_target(request.name.as_ref(), self.state.allows_query_tools())
-        else {
+        let Some(dispatch) = dispatch_target(
+            catalog::enabled_name(request.name.as_ref(), &self.state.options()),
+            self.state.allows_query_tools(),
+        ) else {
             return Err(unknown_tool_error());
         };
+        let mutation = matches!(
+            dispatch,
+            DispatchTarget::Adapter(
+                crate::catalog::ToolId::RulesSetEnabledPlan
+                    | crate::catalog::ToolId::PlanApply
+                    | crate::catalog::ToolId::PlanGet
+                    | crate::catalog::ToolId::PlanList
+                    | crate::catalog::ToolId::PlanDiscard,
+                _
+            )
+        );
+        let call_context = if mutation {
+            tools::CallContext::from_request(&context)?
+        } else {
+            tools::CallContext::default()
+        };
+        if matches!(
+            dispatch,
+            DispatchTarget::Adapter(crate::catalog::ToolId::PlanApply, _)
+        ) {
+            return crate::plan::apply::handle(self.state.clone(), request, context, call_context)
+                .await;
+        }
         let cancellation = context.ct.clone();
         let target = self.state.target().clone();
         let request_id = context.id.clone();
@@ -378,11 +409,12 @@ impl ServerHandler for McpServer {
             let outcome = match dispatch {
                 DispatchTarget::Adapter(tool, adapter) => {
                     adapter
-                        .call(
+                        .call_with_context(
                             tool,
                             request.arguments.as_ref(),
                             &state,
                             cancellation.clone(),
+                            call_context,
                         )
                         .await
                 }
@@ -397,6 +429,7 @@ impl ServerHandler for McpServer {
                     target,
                     error::local(LocalError::InvalidArgument),
                 ))),
+                Err(AdapterError::Tool(tool_error)) => Err(Box::new((target, tool_error))),
                 Err(AdapterError::Core(core_error)) => {
                     Err(Box::new((target, error::core(&core_error))))
                 }

@@ -23,6 +23,7 @@ spec first and in the same commit as any behavior change.
 |-|-|
 |What is in scope, and how does the API behave?|`docs/specs/elasticctl-design.md`|
 |What does a capability area add?|`docs/specs/elasticctl-*-design.md`|
+|How do MCP mutation plans and confirmation work?|`docs/specs/elasticctl-mcp-mutation-design.md`|
 |What was planned and proven per release?|`docs/plans/`, `docs/conformance/`, `docs/reviews/`|
 |How do users run the CLI and MCP server?|`docs/wiki/`|
 |What changed?|`CHANGELOG.md`|

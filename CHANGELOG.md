@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.9.0 — 2026-11-11
+
+### Added
+
+- `mcp serve --allow-mutations <CLASSES>` enables MCP mutation classes for the
+  life of the process. `rules-toggle` is the one class. The value is a
+  comma-separated list and the flag may repeat; there is no `all` value or
+  wildcard, and an empty value, an unknown name, or whitespace is a usage
+  error. A class set needs the profile's Elasticsearch URL and a profile
+  name, host, and space without line breaks or control characters, writes a
+  `mutations_enabled` warning line to stderr at startup, and replaces one
+  sentence of the server instructions. Without the flag the catalog, schemas,
+  results, and instructions are unchanged.
+- MCP tools `rules_set_enabled_plan`, `plan_apply`, `plan_get`, `plan_list`,
+  and `plan_discard`, listed only when a class is enabled: 29 tools, or 31
+  with `--allow-query-tools`. The planner reads the stack and stores a plan in
+  server memory for 15 minutes without writing. `plan_apply` takes only a
+  plan id.
+- `plan_apply` applies a plan only after a form elicitation answered `accept`
+  with `apply: true`; no tool argument confirms. On protocol `2026-07-28` it
+  returns an input request and reads the answer from the next call; on
+  `2025-11-25` it asks the client while the call waits, up to 240 seconds. A
+  client without form elicitation gets `confirmation_unavailable`, and the
+  plan names the CLI command in `cli_equivalent`. A plan is checked for drift
+  in target, credential, and rule state before the question and again before
+  the write, applies at most once as one write request on its own
+  connection, and returns its first outcome when applied again. At most 8
+  plans are open, 32 final records are kept, and a plan holds at most 20
+  rules and prompts at most 3 times.
+- An audit trail on stderr: one JSON line per plan event (`plan_created`,
+  `confirmation_requested`, `confirmation_answered`, `apply_started`,
+  `apply_finished`, `apply_interrupted`, `plan_closed`), with ids, counts,
+  and classifications only.
+- Rust source changes, outside the CLI and MCP compatibility promise:
+  `elasticctl_mcp::ServerOptions::allow_mutations` with `MutationClasses` and
+  `MutationClass`; in `elasticctl-mcp` also `validate_startup`,
+  `ServerState::mutation_transport`, `tools::CallContext` and `CallProtocol`,
+  `ToolAdapter::call_with_context`, the `AdapterError::Tool` variant, and five
+  `catalog::ToolId` variants;
+  `elasticctl_core::TransportOptions::disable_connection_pool`,
+  which keeps no idle connection so each request opens its own socket; and in
+  `elasticctl-api` the `observe` module (`Observed`, `Preconditions`,
+  `require_rule_identity`), `rules_ops::plan_set_enabled_observed`,
+  `rules_ops::observe_rules`, `rules_ops::plan_create` and
+  `rules_ops::apply_create` with `RuleCreatePlan` and `RuleCreateOutcome`,
+  `alerts_ops::plan_status_by_ids_observed`,
+  `alerts_ops::plan_tags_observed`, `alerts_ops::observe_alerts` with
+  `AlertFacet`, `cases_ops::plan_status_observed`,
+  `cases_ops::plan_comment_observed`, `cases_ops::observe_cases`, and
+  `health::credential_identity` with `CredentialIdentity`.
+
+### Changed
+
+- A conflicting `cases close` or `cases open` error carries
+  `"http_status": 409`.
+- The `mcp` command description drops "read-only" and reads
+  `Serve Elastic tools over MCP stdio`.
+
 ## 0.8.2 — 2026-11-11
 
 ### Added

@@ -109,16 +109,21 @@ pub async fn apply_create(t: &Transport, plan: &RuleCreatePlan) -> Result<RuleCr
   `[rule_id]`; details are one line per top-level key of the stored rule, in
   byte order of the key, as `<key>: <value>`. `<value>` is compact JSON with
   nested keys sorted, so a string is quoted and escaped and no value spans
-  lines. Every key is rendered, including `rule_id`, `enabled`, and keys this
-  version does not know. There is no summary line and no omitted field: a
+  lines. `<key>` is the key's JSON string escape without the surrounding
+  quotes, so a key that holds a quote, a backslash, or a control character
+  cannot break the line either. Every key is rendered, including `rule_id`,
+  `enabled`, and keys this version does not know. There is no summary line and no omitted field: a
   field such as `threat_query`, `filters`, or `threshold` appears in full
   like `query` does.
 - `plan_create` does not cap the size of the preview. The caller that shows
   it does: `-mcp` renders the consent text from these details and refuses
   the plan when the result exceeds 8,192 bytes
   ([section 5.4](05-plans.md#54-states-expiry-and-limits)).
-- `apply_create` calls `rules::create`. It returns kind `http` when the
-  response `rule_id` differs from the plan or `enabled` is not `false`.
+- `apply_create` repeats every local refusal of `plan_create` on the plan's
+  rule, and also requires `enabled` to be `false`, before any request,
+  because the plan's fields are public and can change after planning. It
+  then calls `rules::create`. It returns kind `http` when the response
+  `rule_id` differs from the plan or `enabled` is not `false`.
 
 ### Alerts
 
@@ -209,8 +214,10 @@ pub async fn credential_identity(t: &Transport) -> Result<CredentialIdentity>;
 
 It reads `/_security/_authenticate` and keeps the existing fail-closed decode
 of `username` and `authentication_realm.type`. `api_key.id` is optional; a
-present value of the wrong type is an `http` error. The private `identity`
-that `doctor` uses becomes a call to it. `doctor` output does not change.
+present value of the wrong type is an `http` error. `doctor` keeps its own
+decode of `username` and `authentication_realm.type` and ignores `api_key`,
+so `doctor` output does not change. Only planners and checks call
+`credential_identity`.
 
 ### What stays in `-mcp`
 

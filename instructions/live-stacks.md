@@ -8,12 +8,12 @@
 - Never commit `.env`, copy its contents into tracked files, or echo a key into output, logs, or
   commits. Write a new key straight into `.env`; never print it to read it back.
 - A worktree has no `.env`. Source the main checkout's file instead of copying it.
-- An **organization-level** Cloud API key is not enough. Every key type carries the `essu_`
-  prefix, so the prefix does not indicate scope. Only `GET /_security/_authenticate` (or
-  `elasticctl doctor`) reports the realm. An organization key can read and create *disabled*
-  rules, but **cannot enable a rule**: the alerting framework refuses to mint a rule API key on
-  its behalf. Enable, disable-apply, and `state push` need a **project-scoped Elasticsearch API
-  key** created inside Kibana.
+- Use a **project- or deployment-scoped Elasticsearch API key** created inside Kibana. Every
+  key type carries the `essu_` prefix, so the prefix does not indicate scope. Only
+  `GET /_security/_authenticate` (or `elasticctl doctor`) reports the realm. An
+  **organization-level** key (realm `_cloud_api_key`) is not supported: Serverless 9.7.0
+  accepts it for CLI rule changes, Hosted answers 401 at `_authenticate`, and MCP planning
+  refuses it as policy (shared design 7.2, mutation design 5.2).
 - Recording reads the generic `ELASTICCTL_*` target and `ELASTICCTL_FIXTURE_FLAVOR`. Map the
   `ELASTICCTL_ECH_*` target to those generic names for the recorder; `.env.example` shows how.
   `cargo xtask conformance-matrix` reads the `ELASTICCTL_ECH_*` names itself.
@@ -38,9 +38,7 @@ baseline rules still apply.
 - The Serverless project holds Elastic prebuilt rules for scale testing. `cargo xtask seed`
   installs or updates the prebuilt pack until its status reports current. They are read-only ground truth: never mutate an
   untagged rule.
-- Every object a live test creates carries the `elasticctl-sample` marker: a `rule_id` prefix and
-  tag for rules, and `*elasticctl-sample*` in index names. Every remote mutation targets explicit
-  ids.
+- Every object a live contract creates carries the live marker: the `elasticctl-live-` prefix on `rule_id`s, ids, and index names, and the `elasticctl-live-marker` tag. The baseline audit checks for that marker. The fixture recorder, the corpus fill, and sample data use the `elasticctl-sample` marker instead. Every remote mutation targets explicit ids, and a cleanup deletes a rule by its exact `rule_id`, never by name.
 - A run ends by verifying the project is back to baseline: unchanged prebuilt-rule count, no
   sample rules, and no sample indices.
 - Fleet packages are the exception: a package a test installs (for example `system` or
@@ -50,6 +48,11 @@ baseline rules still apply.
 
 The on-demand `lab/` stack supports Docker Compose v2 first, then Podman Compose.
 It records self-managed fixtures and runs traditional conformance; do not assume it is running.
+`live-lab.yml` runs the self-managed matrix in CI, so a release does not start the lab on a
+workstation for it. Model-driven clients run against the Hosted test deployment, not the lab
+([design 9.3](../docs/specs/elasticctl-mcp-mutation-design/09-testing-and-evidence.md#93-real-clients)).
+Start it locally only to record self-managed fixtures, or for a contract that `live-lab.yml`
+does not run yet, such as the 0.9 mutation contract.
 
 - `lab/up.sh` generates missing `ELASTIC_PASSWORD` and `KIBANA_SYSTEM_PASSWORD`
   and atomically stores them in gitignored `lab/.env` at mode 0600. Existing

@@ -16,6 +16,7 @@
 - [Data Views and Dashboards](Data-Views-and-Dashboards.md)
 - [Fleet](Fleet.md)
 - [MCP](MCP.md)
+- [MCP Mutations](MCP-Mutations.md)
 
 **Reference**
 

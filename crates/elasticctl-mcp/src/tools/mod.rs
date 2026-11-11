@@ -15,6 +15,8 @@ mod compose;
 mod content;
 mod exceptions;
 mod fleet;
+mod mutations;
+mod plans;
 mod query;
 mod rules;
 mod stack;
@@ -36,12 +38,30 @@ pub enum AdapterError {
     InvalidArgument,
     /// Existing API/core operation failure. Its message remains untrusted.
     Core(Error),
+    /// Static local failure from a stored plan operation.
+    Tool(crate::ToolError),
 }
+
+mod context;
+pub use context::{CallContext, CallProtocol};
 
 /// One vertical's explicit MCP allowlist and typed dispatch entry point.
 pub trait ToolAdapter: Send + Sync {
     /// Static public definitions for this adapter's tools.
     fn definitions(&self) -> Vec<Tool>;
+
+    /// Execute a call with request metadata, preserving existing adapters.
+    fn call_with_context<'a>(
+        &'a self,
+        tool: ToolId,
+        arguments: Option<&'a rmcp::model::JsonObject>,
+        state: &'a ServerState,
+        cancellation: CancellationToken,
+        _context: CallContext,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<AdapterResult, AdapterError>> + Send + 'a>>
+    {
+        self.call(tool, arguments, state, cancellation)
+    }
 
     /// Execute one already name-resolved tool.
     fn call<'a>(
@@ -56,6 +76,10 @@ pub trait ToolAdapter: Send + Sync {
 /// Resolve an advertised adapter.
 pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
     match tool {
+        ToolId::PlanApply | ToolId::PlanDiscard | ToolId::PlanGet | ToolId::PlanList => {
+            Some(plans::adapter())
+        }
+        ToolId::RulesSetEnabledPlan => Some(mutations::rules::adapter()),
         ToolId::AlertContext
         | ToolId::DetectionCoverage
         | ToolId::RuleHealth
@@ -82,17 +106,17 @@ pub(crate) fn adapter_for(tool: ToolId) -> Option<&'static dyn ToolAdapter> {
 }
 
 /// Return the production definitions in lexical catalog order.
-pub(crate) fn definitions(allow_query_tools: bool) -> Vec<Tool> {
-    let mut definitions = triage::definitions();
-    definitions.extend(content::definitions());
-    definitions.extend(exceptions::definitions());
-    definitions.extend(fleet::definitions());
-    definitions.extend(rules::definitions());
-    if allow_query_tools {
-        definitions.extend(query::definitions());
-    }
-    definitions.extend(stack::definitions());
-    definitions.extend(compose::definitions());
-    definitions.sort_by(|a, b| a.name.cmp(&b.name));
-    definitions
+pub(crate) fn definitions(options: &crate::ServerOptions) -> Vec<Tool> {
+    ToolId::ALL
+        .into_iter()
+        .filter(|tool| tool.enabled(options))
+        .map(|tool| {
+            adapter_for(tool)
+                .expect("registered adapter")
+                .definitions()
+                .into_iter()
+                .find(|definition| definition.name == tool.name())
+                .expect("registered definition")
+        })
+        .collect()
 }

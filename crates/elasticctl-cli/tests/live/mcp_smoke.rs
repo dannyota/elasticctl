@@ -2198,7 +2198,7 @@ fn validate_query_page(
 pub(super) struct McpChild {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    replies: Receiver<Result<Option<Vec<u8>>, &'static str>>,
+    pub(super) replies: Receiver<Result<Option<Vec<u8>>, &'static str>>,
     stdout_reader: Option<JoinHandle<()>>,
     stderr_reader: Option<JoinHandle<()>>,
     next_id: u64,
@@ -2295,7 +2295,7 @@ impl McpChild {
         )
     }
 
-    fn spawn_command(
+    pub(super) fn spawn_command(
         mut command: std::process::Command,
         allow_query_tools: bool,
     ) -> TestResult<Self> {
@@ -2435,7 +2435,7 @@ impl McpChild {
         normalized_not_found_content(&response, id, tool, http_status)
     }
 
-    fn send(&mut self, request: Value) -> TestResult {
+    pub(super) fn send(&mut self, request: Value) -> TestResult {
         let mut frame = serde_json::to_vec(&request)
             .map_err(|_| "MCP request could not be serialized.".to_string())?;
         frame.push(b'\n');
@@ -2574,7 +2574,10 @@ fn parse_response_frame(frame: &[u8]) -> TestResult<Value> {
     serde_json::from_slice(frame).map_err(|_| "MCP child response was not valid JSON.".to_string())
 }
 
-fn normalize_protocol_result(response: &mut Value, protocol_path: McpProtocolPath) -> TestResult {
+pub(super) fn normalize_protocol_result(
+    response: &mut Value,
+    protocol_path: McpProtocolPath,
+) -> TestResult {
     let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) else {
         return Ok(());
     };

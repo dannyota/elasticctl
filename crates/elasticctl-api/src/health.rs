@@ -126,6 +126,41 @@ async fn identity(t: &Transport) -> Result<(String, String)> {
     decode_identity(&body)
 }
 
+/// The authenticated username, realm, and optional API key identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialIdentity {
+    /// The authenticated username.
+    pub username: String,
+    /// The authentication realm type.
+    pub realm_type: String,
+    /// The API key ID, when supplied.
+    pub api_key_id: Option<String>,
+}
+
+/// Read the credential identity from Elasticsearch.
+pub async fn credential_identity(t: &Transport) -> Result<CredentialIdentity> {
+    let body = t.get_absolute_es("/_security/_authenticate").await?;
+    let (username, realm_type) = decode_identity(&body)?;
+    let api_key_id = match body.get("api_key") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(key)) => match key.get("id") {
+            None => None,
+            Some(id) => Some(
+                id.as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| identity_error("api_key.id", "must be a non-empty string"))?
+                    .to_string(),
+            ),
+        },
+        Some(_) => return Err(identity_error("api_key", "must be an object")),
+    };
+    Ok(CredentialIdentity {
+        username,
+        realm_type,
+        api_key_id,
+    })
+}
+
 /// Decode an `_authenticate` response, refusing a malformed success body.
 ///
 /// A missing or mistyped `username` or `authentication_realm.type` must fail

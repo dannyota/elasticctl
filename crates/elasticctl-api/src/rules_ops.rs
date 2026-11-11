@@ -4,6 +4,13 @@
 //! module does the work between them so a future MCP server can call the same
 //! functions and serialize the same structs.
 
+mod create;
+mod recheck;
+pub use create::{RuleCreateOutcome, RuleCreatePlan, apply_create, plan_create};
+pub use recheck::observe_rules;
+mod observed;
+pub use observed::plan_set_enabled_observed;
+
 use crate::codec::{self, Format};
 use crate::model::{ListKey, Rule, exception_refs, server_defaults};
 use crate::normalize;
@@ -185,21 +192,7 @@ pub async fn plan_set_enabled(
     selectors: &[String],
     enable: bool,
 ) -> Result<MutationPlan> {
-    let resolved = resolve_targets(t, selectors).await?;
-    let preview_details = resolved
-        .iter()
-        .map(|(id, r)| {
-            let from = if r.enabled() { "enabled" } else { "disabled" };
-            let to = if enable { "enabled" } else { "disabled" };
-            format!("{id}  {}  {from} -> {to}", r.name())
-        })
-        .collect();
-    let verb = if enable { "Enable" } else { "Disable" };
-    Ok(MutationPlan {
-        preview_action: format!("{verb} {} rule(s)", resolved.len()),
-        preview_details,
-        targets: resolved.into_iter().map(|(id, _)| id).collect(),
-    })
+    Ok(plan_set_enabled_observed(t, selectors, enable).await?.0)
 }
 
 pub async fn apply_set_enabled(

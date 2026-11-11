@@ -26,6 +26,8 @@ pub struct TransportOptions {
     pub response_body_limit: Option<usize>,
     pub disable_redirects: bool,
     pub disable_retries: bool,
+    /// Keep no idle connection, so every request opens its own socket.
+    pub disable_connection_pool: bool,
 }
 
 /// Response headers retained past the transport boundary.
@@ -235,6 +237,9 @@ impl Transport {
         }
         if options.disable_retries {
             client_builder = client_builder.retry(reqwest::retry::never());
+        }
+        if options.disable_connection_pool {
+            client_builder = client_builder.pool_max_idle_per_host(0);
         }
         let client = client_builder
             .build()

@@ -37,7 +37,10 @@ task.
 
 The deadline covers steps A to D. On the current protocol it starts with the
 round 2 request. On the legacy protocol it starts again after the person's
-answer.
+answer and also covers the wait for a call permit
+([section 6.3](06-confirmation-protocol.md#63-legacy-protocol)), so with the
+defaults the call ends within 270 seconds after the question, below the 300
+second default tool timeout of Codex CLI.
 
 ### 8.2 Classifying the write
 
@@ -147,11 +150,11 @@ existing vocabulary.
 | `plan_not_found` | `not_found` | No plan with that id in this process |
 | `plan_expired` | `conflict` | The plan's life ended |
 | `plan_stale` | `conflict` | The target changed after the plan was made |
-| `plan_declined` | `permission` | A person declined, or the prompt limit was reached |
+| `plan_declined` | `permission` | A person declined, or the prompt limit was reached. The message is `The plan was declined and closed.` |
 | `plan_discarded` | `conflict` | The plan was discarded |
 | `plan_not_open` | `conflict` | `plan_discard` on a plan that is applying |
 | `plan_too_large` | `unsupported` | The plan or its consent text exceeds a limit |
-| `too_many_plans` | `error` | Eight plans are open |
+| `too_many_plans` | `error` | Eight plans are open or applying |
 | `not_confirmed` | `permission` | The form was not accepted with `apply: true` |
 | `confirmation_unavailable` | `unsupported` | The client cannot show a form |
 | `confirmation_pending` | `error` | Another confirmation is waiting (legacy) |

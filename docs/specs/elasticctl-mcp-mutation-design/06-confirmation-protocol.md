@@ -8,8 +8,18 @@ of the question differs.
 
 The path is chosen from the protocol version of the `plan_apply` request:
 2026-07-28 uses [section 6.2](#62-current-protocol), 2025-11-25 uses
-[section 6.3](#63-legacy-protocol). The SDK rejects the wrong shape on each
-side, so a wrong choice is a protocol error, never an apply.
+[section 6.3](#63-legacy-protocol). In a session started with `initialize`,
+that version is the negotiated one, and the capabilities are those of
+`initialize`; in a current session, both come from the request's `_meta`. The
+server rejects the wrong shape on each side before any read, with the
+protocol error `invalid_request`, never an apply:
+
+- a mutation tool call in a session started with `initialize` whose `_meta`
+  names another protocol version;
+- a legacy `plan_apply` request that carries `requestState` or
+  `inputResponses`.
+
+The SDK does not check either. Read tools keep the 0.8 behavior.
 
 Before either path, `plan_apply` runs these steps in order and stops at the
 first that fails:
@@ -38,10 +48,8 @@ The elicitation `message` is this text. Lines in angle brackets are filled
 in; every other character is fixed.
 
 ```text
-elasticctl asks to apply a change.
-
+elasticctl asks to apply: <action>
 Target: profile <profile> @ <host>, space <space>
-Change: <action>
   <detail>
   <detail>
 Note: <note>
@@ -52,6 +60,11 @@ Expires in <n> min.
 Set "Apply this change" to true and accept to apply it.
 Decline, or leave it false, and nothing changes.
 ```
+
+Some clients show only the first lines of the message: Claude Code 2.1.322
+shows three and collapses the rest (M10). So the first three lines hold what
+the person consents to: the action with its count, the target, and the first
+affected object. The full text follows.
 
 `<action>` and `<detail>` are the plan's `action` and `details`. They come
 from the `-api` plan, the same text the CLI guard prints. For a kind whose
@@ -75,14 +88,14 @@ target.
 The `Note:` line is present only for the two rule kinds. It is static text:
 
 ```text
-Note: Kibana ties each rule listed to this server's credential (<12 hex>). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.
+Note: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (<12 hex>) when it is enabled, and then runs with that credential's privileges.
 ```
 
-`<12 hex>` is the plan's credential value. Kibana documents that the
-caller's API key is assigned to the affected rules, for rule create and for
-bulk actions. The server cannot read which key a rule had before, so the
-text does not claim a difference; it states what will be true after the
-write.
+`<12 hex>` is the plan's credential value. M13 measured key ownership on
+the 9.5.1 lab ([research](../../plans/v0.9-research.md)): a rule without a
+key gets the key of the credential that enables it, and a later disable or
+enable by another credential keeps the existing owner. The planner does not
+read a rule's key owner, so the note states both cases.
 
 Rendering rules, applied to every filled-in value:
 
@@ -190,14 +203,16 @@ On 2025-11-25 the question is a request the server sends while the
    The plan stays `open` in both cases.
 5. On an answer, apply the answer table. An SDK error from the client counts
    as `not_confirmed`.
-6. If confirmed, take a call permit again, waiting at most the call timeout;
-   if none frees, return `busy` and leave the plan `open`. Then run the
-   second check and the write under a fresh call deadline.
+6. If confirmed, start a fresh call deadline. Under it, take a call permit
+   again; if none frees before the deadline, return `busy` and leave the plan
+   `open`. Then run the second check and the write under the same deadline.
 
 The call deadline of 0.7 covers the steps before the question and, started
-again, the steps after the answer. It does not run while a person reads. 240
-seconds is below the 300 second default tool timeout of Codex CLI, the
-shortest verified client limit.
+again once, every step after the answer: the permit wait, the second check,
+and the write. It does not run while a person reads. With the defaults, a
+legacy `plan_apply` ends within 270 seconds after the question: 240 for the
+answer and one 30 second call deadline. That is below the 300 second default
+tool timeout of Codex CLI, the shortest verified client limit.
 
 No handle exists on this path. The answer is tied to the plan by the open
 request itself.

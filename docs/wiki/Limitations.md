@@ -17,17 +17,24 @@ work, and local commands such as `validate` never check the version. In
 [MCP](MCP.md), `stack_info` and `stack_doctor` stay usable for diagnosing an
 older stack.
 
-## An organization-level Cloud key cannot enable a rule
+## An organization-level Cloud key is not supported
 
-Enabling a rule makes the alerting framework create a rule API key on behalf of
-the caller, and it refuses to do that for an organization-level Elastic Cloud
-API key. Such a key can still read, create disabled rules, and delete. The
-`essu_` prefix does not tell the key types apart.
+Use a project- or deployment-scoped Elasticsearch API key created inside
+Kibana. An organization-level Elastic Cloud API key behaves differently by
+flavor:
 
-`elkctl doctor` reports which realm the key authenticates through:
-`_cloud_api_key` means enabling will fail, and `_es_api_key` means it will
-work. Use an Elasticsearch API key created inside Kibana; see
-[which key to use](Configuration.md#which-api-key-to-use).
+- Serverless 9.7.0 accepts it for reads and for CLI rule changes, including an
+  enable. Older Serverless versions may refuse to enable a rule with it,
+  because the alerting framework would not create a rule API key for it.
+- Hosted refuses it when it authenticates.
+- MCP planning refuses it on every flavor with `credential_unsuitable`: it
+  reaches the whole organization and its role scope cannot be read, so a plan
+  cannot show what it may do.
+
+The `essu_` prefix does not tell the key types apart. `elkctl doctor` reports
+the realm the key authenticates through: `_cloud_api_key` is an
+organization-level key and gets a warning, and `_es_api_key` is a scoped key.
+See [which key to use](Configuration.md#which-api-key-to-use).
 
 ## Serverless tags a rule enabled by a project-scoped key
 
