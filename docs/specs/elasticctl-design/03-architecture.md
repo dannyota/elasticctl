@@ -134,7 +134,12 @@ routes.
   `unsupported` with `response body exceeds configured byte limit` and is
   never retried. Retry suppression allows one application attempt and disables
   HTTP-client retries. Redirect suppression applies to both clients; one-shot
-  requests retain their stricter transport settings.
+  requests retain their stricter transport settings. From 0.9,
+  `TransportOptions::disable_connection_pool` keeps no idle connection on the
+  main client, so every request opens its own socket; the default, `false`,
+  keeps pooling. Only the MCP server's transport for a confirmed plan write
+  sets it, together with redirect and retry suppression, so that write is one
+  HTTP attempt on a new connection.
   Response headers are captured and returned alongside the body, because the
   deployment flavor is not derivable from any response body — see
   `capabilities` below. They are carried, never logged: `--debug` still prints
@@ -227,6 +232,11 @@ limits. It calls API orchestration and never uses the CLI renderer or reads
 model-selected local files. Both existing binaries delegate to it through
 `mcp serve`. The [MCP design](../elasticctl-mcp-design.md) defines protocol,
 target validation, tools, and limits.
+
+From 0.9 `-mcp` also owns the opt-in mutation path: the plan store, the
+consent text, confirmation through form elicitation, and the audit lines on
+stderr. The [MCP mutation design](../elasticctl-mcp-mutation-design.md)
+defines them.
 
 Each MCP session uses a dedicated runtime thread to suppress SDK tracing
 without changing the embedding process's logger. The public entrypoints

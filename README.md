@@ -122,7 +122,27 @@ plan id and asks the person at the client to confirm it in a form. No tool
 argument confirms a change, and a client without form elicitation cannot
 apply: the plan names the CLI command to run instead. The profile needs
 `es_url`. A rule without an API key that is enabled this way then runs with the
-server's credential; a rule that has a key keeps it.
+server's credential; a rule that has a key keeps it. For a client that uses an
+`mcpServers` object, this placeholder stanza starts such a server:
+
+```json
+{
+  "mcpServers": {
+    "elasticctl": {
+      "command": "elkctl",
+      "args": ["--profile", "analyst", "--space", "default", "mcp", "serve",
+               "--allow-mutations", "rules-toggle"]
+    }
+  }
+}
+```
+
+The server can check that an answer came through the form, not that a person
+gave it: a client hook can accept for the person, and a model with a shell can
+run `elkctl ... --yes` without MCP. Rule names in the form are data from the
+stack and cannot change its fixed lines. A model can plan and ask again after
+a decline; each plan asks at most three times, and at most eight plans are
+open. A change made between the last check and the write is not seen.
 See [MCP Mutations][mcp-mutations] for the flow, the audit trail, and the
 limits of this consent model.
 

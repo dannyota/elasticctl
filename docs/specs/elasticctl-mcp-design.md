@@ -9,6 +9,11 @@ separate approval. The
 [Research](../plans/v0.7-research.md) records sources, the 0.6.2 baseline,
 and unmeasured claims.
 
+From 0.9, `mcp serve --allow-mutations` lets the server also apply opt-in
+changes, each through a stored plan that a person confirms in the client. The
+[MCP mutation design](elasticctl-mcp-mutation-design.md) defines that path.
+Without the flag the server stays read-only.
+
 ## Contents
 
 | Section | Page |

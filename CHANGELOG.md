@@ -34,7 +34,11 @@
   and classifications only.
 - Rust source changes, outside the CLI and MCP compatibility promise:
   `elasticctl_mcp::ServerOptions::allow_mutations` with `MutationClasses` and
-  `MutationClass`; `elasticctl_core::TransportOptions::disable_connection_pool`,
+  `MutationClass`; in `elasticctl-mcp` also `validate_startup`,
+  `ServerState::mutation_transport`, `tools::CallContext` and `CallProtocol`,
+  `ToolAdapter::call_with_context`, the `AdapterError::Tool` variant, and five
+  `catalog::ToolId` variants;
+  `elasticctl_core::TransportOptions::disable_connection_pool`,
   which keeps no idle connection so each request opens its own socket; and in
   `elasticctl-api` the `observe` module (`Observed`, `Preconditions`,
   `require_rule_identity`), `rules_ops::plan_set_enabled_observed`,
