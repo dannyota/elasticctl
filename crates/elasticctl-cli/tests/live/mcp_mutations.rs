@@ -274,6 +274,7 @@ fn live_run(measurements: bool) -> TestResult {
     let result = orchestrate(
         &rt,
         &t,
+        &cleanup_transport(&profile)?,
         &mut registry,
         || {
             rt.block_on(lab_identity::baseline(

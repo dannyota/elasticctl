@@ -107,6 +107,17 @@ pub(super) fn verify_alert(source: &Value, rule: &str) -> TestResult {
                 .is_some_and(|tags| tags.contains(&json!(LIVE_TAG)) && tags.contains(&json!(rule))),
     )
 }
+pub(super) fn cleanup_transport(profile: &Profile) -> TestResult<Transport> {
+    safe(Transport::with_options(
+        profile,
+        elasticctl_core::transport::TransportOptions {
+            disable_retries: true,
+            disable_redirects: true,
+            disable_connection_pool: true,
+            ..Default::default()
+        },
+    ))
+}
 pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
     // Every ? stops the trace. No retry or Drop path sends another mutation.
     for rule in &registry.rules {
@@ -133,7 +144,7 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
         let hit = safe(elasticctl_api::alerts_ops::get_one(t, id).await)?;
         require(hit.id == *id && registry.rules.contains(rule))?;
         verify_alert(&hit.source, rule)?;
-        safe(
+        let outcome = safe(
             elasticctl_api::alerts::status_by_ids(
                 t,
                 std::slice::from_ref(id),
@@ -142,6 +153,15 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
             )
             .await,
         )?;
+        require(
+            outcome.failures.is_empty()
+                && outcome.version_conflicts == 0
+                && outcome.total == 1
+                && outcome.updated.checked_add(outcome.noops) == Some(1),
+        )?;
+        let closed = safe(elasticctl_api::alerts_ops::get_one(t, id).await)?;
+        require(closed.id == *id && closed.source["kibana.alert.workflow_status"] == "closed")?;
+        verify_alert(&closed.source, rule)?;
     }
     for (id, token) in &registry.cases {
         let c = safe(elasticctl_api::cases::get(t, id).await)?;
@@ -179,6 +199,7 @@ pub(super) async fn baseline(t: &Transport) -> TestResult {
 pub(super) fn orchestrate(
     rt: &tokio::runtime::Runtime,
     t: &Transport,
+    cleanup: &Transport,
     registry: &mut Registry,
     mut shared_baseline: impl FnMut() -> TestResult,
     body: impl FnOnce(&mut Registry) -> TestResult,
@@ -194,7 +215,7 @@ pub(super) fn orchestrate(
     CANCELLATION.with(|flag| {
         flag.borrow_mut().take();
     });
-    rt.block_on(clean(t, registry))
+    rt.block_on(clean(cleanup, registry))
         .map_err(|_| "cleanup_failed".to_string())?;
     if matches!(&result, Ok(Err(e)) if e == "baseline_failed") {
         return Err("baseline_failed".into());

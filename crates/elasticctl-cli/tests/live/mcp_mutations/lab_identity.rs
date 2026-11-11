@@ -9,14 +9,7 @@ pub(super) struct Lease {
     basic: Transport,
 }
 fn transport(profile: &Profile) -> TestResult<Transport> {
-    safe(Transport::with_options(
-        profile,
-        elasticctl_core::transport::TransportOptions {
-            disable_retries: true,
-            disable_redirects: true,
-            ..Default::default()
-        },
-    ))
+    cleanup_transport(profile)
 }
 fn metadata(token: &str) -> Value {
     json!({"marker":LIVE_TAG,"token":token})

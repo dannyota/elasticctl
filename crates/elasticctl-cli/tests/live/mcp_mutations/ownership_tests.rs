@@ -18,11 +18,20 @@ enum Fault {
     Cleanup,
     CancelAlerts,
     LateAlerts,
+    RetryCleanup,
+    AlertFailure,
+    AlertConflict,
+    AlertZero,
+    AlertWrongTotal,
+    AlertUnclosed,
+    AlertNoop,
 }
 struct Stack {
     fault: Fault,
     created: bool,
     deleted: bool,
+    mutations: usize,
+    closed: bool,
 }
 struct Responder(Arc<Mutex<Stack>>);
 impl wiremock::Respond for Responder {
@@ -37,8 +46,18 @@ impl wiremock::Respond for Responder {
         if path.ends_with("/signals/search") {
             let body = request.body_json::<Value>().unwrap();
             let ids = body.pointer("/query/ids/values").and_then(Value::as_array);
-            let hits: Vec<_> = if matches!(s.fault, Fault::CancelAlerts | Fault::LateAlerts) {
-                (0..12).filter(|n| ids.is_none_or(|ids| ids.contains(&json!(format!("alert-{n}"))))).map(|n| json!({"_id":format!("alert-{n}"),"_source":{"kibana.alert.rule.rule_id":ID,"kibana.alert.rule.tags":[LIVE_TAG,ID]}})).collect()
+            let hits: Vec<_> = if matches!(
+                s.fault,
+                Fault::CancelAlerts
+                    | Fault::LateAlerts
+                    | Fault::AlertFailure
+                    | Fault::AlertConflict
+                    | Fault::AlertZero
+                    | Fault::AlertWrongTotal
+                    | Fault::AlertUnclosed
+                    | Fault::AlertNoop
+            ) {
+                (0..12).filter(|n| ids.is_none_or(|ids| ids.contains(&json!(format!("alert-{n}"))))).map(|n| json!({"_id":format!("alert-{n}"),"_source":{"kibana.alert.rule.rule_id":ID,"kibana.alert.rule.tags":[LIVE_TAG,ID],"kibana.alert.workflow_status":if s.closed {"closed"} else {"open"}}})).collect()
             } else {
                 vec![]
             };
@@ -46,9 +65,33 @@ impl wiremock::Respond for Responder {
                 .set_body_json(json!({"hits":{"total":{"value":hits.len()},"hits":hits}}));
         }
         if path.ends_with("/signals/status") {
-            return ResponseTemplate::new(200).set_body_json(
-                json!({"total":1,"updated":1,"version_conflicts":0,"noops":0,"failures":[]}),
-            );
+            s.closed = !matches!(s.fault, Fault::AlertUnclosed);
+            let mut outcome = fixture("signals_status_ids");
+            outcome["total"] = json!(1);
+            outcome["updated"] = json!(1);
+            outcome["noops"] = json!(0);
+            outcome["version_conflicts"] = json!(0);
+            outcome["failures"] = json!([]);
+            match s.fault {
+                Fault::AlertFailure => {
+                    outcome["failures"] = json!([{"cause":{"type":"unavailable_shards_exception","reason":"unavailable"}}])
+                }
+                Fault::AlertConflict => {
+                    outcome["version_conflicts"] = json!(1);
+                    outcome["updated"] = json!(0);
+                }
+                Fault::AlertZero => {
+                    outcome["total"] = json!(0);
+                    outcome["updated"] = json!(0);
+                }
+                Fault::AlertWrongTotal => outcome["total"] = json!(2),
+                Fault::AlertNoop => {
+                    outcome["updated"] = json!(0);
+                    outcome["noops"] = json!(1);
+                }
+                _ => {}
+            }
+            return ResponseTemplate::new(200).set_body_json(outcome);
         }
         let mut rule = fixture("rules_get");
         rule["rule_id"] = json!(ID);
@@ -74,6 +117,11 @@ impl wiremock::Respond for Responder {
             return ResponseTemplate::new(200).set_body_json(rule);
         }
         if request.method == "POST" && path.ends_with("/_bulk_action") {
+            s.mutations += 1;
+            if matches!(s.fault, Fault::RetryCleanup) && s.mutations == 1 {
+                return ResponseTemplate::new(503)
+                    .set_body_json(json!({"message":"unavailable","status_code":503}));
+            }
             if matches!(s.fault, Fault::Cleanup) {
                 return ResponseTemplate::new(403)
                     .set_body_json(json!({"message":"refused","status_code":403}));
@@ -90,6 +138,8 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
         fault,
         created: false,
         deleted: false,
+        mutations: 0,
+        closed: false,
     }));
     rt.block_on(
         Mock::given(wiremock::matchers::any())
@@ -105,11 +155,22 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
     let result = orchestrate(
         &rt,
         &t,
+        &cleanup_transport(&profile).unwrap(),
         &mut registry,
         || Ok(()),
         |r| {
             rt.block_on(create_rule(&t, r, ID, INDEX))?;
-            if matches!(fault, Fault::CancelAlerts | Fault::LateAlerts) {
+            if matches!(
+                fault,
+                Fault::CancelAlerts
+                    | Fault::LateAlerts
+                    | Fault::AlertFailure
+                    | Fault::AlertConflict
+                    | Fault::AlertZero
+                    | Fault::AlertWrongTotal
+                    | Fault::AlertUnclosed
+                    | Fault::AlertNoop
+            ) {
                 if matches!(fault, Fault::LateAlerts) {
                     for n in 0..10 {
                         r.alerts.insert(format!("alert-{n}"), ID.into());
@@ -247,6 +308,7 @@ fn unrelated_case_response_never_enters_cleanup_trace() {
     let result = orchestrate(
         &rt,
         &t,
+        &cleanup_transport(&profile).unwrap(),
         &mut registry,
         || Ok(()),
         |r| rt.block_on(create_case(&t, r, ID)).map(|_| ()),
@@ -310,4 +372,54 @@ fn mcp_mutations_cleanup_discovers_alerts_on_early_cancellation_and_after_ten_hi
         let delete = trace.iter().position(|(m, _, _)| m == "DELETE").unwrap();
         assert!(disable < close && close < delete);
     }
+}
+
+#[test]
+fn cleanup_503_then_200_stops_after_one_mutation() {
+    let (class, trace, _) = exercise(Fault::RetryCleanup);
+    assert_eq!(class, "cleanup_failed");
+    assert_eq!(
+        trace.len(),
+        2,
+        "only create and one cleanup toggle: {trace:?}"
+    );
+    assert!(trace[1].1.ends_with("/_bulk_action"));
+}
+
+#[test]
+fn unsuccessful_alert_close_stops_every_later_write() {
+    for fault in [
+        Fault::AlertFailure,
+        Fault::AlertConflict,
+        Fault::AlertZero,
+        Fault::AlertWrongTotal,
+        Fault::AlertUnclosed,
+    ] {
+        let (class, trace, _) = exercise(fault);
+        assert_eq!(class, "cleanup_failed");
+        assert_eq!(
+            trace.len(),
+            3,
+            "only create, disable, and first close: {trace:?}"
+        );
+        assert!(trace[2].1.ends_with("/signals/status"));
+        assert_eq!(
+            trace[2].2,
+            json!({"signal_ids":["alert-0"],"status":"closed"})
+        );
+    }
+}
+
+#[test]
+fn already_closed_alerts_allow_cleanup_after_readback() {
+    let (class, trace, _) = exercise(Fault::AlertNoop);
+    assert_eq!(class, "contract");
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(_, p, _)| p.ends_with("/signals/status"))
+            .count(),
+        12
+    );
+    assert_eq!(trace.last().unwrap().0, "DELETE");
 }

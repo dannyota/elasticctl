@@ -187,7 +187,7 @@ fn setup(rt: &tokio::runtime::Runtime) -> (MockServer, Stack, Profile, Transport
             .mount(&server),
     );
     let profile: Profile = serde_json::from_value(json!({"kibana_url":server.uri(),"es_url":server.uri(),"username":"elastic","password":"offline"})).unwrap();
-    let t = Transport::new(&profile).unwrap();
+    let t = cleanup_transport(&profile).unwrap();
     (server, stack, profile, t)
 }
 fn writes(rt: &tokio::runtime::Runtime, server: &MockServer) -> Vec<(String, String)> {
@@ -258,7 +258,15 @@ fn mcp_mutations_lab_cleanup_failure_never_deletes_user() {
     rt.block_on(lab_identity::provision(&profile, true, &mut registry))
         .unwrap();
     stack.0.lock().unwrap().fail_invalidation = true;
-    let error = orchestrate(&rt, &t, &mut registry, || Ok(()), |_| Ok(())).unwrap_err();
+    let error = orchestrate(
+        &rt,
+        &t,
+        &cleanup_transport(&profile).unwrap(),
+        &mut registry,
+        || Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap_err();
     assert_eq!(error, "cleanup_failed");
     let trace = writes(&rt, &server);
     assert_eq!(trace.len(), 3);
@@ -275,7 +283,15 @@ fn mcp_mutations_lab_unrelated_key_is_not_invalidated_and_user_is_retained() {
         rt.block_on(lab_identity::provision(&profile, true, &mut registry))
             .is_err()
     );
-    let error = orchestrate(&rt, &t, &mut registry, || Ok(()), |_| Ok(())).unwrap_err();
+    let error = orchestrate(
+        &rt,
+        &t,
+        &cleanup_transport(&profile).unwrap(),
+        &mut registry,
+        || Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap_err();
     assert_eq!(error, "cleanup_failed");
     assert_eq!(writes(&rt, &server).len(), 2);
 }
