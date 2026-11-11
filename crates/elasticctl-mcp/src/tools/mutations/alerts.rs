@@ -81,7 +81,7 @@ async fn create(
 ) -> Result<AdapterResult, AdapterError> {
     use super::{drain_closed, local_error, output};
     use crate::plan::{
-        audit, consent, hash,
+        PlanError, audit, consent, hash,
         kind::{Operation, PlanKind},
         store::{Plan, PlanContent},
         view,
@@ -142,7 +142,14 @@ async fn create(
     let identity = health::credential_identity(t)
         .await
         .map_err(AdapterError::Core)?;
-    let (kind, operation, seen, action, targets) = match input {
+    let kind = match &input {
+        Input::Status(..) => PlanKind::AlertsSetStatus,
+        Input::Tags(..) => PlanKind::AlertsSetTags,
+    };
+    if !kind.credential_suitable(&identity) {
+        return Err(local_error(PlanError::CredentialUnsuitable.tool_error()));
+    }
+    let (operation, seen, action, targets) = match input {
         Input::Status(input, status) => {
             let (plan, seen) =
                 alerts_ops::plan_status_by_ids_observed(t, &input.alert_ids, status, input.reason)
@@ -150,13 +157,7 @@ async fn create(
                     .map_err(AdapterError::Core)?;
             let action = plan.preview_action.clone();
             let targets = plan.targets.clone();
-            (
-                PlanKind::AlertsSetStatus,
-                Operation::AlertsSetStatus { plan },
-                seen,
-                action,
-                targets,
-            )
+            (Operation::AlertsSetStatus { plan }, seen, action, targets)
         }
         Input::Tags(input) => {
             let (plan, seen) =
@@ -165,13 +166,7 @@ async fn create(
                     .map_err(AdapterError::Core)?;
             let action = plan.preview_action.clone();
             let targets = plan.targets.clone();
-            (
-                PlanKind::AlertsSetTags,
-                Operation::AlertsSetTags { plan },
-                seen,
-                action,
-                targets,
-            )
+            (Operation::AlertsSetTags { plan }, seen, action, targets)
         }
     };
     let credential = hash::credential_hash(&identity);

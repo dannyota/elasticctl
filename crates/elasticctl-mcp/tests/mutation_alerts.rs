@@ -509,3 +509,45 @@ async fn consent_names_each_alert_on_its_own_line() {
     h.close_input();
     h.join().await.unwrap();
 }
+
+async fn refuses_organization_key(tool: &str, args: Value) {
+    let (server, mut h) = setup("ech-9.5.2").await;
+    let mut auth = fixture("ech-9.5.2", "authenticate");
+    auth["authentication_realm"]["type"] = json!("_cloud_api_key");
+    Mock::given(method("GET"))
+        .and(path("/_security/_authenticate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(auth))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let result = call(&mut h, tool, args).await;
+    assert_eq!(result["error"]["code"], "credential_unsuitable", "{result}");
+    assert_eq!(
+        call(&mut h, "plan_list", json!({})).await["data"]["plans"],
+        json!([])
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].url.path(), "/_security/_authenticate");
+    h.close_input();
+    h.join().await.unwrap();
+}
+
+#[tokio::test]
+async fn status_refuses_organization_key_before_search() {
+    refuses_organization_key(
+        "alerts_set_status_plan",
+        json!({"alert_ids":["elasticctl-fixture-alert-1"],"status":"closed"}),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn tags_refuses_organization_key_before_search() {
+    refuses_organization_key(
+        "alerts_set_tags_plan",
+        json!({"alert_ids":["elasticctl-fixture-alert-1"],"add":["test"]}),
+    )
+    .await;
+}
