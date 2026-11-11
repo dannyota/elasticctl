@@ -109,9 +109,9 @@ each rule, and sends no write.
 - A rule already in the requested state stays in the plan and shows as
   `enabled -> enabled` or `disabled -> disabled`.
 - An organization-level Elastic Cloud API key is refused with
-  `credential_unsuitable` before anyone is asked, because it cannot enable a
-  rule or apply a disable; see
-  [Which API key to use](Configuration.md#which-api-key-to-use).
+  `credential_unsuitable` before anyone is asked: it reaches the whole
+  organization and its role scope cannot be read, so the plan cannot show what
+  it may do. Use a scoped key ([which key](Configuration.md#which-api-key-to-use)).
 - A read that returns a rule with another `rule_id` than the one asked for
   fails with `elastic_conflict`, and no plan is stored.
 
@@ -390,10 +390,10 @@ It cannot check that a person gave it.
   eight plans are open. That bounds the rate; it does not stop it.
 - **The last check is not atomic.** A change between the last read and the
   write is not seen.
-- **A toggled rule runs with the server's credential.** Kibana assigns the
-  caller's API key to every rule a bulk action touches. After a toggle through
-  MCP, the rule runs with this credential's privileges and stops if the key is
-  deleted. Toggling it back assigns the same key again, not the earlier one.
+- **A rule without a key takes the server's credential.** Kibana gives a rule
+  an API key on its first enable. Enabled through MCP, such a rule then runs
+  with this credential's privileges and stops if the key is deleted; a later
+  disable keeps the key. A rule that already has a key keeps it.
 
 MCP deletes nothing, changes no rule content or exception list, and never
 runs `state push`. To limit what the server can change, start it with a

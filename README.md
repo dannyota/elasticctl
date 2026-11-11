@@ -119,7 +119,8 @@ A planner tool reads the stack and stores a plan; `plan_apply` takes only the
 plan id and asks the person at the client to confirm it in a form. No tool
 argument confirms a change, and a client without form elicitation cannot
 apply: the plan names the CLI command to run instead. The profile needs
-`es_url`, and a rule toggled this way then runs with the server's credential.
+`es_url`. A rule without an API key that is enabled this way then runs with the
+server's credential; a rule that has a key keeps it.
 See [MCP Mutations][mcp-mutations] for the flow, the audit trail, and the
 limits of this consent model.
 
