@@ -38,9 +38,7 @@ baseline rules still apply.
 - The Serverless project holds Elastic prebuilt rules for scale testing. `cargo xtask seed`
   installs or updates the prebuilt pack until its status reports current. They are read-only ground truth: never mutate an
   untagged rule.
-- Every object a live test creates carries the `elasticctl-sample` marker: a `rule_id` prefix and
-  tag for rules, and `*elasticctl-sample*` in index names. Every remote mutation targets explicit
-  ids.
+- Every object a live contract creates carries the live marker: the `elasticctl-live-` prefix on `rule_id`s, ids, and index names, and the `elasticctl-live-marker` tag. The baseline audit checks for that marker. The fixture recorder, the corpus fill, and sample data use the `elasticctl-sample` marker instead. Every remote mutation targets explicit ids, and a cleanup deletes a rule by its exact `rule_id`, never by name.
 - A run ends by verifying the project is back to baseline: unchanged prebuilt-rule count, no
   sample rules, and no sample indices.
 - Fleet packages are the exception: a package a test installs (for example `system` or
