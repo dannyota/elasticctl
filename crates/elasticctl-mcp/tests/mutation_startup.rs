@@ -3,6 +3,8 @@ mod support;
 use serde_json::json;
 use support::{Harness, current_metadata, options, target};
 
+// Read-only catalog/tool code at 5bdab54 is identical to tag v0.8.2:
+// git diff v0.8.2 5bdab54 -- crates/elasticctl-mcp/src/catalog.rs crates/elasticctl-mcp/src/tools
 // Baseline: revision 5bdab54 (origin/dev-0.9), exported with git archive.
 // Built the unmodified server in /private/tmp/elasticctl-baseline-5bdab54-gzqneqk5:
 // cargo build --locked --manifest-path /private/tmp/elasticctl-baseline-5bdab54-gzqneqk5/Cargo.toml -p elasticctl --bin elasticctl --jobs 2 --target-dir /private/tmp/elasticctl-baseline-5bdab54-gzqneqk5/target
@@ -94,47 +96,67 @@ async fn raw_request(
 
 #[tokio::test]
 async fn catalog_matches_baseline() {
-    for legacy in [false, true] {
-        for query in [false, true] {
-            let mut opts = options();
-            opts.allow_query_tools = query;
-            let (mut input, server_input) = tokio::io::duplex(1_048_576);
-            let (server_output, output) = tokio::io::duplex(1_048_576);
-            let server = tokio::spawn(elasticctl_mcp::serve_io(
-                target(),
-                opts,
-                server_input,
-                server_output,
-            ));
-            let mut output = tokio::io::BufReader::new(output);
-            let discovery = if legacy {
-                support::legacy_initialize(100)
-            } else {
-                json!({"jsonrpc":"2.0","id":100,"method":"server/discover","params":{"_meta":current_metadata()}})
-            };
-            let info = raw_request(&mut input, &mut output, discovery).await;
-            assert_eq!(
-                raw_member(raw_member(&info, "result"), "instructions"),
-                BASE_INSTRUCTIONS_JSON.as_bytes(),
-            );
-            if legacy {
-                use tokio::io::AsyncWriteExt;
-                input
-                    .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
-                    .await
-                    .unwrap();
-            }
-            let response = raw_request(&mut input, &mut output,
+    for toggle in [false, true] {
+        for legacy in [false, true] {
+            for query in [false, true] {
+                let mut opts = options();
+                opts.allow_query_tools = query;
+                if toggle {
+                    opts.allow_mutations =
+                        elasticctl_mcp::MutationClasses::parse(["rules-toggle"]).unwrap();
+                }
+                let (mut input, server_input) = tokio::io::duplex(1_048_576);
+                let (server_output, output) = tokio::io::duplex(1_048_576);
+                let server = tokio::spawn(elasticctl_mcp::serve_io(
+                    target(),
+                    opts,
+                    server_input,
+                    server_output,
+                ));
+                let mut output = tokio::io::BufReader::new(output);
+                let discovery = if legacy {
+                    support::legacy_initialize(100)
+                } else {
+                    json!({"jsonrpc":"2.0","id":100,"method":"server/discover","params":{"_meta":current_metadata()}})
+                };
+                let info = raw_request(&mut input, &mut output, discovery).await;
+                assert_eq!(
+                    raw_member(raw_member(&info, "result"), "instructions"),
+                    if toggle {
+                        serde_json::to_vec(MUTATION_INSTRUCTIONS).unwrap()
+                    } else {
+                        BASE_INSTRUCTIONS_JSON.as_bytes().to_vec()
+                    },
+                );
+                if legacy {
+                    use tokio::io::AsyncWriteExt;
+                    input
+                        .write_all(
+                            b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                let response = raw_request(&mut input, &mut output,
                 json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":current_metadata()}}),
             ).await;
-            let expected = if query {
-                QUERY_CATALOG
-            } else {
-                DEFAULT_CATALOG
-            };
-            assert_eq!(raw_member(&response, "result"), expected.as_bytes());
-            drop(input);
-            server.await.unwrap().unwrap();
+                // Toggle snapshots were captured by the CLI process test from a46f4c38,
+                // before production changes; see toggle_catalog_snapshot for reproduction.
+                let expected = if toggle {
+                    if query {
+                        include_str!("../../elasticctl-cli/tests/snapshots/mcp_toggle_true.json")
+                    } else {
+                        include_str!("../../elasticctl-cli/tests/snapshots/mcp_toggle_false.json")
+                    }
+                } else if query {
+                    QUERY_CATALOG
+                } else {
+                    DEFAULT_CATALOG
+                };
+                assert_eq!(raw_member(&response, "result"), expected.as_bytes());
+                drop(input);
+                server.await.unwrap().unwrap();
+            }
         }
     }
 }
@@ -160,9 +182,6 @@ fn parses_classes() {
         "",
         "all",
         "*",
-        "cases",
-        "alerts-triage",
-        "rules-create",
         "Rules-Toggle",
         " rules-toggle",
         "rules-toggle,",
@@ -469,4 +488,121 @@ async fn mutation_target_must_display_on_one_line() {
             }
         }
     }
+}
+
+const PLANNERS: &[(&str, &[&str])] = &[
+    (
+        "alerts-triage",
+        &["alerts_set_status_plan", "alerts_set_tags_plan"],
+    ),
+    (
+        "cases",
+        &[
+            "cases_comment_plan",
+            "cases_create_plan",
+            "cases_set_status_plan",
+        ],
+    ),
+    ("rules-create", &["rules_create_plan"]),
+];
+
+#[tokio::test]
+async fn new_classes_catalog_gate_and_annotations() {
+    let mock = wiremock::MockServer::start().await;
+    for query in [false, true] {
+        for class in [
+            "",
+            "alerts-triage",
+            "cases",
+            "rules-create",
+            "rules-toggle,alerts-triage,cases,rules-create",
+        ] {
+            let mut opts = options();
+            opts.allow_query_tools = query;
+            if !class.is_empty() {
+                opts.allow_mutations = elasticctl_mcp::MutationClasses::parse([class]).unwrap();
+            }
+            let mut resolved = target();
+            resolved.profile.kibana_url = mock.uri();
+            resolved.profile.es_url = Some(mock.uri());
+            let mut h = Harness::start(resolved, opts);
+            let r = support::request(&mut h, true, 1, "tools/list", json!({})).await;
+            let tools = r["result"]["tools"].as_array().unwrap();
+            let names: Vec<_> = tools.iter().map(|v| v["name"].as_str().unwrap()).collect();
+            let mut expected = support::EXPECTED_TOOL_NAMES.to_vec();
+            if query {
+                expected.extend(["search_dsl", "search_esql"]);
+            }
+            if !class.is_empty() {
+                expected.extend(["plan_apply", "plan_discard", "plan_get", "plan_list"]);
+            }
+            if class.contains("rules-toggle") {
+                expected.push("rules_set_enabled_plan");
+            }
+            for (owner, planners) in PLANNERS {
+                for name in *planners {
+                    if class.contains(owner) {
+                        expected.push(name);
+                        let tool = tools.iter().find(|t| t["name"] == *name).unwrap();
+                        assert_eq!(
+                            tool["annotations"],
+                            json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true})
+                        );
+                        assert!(tool.get("_meta").is_none());
+                        jsonschema::validator_for(&tool["inputSchema"]).unwrap();
+                        jsonschema::validator_for(&tool["outputSchema"]).unwrap();
+                    } else {
+                        let r = support::request(
+                            &mut h,
+                            true,
+                            2,
+                            "tools/call",
+                            json!({"name":name,"arguments":{"invalid":true}}),
+                        )
+                        .await;
+                        assert_eq!(
+                            r["error"],
+                            json!({"code":-32601,"message":"Unknown MCP tool"})
+                        );
+                    }
+                }
+            }
+            expected.sort_unstable();
+            assert_eq!(names, expected);
+            assert!(h.audit.lock().unwrap().is_empty());
+            h.close_input();
+            h.join().await.unwrap();
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn six_planners_reject_mixed_session_before_reads() {
+    let mock = wiremock::MockServer::start().await;
+    let mut opts = options();
+    opts.allow_mutations =
+        elasticctl_mcp::MutationClasses::parse(["alerts-triage,cases,rules-create"]).unwrap();
+    let mut resolved = target();
+    resolved.profile.kibana_url = mock.uri();
+    resolved.profile.es_url = Some(mock.uri());
+    let mut h = Harness::start(resolved, opts);
+    support::initialize(&mut h, false).await;
+    for (_, planners) in PLANNERS {
+        for name in *planners {
+            let r = support::request(
+                &mut h,
+                true,
+                1,
+                "tools/call",
+                json!({"name":name,"arguments":{}}),
+            )
+            .await;
+            assert_eq!(r["error"]["code"], -32600, "{name}: {r}");
+        }
+    }
+    assert!(h.audit.lock().unwrap().is_empty());
+    h.close_input();
+    h.join().await.unwrap();
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }

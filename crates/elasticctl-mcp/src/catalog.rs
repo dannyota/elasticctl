@@ -8,8 +8,13 @@ pub enum ToolId {
     AlertContext,
     AlertsGet,
     AlertsList,
+    AlertsSetStatusPlan,
+    AlertsSetTagsPlan,
+    CasesCommentPlan,
+    CasesCreatePlan,
     CasesGet,
     CasesList,
+    CasesSetStatusPlan,
     DashboardsGet,
     DashboardsList,
     DataViewsDefaultGet,
@@ -28,6 +33,7 @@ pub enum ToolId {
     PlanList,
     RuleHealth,
     RuleReadiness,
+    RulesCreatePlan,
     RulesGet,
     RulesList,
     RulesPrebuiltStatus,
@@ -39,12 +45,17 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 37] = [
         Self::AlertContext,
         Self::AlertsGet,
         Self::AlertsList,
+        Self::AlertsSetStatusPlan,
+        Self::AlertsSetTagsPlan,
+        Self::CasesCommentPlan,
+        Self::CasesCreatePlan,
         Self::CasesGet,
         Self::CasesList,
+        Self::CasesSetStatusPlan,
         Self::DashboardsGet,
         Self::DashboardsList,
         Self::DataViewsDefaultGet,
@@ -63,6 +74,7 @@ impl ToolId {
         Self::PlanList,
         Self::RuleHealth,
         Self::RuleReadiness,
+        Self::RulesCreatePlan,
         Self::RulesGet,
         Self::RulesList,
         Self::RulesPrebuiltStatus,
@@ -75,6 +87,12 @@ impl ToolId {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::AlertsSetStatusPlan => "alerts_set_status_plan",
+            Self::AlertsSetTagsPlan => "alerts_set_tags_plan",
+            Self::CasesCommentPlan => "cases_comment_plan",
+            Self::CasesCreatePlan => "cases_create_plan",
+            Self::CasesSetStatusPlan => "cases_set_status_plan",
+            Self::RulesCreatePlan => "rules_create_plan",
             Self::PlanApply => "plan_apply",
             Self::PlanDiscard => "plan_discard",
             Self::PlanGet => "plan_get",
@@ -134,6 +152,24 @@ impl ToolId {
             Self::RulesSetEnabledPlan => options
                 .allow_mutations
                 .contains(crate::MutationClass::RulesToggle),
+            Self::AlertsSetStatusPlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::AlertsTriage),
+            Self::AlertsSetTagsPlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::AlertsTriage),
+            Self::CasesCommentPlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::Cases),
+            Self::CasesCreatePlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::Cases),
+            Self::CasesSetStatusPlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::Cases),
+            Self::RulesCreatePlan => options
+                .allow_mutations
+                .contains(crate::MutationClass::RulesCreate),
             _ => true,
         }
     }

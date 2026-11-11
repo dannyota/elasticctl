@@ -137,6 +137,11 @@ envelope with this `data`:
 | `cases_create` | 1 | 1 | 0 | 0; `created` is `{"case_id": "..."}` |
 | `rules_create` | 1 | 1 | 0 | 0; `created` is `{"rule_id": "..."}` |
 
+Outcome arithmetic is checked. Overflow, totals above the planned count, or
+`updated + unchanged + failed > requested` make a report unmappable. The
+mapping returns a statusless error; apply records `unknown`, no outcome, and
+an `apply_finished` audit event.
+
 `complete` is true when `updated + unchanged == requested` and `failed == 0`.
 A result with `complete: false` is a success envelope, not a tool error: the
 call worked and the data says what did not. Per-object failure text from the
