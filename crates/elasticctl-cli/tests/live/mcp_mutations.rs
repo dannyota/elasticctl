@@ -7,6 +7,9 @@ mod frames;
 #[path = "mcp_mutations/tests.rs"]
 mod tests;
 
+#[path = "mcp_mutations/conformance.rs"]
+mod conformance;
+
 const SHIPPED_CLASSES: &[&str] = &["rules-toggle"];
 const MUTATION_TOOLS: &[&str] = &[
     "plan_apply",
