@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.2 — Unreleased
+
+### Added
+
+- `scripts/mcp-stdio-shim.sh` runs an MCP server and records both stdio
+  directions to private files, for checking what a client sends.
+
+### Changed
+
+- The MCP server is checked with two product clients, Claude Code 2.1.322 and
+  Codex CLI 0.167.0, on a local lab; the MCP wiki page lists what each one
+  supports. Protocol tests now cover the whole 0.8 surface at once: every tool
+  against its output schema, exact request maxima, mixed tool and resource
+  admission, and credential sentinels. The server is unchanged.
+
 ## 0.8.1 — 2026-11-11
 
 ### Added

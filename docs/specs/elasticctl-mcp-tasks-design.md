@@ -2,8 +2,9 @@
 
 Status: 0.8.0 implements sections 4 to 7 and 10: the four task tools, the
 `rules_list` threat filters, the verified corpus read, and the server
-instructions. 0.8.1 implements sections 8 and 9, resources and prompts.
-Release and publication each need separate approval. The
+instructions. 0.8.1 implements sections 8 and 9, resources and prompts. 0.8.2
+records the product client measurements M11 and M12 of section 11; the 0.8
+scope is complete. Release and publication each need separate approval. The
 [0.7 MCP design](elasticctl-mcp-design.md) stays in force; this document only
 adds to it. [Research](../plans/v0.8-research.md) records sources, measured
 facts, and evidence gaps. Plans: [0.8.0](../plans/v0.8.0.md),
