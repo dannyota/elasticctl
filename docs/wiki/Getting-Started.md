@@ -35,7 +35,8 @@ Every method installs two names for one binary: `elasticctl` and the shorter
 
 Create an Elasticsearch API key inside Kibana: Project Settings, Management,
 API keys on Serverless, or Stack Management, API keys on Hosted and
-self-managed. An organization-level Elastic Cloud key is not enough. See
+self-managed, scoped to the project or deployment. An organization-level
+Elastic Cloud key is not supported. See
 [which key to use](Configuration.md#which-api-key-to-use).
 
 ## Create a profile

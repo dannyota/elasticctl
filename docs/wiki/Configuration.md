@@ -62,13 +62,13 @@ interchangeable:
 | Key | Created in | Works for |
 | --- | --- | --- |
 | Elasticsearch API key | Kibana, under API keys | Everything `elkctl` does |
-| Organization-level Cloud API key | Elastic Cloud console | Reads, and creating disabled rules. Enabling a rule fails |
+| Organization-level Cloud API key | Elastic Cloud console | Not supported. Serverless 9.7.0 accepts it for CLI reads and rule changes; Hosted and MCP planning refuse it |
 | Cloud API key with provisioning rights | Elastic Cloud console | Not used by `elkctl` |
 
-Enabling a rule, applying a disable, and `state push` need the first type: the
-alerting framework creates a rule API key on behalf of the caller and refuses
-an organization-level key. `elkctl doctor` reports which realm the key
-authenticates through.
+Use the first type. An organization-level key reaches every deployment and
+project in the organization, and MCP planning refuses it because its role scope
+cannot be read; see [Limitations](Limitations.md#an-organization-level-cloud-key-is-not-supported).
+`elkctl doctor` reports which realm the key authenticates through.
 
 ## Global flags
 
