@@ -182,6 +182,12 @@ fn rule_body(id: &str, index: &str) -> TestResult<elasticctl_api::model::Rule> {
     value["tags"] = json!([LIVE_TAG, id]);
     safe(elasticctl_api::model::Rule::from_value(value))
 }
+/// The rule as the plans see it. An enabled rule runs on its own, and Kibana then
+/// rewrites `execution_summary`, so "no change" compares this form, the same one
+/// stale detection uses, not the raw read.
+fn rule_state(rule: &elasticctl_api::model::Rule) -> elasticctl_api::model::Rule {
+    elasticctl_api::normalize::canonical(rule)
+}
 async fn owned_rule(t: &Transport, id: &str) -> TestResult<elasticctl_api::model::Rule> {
     marker(id)?;
     let r = safe(elasticctl_api::rules::get(t, id).await)?;
@@ -207,7 +213,10 @@ fn contract(config: &Path, profile: &Profile, registry: &Registry, id: &str) -> 
     let rt = runtime()?;
     let t = safe(Transport::new(profile))?;
     require(registry.rules.contains(id))?;
-    let read = || rt.block_on(owned_rule(&t, id));
+    let read = || {
+        rt.block_on(owned_rule(&t, id))
+            .map(|rule| rule_state(&rule))
+    };
     let mut a = Session::spawn(config, McpProtocolPath::Current, true, true)?;
     a.owned = registry.rules.clone();
     for class in SHIPPED_CLASSES {
