@@ -309,3 +309,70 @@ async fn legacy_wait_releases_all_four_permits_for_blocked_reads() {
     h.close_input();
     h.join().await.unwrap();
 }
+
+#[tokio::test]
+async fn mixed_session_mutations_reject_before_reads_and_audit() {
+    let (s, mut h) = common::setup().await;
+    h.initialize(true).await;
+    let id = common::plan(&mut h).await;
+    let meta = json!({"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}});
+    let baseline = common::call(&mut h, "rules_get", json!({"selector":"r"}), json!({})).await;
+    // Read calls retain the initialized session behavior despite request metadata.
+    let r = common::call(&mut h, "rules_get", json!({"selector":"r"}), meta.clone()).await;
+    assert_ne!(r["result"]["isError"], true, "{r}");
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(
+        r["result"]["structuredContent"],
+        baseline["result"]["structuredContent"]
+    );
+    let count = s.received_requests().await.unwrap().len();
+    let audits = h.audit.lock().unwrap().len();
+    for name in [
+        "plan_list",
+        "plan_get",
+        "plan_discard",
+        "rules_set_enabled_plan",
+        "plan_apply",
+    ] {
+        let args = if name == "rules_set_enabled_plan" {
+            json!({"selectors":["r"],"enabled":false})
+        } else if name == "plan_list" {
+            json!({})
+        } else {
+            json!({"plan_id":id})
+        };
+        let r = common::call(&mut h, name, args, meta.clone()).await;
+        assert_eq!(r["error"]["code"], -32600, "{name}: {r}");
+        assert_eq!(s.received_requests().await.unwrap().len(), count);
+        assert_eq!(h.audit.lock().unwrap().len(), audits);
+    }
+    h.close_input();
+    h.join().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_answer_fields_reject_before_reads_and_prompt() {
+    let _serial = LEGACY.lock().await;
+    let (s, mut h) = common::setup().await;
+    h.initialize(true).await;
+    let id = common::plan(&mut h).await;
+    let before = common::call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+    let count = s.received_requests().await.unwrap().len();
+    let audits = h.audit.lock().unwrap().len();
+    for fields in [
+        json!({"requestState":"bogus"}),
+        json!({"inputResponses":{"confirm":{"action":"accept","content":{"apply":true}}}}),
+    ] {
+        let r = common::call(&mut h, "plan_apply", json!({"plan_id":id}), fields).await;
+        assert_eq!(r["error"]["code"], -32600, "{r}");
+        assert_eq!(s.received_requests().await.unwrap().len(), count);
+        assert_eq!(h.audit.lock().unwrap().len(), audits);
+        let after = common::call(&mut h, "plan_get", json!({"plan_id":id}), json!({})).await;
+        assert_eq!(
+            after["result"]["structuredContent"]["data"]["plan"],
+            before["result"]["structuredContent"]["data"]["plan"]
+        );
+    }
+    h.close_input();
+    h.join().await.unwrap();
+}

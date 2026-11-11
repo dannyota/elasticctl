@@ -529,4 +529,184 @@ mod tests {
         upstream.abort();
         clock_guard.abort();
     }
+    #[tokio::test(start_paused = true)]
+    async fn legacy_answer_deadline_includes_admission_and_second_check() {
+        let _serial = crate::plan::confirm::tests::LEGACY_SESSION.lock().await;
+        // Keep paused time from auto-advancing while TCP I/O is pending.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let delayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let delay = delayed.clone();
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let arrival = arrived.clone();
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_writes = writes.clone();
+        let upstream = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let delay = delay.clone();
+                let arrival = arrival.clone();
+                let writes = seen_writes.clone();
+                connections.spawn(async move {
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        headers.push(stream.read_u8().await.unwrap());
+                    }
+                    let headers = String::from_utf8(headers).unwrap();
+                    let request = headers.lines().next().unwrap();
+                    if request.starts_with("POST ") {
+                        writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if delay.load(std::sync::atomic::Ordering::SeqCst) {
+                        arrival.notify_one();
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    let body = if request == "GET /_security/_authenticate HTTP/1.1" {
+                        fixture("authenticate")
+                    } else if request.starts_with("POST ") {
+                        fixture("rules_bulk_disable")
+                    } else {
+                        assert!(request.starts_with("GET /api/detection_engine/rules?"), "{request}");
+                        fixture("rules_get")
+                    }.to_string();
+                    stream.write_all(format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()
+                    ).as_bytes()).await.unwrap();
+                });
+            }
+        });
+        let target = elasticctl_core::Resolved {
+            name: "test".into(),
+            source: elasticctl_core::Source::Profile,
+            profile: elasticctl_core::Profile {
+                kibana_url: url.clone(),
+                es_url: Some(url),
+                api_key: Some("test-key".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            },
+        };
+        let options = super::ServerOptions {
+            allow_mutations: crate::MutationClasses::parse(["rules-toggle"]).unwrap(),
+            ..Default::default()
+        };
+        let context = super::validate_target(&target, &options).unwrap();
+        let mut state = super::ServerState::new(context, target, options.call_timeout, false);
+        state.allow_mutations = options.allow_mutations;
+        let answered = Arc::new(tokio::sync::Notify::new());
+        let answer_notice = answered.clone();
+        state.audit = crate::plan::audit::AuditSink::production(move |line| {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if v["audit"]["event"] == "confirmation_answered" {
+                answer_notice.notify_one();
+            }
+        });
+        let state = Arc::new(state);
+        let (mut input, server_input) = tokio::io::duplex(1_048_576);
+        let (server_output, output) = tokio::io::duplex(1_048_576);
+        let mut output = BufReader::new(output);
+        let server = tokio::spawn(super::serve_with_writes(
+            state.clone(),
+            server_input,
+            server_output,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{}}},
+                "clientInfo":{"name":"test","version":"0"}
+            }}),
+        )
+        .await;
+        let initialized = receive(&mut output).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        let rule_id = fixture("rules_get")["rule_id"].clone();
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name":"rules_set_enabled_plan","arguments":{"selectors":[rule_id],"enabled":false}
+            }}),
+        )
+        .await;
+        let planned = receive(&mut output).await;
+        let id = planned["result"]["structuredContent"]["data"]["plan"]["plan_id"]
+            .as_str()
+            .expect("plan created");
+        for fields in [
+            json!({"requestState":"bogus"}),
+            json!({"inputResponses":{}}),
+        ] {
+            let mut params = json!({"name":"plan_apply","arguments":{"plan_id":id}});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            send(
+                &mut input,
+                json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":params}),
+            )
+            .await;
+            let rejected = receive(&mut output).await;
+            assert_eq!(rejected["error"]["code"], -32600);
+            let mut plans = state.plans.lock().unwrap();
+            let plan = plans.get(id, tokio::time::Instant::now()).unwrap();
+            assert_eq!(plan.state, crate::plan::store::PlanState::Open);
+            assert_eq!(plan.prompt_count(), 0);
+        }
+        send(
+            &mut input,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                "name":"plan_apply","arguments":{"plan_id":id}
+            }}),
+        )
+        .await;
+        let question = receive(&mut output).await;
+        assert_eq!(question["method"], "elicitation/create", "{question}");
+        assert_eq!(question["params"]["mode"], "form");
+        let mut holders: Vec<_> = (0..4).map(|_| state.try_admit().unwrap()).collect();
+        send(&mut input, json!({"jsonrpc":"2.0","id":question["id"],"result":{"action":"accept","content":{"apply":true}}})).await;
+        answered.notified().await;
+        tokio::time::advance(Duration::from_secs(29)).await;
+        delayed.store(true, std::sync::atomic::Ordering::SeqCst);
+        holders.pop();
+        arrived.notified().await;
+        delayed.store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let response = receive(&mut output).await;
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"], "deadline_exceeded",
+            "{response}"
+        );
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            state
+                .plans
+                .lock()
+                .unwrap()
+                .get(id, tokio::time::Instant::now())
+                .unwrap()
+                .state,
+            crate::plan::store::PlanState::Open
+        );
+        drop(holders);
+        drop(input);
+        server.await.unwrap().unwrap();
+        upstream.abort();
+        clock_guard.abort();
+    }
 }

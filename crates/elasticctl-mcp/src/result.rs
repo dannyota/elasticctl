@@ -84,7 +84,6 @@ pub(crate) fn failure(
 
 /// Build a list result, removing complete trailing rows until both copies of
 /// the envelope fit. Callers keep their schema-specific rows under `row_key`.
-#[allow(dead_code)] // List adapters call this once the foundation catalog gains rows.
 pub(crate) fn success_with_truncated_rows(
     target: TargetContext,
     mut data: serde_json::Value,

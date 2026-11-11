@@ -7,6 +7,7 @@
 use crate::cli::GlobalArgs;
 use crate::context::{Context, config_path};
 use elasticctl_core::Config;
+use elasticctl_mcp::MUTATION_TARGET_MESSAGE;
 use serde_json::json;
 use std::io::Write;
 use std::time::Duration;
@@ -66,6 +67,14 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[Strin
         allow_mutations,
     };
 
+    let validation = elasticctl_mcp::validate_startup(&context.resolved, &options);
+    if validation
+        .as_ref()
+        .is_err_and(|error| error.message == MUTATION_TARGET_MESSAGE)
+    {
+        finish_error(1, "error", MUTATION_TARGET_MESSAGE);
+    }
+
     if Config::permission_warning(&config_path(global)).is_some() {
         emit_warning("insecure_config_permissions", INSECURE_PERMISSIONS, None);
     }
@@ -75,7 +84,7 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[Strin
 
     // Validate before announcing mutations, so a failed start never claims
     // they are enabled. The output of a failed start is the same as before.
-    if let Err(error) = elasticctl_mcp::validate_startup(&context.resolved, &options) {
+    if let Err(error) = validation {
         finish_error(1, error.kind.as_str(), SERVER_FAILED);
     }
     if !options.allow_mutations.is_empty() {

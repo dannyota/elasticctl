@@ -9,12 +9,39 @@ fn run(
     es: bool,
     url: &str,
 ) -> (std::process::Output, tempfile::TempDir) {
+    run_target(bin, flags, es, url, "test", "default")
+}
+
+fn run_target(
+    bin: &str,
+    flags: &[&str],
+    es: bool,
+    url: &str,
+    name: &str,
+    space: &str,
+) -> (std::process::Output, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
+    let quoted = |v: &str| {
+        let mut text = String::from("\"");
+        for c in v.chars() {
+            if c.is_control() {
+                text.push_str(&format!("\\u{:04x}", c as u32));
+            } else {
+                text.push(c);
+            }
+        }
+        text.push('"');
+        text
+    };
     std::fs::write(
         &config,
         format!(
-            "current = \"test\"\n[profiles.test]\nkibana_url = \"{url}\"\n{}api_key = \"test\"\n",
+            "current = {}\n[profiles.{}]\nkibana_url = {}\nspace = {}\n{}api_key = \"test\"\n",
+            quoted(name),
+            quoted(name),
+            quoted(url),
+            quoted(space),
             if es {
                 "es_url = \"http://127.0.0.1:9\"\n"
             } else {
@@ -164,5 +191,69 @@ async fn mutation_flag_process_contract() {
         }
         let (out, _) = run(bin, &["--yes"], false, &url);
         assert_eq!(out.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn mutation_target_process_contract() {
+    for bin in [
+        env!("CARGO_BIN_EXE_elasticctl"),
+        env!("CARGO_BIN_EXE_elkctl"),
+    ] {
+        for control in [
+            '\n', '\r', '\t', '\u{7f}', '\u{85}', '\u{2028}', '\u{202e}', '\u{2066}',
+        ] {
+            for field in ["profile", "host", "space"] {
+                let bad = format!("test{control}continued");
+                let url = if field == "host" {
+                    format!("https://{bad}.example.test")
+                } else {
+                    "https://kibana.example.test".into()
+                };
+                let name = if field == "profile" {
+                    bad.as_str()
+                } else {
+                    "test"
+                };
+                let space = if field == "space" {
+                    bad.as_str()
+                } else {
+                    "default"
+                };
+                let (out, _) = run_target(
+                    bin,
+                    &["--allow-mutations", "rules-toggle"],
+                    true,
+                    &url,
+                    name,
+                    space,
+                );
+                assert_eq!(out.status.code(), Some(1), "{field}: {out:?}");
+                assert!(out.stdout.is_empty());
+                let expected = if field == "space" {
+                    "MCP startup configuration could not be resolved."
+                } else {
+                    "MCP mutation tools need a profile name, host, and space without line breaks or control characters."
+                };
+                assert_eq!(
+                    out.stderr,
+                    format!("{}\n", json!({"error":{"kind":"error","message":expected}}))
+                        .as_bytes()
+                );
+                if field == "host" && !matches!(control, '\n' | '\r' | '\t') {
+                    continue;
+                }
+                let (out, _) = run_target(bin, &[], true, &url, name, space);
+                if field == "space" {
+                    assert_eq!(out.status.code(), Some(1));
+                    assert!(out.stdout.is_empty());
+                    assert_eq!(out.stderr, b"{\"error\":{\"kind\":\"error\",\"message\":\"MCP startup configuration could not be resolved.\"}}\n");
+                    continue;
+                }
+                assert!(out.status.success(), "{out:?}");
+                let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert!(reply["result"]["tools"].is_array());
+            }
+        }
     }
 }

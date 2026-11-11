@@ -49,11 +49,13 @@ pub(crate) fn acquire(state: &Arc<ServerState>) -> Option<tokio::sync::OwnedSema
 }
 pub(crate) async fn reacquire(
     state: &Arc<ServerState>,
+    deadline: time::Instant,
 ) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    time::timeout(state.call_timeout, state.permits.clone().acquire_owned())
+    let permit = time::timeout_at(deadline, state.permits.clone().acquire_owned())
         .await
         .ok()?
-        .ok()
+        .ok()?;
+    (time::Instant::now() < deadline).then_some(permit)
 }
 pub(crate) fn timeout(state: &ServerState) -> std::time::Duration {
     state.call_timeout

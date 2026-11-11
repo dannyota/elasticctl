@@ -1,7 +1,6 @@
 use super::store::{ClosedPlan, Plan};
 use serde_json::{Value, json};
 use std::sync::Arc;
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum Answer {
     Confirmed,
@@ -21,7 +20,6 @@ impl Answer {
         }
     }
 }
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum Event {
     PlanCreated,
@@ -32,7 +30,6 @@ pub(crate) enum Event {
     ApplyInterrupted,
     PlanClosed,
 }
-#[allow(dead_code)]
 pub(crate) fn line<P>(ts: u64, p: &Plan<P>, protocol: &str, event: Event) -> String {
     let name = match event {
         Event::PlanCreated => "plan_created",
@@ -59,24 +56,20 @@ pub(crate) fn line<P>(ts: u64, p: &Plan<P>, protocol: &str, event: Event) -> Str
     json!({"audit":v}).to_string()
 }
 /// Formats an expiry snapshot after its plan record may have been evicted.
-#[allow(dead_code)]
 pub(crate) fn closed_line(ts: u64, p: &ClosedPlan, protocol: &str) -> String {
     json!({"audit":{"ts":ts,"event":"plan_closed","plan_id":p.id,"hash":p.hash,
         "kind":p.kind,"class":p.class,"profile":p.target.profile,"host":p.target.host,
         "space":p.target.space,"credential":p.credential,"protocol":protocol,"state":p.state}})
     .to_string()
 }
-#[allow(dead_code)]
 pub(crate) fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct AuditSink(Arc<dyn Fn(&str) + Send + Sync>);
-#[allow(dead_code)]
 impl AuditSink {
     /// The caller supplies the startup diagnostics writer. It receives a full line.
     pub(crate) fn production(writer: impl Fn(&str) + Send + Sync + 'static) -> Self {

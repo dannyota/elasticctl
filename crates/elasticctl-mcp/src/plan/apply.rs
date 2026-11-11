@@ -156,6 +156,14 @@ pub(crate) async fn handle(
     context: RequestContext<RoleServer>,
     c: CallContext,
 ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
+    if matches!(c.protocol, CallProtocol::Legacy)
+        && (request.request_state.is_some() || request.input_responses.is_some())
+    {
+        return Err(rmcp::ErrorData::invalid_request(
+            "Legacy plan_apply does not accept answer fields",
+            None,
+        ));
+    }
     let outcome = run(s.clone(), request, &context, &c).await;
     match outcome {
         Ok(r) => Ok(r),
@@ -179,7 +187,7 @@ async fn run(
     c: &CallContext,
 ) -> Result<CallToolResponse> {
     let mut permit = admission::acquire(&s).ok_or_else(|| error::local(LocalError::Busy))?;
-    let deadline = Instant::now() + admission::timeout(&s);
+    let mut deadline = Instant::now() + admission::timeout(&s);
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Input {
@@ -284,18 +292,14 @@ async fn run(
                 Ok(Err(_))=>Answer::NotConfirmed,
             }
         };
+        deadline = Instant::now() + admission::timeout(&s);
         drop(legacy);
         read_answer(&s, c, &id, answer)?;
         permit = tokio::select! { biased;
             _=context.ct.cancelled()=>return Err(PlanError::NotConfirmed.tool_error()),
-            p=admission::reacquire(&s)=>p.ok_or_else(||error::local(LocalError::Busy))?,
+            p=admission::reacquire(&s, deadline)=>p.ok_or_else(||error::local(LocalError::Busy))?,
         };
     }
-    let deadline = if matches!(c.protocol, CallProtocol::Legacy) {
-        Instant::now() + admission::timeout(&s)
-    } else {
-        deadline
-    };
     let current = get(&s, c, &id)?;
     if current.state.replayed()? {
         return projection(&s, c, &current, true, &context.id)

@@ -122,8 +122,8 @@ fn short_identity(value: &str) -> String {
 
 /// Reads the username and authentication realm from Elasticsearch.
 async fn identity(t: &Transport) -> Result<(String, String)> {
-    let identity = credential_identity(t).await?;
-    Ok((identity.username, identity.realm_type))
+    let body = t.get_absolute_es("/_security/_authenticate").await?;
+    decode_identity(&body)
 }
 
 /// The authenticated username, realm, and optional API key identifier.

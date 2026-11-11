@@ -99,7 +99,6 @@ impl ServerState {
     }
 
     /// Lazily construct the one-attempt transport for confirmed mutations.
-    #[allow(dead_code)]
     pub async fn mutation_transport(&self) -> Result<&Transport> {
         self.mutation_transport
             .get_or_try_init(|| async {
@@ -167,6 +166,9 @@ impl ServerState {
     }
 }
 
+/// Startup error for a mutation target that cannot display on one line.
+pub const MUTATION_TARGET_MESSAGE: &str = "MCP mutation tools need a profile name, host, and space without line breaks or control characters.";
+
 /// Validate a target and options before starting the MCP server.
 pub fn validate_startup(target: &Resolved, options: &ServerOptions) -> elasticctl_core::Result<()> {
     validate_target(target, options).map(|_| ())
@@ -180,6 +182,13 @@ fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetC
             ErrorKind::Error,
             "MCP mutation tools need an Elasticsearch URL. Set es_url in the profile or ELASTICCTL_ES_URL.",
         ));
+    }
+    if !options.allow_mutations.is_empty()
+        && [&target.name, &target.profile.host(), &target.profile.space]
+            .iter()
+            .any(|text| text.contains('\n') || !crate::plan::consent::displays_exactly(text))
+    {
+        return Err(Error::new(ErrorKind::Error, MUTATION_TARGET_MESSAGE));
     }
     let seconds = options.call_timeout.as_secs();
     if seconds == 0 || seconds > 120 || options.call_timeout.subsec_nanos() != 0 {
@@ -242,7 +251,6 @@ fn validate_url(field: &str, value: &str) -> Result<()> {
 }
 
 /// Validate a selector or filter without changing caller-provided text.
-#[allow(dead_code)] // Called by selector-bearing adapters added after the foundation runtime.
 pub(crate) fn validate_text(field: &'static str, value: &str, max_bytes: usize) -> Result<()> {
     if value.trim().is_empty() || value.len() > max_bytes {
         return Err(Error::new(
@@ -262,7 +270,6 @@ pub(crate) fn validate_path_id(field: &'static str, value: &str) -> Result<()> {
 }
 
 /// Validate a list page size.
-#[allow(dead_code)] // Called by list adapters added after the foundation runtime.
 pub(crate) fn validate_limit(value: usize) -> Result<()> {
     if !(1..=200).contains(&value) {
         return Err(Error::new(

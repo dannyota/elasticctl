@@ -9,7 +9,6 @@ use std::{collections::VecDeque, time::Duration};
 use tokio::time::Instant;
 type Result<T> = std::result::Result<T, ToolError>;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum PlanState {
@@ -27,7 +26,6 @@ impl PlanState {
     pub(crate) fn is_final(self) -> bool {
         !matches!(self, Self::Open | Self::Applying)
     }
-    #[allow(dead_code)]
     pub(crate) fn replayed(self) -> Result<bool> {
         match self {
             Self::Open => Ok(false),
@@ -46,7 +44,6 @@ impl PlanState {
         .tool_error()
     }
 }
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct Outcome {
     pub(crate) requested: u64,
@@ -56,7 +53,6 @@ pub(crate) struct Outcome {
     pub(crate) complete: bool,
     pub(crate) created: Option<Value>,
 }
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct PlanContent<P = Value> {
     pub(crate) kind: &'static str,
@@ -73,7 +69,6 @@ pub(crate) struct PlanContent<P = Value> {
     pub(crate) cli_equivalent: Option<Vec<String>>,
     pub(crate) payload: P,
 }
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct Plan<P = Value> {
     pub(crate) id: String,
@@ -85,7 +80,6 @@ pub(crate) struct Plan<P = Value> {
     prompts: u8,
     handle: Option<String>,
 }
-#[allow(dead_code)]
 impl<P> Plan<P> {
     pub(crate) fn new(mut content: PlanContent<P>, now: Instant) -> Result<Self> {
         if content.targets.len() > MAX_OBJECTS_PER_PLAN
@@ -151,7 +145,6 @@ impl<P> Plan<P> {
         self.prompts
     }
 }
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct ClosedPlan {
     pub(crate) id: String,
@@ -162,7 +155,6 @@ pub(crate) struct ClosedPlan {
     pub(crate) credential: String,
     pub(crate) state: PlanState,
 }
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct PlanStore<P = Value> {
     plans: Vec<Plan<P>>,
@@ -178,7 +170,6 @@ impl<P> Default for PlanStore<P> {
         }
     }
 }
-#[allow(dead_code)]
 impl<P: Clone> PlanStore<P> {
     pub(crate) fn take_closed(&mut self) -> Vec<ClosedPlan> {
         std::mem::take(&mut self.closed)

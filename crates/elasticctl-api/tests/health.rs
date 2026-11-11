@@ -102,3 +102,23 @@ async fn doctor_reports_an_empty_identity_realm_as_failed() {
         check.detail
     );
 }
+
+#[tokio::test]
+async fn doctor_ignores_malformed_api_key_but_planners_reject_it() {
+    let body = serde_json::json!({"username":"review-user","authentication_realm":{"type":"native"},"api_key":{"id":7}});
+    let malformed = MockStack::with_identity(body.clone()).await;
+    let mut baseline_body = body;
+    baseline_body.as_object_mut().unwrap().remove("api_key");
+    let baseline = MockStack::with_identity(baseline_body).await;
+    let mut expected = health::doctor(baseline.transport()).await.unwrap();
+    expected.checks[0].detail = malformed.transport().kibana_url().to_string();
+    assert_eq!(
+        health::doctor(malformed.transport()).await.unwrap(),
+        expected
+    );
+    let error = health::credential_identity(malformed.transport())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, elasticctl_core::ErrorKind::Http);
+    assert!(error.message.contains("api_key.id"));
+}
