@@ -38,10 +38,8 @@ The elicitation `message` is this text. Lines in angle brackets are filled
 in; every other character is fixed.
 
 ```text
-elasticctl asks to apply a change.
-
+elasticctl asks to apply: <action>
 Target: profile <profile> @ <host>, space <space>
-Change: <action>
   <detail>
   <detail>
 Note: <note>
@@ -52,6 +50,11 @@ Expires in <n> min.
 Set "Apply this change" to true and accept to apply it.
 Decline, or leave it false, and nothing changes.
 ```
+
+Some clients show only the first lines of the message: Claude Code 2.1.322
+shows three and collapses the rest (M10). So the first three lines hold what
+the person consents to: the action with its count, the target, and the first
+affected object. The full text follows.
 
 `<action>` and `<detail>` are the plan's `action` and `details`. They come
 from the `-api` plan, the same text the CLI guard prints. For a kind whose

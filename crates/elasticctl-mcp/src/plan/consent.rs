@@ -28,11 +28,11 @@ pub(crate) fn render(
     minutes: u64,
 ) -> String {
     let mut text = format!(
-        "elasticctl asks to apply a change.\n\nTarget: profile {} @ {}, space {}\nChange: {}\n",
+        "elasticctl asks to apply: {}\nTarget: profile {} @ {}, space {}\n",
+        display(action),
         display(&target.profile),
         display(&target.host),
-        display(&target.space),
-        display(action)
+        display(&target.space)
     );
     for detail in details {
         text.push_str(&format!("  {}\n", display(detail)));
@@ -87,11 +87,52 @@ mod tests {
                 "0123456789abcdefabcd",
                 15
             ),
-            "elasticctl asks to apply a change.\n\nTarget: profile analyst @ kibana.example.test, space default\nChange: Disable 2 rule(s)\n  r1  One  true -> false\n  r2  Two  true -> false\nNote: key note\nPlan: pln_sample\nHash: 0123456789abcdef\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes."
+            "elasticctl asks to apply: Disable 2 rule(s)\nTarget: profile analyst @ kibana.example.test, space default\n  r1  One  true -> false\n  r2  Two  true -> false\nNote: key note\nPlan: pln_sample\nHash: 0123456789abcdef\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes."
         );
         let text = render(&target(), "x", &[], None, "p", "h", 1);
         assert!(text.contains("Expires in 1 min."));
         assert!(!text.contains("Note:"));
+    }
+    #[test]
+    fn first_three_lines_show_action_target_and_detail() {
+        let text = render(
+            &target(),
+            "Disable 1 rule(s)",
+            &["r1  One  true -> false".into()],
+            Some("key note"),
+            "pln_sample",
+            "0123456789abcdef",
+            15,
+        );
+        assert_eq!(
+            text.lines().take(3).collect::<Vec<_>>(),
+            [
+                "elasticctl asks to apply: Disable 1 rule(s)",
+                "Target: profile analyst @ kibana.example.test, space default",
+                "  r1  One  true -> false",
+            ]
+        );
+    }
+    #[test]
+    fn action_continuations_precede_target() {
+        let text = render(
+            &target(),
+            "Disable 1 rule(s)\nFORGED\nTarget: forged",
+            &[],
+            None,
+            "p",
+            "h",
+            15,
+        );
+        assert_eq!(
+            text.lines().take(4).collect::<Vec<_>>(),
+            [
+                "elasticctl asks to apply: Disable 1 rule(s)",
+                "  | FORGED",
+                "  | Target: forged",
+                "Target: profile analyst @ kibana.example.test, space default",
+            ]
+        );
     }
     #[test]
     fn replacement_and_continuations() {
