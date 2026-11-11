@@ -131,3 +131,19 @@ M11 and M12 use only the local lab. A model-driven client sends tool results,
 which carry `target.host`, to its model provider, so such a client never
 points at a trial deployment. The 0.8.2 conformance matrix is separate from
 the client runs and still covers all three flavors.
+
+**Results of M10 to M12.** M10 passed on all three flavors in 0.8.1: every
+resource text equalled its tool text, and an absent rule id or a `plans`
+authority returned `-32602` on the current path and `-32002` on the legacy
+path. In 0.8.2, on the lab, Claude Code 2.1.322 negotiated `2026-07-28` through
+`server/discover` and Codex CLI 0.167.0 negotiated `2025-11-25` through
+`initialize`. Both sent `resources/list` and `resources/read`, and both read a
+template URI that `resources/list` does not list without sending
+`resources/templates/list`. Only Claude Code sent `prompts/list` and
+`prompts/get`; Codex has no prompt entry point. Neither sent
+`completion/complete` or `subscriptions/listen`, so leaving completion out
+(section 8.6) costs no tested client. Claude Code deferred the tool
+definitions behind tool search and loaded the instructions; Codex loaded the
+instructions, and whether it defers tools is not testable from its output.
+The [0.8.2 findings](../../conformance/v0.8.2/findings.md) hold the method
+table and the ten-step outcomes.

@@ -331,3 +331,26 @@ contracts pass on every target:
 The self-managed leg filled the lab to 4,000 rules for the coverage
 measurement and removed the fill. The
 [findings](../../conformance/v0.8.0/findings.md) record the latency gate M9.
+
+The 0.8.1 measured matrix extends `mcp_answers_across_verticals` to every
+resource shape and prompt; all twelve contracts pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 12 pass | Verified | [report](../../conformance/v0.8.1/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 12 pass | Verified | [report](../../conformance/v0.8.1/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 12 pass | Verified | [report](../../conformance/v0.8.1/traditional-9.5.1.json) |
+
+The [findings](../../conformance/v0.8.1/findings.md) record measurement M10.
+
+The 0.8.2 measured matrix reruns the twelve contracts unchanged; all pass on
+every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 12 pass | Verified | [report](../../conformance/v0.8.2/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 12 pass | Verified | [report](../../conformance/v0.8.2/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 12 pass | Verified | [report](../../conformance/v0.8.2/traditional-9.5.1.json) |
+
+The [findings](../../conformance/v0.8.2/findings.md) record the product
+client matrix, measurements M11 and M12.
