@@ -62,15 +62,10 @@ pub(in crate::mcp_mutations) async fn fingerprint(profile: &Profile, opt_in: boo
         .as_str()
         .filter(|v| !v.is_empty() && *v != "_na_")
         .ok_or("contract")?;
-    let through_kibana = safe(
-        kibana
-            .post("/api/console/proxy?path=%2F&method=GET", None)
-            .await,
-    )?;
-    require(
-        through_kibana["cluster_uuid"] == uuid
-            && through_kibana["cluster_name"] == "docker-cluster",
-    )
+    // Kibana's extended stats name the Elasticsearch cluster it uses. The
+    // Console proxy is an internal route on 9.5 and refuses a body on `GET /`.
+    let through_kibana = safe(kibana.get("/api/stats?extended=true").await)?;
+    require(through_kibana["cluster_uuid"] == uuid)
 }
 pub(super) async fn measure(
     t: &Transport,
@@ -128,10 +123,14 @@ pub(in crate::mcp_mutations) async fn measure_with_basic(
         report("M13", "inconclusive", start);
         return Ok(());
     };
+    // Kibana makes a rule's API key only when the rule is enabled, so each
+    // rule is enabled by the credential that created it before owners are read.
     let probe_id = unique_name("mutation-owner-probe");
     create_rule(&other, cleanup, &probe_id, index).await?;
+    toggle(&other, cleanup, &probe_id, true).await?;
     let rule_id = unique_name("mutation-owner");
     create_rule(&basic, cleanup, &rule_id, index).await?;
+    toggle(&basic, cleanup, &rule_id, true).await?;
     async fn owner(t: &Transport, id: &str) -> TestResult<(String, Value)> {
         let rule = owned_rule(t, id).await?;
         let saved = rule.as_map()["id"].as_str().ok_or("contract")?;
@@ -145,30 +144,24 @@ pub(in crate::mcp_mutations) async fn measure_with_basic(
         report("M13", "inconclusive", start);
         return Ok(());
     }
-    toggle(&other, cleanup, &rule_id, true).await?;
-    let enabled = safe(t.get(&path).await)?;
+    // The rule is enabled and owned by `elastic`. The other credential then
+    // disables it and enables it again; each read shows whose key it runs on.
     toggle(&other, cleanup, &rule_id, false).await?;
     let disabled = safe(t.get(&path).await)?;
-    for v in [&enabled, &disabled] {
-        require(v["api_key_owner"] == "elastic" || v["api_key_owner"] == other_owner)?;
-    }
-    report(
-        "M13_enable",
-        if before["api_key_owner"] == enabled["api_key_owner"] {
+    toggle(&other, cleanup, &rule_id, true).await?;
+    let enabled = safe(t.get(&path).await)?;
+    let class = |from: &Value, to: &Value| {
+        if to["api_key_owner"] == from["api_key_owner"] {
             "owner_kept"
-        } else {
+        } else if to["api_key_owner"] == other_owner {
             "owner_changed"
-        },
-        start,
-    );
-    report(
-        "M13_disable",
-        if enabled["api_key_owner"] == disabled["api_key_owner"] {
-            "owner_kept"
+        } else if to["api_key_owner"].is_null() {
+            "owner_cleared"
         } else {
-            "owner_changed"
-        },
-        start,
-    );
+            "inconclusive"
+        }
+    };
+    report("M13_disable", class(&before, &disabled), start);
+    report("M13_enable", class(&disabled, &enabled), start);
     Ok(())
 }
