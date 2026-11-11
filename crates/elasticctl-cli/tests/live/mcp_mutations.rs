@@ -10,7 +10,7 @@ mod tests;
 #[path = "mcp_mutations/conformance.rs"]
 mod conformance;
 
-const SHIPPED_CLASSES: &[&str] = &["rules-toggle"];
+const SHIPPED_CLASSES: &[&str] = &["rules-toggle", "alerts-triage", "cases", "rules-create"];
 const MUTATION_TOOLS: &[&str] = &[
     "plan_apply",
     "plan_discard",
@@ -62,6 +62,7 @@ struct Session<C> {
     next: u64,
     owned: std::collections::BTreeSet<String>,
     plans: std::collections::BTreeMap<String, String>,
+    checks: std::collections::BTreeMap<String, (Vec<String>, Value)>,
 }
 impl<C: Child> Session<C> {
     fn call(&mut self, name: &str, args: Value) -> TestResult<Value> {
@@ -91,7 +92,12 @@ impl<C: Child> Session<C> {
         let rule = self.plans.get(plan).ok_or("contract")?.clone();
         require(self.owned.contains(&rule))?;
         let view = self.call("plan_get", json!({"plan_id":plan}))?;
-        verify_view(&frames::content(view, self.path)?, &rule)?;
+        let content = frames::content(view, self.path)?;
+        if let Some((targets, operation)) = self.checks.get(plan) {
+            self.check_change(&content, targets, operation)?;
+        } else {
+            verify_view(&content, &rule)?;
+        }
         let id = self.next;
         self.next += 1;
         let request = frames::request(
@@ -153,6 +159,7 @@ impl Session<McpChild> {
             next: 10,
             owned: Default::default(),
             plans: Default::default(),
+            checks: Default::default(),
         };
         if matches!(path, McpProtocolPath::Legacy) {
             s.child.send(
@@ -209,7 +216,13 @@ async fn toggle(t: &Transport, registry: &Registry, id: &str, enabled: bool) -> 
     require(o.failed == 0 && o.total == 1)?;
     require(owned_rule(t, id).await?.enabled() == enabled)
 }
-fn contract(config: &Path, profile: &Profile, registry: &Registry, id: &str) -> TestResult {
+fn contract(
+    config: &Path,
+    profile: &Profile,
+    registry: &mut Registry,
+    id: &str,
+    index: &str,
+) -> TestResult {
     let rt = runtime()?;
     let t = safe(Transport::new(profile))?;
     require(registry.rules.contains(id))?;
@@ -219,8 +232,7 @@ fn contract(config: &Path, profile: &Profile, registry: &Registry, id: &str) -> 
     };
     let mut a = Session::spawn(config, McpProtocolPath::Current, true, true)?;
     a.owned = registry.rules.clone();
-    for class in SHIPPED_CLASSES {
-        require(*class == "rules-toggle")?;
+    {
         let before = read()?;
         require(!before.enabled())?;
         let plan = a.plan(id, true)?;
@@ -241,6 +253,7 @@ fn contract(config: &Path, profile: &Profile, registry: &Registry, id: &str) -> 
         frames::code(&frames::content(stale, a.path)?, "plan_stale")?;
         require(read()? == outside)?;
     }
+    extension::run(&mut a, &rt, &t, registry, id, index)?;
     a.child.shutdown()?;
     let mut b = Session::spawn(config, McpProtocolPath::Legacy, true, true)?;
     b.owned = registry.rules.clone();
@@ -305,7 +318,7 @@ fn live_run(measurements: bool) -> TestResult {
             if measurements {
                 measure::run(&rt, &t, &profile, &id, &index, registry)
             } else {
-                contract(&config, &profile, registry, &id)
+                contract(&config, &profile, registry, &id, &index)
             }
         },
     );
@@ -345,3 +358,10 @@ mod lab_identity;
 #[cfg(test)]
 #[path = "mcp_mutations/lab_tests.rs"]
 mod lab_tests;
+
+#[cfg(test)]
+#[path = "mcp_mutations/extension_tests.rs"]
+mod extension_tests;
+
+#[path = "mcp_mutations/extension.rs"]
+mod extension;

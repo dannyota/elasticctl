@@ -67,6 +67,7 @@ pub(super) async fn register_case(
     id: &str,
     token: &str,
 ) -> TestResult {
+    marker(token)?;
     let c = safe(elasticctl_api::cases::get(t, id).await)?;
     require(
         c.id == id
@@ -176,7 +177,7 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
     for id in &registry.rules {
         match elasticctl_api::rules::get(t, id).await {
             Ok(_) => {
-                owned_rule(t, id).await?;
+                require(!owned_rule(t, id).await?.enabled())?;
                 safe(elasticctl_api::rules::delete(t, id).await)?;
             }
             Err(e) if e.kind == ErrorKind::NotFound => {}

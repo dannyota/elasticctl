@@ -25,6 +25,7 @@ enum Fault {
     AlertWrongTotal,
     AlertUnclosed,
     AlertNoop,
+    Reenabled,
 }
 struct Stack {
     fault: Fault,
@@ -32,6 +33,7 @@ struct Stack {
     deleted: bool,
     mutations: usize,
     closed: bool,
+    reads_after_toggle: usize,
 }
 struct Responder(Arc<Mutex<Stack>>);
 impl wiremock::Respond for Responder {
@@ -100,7 +102,10 @@ impl wiremock::Respond for Responder {
         } else {
             json!([LIVE_TAG, ID])
         };
-        rule["enabled"] = json!(false);
+        if s.mutations > 0 && request.method == "GET" {
+            s.reads_after_toggle += 1;
+        }
+        rule["enabled"] = json!(matches!(s.fault, Fault::Reenabled) && s.reads_after_toggle >= 2);
         if request.method == "POST" && path == "/api/detection_engine/rules" {
             s.created = true;
             if matches!(s.fault, Fault::WrongCreate) {
@@ -140,6 +145,7 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
         deleted: false,
         mutations: 0,
         closed: false,
+        reads_after_toggle: 0,
     }));
     rt.block_on(
         Mock::given(wiremock::matchers::any())
@@ -422,4 +428,12 @@ fn already_closed_alerts_allow_cleanup_after_readback() {
         12
     );
     assert_eq!(trace.last().unwrap().0, "DELETE");
+}
+
+#[test]
+fn reenabled_rule_stops_cleanup_before_exact_delete() {
+    let (class, trace, _) = exercise(Fault::Reenabled);
+    assert_eq!(class, "cleanup_failed");
+    assert_eq!(trace.len(), 2);
+    assert!(!trace.iter().any(|(method, _, _)| method == "DELETE"));
 }

@@ -75,6 +75,7 @@ fn spawn(config: &Path, path: McpProtocolPath, form: bool, mutations: bool) -> S
         form: s.form,
         next: s.next,
         owned: [RULE.into()].into(),
+        checks: Default::default(),
         plans: Default::default(),
     }
 }
