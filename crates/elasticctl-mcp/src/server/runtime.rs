@@ -458,8 +458,9 @@ mod tests {
         let question = receive(&mut output).await;
         assert_eq!(question["method"], "elicitation/create", "{question}");
         assert_eq!(question["params"]["mode"], "form");
-        let started = tokio::time::Instant::now();
-        tokio::time::advance(Duration::from_secs(239)).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+        let last_pending = deadline - Duration::from_millis(1);
+        tokio::time::advance(last_pending - tokio::time::Instant::now()).await;
         // A read round trip lets the server process expired timers before checking pending output.
         send(
             &mut input,
@@ -471,7 +472,7 @@ mod tests {
         let pending = receive(&mut output).await;
         assert_eq!(
             pending["id"], 4,
-            "plan_apply must still be pending at 239 s: {pending}"
+            "plan_apply must still be pending at 239.999 s: {pending}"
         );
         assert_eq!(
             pending["result"]["structuredContent"]["data"]["plan"]["state"],
@@ -483,12 +484,28 @@ mod tests {
             std::future::poll_fn(|cx| std::task::Poll::Ready(next.as_mut().poll(cx).is_pending()))
                 .await
         );
-        tokio::time::advance(Duration::from_secs(1)).await;
-        let timed_out = next.await;
-        assert_eq!(
-            tokio::time::Instant::now() - started,
-            Duration::from_secs(240)
+        assert_eq!(tokio::time::Instant::now(), last_pending);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let mut timed_out = None;
+        for _ in 0..1024 {
+            if let Some(frame) = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(match next.as_mut().poll(cx) {
+                    std::task::Poll::Ready(frame) => Some(frame),
+                    std::task::Poll::Pending => None,
+                })
+            })
+            .await
+            {
+                timed_out = Some(frame);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        drop(next);
+        let timed_out = timed_out.expect(
+            "plan_apply must return confirmation_timeout at 240 s within 1024 scheduler yields",
         );
+        assert_eq!(tokio::time::Instant::now(), deadline);
         assert_eq!(timed_out["id"], 3);
         assert_eq!(
             timed_out["result"]["structuredContent"]["error"]["code"],
