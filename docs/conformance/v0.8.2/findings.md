@@ -167,17 +167,16 @@ The server sent the instructions to every server process of both clients.
 These are client behaviors, not server defects. None changes the server in
 this patch.
 
-- Under `claude -p`, an `@server:uri` mention of an MCP resource does not read
-  the resource. Interactive Claude Code resolves the mention; scripted use
-  should name the resource and let the model read it.
+- Under `claude -p`, an `@server:uri` mention of an MCP resource did not read
+  the resource, while asking for a URI by name did (step 7). An interactive
+  session was not tested.
 - Codex CLI 0.167.0 exposes no MCP prompt entry point, so the four
   prompts are reachable only from Claude Code among the tested clients.
-- Claude Code writes `unknown format "uint64" ignored in schema` lines to
-  stderr, and the same for `uint` and `uint16`, for integer `format`
-  annotations in the tools' output schemas. JSON Schema treats an unknown
-  format as an annotation, the client ignores it, and no call failed
-  because of it. The schemas are unchanged in this patch.
-- Codex CLI writes `Reading additional input from stdin...` to stderr when
+- Claude Code warns on stderr that it ignores the unknown integer formats
+  `uint64`, `uint`, and `uint16` in the tools' output schemas. JSON Schema
+  treats an unknown format as an annotation, and no call failed because of
+  it. The schemas are unchanged in this patch.
+- Codex CLI notes on stderr that it reads additional input from stdin when
   stdin is not a terminal. It has no effect on the run.
 - A `claude -p` run started from inside another Claude Code session inherits
   that session's `CLAUDE_CODE_*` variables, including its messaging socket,

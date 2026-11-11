@@ -390,10 +390,10 @@ secrets.
 ## Tested clients
 
 Claude Code 2.1.322 (protocol `2026-07-28`) and Codex CLI 0.167.0
-(`2025-11-25`) passed on the local lab with every tool, a listed resource, and
-a resource template. Claude Code also ran a prompt; Codex has no prompt entry
-point. Under `claude -p`, an `@` mention does not read the resource. The server
-supports exactly these two protocol revisions. The
+(`2025-11-25`) passed on the local lab with the four task tools, `rules_list`,
+and a resource template; Codex also read a listed resource. Claude Code ran a
+prompt; Codex has no prompt entry point. Under `claude -p`, an `@` mention did
+not read the resource. The server supports exactly these two revisions. The
 [0.8.2 findings](https://github.com/dannyota/elasticctl/blob/master/docs/conformance/v0.8.2/findings.md) list each request.
 
 See [Security](Security.md#mcp-server) for what the server can and cannot
