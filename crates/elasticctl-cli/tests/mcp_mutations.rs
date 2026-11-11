@@ -299,7 +299,11 @@ fn toggle_catalog_snapshot() {
         let actual = serde_json::to_string(&reply["result"]).unwrap();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(format!("tests/snapshots/mcp_toggle_{query}.json"));
-        assert_eq!(actual, std::fs::read_to_string(path).unwrap());
+        // A Windows checkout may convert the snapshot to CRLF; the server writes LF.
+        assert_eq!(
+            actual,
+            std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
+        );
     }
 }
 
@@ -379,6 +383,10 @@ fn compatibility_results_and_instructions() {
         let actual = captures.concat();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(format!("tests/snapshots/mcp_compatibility_{toggle}.jsonl"));
-        assert_eq!(actual, std::fs::read_to_string(path).unwrap());
+        // A Windows checkout may convert the snapshot to CRLF; the server writes LF.
+        assert_eq!(
+            actual,
+            std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
+        );
     }
 }
