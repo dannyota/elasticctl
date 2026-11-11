@@ -8,7 +8,8 @@
   life of the process. `rules-toggle` is the one class. The value is a
   comma-separated list and the flag may repeat; there is no `all` value or
   wildcard, and an empty value, an unknown name, or whitespace is a usage
-  error. A class set needs the profile's Elasticsearch URL, writes a
+  error. A class set needs the profile's Elasticsearch URL and a profile
+  name, host, and space without line breaks or control characters, writes a
   `mutations_enabled` warning line to stderr at startup, and replaces one
   sentence of the server instructions. Without the flag the catalog, schemas,
   results, and instructions are unchanged.
