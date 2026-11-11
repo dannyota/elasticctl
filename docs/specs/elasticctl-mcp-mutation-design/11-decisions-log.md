@@ -47,6 +47,7 @@ Each row is final for 0.9. Sources are in
 | D38 | A class set requires a single-line profile name, host, and space. | A line break in the target pushed the first object out of the three lines Claude Code shows. |
 | D39 | The consent action line holds one line: a written case title with a line feed is refused, and a line feed in stack text on that line shows as U+FFFD. A rule create plan shows its `rule_id` line first. | Owner decision for 0.9.1. A model-written or stack-read title with line breaks could push the target and the first object past the three lines Claude Code shows. |
 | D40 | A rule create plan carries its own note: the rule is created disabled and without an API key, and the credential that first enables it gives it one. | M13: a rule created disabled has no key until its first enable, so the toggle note is wrong for a create. Owner decision for 0.9.1. |
+| D41 | Every mutation kind refuses an organization-level key (`_cloud_api_key`) with `credential_unsuitable`, not only the rule toggle. | Owner decision for 0.9.1. The 5.2 reason, that the plan cannot show what such a key may do, holds for every kind, and the README and wiki already say MCP planning refuses it. |
 
 ### Owner decisions, 2026-11-10
 
