@@ -751,6 +751,14 @@ async fn assert_four_permits_free(harness: &mut Harness, server: &MockServer, fi
                 .expect("reply"),
         );
     }
+    // Admission answers at once, and a held call answers only when its read or
+    // deadline ends. A first reply from the fourth call proves it was admitted
+    // while the three held calls still had their permits.
+    assert_eq!(
+        replies[0]["id"],
+        first_id + 3,
+        "the fourth call was admitted while three calls held permits"
+    );
     let fourth = replies
         .iter()
         .find(|r| r["id"] == first_id + 3)
