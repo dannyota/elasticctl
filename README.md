@@ -90,7 +90,7 @@ and [Rules as Code][state].
 | Alerts and cases | Alert status, tags, and assignees; case create, comment, attach, close, reopen, delete | [Alerts and Cases][triage] |
 | Data views and dashboards | Portable files, the default data view, reference-safe delete, Saved Objects bundles | [Data Views and Dashboards][content] |
 | Fleet | Agent and integration policies as portable files | [Fleet][fleet] |
-| MCP | Twenty-four read-only tools, among them the task tools `alert_context`, `rule_health`, `detection_coverage`, and `rule_readiness`; two opt-in query tools | [MCP][mcp] |
+| MCP | Twenty-four read-only tools, among them the task tools `alert_context`, `rule_health`, `detection_coverage`, and `rule_readiness`; two opt-in query tools; opt-in rule enable and disable through stored plans a person confirms | [MCP][mcp], [MCP Mutations][mcp-mutations] |
 | Stack | Profiles, `doctor`, and `info` | [Configuration][config] |
 
 ## MCP server
@@ -110,9 +110,18 @@ MITRE ATT&CK technique, tactic, index pattern, or integration, and
 inspection tools read stack diagnostics, rules, exception lists, alerts,
 cases, data views, dashboards, and Fleet policies; `rules_list` also filters
 by ATT&CK `technique` or `tactic`. `--allow-query-tools` adds synchronous
-ES|QL and Query DSL tools. No tool changes the stack, selects local files, or
-changes the target. See [MCP][mcp] for the client stanza, limits, and tested
-clients.
+ES|QL and Query DSL tools. By default no tool changes the stack, and no tool
+selects local files or changes the target. See [MCP][mcp] for the client
+stanza, limits, and tested clients.
+
+`--allow-mutations rules-toggle` adds tools that enable or disable named rules.
+A planner tool reads the stack and stores a plan; `plan_apply` takes only the
+plan id and asks the person at the client to confirm it in a form. No tool
+argument confirms a change, and a client without form elicitation cannot
+apply: the plan names the CLI command to run instead. The profile needs
+`es_url`, and a rule toggled this way then runs with the server's credential.
+See [MCP Mutations][mcp-mutations] for the flow, the audit trail, and the
+limits of this consent model.
 
 The server also offers five resources, four resource templates, and four
 prompts. Their lists are fixed: listing them sends no Elastic request and
@@ -153,7 +162,8 @@ See the [CLI reference][cli] for output, errors, and selectors, and
 - [CLI reference][cli]: command tree, output formats, errors, exit codes.
 - Guides: [Rules as Code][state], [Rules][rules], [Exceptions][exceptions],
   [Search][search], [Alerts and Cases][triage],
-  [Data Views and Dashboards][content], [Fleet][fleet], [MCP][mcp].
+  [Data Views and Dashboards][content], [Fleet][fleet], [MCP][mcp],
+  [MCP Mutations][mcp-mutations].
 - [Security][security]: the dry-run guard, credentials, and MCP reach.
 - [Limitations][limitations]: Elastic behaviors the tool works around.
 - [Changelog](CHANGELOG.md): changes by version.
@@ -181,6 +191,7 @@ Licensed under [Apache 2.0](LICENSE).
 [fleet]: https://github.com/dannyota/elasticctl/wiki/Fleet
 [mcp]: https://github.com/dannyota/elasticctl/wiki/MCP
 [mcp-resources]: https://github.com/dannyota/elasticctl/wiki/MCP#resources-and-prompts
+[mcp-mutations]: https://github.com/dannyota/elasticctl/wiki/MCP-Mutations
 [cc-resources]: https://code.claude.com/docs/en/mcp#use-mcp-resources
 [cc-prompts]: https://code.claude.com/docs/en/mcp#use-mcp-prompts-as-commands
 [security]: https://github.com/dannyota/elasticctl/wiki/Security
