@@ -43,7 +43,7 @@ impl wiremock::Respond for Stack {
         } else {
             s.user.clone().unwrap_or_default()
         };
-        if p == "/" || p == "/api/console/proxy" {
+        if p == "/" || p == "/api/stats" {
             let v = json!({"cluster_name":if s.foreign == 2 {"foreign"} else {"docker-cluster"},"cluster_uuid":if s.foreign == 5 && p != "/" {"other"} else {"local"}});
             let mut response = ResponseTemplate::new(200).set_body_json(v);
             if s.foreign == 1 && p == "/" {
@@ -138,7 +138,10 @@ impl wiremock::Respond for Stack {
                 }
                 rule["id"] = json!(id);
                 s.rules.insert(id.clone(), rule.clone());
-                s.owners.insert(id, owner);
+                // Kibana makes a rule's API key, and so its owner, only on enable.
+                if body["enabled"] == json!(true) {
+                    s.owners.insert(id, owner);
+                }
                 return ResponseTemplate::new(200).set_body_json(rule);
             }
             let id = r
@@ -159,7 +162,7 @@ impl wiremock::Respond for Stack {
         }
         if let Some(id) = p.strip_prefix("/api/alerting/rule/") {
             return ResponseTemplate::new(200).set_body_json(
-                json!({"api_key_owner":if s.wrong_owner {"elastic"} else {s.owners[id].as_str()}}),
+                json!({"api_key_owner":if s.wrong_owner {Some("elastic")} else {s.owners.get(id).map(String::as_str)}}),
             );
         }
         if p.ends_with("/_bulk_action") {
@@ -195,11 +198,7 @@ fn writes(rt: &tokio::runtime::Runtime, server: &MockServer) -> Vec<(String, Str
     rt.block_on(server.received_requests())
         .unwrap()
         .into_iter()
-        .filter(|r| {
-            r.method != "GET"
-                && r.url.path() != "/api/console/proxy"
-                && r.url.path() != "/api/detection_engine/signals/search"
-        })
+        .filter(|r| r.method != "GET" && r.url.path() != "/api/detection_engine/signals/search")
         .map(|r| (r.method.to_string(), r.url.path().into()))
         .collect()
 }
@@ -218,16 +217,20 @@ fn mcp_mutations_lab_measures_distinct_owners_then_cleans_key_before_user() {
     .unwrap();
     let user = stack.0.lock().unwrap().user.clone().unwrap();
     let requests = rt.block_on(server.received_requests()).unwrap();
-    let first_toggle = requests
+    let measured_toggle = requests
         .iter()
-        .position(|r| r.url.path().ends_with("/_bulk_action"))
-        .unwrap();
+        .enumerate()
+        .filter(|(_, r)| r.url.path().ends_with("/_bulk_action"))
+        .nth(2)
+        .unwrap()
+        .0;
     assert_eq!(
-        requests[..first_toggle]
+        requests[..measured_toggle]
             .iter()
             .filter(|r| r.url.path().starts_with("/api/alerting/rule/"))
             .count(),
-        2
+        2,
+        "both owners are read after the creator enables and before any measured toggle"
     );
     let trace = writes(&rt, &server);
     assert_eq!(
@@ -235,7 +238,7 @@ fn mcp_mutations_lab_measures_distinct_owners_then_cleans_key_before_user() {
             .iter()
             .filter(|(_, p)| p.ends_with("/_bulk_action"))
             .count(),
-        2
+        4
     );
     assert!(stack.0.lock().unwrap().owners.values().all(|o| o == &user));
     rt.block_on(clean(&t, &registry)).unwrap();
@@ -327,10 +330,13 @@ fn mcp_mutations_lab_unverified_rule_owners_prevent_measurement_toggles() {
         true,
     ))
     .unwrap();
-    assert!(
+    // Only the two creator enables run; no measured toggle follows a bad owner.
+    assert_eq!(
         writes(&rt, &server)
             .iter()
-            .all(|(_, p)| !p.ends_with("/_bulk_action"))
+            .filter(|(_, p)| p.ends_with("/_bulk_action"))
+            .count(),
+        2
     );
     rt.block_on(clean(&t, &registry)).unwrap();
 }
