@@ -27,7 +27,7 @@ impl PlanKind {
     }
     pub(crate) fn note(self, credential: &str) -> String {
         format!(
-            "Kibana ties each rule listed to this server's credential ({}). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.",
+            "Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential ({}) when it is enabled, and then runs with that credential's privileges.",
             &credential[..12]
         )
     }
@@ -83,6 +83,15 @@ mod tests {
         },
     };
     use tokio::time::Instant;
+
+    #[test]
+    fn rule_note_keeps_existing_credential_and_names_keyless_enabler() {
+        assert_eq!(
+            PlanKind::RulesSetEnabled
+                .note("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            "Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (0123456789ab) when it is enabled, and then runs with that credential's privileges."
+        );
+    }
 
     #[test]
     fn consent_names_every_rule_and_keeps_stack_text_indented() {

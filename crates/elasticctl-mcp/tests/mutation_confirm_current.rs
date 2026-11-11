@@ -196,10 +196,17 @@ pub async fn question(h: &mut Harness, id: &str) -> Value {
         q["inputRequests"]["confirm"]["params"]["requestedSchema"],
         json!({"type":"object","properties":{"apply":{"type":"boolean","title":"Apply this change","description":"True applies the change shown above. False keeps the dry run.","default":false}},"required":["apply"]})
     );
+    assert_eq!(
+        q["inputRequests"]["confirm"]["params"]["message"],
+        question_text(&before, id)
+    );
+    q.clone()
+}
+pub fn question_text(before: &Value, id: &str) -> String {
     let p = &before["result"]["structuredContent"]["data"]["plan"];
     let target = &before["result"]["structuredContent"]["target"];
-    let text = format!(
-        "elasticctl asks to apply: {}\nTarget: profile {} @ {}, space {}\n{}\nNote: Kibana ties each rule listed to this server's credential ({}). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.\nPlan: {}\nHash: {}\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes.",
+    format!(
+        "elasticctl asks to apply: {}\nTarget: profile {} @ {}, space {}\n{}\nNote: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential ({}) when it is enabled, and then runs with that credential's privileges.\nPlan: {}\nHash: {}\nExpires in 15 min.\n\nSet \"Apply this change\" to true and accept to apply it.\nDecline, or leave it false, and nothing changes.",
         p["action"].as_str().unwrap(),
         target["profile"].as_str().unwrap(),
         target["host"].as_str().unwrap(),
@@ -214,10 +221,9 @@ pub async fn question(h: &mut Harness, id: &str) -> Value {
         p["credential"].as_str().unwrap(),
         id,
         &p["hash"].as_str().unwrap()[..16]
-    );
-    assert_eq!(q["inputRequests"]["confirm"]["params"]["message"], text);
-    q.clone()
+    )
 }
+
 #[tokio::test]
 async fn one_rule_question_first_three_lines() {
     let (_s, mut h) = setup().await;

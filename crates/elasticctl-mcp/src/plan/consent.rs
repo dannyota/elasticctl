@@ -53,14 +53,6 @@ pub(crate) fn validate(text: &str) -> Result<(), PlanError> {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn credential_note(credential: &str) -> String {
-    let short: String = credential.chars().take(12).collect();
-    format!(
-        "Kibana ties each rule listed to this server's credential ({short}). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

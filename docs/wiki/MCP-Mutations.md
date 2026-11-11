@@ -196,7 +196,7 @@ Decline, or leave it false, and nothing changes.
 For a rule toggle the `Note:` line is:
 
 ```text
-Note: Kibana ties each rule listed to this server's credential (<12 hex>). The rule then runs with that credential's privileges and stops if it is deleted or disabled. Undoing this change does not restore the earlier one.
+Note: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (<12 hex>) when it is enabled, and then runs with that credential's privileges.
 ```
 
 The form has one boolean field, "Apply this change", with default `false`.

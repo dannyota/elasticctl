@@ -18,10 +18,12 @@ use serde_json::{Value, json};
 use std::time::Duration;
 static LEGACY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 async fn begin(h: &mut common::Harness, id: &str) -> Value {
+    let before = common::call(h, "plan_get", json!({"plan_id":id}), json!({})).await;
     h.send_json(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"plan_apply","arguments":{"plan_id":id}}})).await;
     let q = h.receive_json().await;
     assert_eq!(q["method"], "elicitation/create", "{q}");
     assert_eq!(q["params"]["mode"], "form");
+    assert_eq!(q["params"]["message"], common::question_text(&before, id));
     q
 }
 #[tokio::test]
