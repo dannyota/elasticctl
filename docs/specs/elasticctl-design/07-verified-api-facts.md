@@ -60,8 +60,9 @@ action-connector equivalents).
 
 ### 7.2 Rule mutation requires a project-scoped API key
 
-`PATCH /api/detection_engine/rules` and `_bulk_action` with `action: enable`
-both fail with an organization-level API key:
+Recorded on 2026-08-13: `PATCH /api/detection_engine/rules` and `_bulk_action`
+with `action: enable` both failed on Serverless with an organization-level API
+key:
 
 ```
 Cannot use an organization-level API key to create or enable rule
@@ -73,6 +74,13 @@ Enabling a rule makes the alerting framework mint a rule-owned API key. It
 refuses to do that on behalf of an organization key. The `essu_` prefix does
 **not** imply project scope: the key used for the probes reports
 `roles: ["admin"]` in realm `_cloud_api_key` and is organization-level.
+
+Measured again on 2026-11-11 on Serverless 9.7.0 (measurement M9 of the 0.9
+research): `_bulk_action` enable with an organization-level key in realm
+`_cloud_api_key` succeeded and the rule read back enabled. Hosted 9.5.6 answers
+401 to the same key at `_authenticate`. A project- or deployment-scoped key
+remains the supported credential; the MCP planner refuses realm
+`_cloud_api_key` (mutation design section 5.2).
 
 Consequences:
 
