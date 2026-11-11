@@ -150,3 +150,29 @@ fn view(path: McpProtocolPath) -> Value {
     f["result"]["content"][0]["text"] = json!(c.to_string());
     f
 }
+#[test]
+fn rule_state_ignores_a_run_and_keeps_a_real_change() {
+    let id = format!("{LIVE_PREFIX}rule-state");
+    let rule = |enabled: bool, run: &str| {
+        elasticctl_api::model::Rule::from_value(json!({
+            "rule_id": id,
+            "name": "marker",
+            "enabled": enabled,
+            "tags": [LIVE_TAG, id],
+            "execution_summary": {"last_execution": {"date": run, "status": "succeeded"}},
+        }))
+        .unwrap()
+    };
+    let before = rule(true, "2026-11-11T02:20:00.000Z");
+    assert_eq!(
+        rule_state(&before),
+        rule_state(&rule(true, "2026-11-11T02:21:00.000Z")),
+        "a rule run alone is not a change"
+    );
+    assert_ne!(
+        rule_state(&before),
+        rule_state(&rule(false, "2026-11-11T02:20:00.000Z")),
+        "a toggle is a change"
+    );
+    assert!(rule_state(&before).enabled());
+}
