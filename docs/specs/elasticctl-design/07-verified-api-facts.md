@@ -99,9 +99,16 @@ End-to-end verification created a disabled rule, patched it to `enabled: true`
 by `rule_id` (200, `enabled: true`), disabled it through `_bulk_action`
 (`succeeded: 1`, `enabled: false`), then deleted it.
 
-`doctor` should use the realm as the signal: `_cloud_api_key` means rule
-mutation will fail; `_es_api_key` means it will work. This check is cheaper and
-clearer than attempting a mutation and classifying the 400.
+`doctor` uses the realm as the signal: `_es_api_key` is a scoped key, and
+`_cloud_api_key` is an organization-level key, which is not supported. Since
+0.9.1 the `key_scope` check warns for it with this static detail:
+
+```text
+Organization-level API key: not supported. MCP planning refuses it, and rule changes may fail on some deployments. Create a project- or deployment-scoped Elasticsearch API key in Kibana under Management > API keys.
+```
+
+The realm check is cheaper and clearer than attempting a mutation and
+classifying the error.
 
 Enabling a rule does not bump `revision` — it stayed 0 across the enable.
 

@@ -123,6 +123,9 @@ Further rules:
   with line feeds or tabs is accepted and shown as `\n` and `\t`; a string
   with DEL, a C1 control, U+2028, U+2029, or a bidirectional control is
   refused.
+- A case title for `cases_create` with a line feed is `invalid_argument`
+  before I/O: it lands on the consent text's action line, which holds one
+  line ([section 6.1](06-confirmation-protocol.md#61-consent-text), rule 7).
 - The caps of 20 objects, 10 tags, and the text sizes are product choices
   sized so the consent text always fits
   ([section 6.1](06-confirmation-protocol.md#61-consent-text)). A value over

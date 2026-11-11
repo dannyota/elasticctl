@@ -79,23 +79,32 @@ lines built from `operation`:
 | `cases_create` | `-api` details (`severity`, `tags`); then `description: <text>` when set; then the static line `syncAlerts: false`, which is what `cases::create` sends |
 | `cases_comment` | `case_id: <case id>` from `operation`, then the `-api` details: the message. The `-api` preview names the case by title only, and titles are not unique |
 | `cases_set_status` | `-api` details: `<id>  <title>  <from> -> <to>` per case; then the static line `attached alerts: not changed (syncAlerts is off for every case listed)` |
-| `rules_create` | `-api` details from `rules_ops::plan_create`: one line per field of the stored rule, every field, whole value ([section 7](07-api-reuse.md#rules)). Key note |
+| `rules_create` | `-api` details from `rules_ops::plan_create`: one line per field of the stored rule, every field, whole value ([section 7](07-api-reuse.md#rules)), with the `rule_id` line first and the others in byte order of the key. Create note |
 
 Every object a plan writes to is named by its identity on a detail line:
 `rule_id`, alert `_id`, or case id. A name or title alone never identifies a
 target.
 
-The `Note:` line is present only for the two rule kinds. It is static text:
+The `Note:` line is present only for the two rule kinds. It is static text.
+For `rules_set_enabled`:
 
 ```text
 Note: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (<12 hex>) when it is enabled, and then runs with that credential's privileges.
+```
+
+For `rules_create`:
+
+```text
+Note: Kibana creates the rule disabled and without an API key. The credential that first enables it gives it a key, and the rule then runs with that credential's privileges.
 ```
 
 `<12 hex>` is the plan's credential value. M13 measured key ownership on
 the 9.5.1 lab ([research](../../plans/v0.9-research.md)): a rule without a
 key gets the key of the credential that enables it, and a later disable or
 enable by another credential keeps the existing owner. The planner does not
-read a rule's key owner, so the note states both cases.
+read a rule's key owner, so the note states both cases. The create note names
+no credential: M13 also found that a rule created disabled has no key until
+its first enable.
 
 Rendering rules, applied to every filled-in value:
 
@@ -115,6 +124,13 @@ Rendering rules, applied to every filled-in value:
 6. `<n>` is the remaining life in whole minutes, rounded up, from 15 down to
    1. The planner measures the text with 15, so a later, smaller number
    never makes it longer.
+7. The action line holds one line. A value the plan will write that lands on
+   it, a case title in `cases_create`, is refused with `invalid_argument`
+   when it holds a line feed ([section 4.1](04-mutation-set.md#41-planner-inputs)).
+   A value read from the stack that lands on it, a case title in
+   `cases_comment`, shows each line feed as U+FFFD. With the single-line
+   target of [section 3](03-startup-opt-in-and-catalog.md), the first three
+   lines always hold the action, the target, and the first object.
 
 The result has one property a reader can use: a line that starts at the left
 margin was written by elasticctl, and an indented line is data. Text from the
