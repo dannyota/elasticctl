@@ -68,6 +68,9 @@ line, in the CLI and in `serve_io`:
 {"error":{"kind":"error","message":"MCP mutation tools need a profile name, host, and space without line breaks or control characters."}}
 ```
 
+A space that configuration resolution already refuses keeps the existing
+configuration error; the check adds no second resolution.
+
 `mcp serve` stays `mutates: false` in the command tree and stays out of
 `guard::MUTATING`. The command itself changes nothing; the `--allow-mutations`
 help text says what it enables. The `mcp` command description drops the word
