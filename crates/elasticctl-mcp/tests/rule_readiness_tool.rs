@@ -843,6 +843,11 @@ async fn a_deadline_during_the_fifth_pattern_read_returns_no_data_and_frees_the_
     harness.join().await.expect("clean EOF");
 }
 
+/// The held reads outlast [`PROMPT_REPLY`] by a wide margin, so a reply inside it
+/// proves the call ended before the held reads, even on a slow runner.
+const HELD_PACKAGE_READ: Duration = Duration::from_secs(8);
+const PROMPT_REPLY: Duration = Duration::from_secs(4);
+
 /// A large rule stays below the inspection body cap.
 async fn large_package_stack() -> (MockServer, String) {
     let names = (0..100_000)
@@ -851,9 +856,9 @@ async fn large_package_stack() -> (MockServer, String) {
     let packages = names.iter().map(String::as_str).collect::<Vec<_>>();
     let body = rule(None, None, &packages);
     assert!(serde_json::to_vec(&body).unwrap().len() < 16_777_216);
-    let server = router_stack(&body, Duration::ZERO, Duration::from_secs(3)).await;
+    let server = router_stack(&body, Duration::ZERO, HELD_PACKAGE_READ).await;
     Mock::given(path(POLICIES))
-        .respond_with(ok_json(policies(&[])).set_delay(Duration::from_secs(3)))
+        .respond_with(ok_json(policies(&[])).set_delay(HELD_PACKAGE_READ))
         .with_priority(1)
         .mount(&server)
         .await;
@@ -882,7 +887,7 @@ async fn large_package_scan_cancellation_frees_the_permit_promptly() {
             .is_err()
     );
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < PROMPT_REPLY,
         "package scan blocked cancellation"
     );
     assert_four_permits_free(&mut harness, &server, 10).await;
@@ -904,7 +909,7 @@ async fn large_package_scan_deadline_frees_the_permit_promptly() {
     assert_eq!(structured["error"]["code"], "deadline_exceeded");
     assert!(structured.get("data").is_none());
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < PROMPT_REPLY,
         "package scan blocked deadline"
     );
     assert_four_permits_free(&mut harness, &server, 10).await;
