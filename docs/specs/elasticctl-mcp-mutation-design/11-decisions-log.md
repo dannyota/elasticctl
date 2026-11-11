@@ -52,7 +52,7 @@ Each row is final for 0.9. Sources are in
 | A reachable Elasticsearch URL for plans | Required. The error names `es_url` (D29) |
 | Two prompts per apply in Claude Code | Accepted |
 | Audit trail on stderr only | Accepted |
-| Organization-level key for measurement M9 | Pending. M9 stays a gated measurement and blocks no other work |
+| Organization-level key for measurement M9 | Supplied and measured on 2026-11-11 (M9): Serverless accepts it, Hosted refuses it at `_authenticate` |
 
 ### Alternatives where the trade-off matters
 
@@ -85,8 +85,9 @@ accepted stderr only.
 
 **Skipping the credential read (rejected for D15).** It would let profiles
 without an Elasticsearch URL make plans and save two requests per apply. The
-audit trail would then have no actor, and an organization-level key would
-fail after a person had already confirmed.
+audit trail would then have no actor, and a key the stack refuses, such as an
+organization-level key on Hosted (M9), would fail only after a person had
+already confirmed.
 
 **Typed confirmation code (rejected for D5).** See
 [section 2.2](02-consent-model.md#22-rejected-alternatives). It returns if a
