@@ -12,9 +12,12 @@
   equal plan hashes across protocol paths, concurrent applies, every mutation
   tool against its output schema, and the exact audit sequence of each
   outcome. They found no server defect.
-- TBD: the consent flow is checked with two product clients on the Hosted
-  test deployment, Claude Code <version> and Codex CLI <version>, and what
-  each one showed. The server is unchanged.
+- The consent flow is checked with two product clients on the Hosted test
+  deployment, Claude Code 2.1.322 on both protocol paths and Codex CLI
+  0.167.1 on the legacy path. In every scenario an apply needed a person.
+  Claude Code shows only the form's first three lines, and Codex CLI's form
+  has no decline button; the MCP Mutations wiki page says how to work with
+  each. The server is unchanged.
 - The conformance runner no longer passes a Fleet setup marker inherited
   from the caller's environment to a contract child.
 

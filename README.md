@@ -157,7 +157,9 @@ run `elkctl ... --yes` without MCP. Rule names and case titles in the form are
 data from the stack and cannot change its fixed lines. A model can plan and
 ask again after a decline; each plan asks at most three times, and at most
 eight plans are open. A change made between the last check and the write is
-not seen.
+not seen. Claude Code shows only the form's first three lines, so read the
+plan with `plan_get` before you accept; Codex CLI's form has no decline
+button, so leave the value false instead.
 See [MCP Mutations][mcp-mutations] for the flow, the audit trail, and the
 limits of this consent model.
 

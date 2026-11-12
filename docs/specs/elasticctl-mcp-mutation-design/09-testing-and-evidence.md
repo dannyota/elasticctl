@@ -119,6 +119,18 @@ record.
 needs the whole table. A client that cannot run is an evidence gap, never a
 pass taken from its documents.
 
+Measured in 0.9.2 on Hosted
+([findings](../../conformance/v0.9.2/findings.md)). Claude Code 2.1.322 ran
+every row on both paths. Codex CLI 0.167.1 ran on the legacy path only,
+because it does not negotiate the current one. In every row an apply needed
+a person; with a hook, that person answers only the permission card. Two
+client limits stand by owner decision. Claude Code collapses the form after
+its first three lines, the credential note included (M10, D33 unchanged).
+Codex CLI's form has no decline control, so its Decline row ends
+`not_confirmed` with no change. `claude -p` never sends `plan_apply`, and
+`codex exec` declines the form (M12). Both legacy forms were answered well
+inside the 240-second wait (M11).
+
 ### 9.4 Evidence and release contract
 
 - Raw client logs, child output, and live results stay in ignored private

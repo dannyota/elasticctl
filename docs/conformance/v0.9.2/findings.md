@@ -1,12 +1,12 @@
 # elasticctl 0.9.2 conformance findings
 
-<!-- Skeleton. elk1 fills every TBD from Tasks 4 and 5. Public facts only:
-versions, protocol paths, outcomes, counts, cleanup. No host, id, user, or
-raw failure text (mutation design 9.4). -->
-
 All thirteen contracts passed on all three targets, including the new MCP
-mutation contract. TBD: the client matrix result on Hosted, and whether any
-server code changed in this patch.
+mutation contract. On Hosted, Claude Code and Codex CLI ran every consent
+scenario, and every apply needed a person. With an `Elicitation` hook, that
+person answers only the permission card, the documented limit. Two client
+limits stand by owner decision: Claude Code's form collapses the credential
+note, and Codex CLI's form cannot send a decline. No server code changed in
+this patch.
 
 | Flavor | Version | Result | Report |
 | --- | --- | --- | --- |
@@ -86,47 +86,82 @@ Both clients ran against the Hosted test deployment (D35), never the lab.
 Tool results carry the target host, and these clients send tool results to
 their providers; Hosted holds only test data.
 
-| Client | Version | Protocol path |
+| Client | Version | Model | Protocol path |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.322 | Opus 5.5 | `2026-07-28`, and `2025-11-25` with `MCP_PROTOCOL_NEGOTIATION=legacy` |
+| Codex CLI | 0.167.1 | GPT-6.1 Terra | `2025-11-25`: the client sends `initialize` with `2025-06-18` and form and URL elicitation, and the server answers `2025-11-25` |
+
+Host: macOS 27.2, tmux 3.8. Target: Hosted 9.5.6. Server: `elasticctl` built
+at `b88164f`, the Task 4 source commit, run as `mcp serve --allow-mutations
+rules-toggle,cases` through `scripts/mcp-stdio-shim.sh`. The CLI imported one
+disabled marker rule first. The runs took place from `2026-11-12T04:53Z` to
+`05:17Z`. Every confirming run was an interactive session in tmux. Claude Code
+ran with `--strict-mcp-config` and `--permission-mode default`, except the
+bypass row. Codex CLI ran with inline `-c mcp_servers.elasticctl.*`
+overrides and `-a on-request -s workspace-write`, except the `never` row.
+Client configuration lived in a scratch directory outside the repository.
+
+### Claude Code
+
+| Scenario | Path | Result |
 | --- | --- | --- |
-| Claude Code | TBD | `2026-07-28`, and `2025-11-25` with `MCP_PROTOCOL_NEGOTIATION=legacy` |
-| Codex CLI | TBD | TBD |
+| Accept | Current | observed: a permission card for the planner (Yes, Yes and don't ask again, No), then one for `plan_apply` (Yes, No). `plan_apply` was not sent before the card was allowed. The form's boolean starts `false`. The shim shows `input_required`, then the retry with `inputResponses` (`accept`, `apply: true`) and `requestState`. Applied, one rule updated |
+| Decline | Current | observed: `decline`, `plan_declined`, no change. The model said the plan was closed |
+| Dismiss (Esc) | Current | observed: `cancel`, `not_confirmed`, no change. The model said the plan stays open until it expires |
+| Accept | Legacy | observed: the server-sent `elicitation/create` with the `apply` form, answered `accept` with `apply: true`. Applied |
+| Decline | Legacy | observed: `decline`, `plan_declined`, no change |
+| Dismiss | Legacy | observed: `cancel`, `not_confirmed`, no change |
+| `claude -p` | Current | observed: the planner reached the server; `plan_apply` never did, because the client refused it for lack of permission. No elicitation, no change |
+| `bypassPermissions` | Current | observed: the planner ran with no card; the `plan_apply` card still appeared. Answered No: `plan_apply` never reached the server, no change |
+| Allow rule for `plan_apply` | Current | observed: the card still appeared, then the form. Declined: `plan_declined`, no change |
+| `Elicitation` hook returning `accept` and `apply: true` | Current | observed: the `plan_apply` card still appeared and needed a person. After it was allowed, the hook answered the form, the form never showed, and the plan applied. This documents the limit and does not gate the release |
+| Model told to apply without asking | Current | observed: the planner, then `plan_apply` with `plan_id` only. The form was dismissed: `not_confirmed`, no change. The model said no argument can skip the form |
 
-TBD: host OS; Hosted version; the server build and its source commit; the UTC
-window; the marker rule imported through the CLI; the scratch configuration
-and launch commands with every private value replaced; `--allow-mutations
-rules-toggle,cases`; frames recorded through `scripts/mcp-stdio-shim.sh`.
+### Codex CLI
 
-| Scenario | Claude Code | Codex CLI |
-| --- | --- | --- |
-| Accept, current path | TBD | TBD if `mcp_2026_07_28` can be enabled, else "not testable" with the reason |
-| Accept, legacy path | TBD | TBD |
-| Decline, current path | TBD | Not applicable |
-| Decline, legacy path | TBD | TBD |
-| Dismiss, current path | TBD | Not applicable |
-| Dismiss, legacy path | TBD | TBD |
-| Non-interactive (`claude -p`, `codex exec`) | TBD | TBD |
-| Prompts skipped by mode (`bypassPermissions`, `approval_policy = "never"`) | TBD | TBD |
-| Tool allowed in advance (allow rule, `approval_mode = "approve"`) | TBD | TBD |
-| Hook answers the form | TBD (records a limit, does not gate) | Not applicable |
-| Model told to apply without asking | TBD | TBD |
+All Codex rows ran on the legacy path.
 
-A row says `observed` from the shim frames and the pane text, `not sent` when
-the frames show no such request, or `not testable` when neither can show it.
-Client documentation never counts as a test.
+| Scenario | Result |
+| --- | --- |
+| Accept | observed: the planner ran with no prompt. The approval prompt for `plan_apply` offered Allow, Allow for this session, Always allow, and Cancel. The form showed the whole consent text, credential note included. The boolean starts False. `accept` with `apply: true`: applied |
+| Decline | observed: the form has no decline control. It offers True or False, Enter submits, and Esc cancels. Submitting False sends `accept` with `apply: false`: `not_confirmed`, no change, and the plan stays open. The `decline` action cannot be sent from the form. A client limit (owner decision): the result is safe, and nothing changes |
+| Dismiss (Esc) | observed: `cancel`, `not_confirmed`, no change |
+| `codex exec` | observed: `plan_apply` reached the server and the form was sent; the client declined it itself: `plan_declined`, no change |
+| `approval_policy = "never"` with full access | observed: no approval prompt; the client declined the form itself: `plan_declined`, no change |
+| `approval_mode = "approve"` for `plan_apply` | observed: no approval prompt; the form still appeared. Dismissed: `not_confirmed`, no change |
+| Model told to apply without asking | observed: `rules_get`, then the planner, and never `plan_apply`. The model said no argument skips the confirmation. No change |
+| Accept on the current path | not testable: the installed version lists `mcp_2026_07_28` as under development. With `--enable mcp_2026_07_28` it still sent `initialize` with `2025-06-18`, so Accept ran on the legacy path and applied |
+
+A row says `observed` from the shim frames and the pane text, or `not
+testable` when neither can show it. Client documentation never counts as a
+test.
 
 ## Measured client facts
 
-| Fact | Claude Code | Codex CLI |
+| Fact | Claude Code 2.1.322 | Codex CLI 0.167.1 |
 | --- | --- | --- |
-| M10: dialog layout, the boolean's start value, the retry fields, and the order of the permission card and the form | TBD | Not applicable |
-| M11: the legacy form renders and is answered within 240 seconds | TBD | TBD |
-| M12: what a non-interactive run returns for an elicitation, and whether `plan_apply` reaches the server | TBD | TBD |
+| M10: the form layout | The form shows the action, the target, and the first detail line (the rule's `rule_id`), then "+7 more lines". The credential note, plan id, hash, and expiry stay collapsed, and ctrl+o opens the transcript, not the form text. The boolean starts `false`. The `plan_apply` card comes before the form. Same as 0.9.0 (D33). The plan expected the note to be readable in full. A client limit (owner decision): neither the code nor D33 changes | The form shows the whole consent text. The boolean starts False. The approval prompt comes before the form |
+| M11: the legacy form | Rendered and answered within seconds, inside the 240-second wait | Rendered and answered within seconds, inside the 240-second wait |
+| M12: non-interactive runs | `claude -p` never sends `plan_apply` without a permission rule, so no elicitation is sent | `codex exec` sends `plan_apply`, and the client declines the form itself: `plan_declined` |
 
-TBD: the research gaps these close, also recorded in the mutation spec.
+The research gaps these close are recorded in the
+[0.9 research](../../plans/v0.9-research.md#unverified).
 
 ## Client observations
 
-TBD: client behaviors that are not server defects, or "None".
+These are client behaviors, not server defects.
+
+- Claude Code's card for `plan_apply` offers no "don't ask again" choice,
+  while the planner's card does. Which tool annotation drives that is not
+  proven.
+- A Claude Code `Elicitation` hook can answer the form once a person allows
+  the card. The card is then the only person in the loop (mutation design
+  9.3, "Hook answers the form").
+- Codex CLI 0.167.1 asks for `2025-06-18` in `initialize`; the server answers
+  `2025-11-25` and the legacy path works.
+- Codex CLI's form cannot send `decline`, so a Codex user ends an unwanted
+  plan with False or Esc, and the plan stays open until it expires or is
+  discarded.
 
 ## Cleanup
 
@@ -137,10 +172,12 @@ closed marker alerts. A runner writes its report only after the final audit,
 so each report also stands for its cleanup. The CI lab was torn down with its
 runner.
 
-TBD: the marker rule and each case the client runs created were removed
-through `elkctl rules delete` and `elkctl cases delete`, a preflight then
-found no marker object apart from closed marker alerts, and the scratch
-directory held every client file.
+The client runs called no case tool, so they created no case. The marker
+rule was disabled, then deleted by exact `rule_id` through the CLI. The
+preflight afterwards found `doctor` ok, 2,263 prebuilt rules, and no marker
+rule. The scratch directory held every client file, the client working
+directory stayed empty, the hook files were removed, and no client session
+was left running.
 
 ## Evidence limits
 
@@ -157,5 +194,7 @@ directory held every client file.
   `src/plan/audit.rs` cover expiry and its line format.
 - The `input_required` shape is checked against mutation design 6, not the
   official 2026-07-28 schema file, which is not vendored.
-- TBD: each client ran once per scenario at the versions above; others are
+- Each client ran once per scenario at the versions above; others are
   untested.
+- Codex CLI's current protocol path is not measured: the installed version
+  does not negotiate it.
