@@ -144,17 +144,41 @@ impl<C: Child> Session<C> {
         }
     }
 }
+fn child_command(config: &Path, mutations: bool, api_key: Option<&str>) -> std::process::Command {
+    let mut command = mcp_smoke::offline_child_command(config, false);
+    // Keep the config's target fields and pass only the live key back through
+    // the environment. Source changes, but banners and plans use the name.
+    if let Some(key) = api_key {
+        command.env("ELASTICCTL_API_KEY", key);
+    }
+    if mutations {
+        command.args(["--allow-mutations", &SHIPPED_CLASSES.join(",")]);
+    }
+    command
+}
+
+#[test]
+fn live_mutation_key_is_only_in_child_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    for mutations in [false, true] {
+        let command = child_command(
+            &dir.path().join("config.toml"),
+            mutations,
+            Some(SENTINEL_KEY),
+        );
+        assert_key_environment_only(command.get_envs(), command.get_args());
+    }
+}
+
 impl Session<McpChild> {
     fn spawn(
         config: &Path,
         path: McpProtocolPath,
         form: bool,
         mutations: bool,
+        api_key: Option<&str>,
     ) -> TestResult<Self> {
-        let mut command = mcp_smoke::offline_child_command(config, false);
-        if mutations {
-            command.args(["--allow-mutations", &SHIPPED_CLASSES.join(",")]);
-        }
+        let command = child_command(config, mutations, api_key);
         let child = McpChild::spawn_command(command, false)?;
         let mut s = Self {
             child,
@@ -234,7 +258,8 @@ fn contract(
         rt.block_on(owned_rule(&t, id))
             .map(|rule| rule_state(&rule))
     };
-    let mut a = Session::spawn(config, McpProtocolPath::Current, true, true)?;
+    let key = Some(profile.api_key.as_deref().ok_or("contract")?);
+    let mut a = Session::spawn(config, McpProtocolPath::Current, true, true, key)?;
     a.owned = registry.rules.clone();
     {
         let before = read()?;
@@ -266,7 +291,7 @@ fn contract(
         index,
     )?;
     a.child.shutdown()?;
-    let mut b = Session::spawn(config, McpProtocolPath::Legacy, true, true)?;
+    let mut b = Session::spawn(config, McpProtocolPath::Legacy, true, true, key)?;
     b.owned = registry.rules.clone();
     let before = read()?;
     let plan = b.plan(id, !before.enabled())?;
@@ -275,7 +300,7 @@ fn contract(
     require(read()?.enabled() != before.enabled())?;
     b.child.shutdown()?;
     for path in [McpProtocolPath::Current, McpProtocolPath::Legacy] {
-        let mut no = Session::spawn(config, path, false, true)?;
+        let mut no = Session::spawn(config, path, false, true, key)?;
         no.owned = registry.rules.clone();
         let before = read()?;
         let plan = no.plan(id, !before.enabled())?;
@@ -284,7 +309,7 @@ fn contract(
         require(read()? == before)?;
         no.child.shutdown()?;
     }
-    let mut c = Session::spawn(config, McpProtocolPath::Current, false, false)?;
+    let mut c = Session::spawn(config, McpProtocolPath::Current, false, false, key)?;
     let before = read()?;
     for tool in MUTATION_TOOLS {
         let f = c.call(tool, json!({}))?;

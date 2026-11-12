@@ -409,8 +409,116 @@ fn skip_unless_live() -> bool {
     false
 }
 
+const SENTINEL_KEY: &str = "elasticctl-live-offline-key-sentinel";
+
+// Run environment-dependent checks in a separate process without changing the
+// test runner's environment while other tests build offline children.
+fn isolated_live_environment(test: &str) -> bool {
+    if std::env::var("ELASTICCTL_API_KEY").as_deref() == Ok(SENTINEL_KEY) {
+        return false;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    for name in mcp_smoke::TARGET_OVERRIDES {
+        command.env_remove(name);
+    }
+    let output = command
+        .args([test, "--exact", "--test-threads=4"])
+        .env("ELASTICCTL_API_KEY", SENTINEL_KEY)
+        .env("ELASTICCTL_KIBANA_URL", "http://127.0.0.1:1")
+        .env("ELASTICCTL_ES_URL", "http://127.0.0.1:2")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
+fn assert_key_environment_only<'a>(
+    envs: impl Iterator<Item = (&'a std::ffi::OsStr, Option<&'a std::ffi::OsStr>)>,
+    args: impl Iterator<Item = &'a std::ffi::OsStr>,
+) {
+    assert!(
+        envs.into_iter()
+            .any(|(name, value)| name == "ELASTICCTL_API_KEY"
+                && value == Some(std::ffi::OsStr::new(SENTINEL_KEY))),
+        "child must carry its key in its environment"
+    );
+    assert!(
+        args.into_iter()
+            .all(|arg| !arg.to_string_lossy().contains(SENTINEL_KEY))
+    );
+}
+
+#[test]
+fn live_config_has_no_api_key() {
+    if isolated_live_environment("live_config_has_no_api_key") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_live_config(dir.path());
+    // Config::load parses the file as TOML. An absent optional key stays None.
+    let config = elasticctl_core::Config::load(&path).unwrap();
+    assert!(config.profiles["default"].api_key.is_none());
+    let saved = config.resolve(None, &Default::default()).unwrap();
+    let keyed = config
+        .resolve(
+            None,
+            &elasticctl_core::Overrides {
+                api_key: Some(SENTINEL_KEY.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(saved.source, elasticctl_core::Source::Profile);
+    assert_eq!(keyed.source, elasticctl_core::Source::Flags);
+    assert_eq!(keyed.name, "default");
+    assert_eq!(keyed.banner(), saved.banner());
+}
+
+#[test]
+fn live_config_directory_has_no_key_bytes() {
+    if isolated_live_environment("live_config_directory_has_no_key_bytes") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    write_live_config(dir.path());
+    fn check(dir: &Path) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                check(&path);
+            } else {
+                let bytes = std::fs::read(path).unwrap();
+                assert!(
+                    !bytes
+                        .windows(SENTINEL_KEY.len())
+                        .any(|b| b == SENTINEL_KEY.as_bytes())
+                );
+            }
+        }
+    }
+    check(dir.path());
+}
+
+#[test]
+fn live_cli_key_is_only_in_child_environment() {
+    if isolated_live_environment("live_cli_key_is_only_in_child_environment") {
+        return;
+    }
+    let command = bin();
+    assert_key_environment_only(command.get_envs(), command.get_args());
+}
+
 fn bin() -> Command {
-    Command::cargo_bin("elasticctl").unwrap()
+    let mut command = Command::cargo_bin("elasticctl").unwrap();
+    if let Some(key) = std::env::var_os("ELASTICCTL_API_KEY") {
+        command.env("ELASTICCTL_API_KEY", key);
+    }
+    command
 }
 
 /// Build a profile from environment variables so live tests never use the
@@ -420,7 +528,6 @@ fn bin() -> Command {
 fn write_live_config(dir: &Path) -> PathBuf {
     let kibana_url =
         std::env::var("ELASTICCTL_KIBANA_URL").expect("ELASTICCTL_KIBANA_URL must be set");
-    let api_key = std::env::var("ELASTICCTL_API_KEY").expect("ELASTICCTL_API_KEY must be set");
     let es_url = std::env::var("ELASTICCTL_ES_URL").ok();
     let space = std::env::var("ELASTICCTL_SPACE").unwrap_or_else(|_| "default".to_string());
 
@@ -430,7 +537,7 @@ fn write_live_config(dir: &Path) -> PathBuf {
         body.push_str(&format!("es_url = \"{es}\"\n"));
     }
     body.push_str(&format!(
-        "api_key = \"{api_key}\"\nspace = \"{space}\"\nverify = true\ntimeout_secs = 60\n"
+        "space = \"{space}\"\nverify = true\ntimeout_secs = 60\n"
     ));
 
     let path = dir.join("config.toml");

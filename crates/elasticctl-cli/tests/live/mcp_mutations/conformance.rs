@@ -70,7 +70,7 @@ pub(super) fn spawn(
     form: bool,
     mutations: bool,
 ) -> Session<Observed> {
-    let s = Session::spawn(config, path, form, mutations).unwrap();
+    let s = Session::spawn(config, path, form, mutations, None).unwrap();
     Session {
         child: Observed {
             child: s.child,

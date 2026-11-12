@@ -162,6 +162,18 @@ async fn raw_requests_keep_resource_errors_and_success_requests_stay_strict() {
 }
 
 #[test]
+fn live_mcp_key_is_only_in_child_environment() {
+    if isolated_live_environment("mcp_smoke::live_mcp_key_is_only_in_child_environment") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for allow_query_tools in [false, true] {
+        let command = child_command(&dir.path().join("config.toml"), allow_query_tools);
+        assert_key_environment_only(command.get_envs(), command.get_args());
+    }
+}
+
+#[test]
 fn offline_children_drop_every_target_override() {
     let dir = tempfile::tempdir().expect("create MCP subprocess config directory");
     for allow_query_tools in [false, true] {
@@ -2258,6 +2270,9 @@ pub(super) const TARGET_OVERRIDES: [&str; 5] = [
 
 fn child_command(config: &Path, allow_query_tools: bool) -> std::process::Command {
     let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("elasticctl"));
+    if let Some(key) = std::env::var_os("ELASTICCTL_API_KEY") {
+        command.env("ELASTICCTL_API_KEY", key);
+    }
     command
         .arg("--config")
         .arg(config)
