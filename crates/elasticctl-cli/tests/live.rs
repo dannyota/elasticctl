@@ -21,6 +21,8 @@ mod mcp_mutations;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
 
+/// The thirteenth contract stays at this integration-test root because the
+/// conformance controller invokes this exact name.
 #[test]
 #[ignore = "requires a live stack"]
 fn mcp_mutations_plan_and_confirm() {
