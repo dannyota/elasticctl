@@ -61,8 +61,17 @@ file with the line number:
 ### 3.5 Canonical values per type
 
 A value is canonical when it is the exact string elasticctl sends and Kibana
-returns. elasticctl accepts only spellings whose stored form is measured, and
-refuses the rest with a message giving the accepted spelling.
+returns. The codec has two levels:
+
+- **readable**: any value Kibana accepts and stores for the type, in any
+  spelling, such as uppercase IPv6, a CIDR with host bits, or a mixed-family
+  range (V12). A pulled file holds readable values, and `validate` accepts
+  them;
+- **canonical**: the one spelling of the table below. elasticctl writes only
+  canonical values. A readable value that is not canonical is a warning in
+  `validate` and `diff`, and `push` and `import` refuse to add one, naming
+  the canonical spelling. A non-canonical value already stored on the stack
+  and kept unchanged is not refused, so pull, validate, and push round-trip.
 
 | Type | Accepted | Canonical form |
 | --- | --- | --- |
@@ -74,10 +83,11 @@ refuses the rest with a message giving the accepted spelling.
 V12 showed that Kibana stores each spelling as sent: IPv6 case and
 compression are kept, host bits are kept, and a mixed-family range is stored.
 The same address in two spellings is then two stored values, so elasticctl
-writes one spelling: RFC 5952 for IPv6, no host bits, and only same-family,
-ascending ranges. A reversed range is a 400 from the item API and is dropped
-silently by import (V12), so it is refused locally. A pulled value in another
-spelling stays as stored, as `a-a` does.
+adds only one spelling: RFC 5952 for IPv6, no host bits, and only
+same-family, ascending ranges. A reversed range is a 400 from the item API
+and is dropped silently by import (V12), so it is not readable and is refused
+everywhere. A pulled value in another spelling stays as stored, as `a-a`
+does.
 
 ### 3.6 What the stack holds
 

@@ -14,7 +14,8 @@ command; no list is written while another is invalid.
 | `id` is valid (section 3.1) and its stem (section 7.2) equals the file's stem | `error` |
 | `type` is one of the four types | `unsupported`, naming the type and the four supported ones |
 | The values file exists beside the container file and is UTF-8 | `error` |
-| Each line passes the parsing order of section 3.4 | `error`, with the line number and the value |
+| Each line passes the parsing order of section 3.4 and is readable for the type (section 3.5) | `error`, with the line number and the value |
+| A value the command would add is canonical (section 3.5) | `push` and `import`: `error`, with the canonical spelling. `validate`: a warning, since it does not know what is already stored |
 | No single value, with its line feed, is larger than 8,000,000 bytes | `error`: an import request carries whole values only (section 6.3) |
 
 A value that canonicalizes to one already seen is not an error: the set
@@ -25,7 +26,10 @@ collapses it.
 D12 is checked on three stored states of each `ip_range` list a command would
 write: the current state on the stack, the state between the two phases
 (section 6.3), and the final state. A state's dash count is the number of its
-stored values in dash form, duplicates included (section 3.6).
+stored values in dash form, duplicates included (section 3.6). The states are
+projected from the current stored values: a kept value keeps every stored
+copy, a removed value loses every copy, and an added value is stored once.
+The local file's distinct count is never used for this check.
 
 - A final state above 200 refuses the write with `unsupported`.
 - A between-phases state above 200 refuses the write, unless it is no higher

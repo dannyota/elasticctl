@@ -24,7 +24,11 @@ assertions:
   accepted and refused spelling of section 3.5, CRLF and unsorted input, and
   a value too large for one request;
 - the dash rule: final and between-phase counts at 200 and 201, duplicates
-  counted, and a repair that lowers an existing count;
+  counted, the projection of section 5.2 (199 distinct values stored 200
+  times, one removed and two added, refused at 201), and a repair that lowers
+  an existing count;
+- the two codec levels: pull, then validate, then push of a list holding each
+  V12 spelling unchanged, and the refusal to add a non-canonical one;
 - the empty rule: a referenced list emptied finally or between phases, the
   `{a}` to `{b}` replacement under `is in list` (adds first, never empty),
   and creating a list that an installed reference names;
@@ -51,7 +55,8 @@ assertions:
   `value_lists` diff block and `clean`, the D4 and D12 refusals on unchanged
   items, retained containers, and stack-only lists, a reference whose list
   has no source, the D27 refusal for an added, removed, replaced, and changed
-  reference and its allowed first-creation case, the apply order, the
+  reference, for another entry of a referencing item, and for a second list
+  of that item, and its allowed first-creation case, the apply order, the
   container re-read
   before exception writes, and the report and summary for every outcome,
   including the example of section 7.5;

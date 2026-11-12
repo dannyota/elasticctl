@@ -158,7 +158,7 @@ both streams true. Anything else is an `http` error with the flow's status.
 | Every phase verified by read-back, whatever the answers to its writes | `applied` |
 | 409 | `failed`, kind `conflict` |
 | Other 4xx | `failed`, with Kibana's message and status |
-| A phase not verified within its budget, after an uncertain write or not | `unknown`, with the observed set's missing and extra counts |
+| A phase or a container write not verified within its budget | `unknown`, with what the last read observed (section 7.5) |
 | Not attempted because an earlier list failed or is unknown | `not_reached` |
 
 A command that writes several lists stops at the first `failed` or `unknown`
