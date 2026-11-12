@@ -703,3 +703,32 @@ async fn one_failing_rule_does_not_abort_the_rest() {
             .all(|e| e["error"].as_str().unwrap().contains("already exists"))
     );
 }
+
+#[tokio::test]
+async fn push_refuses_a_newer_mirror_with_json_error() {
+    let server = server_with(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    let state = dir.path().join("state");
+    fs::create_dir_all(state.join("value-lists")).unwrap();
+
+    for yes in [false, true] {
+        let mut command = Command::cargo_bin("elasticctl").unwrap();
+        command
+            .args(["state", "push", "--json", "--config"])
+            .arg(&cfg)
+            .arg("--dir")
+            .arg(&state);
+        if yes {
+            command.arg("--yes");
+        }
+        let out = command.output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let error: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(error["error"]["kind"], "unsupported");
+        assert_eq!(
+            error["error"]["message"],
+            "this mirror holds value-lists/, which needs elasticctl 0.10 or later"
+        );
+    }
+}

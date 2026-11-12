@@ -93,6 +93,7 @@ pub(crate) fn acquire_pull(requested: &Path) -> Result<PullLock> {
 
 fn acquire_pull_from(requested: &Path, current_dir: &Path) -> Result<PullLock> {
     let root = resolve_mirror_root(requested, current_dir)?;
+    super::mirror::refuse_value_lists(&root)?;
     let parent = mirror_parent(&root)?;
     let mirror_name = root
         .file_name()

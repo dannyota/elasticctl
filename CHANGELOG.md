@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.4 — TBD
+
+### Changed
+
+- `state pull`, `state diff`, and `state push` refuse a mirror directory that
+  holds `value-lists/`, with `unsupported`, before any request or file write.
+  elasticctl 0.10 writes value lists there; 0.9 cannot read them and would
+  otherwise push the mirror's exceptions without them, or pull into it and
+  leave them stale. 0.9.0 to 0.9.3 do not have this check, so use 0.9.4 or
+  0.10 with such a mirror.
+
 ## 0.9.3 — 2026-11-12
 
 ### Changed
