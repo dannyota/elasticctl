@@ -45,6 +45,8 @@
 - The consent text's action line holds one line: a line feed from the stack
   shows there as U+FFFD, and a new case title with a line feed is
   `invalid_argument`. A rule create plan shows its `rule_id` line first.
+- A rule toggle whose bulk report has counters that overflow or exceed the
+  rules planned is recorded as `unknown` instead of applied.
 
 ### Fixed
 
