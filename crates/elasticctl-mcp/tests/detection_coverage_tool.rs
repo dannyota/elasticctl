@@ -10,12 +10,18 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::LazyLock;
+use std::pin::Pin;
+use std::sync::{
+    Arc, LazyLock,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use elasticctl_core::{Profile, Resolved, Source};
 use serde_json::{Value, json};
 use support::{Harness, current_metadata, options};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::time::{sleep, timeout};
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
@@ -122,18 +128,284 @@ async fn mount_status(server: &MockServer, version: &str) {
         .await;
 }
 
-/// The recorded rule, answered after `delay`, so a `rules_get` call holds
-/// its permit while it waits.
-async fn mount_held_rule(server: &MockServer, delay: Duration) {
+/// The recorded rule, served through the explicit gate.
+async fn mount_held_rule(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path(RULE))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(delay)
-                .set_body_json(&*RULE_GET),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(&*RULE_GET))
         .mount(server)
         .await;
+}
+
+trait Session {
+    async fn send_json(&mut self, value: Value);
+    async fn receive_json(&mut self) -> Value;
+}
+
+impl Session for Harness {
+    async fn send_json(&mut self, value: Value) {
+        self.send_json(value).await;
+    }
+
+    async fn receive_json(&mut self) -> Value {
+        self.receive_json().await
+    }
+}
+
+/// Capture the isolated MCP runtime without changing the shared harness.
+struct RuntimeInput {
+    input: tokio::io::DuplexStream,
+    runtime: Option<tokio::sync::oneshot::Sender<tokio::runtime::Handle>>,
+}
+
+impl AsyncRead for RuntimeInput {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.send(tokio::runtime::Handle::current()).unwrap();
+        }
+        Pin::new(&mut self.input).poll_read(cx, buf)
+    }
+}
+
+struct ClockHarness {
+    input: Option<tokio::io::DuplexStream>,
+    output: tokio::io::BufReader<tokio::io::DuplexStream>,
+    task: tokio::task::JoinHandle<elasticctl_core::Result<()>>,
+    runtime: Option<tokio::sync::oneshot::Receiver<tokio::runtime::Handle>>,
+}
+
+impl ClockHarness {
+    fn start(target: Resolved, options: elasticctl_mcp::ServerOptions) -> Self {
+        let (input, server_input) = tokio::io::duplex(1_048_576);
+        let (server_output, output) = tokio::io::duplex(1_048_576);
+        let (runtime, captured) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(elasticctl_mcp::server::serve_io(
+            target,
+            options,
+            RuntimeInput {
+                input: server_input,
+                runtime: Some(runtime),
+            },
+            server_output,
+        ));
+        Self {
+            input: Some(input),
+            output: tokio::io::BufReader::new(output),
+            task,
+            runtime: Some(captured),
+        }
+    }
+
+    async fn pause_clock(&mut self) -> Clock {
+        let runtime = timeout(Duration::from_secs(30), self.runtime.take().unwrap())
+            .await
+            .expect("MCP runtime did not start")
+            .unwrap();
+        let blocker = timeout(
+            Duration::from_secs(30),
+            runtime.spawn(async {
+                let (blocker, waiting) = std::sync::mpsc::channel::<()>();
+                // Tokio inhibits paused-clock auto-advance while this task is outstanding.
+                tokio::task::spawn_blocking(move || {
+                    let _ = waiting.recv();
+                });
+                tokio::time::pause();
+                blocker
+            }),
+        )
+        .await
+        .expect("MCP clock did not pause")
+        .unwrap();
+        Clock {
+            runtime,
+            blocker: Some(blocker),
+        }
+    }
+
+    fn close_input(&mut self) {
+        self.input.take();
+    }
+
+    async fn assert_no_reply(&mut self) {
+        let mut trailing = Vec::new();
+        timeout(
+            Duration::from_secs(30),
+            self.output.read_to_end(&mut trailing),
+        )
+        .await
+        .expect("MCP output did not close")
+        .unwrap();
+        assert!(trailing.is_empty(), "the cancelled call emitted a response");
+    }
+
+    async fn join(self) -> elasticctl_core::Result<()> {
+        timeout(Duration::from_secs(30), self.task)
+            .await
+            .expect("MCP session did not stop")
+            .expect("server task must not panic")
+    }
+}
+
+impl Session for ClockHarness {
+    async fn send_json(&mut self, value: Value) {
+        let mut frame = serde_json::to_vec(&value).unwrap();
+        frame.push(b'\n');
+        self.input
+            .as_mut()
+            .expect("input remains open")
+            .write_all(&frame)
+            .await
+            .unwrap();
+    }
+
+    async fn receive_json(&mut self) -> Value {
+        let mut line = Vec::new();
+        timeout(
+            Duration::from_secs(30),
+            self.output.read_until(b'\n', &mut line),
+        )
+        .await
+        .expect("MCP reply did not arrive")
+        .unwrap();
+        serde_json::from_slice(&line).expect("server returns JSON")
+    }
+}
+
+struct Clock {
+    runtime: tokio::runtime::Handle,
+    blocker: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Clock {
+    async fn now(&self) -> tokio::time::Instant {
+        timeout(
+            Duration::from_secs(30),
+            self.runtime.spawn(async { tokio::time::Instant::now() }),
+        )
+        .await
+        .expect("MCP clock did not answer")
+        .unwrap()
+    }
+
+    async fn advance(&self, duration: Duration) {
+        timeout(
+            Duration::from_secs(30),
+            self.runtime.spawn(async move {
+                tokio::time::advance(duration).await;
+            }),
+        )
+        .await
+        .expect("MCP clock did not advance")
+        .unwrap();
+    }
+}
+
+impl Drop for Clock {
+    fn drop(&mut self) {
+        let blocker = self.blocker.take();
+        self.runtime.spawn(async move {
+            tokio::time::resume();
+            drop(blocker);
+        });
+    }
+}
+
+/// Forward requests to wiremock, holding rule replies until explicitly released.
+struct Gate {
+    target: Resolved,
+    arrivals: Arc<AtomicUsize>,
+    departures: Arc<AtomicUsize>,
+    release: Arc<tokio::sync::Semaphore>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Gate {
+    async fn start(server: &MockServer) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut target = target_for(server);
+        target.profile.kibana_url = format!("http://{}", listener.local_addr().unwrap());
+        target.profile.es_url = Some(target.profile.kibana_url.clone());
+        let upstream = *server.address();
+        let arrivals = Arc::new(AtomicUsize::new(0));
+        let departures = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (a, d, r) = (arrivals.clone(), departures.clone(), release.clone());
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    socket = listener.accept() => {
+                        let (socket, _) = socket.unwrap();
+                        let (a, d, r) = (a.clone(), d.clone(), r.clone());
+                        connections.spawn(async move {
+                            let mut socket = tokio::io::BufReader::new(socket);
+                            let mut header = String::new();
+                            let mut length = 0;
+                            loop {
+                                let mut line = String::new();
+                                if socket.read_line(&mut line).await.unwrap() == 0 { return; }
+                                if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                                    length = n.trim().parse::<usize>().unwrap();
+                                }
+                                if line == "\r\n" { break; }
+                                if !line.to_ascii_lowercase().starts_with("connection:") { header.push_str(&line); }
+                            }
+                            header.push_str("Connection: close\r\n\r\n");
+                            let mut body = vec![0; length];
+                            socket.read_exact(&mut body).await.unwrap();
+                            let mut remote = tokio::net::TcpStream::connect(upstream).await.unwrap();
+                            remote.write_all(header.as_bytes()).await.unwrap();
+                            remote.write_all(&body).await.unwrap();
+                            if header.starts_with(&format!("GET {RULE}?")) {
+                                a.fetch_add(1, Ordering::SeqCst);
+                                r.acquire().await.unwrap().forget();
+                                d.fetch_add(1, Ordering::SeqCst);
+                            }
+                            // A deadline can close the client before the gate opens.
+                            let _ = tokio::io::copy(&mut remote, socket.get_mut()).await;
+                        });
+                    }
+                    Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
+                }
+            }
+        });
+        Self {
+            target,
+            arrivals,
+            departures,
+            release,
+            task,
+        }
+    }
+
+    async fn wait_for(&self, expected: usize) {
+        Self::wait_count(&self.arrivals, expected).await;
+    }
+
+    async fn open(&self, count: usize, expected: usize) {
+        self.release.add_permits(count);
+        Self::wait_count(&self.departures, expected).await;
+    }
+
+    async fn wait_count(count: &AtomicUsize, expected: usize) {
+        timeout(Duration::from_secs(30), async {
+            while count.load(Ordering::SeqCst) < expected {
+                sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("held rule requests did not reach the gate condition");
+    }
 }
 
 /// The marker rule as `coverage-<n>` with one technique, `T<n>`.
@@ -154,7 +426,7 @@ fn index_rule(n: usize, patterns: &[String]) -> Value {
     rule
 }
 
-async fn send_call(harness: &mut Harness, id: u64, name: &str, arguments: Value) {
+async fn send_call(harness: &mut impl Session, id: u64, name: &str, arguments: Value) {
     harness
         .send_json(json!({
             "jsonrpc": "2.0",
@@ -165,7 +437,7 @@ async fn send_call(harness: &mut Harness, id: u64, name: &str, arguments: Value)
         .await;
 }
 
-async fn call(harness: &mut Harness, id: u64, arguments: Value) -> Value {
+async fn call(harness: &mut impl Session, id: u64, arguments: Value) -> Value {
     send_call(harness, id, NAME, arguments).await;
     let reply = harness.receive_json().await;
     assert_eq!(reply["id"], id);
@@ -180,7 +452,7 @@ async fn call(harness: &mut Harness, id: u64, arguments: Value) -> Value {
     reply
 }
 
-async fn tool_definition(harness: &mut Harness) -> Value {
+async fn tool_definition(harness: &mut impl Session) -> Value {
     harness
         .send_json(json!({
             "jsonrpc": "2.0", "id": 900, "method": "tools/list",
@@ -615,7 +887,7 @@ async fn byte_cap_trimming_drops_whole_trailing_rows() {
 }
 
 async fn wait_for(server: &MockServer, route: &str, expected: usize) {
-    timeout(Duration::from_secs(2), async {
+    timeout(Duration::from_secs(30), async {
         loop {
             let requests = server.received_requests().await.expect("requests");
             if requests.iter().filter(|r| r.url.path() == route).count() >= expected {
@@ -631,49 +903,187 @@ async fn wait_for(server: &MockServer, route: &str, expected: usize) {
 /// With three `rules_get` calls held, a fourth call is still admitted: the
 /// call that ended released its permit. The admitted call fails validation
 /// before any request. Returns the replies of the three held calls.
-async fn assert_a_permit_is_free(harness: &mut Harness, server: &MockServer) -> Vec<Value> {
-    let held = [11_u64, 12, 13];
+async fn assert_a_permit_is_free(
+    harness: &mut ClockHarness,
+    gate: &Gate,
+    expire_held: bool,
+) -> Vec<Value> {
+    let (replies, attempts) = permit_check(harness, gate, expire_held, 0).await;
+    if !expire_held {
+        assert_eq!(
+            attempts, 1,
+            "a caller without a short deadline must pass on its first attempt"
+        );
+    }
+    replies
+}
+
+/// `expire_attempts` advances the clock before probing to exercise void attempts.
+async fn permit_check(
+    harness: &mut ClockHarness,
+    gate: &Gate,
+    expire_held: bool,
+    expire_attempts: usize,
+) -> (Vec<Value>, usize) {
+    // A gate cannot prevent a one-second holder from reaching its deadline.
+    // Freeze that clock so only the call that ended can have freed a permit.
+    let clock = harness.pause_clock().await;
+    let baseline = gate.arrivals.load(Ordering::SeqCst);
+    for attempt in 1..=6 {
+        let started = clock.now().await;
+        let base = 10 * attempt as u64;
+        let held = [base + 1, base + 2, base + 3];
+        let probe = base + 4;
+        for id in held {
+            send_call(
+                harness,
+                id,
+                "rules_get",
+                json!({"selector": "elasticctl-sample-alert-probe"}),
+            )
+            .await;
+        }
+        let arrivals = baseline + attempt * held.len();
+        gate.wait_for(arrivals).await;
+        if attempt <= expire_attempts {
+            clock.advance(Duration::from_secs(2)).await;
+        }
+        send_call(harness, probe, NAME, json!({"limit": 0})).await;
+        let mut replies = Vec::new();
+        let admitted = loop {
+            let reply = harness.receive_json().await;
+            if reply["id"] == probe {
+                break reply;
+            }
+            assert!(held.contains(&reply["id"].as_u64().unwrap()), "{reply}");
+            assert_eq!(
+                reply["result"]["structuredContent"]["error"]["code"], "deadline_exceeded",
+                "a gated call cannot finish before release"
+            );
+            replies.push(reply);
+        };
+        assert_eq!(
+            admitted["result"]["structuredContent"]["error"]["code"], "invalid_argument",
+            "admitted, not busy"
+        );
+        // Arrival counts alone do not prove holders stayed inside their permits.
+        // Unchanged server time and closed gates rule out both ways they can finish.
+        let void = !replies.is_empty() || clock.now().await != started;
+        if !void && expire_held {
+            clock.advance(Duration::from_secs(2)).await;
+        } else {
+            gate.open(held.len(), arrivals).await;
+        }
+        while replies.len() < held.len() {
+            replies.push(harness.receive_json().await);
+        }
+        let mut ids: Vec<u64> = replies.iter().map(|r| r["id"].as_u64().unwrap()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, held);
+        if void {
+            assert!(
+                attempt < 6,
+                "held calls expired before the probe after 5 retries (6 attempts)"
+            );
+            continue;
+        }
+        if expire_held {
+            gate.open(held.len(), arrivals).await;
+        } else {
+            assert!(
+                replies
+                    .iter()
+                    .all(|reply| reply["result"]["isError"] == false),
+                "every holder must answer from the released gate: {replies:?}"
+            );
+        }
+        return (replies, attempt);
+    }
+    unreachable!("the sixth void attempt fails")
+}
+
+#[tokio::test]
+async fn expired_holders_void_the_probe_and_the_next_attempt_proves_admission() {
+    let server = MockServer::start().await;
+    mount_held_rule(&server).await;
+    let gate = Gate::start(&server).await;
+    let mut short = options();
+    short.call_timeout = Duration::from_secs(1);
+    let mut harness = ClockHarness::start(gate.target.clone(), short);
+    let (replies, attempts) = permit_check(&mut harness, &gate, true, 1).await;
+    assert_eq!(attempts, 2, "the expired attempt must not count as a pass");
+    for reply in replies {
+        assert_eq!(
+            reply["result"]["structuredContent"]["error"]["code"],
+            "deadline_exceeded"
+        );
+    }
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
+}
+
+#[tokio::test]
+#[should_panic(expected = "held calls expired before the probe after 5 retries (6 attempts)")]
+async fn expired_holders_fail_after_five_retries() {
+    let server = MockServer::start().await;
+    mount_held_rule(&server).await;
+    let gate = Gate::start(&server).await;
+    let mut short = options();
+    short.call_timeout = Duration::from_secs(1);
+    let mut harness = ClockHarness::start(gate.target.clone(), short);
+    permit_check(&mut harness, &gate, true, 6).await;
+}
+
+#[tokio::test]
+async fn the_permit_probe_is_busy_while_four_gated_calls_hold_every_permit() {
+    let server = MockServer::start().await;
+    mount_held_rule(&server).await;
+    let gate = Gate::start(&server).await;
+    let mut harness = ClockHarness::start(gate.target.clone(), options());
+    let _clock = harness.pause_clock().await;
+    let held = [10_u64, 11, 12, 13];
     for id in held {
         send_call(
-            harness,
+            &mut harness,
             id,
             "rules_get",
             json!({"selector": "elasticctl-sample-alert-probe"}),
         )
         .await;
     }
-    wait_for(server, RULE, held.len()).await;
-    send_call(harness, 14, NAME, json!({"limit": 0})).await;
-    let admitted = timeout(Duration::from_millis(500), harness.receive_json())
-        .await
-        .expect("the fourth call answers at once");
-    assert_eq!(admitted["id"], 14, "{admitted}");
+    gate.wait_for(held.len()).await;
+    let reply = call(&mut harness, 14, json!({"limit": 0})).await;
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
     assert_eq!(
-        admitted["result"]["structuredContent"]["error"]["code"], "invalid_argument",
-        "admitted, not busy"
+        reply["result"]["structuredContent"]["error"]["code"], "busy",
+        "without a freed permit, the admission assertion must fail"
     );
-    let mut replies = Vec::new();
+    gate.release.add_permits(held.len());
+    let mut ids = Vec::new();
     for _ in held {
-        replies.push(harness.receive_json().await);
+        let reply = harness.receive_json().await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        ids.push(reply["id"].as_u64().unwrap());
     }
-    let mut ids: Vec<u64> = replies.iter().map(|r| r["id"].as_u64().unwrap()).collect();
     ids.sort_unstable();
     assert_eq!(ids, held);
-    replies
+    harness.close_input();
+    harness.join().await.expect("clean EOF");
 }
 
 /// 1,200 rules read in three pages; page 2 answers after `delay`.
-async fn three_page_server(delay: Duration, hold: Duration) -> MockServer {
+async fn three_page_server(delay: Duration) -> MockServer {
     let rules = (0..1_200).map(technique_rule).collect();
     let server = corpus_server(rules, Some((2, delay))).await;
-    mount_held_rule(&server, hold).await;
+    mount_held_rule(&server).await;
     server
 }
 
 #[tokio::test]
 async fn cancelling_during_page_2_of_3_sends_no_page_3_and_frees_the_permit() {
-    let server = three_page_server(Duration::from_secs(1), Duration::from_millis(1_500)).await;
-    let mut harness = Harness::start(target_for(&server), options());
+    let server = three_page_server(Duration::from_secs(1)).await;
+    let gate = Gate::start(&server).await;
+    let mut harness = ClockHarness::start(gate.target.clone(), options());
     send_call(&mut harness, 1, NAME, json!({})).await;
     wait_for(&server, FIND, 2).await;
     harness
@@ -683,16 +1093,10 @@ async fn cancelling_during_page_2_of_3_sends_no_page_3_and_frees_the_permit() {
             "params": {"requestId": 1, "reason": "test", "_meta": current_metadata()},
         }))
         .await;
-    assert!(
-        timeout(Duration::from_millis(500), harness.receive_json())
-            .await
-            .is_err(),
-        "the cancelled call emitted a response"
-    );
     // Past the delayed page 2: a live call would have requested page 3.
     sleep(Duration::from_millis(1_000)).await;
     assert_eq!(find_count(&requests(&server).await), 2, "no page 3");
-    for reply in assert_a_permit_is_free(&mut harness, &server).await {
+    for reply in assert_a_permit_is_free(&mut harness, &gate, false).await {
         assert_eq!(reply["result"]["isError"], false, "{reply}");
     }
     let requests = requests(&server).await;
@@ -703,15 +1107,17 @@ async fn cancelling_during_page_2_of_3_sends_no_page_3_and_frees_the_permit() {
         .collect();
     assert_eq!(pages, ["1", "2"]);
     harness.close_input();
+    harness.assert_no_reply().await;
     harness.join().await.expect("clean EOF");
 }
 
 #[tokio::test]
 async fn a_one_second_deadline_during_page_2_of_3_sends_no_page_3_and_frees_the_permit() {
-    let server = three_page_server(Duration::from_secs(2), Duration::from_millis(1_500)).await;
+    let server = three_page_server(Duration::from_secs(2)).await;
+    let gate = Gate::start(&server).await;
     let mut one_second = options();
     one_second.call_timeout = Duration::from_secs(1);
-    let mut harness = Harness::start(target_for(&server), one_second);
+    let mut harness = ClockHarness::start(gate.target.clone(), one_second);
     let schema = tool_definition(&mut harness).await["outputSchema"].clone();
     let started = tokio::time::Instant::now();
     let reply = call(&mut harness, 1, json!({})).await;
@@ -726,7 +1132,7 @@ async fn a_one_second_deadline_during_page_2_of_3_sends_no_page_3_and_frees_the_
     // Past the delayed page 2: a live call would have requested page 3.
     sleep(Duration::from_millis(1_500)).await;
     assert_eq!(find_count(&requests(&server).await), 2, "no page 3");
-    for reply in assert_a_permit_is_free(&mut harness, &server).await {
+    for reply in assert_a_permit_is_free(&mut harness, &gate, true).await {
         assert_eq!(
             reply["result"]["structuredContent"]["error"]["code"],
             "deadline_exceeded"
