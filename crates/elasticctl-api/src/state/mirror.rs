@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 /// part of the mirror: `rule_default` is an ordinary container, so it must
 /// round-trip through `diff` and `push` like any other referenced list.
 pub fn read_mirror(dir: &Path) -> Result<Mirror> {
+    refuse_value_lists(dir)?;
     let mut mirror = Mirror {
         rules: Vec::new(),
         lists: Vec::new(),
@@ -55,6 +56,23 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
     normalize::sort_lists(&mut mirror.lists);
     normalize::sort_items(&mut mirror.items);
     Ok(mirror)
+}
+
+/// A 0.10 mirror holds `value-lists/`, which 0.9 cannot read. Only a missing
+/// entry passes; any other result, including an unreadable one, stops the
+/// command rather than letting it act on a mirror it does not understand.
+pub(crate) fn refuse_value_lists(dir: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(dir.join("value-lists")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(Error::new(
+            ErrorKind::Unsupported,
+            "this mirror holds value-lists/, which needs elasticctl 0.10 or later",
+        )),
+        Err(e) => Err(Error::new(
+            ErrorKind::Error,
+            format!("checking the mirror for value-lists/: {e}"),
+        )),
+    }
 }
 
 fn validate_top_level_item(item: &ExceptionItem) -> Result<()> {
