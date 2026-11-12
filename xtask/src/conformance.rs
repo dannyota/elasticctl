@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_twelve_in_order() {
+    fn contract_table_is_the_approved_thirteen_in_order() {
         assert_eq!(
             CONTRACTS
                 .iter()
@@ -514,8 +514,12 @@ mod tests {
                 "fleet",
                 "mcp_reads_existing_verticals",
                 "mcp_answers_across_verticals",
+                "mcp_mutations_plan_and_confirm",
             ]
         );
+        let mutations = &CONTRACTS[12];
+        assert_eq!(mutations.test, mutations.name);
+        assert!(mutations.features.is_empty());
         assert_eq!(CONTRACTS[8].features.len(), 1);
         assert_eq!(CONTRACTS[8].features[0].feature, Feature::Dashboards);
         assert_eq!(CONTRACTS[8].features[0].label, "dashboards");
@@ -540,7 +544,7 @@ mod tests {
 
     #[test]
     fn task_contract_has_the_required_features_and_exact_child_command() {
-        let contract = CONTRACTS.last().unwrap();
+        let contract = &CONTRACTS[11];
         assert_eq!(contract.name, "mcp_answers_across_verticals");
         assert_eq!(contract.test, contract.name);
         assert_eq!(
@@ -634,6 +638,7 @@ mod tests {
                 ContractResult::pass("fleet"),
                 ContractResult::pass("mcp_reads_existing_verticals"),
                 ContractResult::pass("mcp_answers_across_verticals"),
+                ContractResult::pass("mcp_mutations_plan_and_confirm"),
             ],
         };
         assert_eq!(
@@ -699,6 +704,11 @@ mod tests {
                     },
                     {
                         "contract": "mcp_answers_across_verticals",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "mcp_mutations_plan_and_confirm",
                         "result": "pass",
                         "error_class": null,
                     },
@@ -1082,6 +1092,35 @@ mod tests {
             name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
                 && value == Some(std::ffi::OsStr::new("1"))
         }));
+
+        // The mutation contract needs no Fleet setup, so a confirmed setup
+        // never reaches its child.
+        let mutation_command =
+            test_command(std::path::Path::new("/workspace"), &CONTRACTS[12], true);
+        assert_eq!(
+            mutation_command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "test",
+                "--locked",
+                "--test",
+                "live",
+                "mcp_mutations_plan_and_confirm",
+                "--",
+                "--ignored",
+                "--exact",
+                "--test-threads=1",
+            ]
+        );
+        assert!(mutation_command.get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("ELASTICCTL_LIVE")
+                && value == Some(std::ffi::OsStr::new("1"))
+        }));
+        assert!(!mutation_command.get_envs().any(|(name, _)| {
+            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
+        }));
     }
 
     #[test]
@@ -1091,7 +1130,7 @@ mod tests {
             test: "mcp_reads_existing_verticals",
             features: &[EXCEPTION_LISTS, PREBUILT_RULES, DASHBOARDS, FLEET_POLICIES],
         };
-        for contract in [&CONTRACTS[9], &mcp_reads, CONTRACTS.last().unwrap()] {
+        for contract in [&CONTRACTS[9], &mcp_reads, &CONTRACTS[11]] {
             let command = test_command(std::path::Path::new("/workspace"), contract, true);
             assert!(command.get_envs().any(|(name, value)| {
                 name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")

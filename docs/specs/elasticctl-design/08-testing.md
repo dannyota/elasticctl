@@ -114,15 +114,17 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same twelve contracts serially against each target: diagnostics,
+It runs the same thirteen contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
 repair, source scoping, rule export/import round-trip, search, triage
 (`elasticctl-triage-design.md` section 9), and content transfer
 (`elasticctl-content-design.md` section 13), then Fleet policy transfer
 (`elasticctl-fleet-design.md` section 14), followed by
 `mcp_reads_existing_verticals`, the MCP read contract defined in
-`elasticctl-mcp-design.md` section 8, and `mcp_answers_across_verticals`,
-the task-tool contract defined in `elasticctl-mcp-tasks-design.md` section 12.3.
+`elasticctl-mcp-design.md` section 8, `mcp_answers_across_verticals`,
+the task-tool contract defined in `elasticctl-mcp-tasks-design.md` section 12.3,
+and, from 0.9.2, `mcp_mutations_plan_and_confirm`, the MCP mutation contract
+defined in [mutation design section 9.2](../elasticctl-mcp-mutation-design/09-testing-and-evidence.md#92-live-contract).
 Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker
