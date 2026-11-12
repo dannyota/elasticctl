@@ -114,15 +114,17 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same twelve contracts serially against each target: diagnostics,
+It runs the same thirteen contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
 repair, source scoping, rule export/import round-trip, search, triage
 (`elasticctl-triage-design.md` section 9), and content transfer
 (`elasticctl-content-design.md` section 13), then Fleet policy transfer
 (`elasticctl-fleet-design.md` section 14), followed by
 `mcp_reads_existing_verticals`, the MCP read contract defined in
-`elasticctl-mcp-design.md` section 8, and `mcp_answers_across_verticals`,
-the task-tool contract defined in `elasticctl-mcp-tasks-design.md` section 12.3.
+`elasticctl-mcp-design.md` section 8, `mcp_answers_across_verticals`,
+the task-tool contract defined in `elasticctl-mcp-tasks-design.md` section 12.3,
+and, from 0.9.2, `mcp_mutations_plan_and_confirm`, the MCP mutation contract
+defined in [mutation design section 9.2](../elasticctl-mcp-mutation-design/09-testing-and-evidence.md#92-live-contract).
 Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker
@@ -354,3 +356,16 @@ every target:
 
 The [findings](../../conformance/v0.8.2/findings.md) record the product
 client matrix, measurements M11 and M12.
+
+The 0.9.2 measured matrix adds `mcp_mutations_plan_and_confirm`; all thirteen
+contracts pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 13 pass | Verified | [report](../../conformance/v0.9.2/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 13 pass | Verified | [report](../../conformance/v0.9.2/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 13 pass | Verified | [report](../../conformance/v0.9.2/traditional-9.5.1.json) |
+
+The self-managed leg ran in `live-lab.yml` on a fresh CI lab. The
+[findings](../../conformance/v0.9.2/findings.md) record the mutation contract
+and the product client matrix on Hosted.

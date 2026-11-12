@@ -42,8 +42,9 @@ The job has a 25-minute timeout; work receives SIGINT by minute 22, followed
 by bounded escalation. An independent always-run step tears down Compose with
 `--env-file /dev/null` and harmless interpolation placeholders.
 Hard termination cannot guarantee teardown. The artifact contains only the
-schema-allowlisted public JSON report; exactly eleven named contracts must
-pass. Private logs, configs, captures, and environment files are never uploaded.
+schema-allowlisted public JSON report; exactly the thirteen contracts of
+section 8.3, in controller order, must pass. Private logs, configs, captures,
+and environment files are never uploaded.
 Cold pulls, package downloads, and alert polling make runner timing unverified;
 measure the workflow before making it required CI.
 
