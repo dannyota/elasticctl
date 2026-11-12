@@ -34,7 +34,9 @@ A `value_lists` module replaces `exceptions/value_lists.rs` and owns:
 - the codec for the container and values files, and their validation
   (section 5);
 - the reads: the bootstrap state, `_find` with `cursor`, the container read,
-  and `_export` decoded into the stored values and the set (section 3.6);
+  `_export` decoded into the stored values and the set (section 3.6), and
+  the scan of installed references (D26), which reuses the exception list
+  and item reads of `exceptions`;
 - the plan: container action and value adds and removes per list, computed
   from a local pair and a remote read;
 - the apply: create, update, the two phases, and their read-backs (section

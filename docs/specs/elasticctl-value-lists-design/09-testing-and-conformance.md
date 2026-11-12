@@ -26,18 +26,24 @@ assertions:
 - the dash rule: final and between-phase counts at 200 and 201, duplicates
   counted, and a repair that lowers an existing count;
 - reconciliation: remove only, add only, both, and nothing; each D22 order
-  for `included`, `excluded`, and mixed references; packing at the
+  for installed `included`, `excluded`, mixed, and absent references found by
+  the D26 scan, including references outside the selection; packing at the
   8,000,000-byte bound; a 409, a 4xx, and a 5xx at each write;
+- uncertain writes: a 5xx import or delete followed by a matching read-back
+  (verified, run continues) and by a non-matching one (`unknown`, run stops);
 - read-back: a phase verified on the first read, after several reads, and
   never, with `unknown`, no second import, and no later phase or list; a
   slow export that uses the budget;
 - the guard: the complete text preview, the JSON preview object, and a list
   that changed between preview and apply;
 - state: the selected set in full and scoped runs, `unreferenced` pairs, the
-  stem rule and case-insensitive collisions, a half pair, the `pull` refusal
-  of D23, the `value_lists` diff block and `clean`, the D4 and D12 refusals
-  on unchanged items and stack-only lists, the apply order, the container
-  re-read before exception writes, and the report for every outcome;
+  stem rule with case-insensitive collisions, long and non-ASCII ids, and
+  Windows device names, a half pair, the `pull` refusal of D23, the
+  `value_lists` diff block and `clean`, the D4 and D12 refusals on unchanged
+  items, retained containers, and stack-only lists, a reference whose list
+  has no source, the D27 refusal, the apply order, the container re-read
+  before exception writes, and the report and summary for every outcome,
+  including the example of section 7.5;
 - `delete`: the 409 with `references`, the 5xx followed by a 404 read, and no
   reference flag on any request;
 - `init`: already bootstrapped, bootstrapped by the flow, and a flow that is
