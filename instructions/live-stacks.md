@@ -51,8 +51,8 @@ It records self-managed fixtures and runs traditional conformance; do not assume
 `live-lab.yml` runs the self-managed matrix in CI, so a release does not start the lab on a
 workstation for it. Model-driven clients run against the Hosted test deployment, not the lab
 ([design 9.3](../docs/specs/elasticctl-mcp-mutation-design/09-testing-and-evidence.md#93-real-clients)).
-Start it locally only to record self-managed fixtures, or for a contract that `live-lab.yml`
-does not run yet, such as the 0.9 mutation contract.
+Start it locally only to record self-managed fixtures. From 0.9.2 the matrix includes the
+mutation contract, so `live-lab.yml` runs every contract.
 
 - `lab/up.sh` generates missing `ELASTIC_PASSWORD` and `KIBANA_SYSTEM_PASSWORD`
   and atomically stores them in gitignored `lab/.env` at mode 0600. Existing
