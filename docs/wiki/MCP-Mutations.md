@@ -170,8 +170,10 @@ Set "Apply this change" to true and accept to apply it.
 Decline, or leave it false, and nothing changes.
 ```
 
-- Claude Code shows only the first three lines of the form. Read the full
-  plan with `plan_get` before you accept.
+- Claude Code shows only the first three lines of the form; the credential
+  note, plan, hash, and expiry stay collapsed. Read the full plan with
+  `plan_get` before you accept. Codex CLI shows the whole form, but it has no
+  decline button: leave the value false or press Esc, and the plan stays open.
 - A line at the left margin was written by elasticctl. An indented line is
   data. Each object has its own detail line that names it by identity;
   [MCP Mutation Kinds](MCP-Mutation-Kinds.md) shows the lines of each kind.
@@ -380,13 +382,11 @@ It cannot check that a person gave it.
   model run `elkctl ... --yes` with the same profile. The client's command
   approval is the control there.
 - **The form shows text from the stack.** Rule names and case titles appear
-  as data. They cannot change the fixed lines, the target line, or the number
-  of objects listed.
+  as data. They cannot change the fixed lines, the target, or the object count.
 - **A person can be asked often.** A model can plan again after a decline. A
   declined plan is closed, each plan prompts at most three times, and at most
   eight plans are open. That bounds the rate; it does not stop it.
-- **The last check is not atomic.** A change between the last read and the
-  write is not seen.
+- **The last check is not atomic.** A change after the last read is missed.
 - **A rule without a key takes the server's credential.** Kibana gives a rule
   an API key on its first enable. Enabled through MCP, such a rule then runs
   with this credential's privileges and stops if the key is deleted; a later
