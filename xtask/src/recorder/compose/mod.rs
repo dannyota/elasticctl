@@ -15,7 +15,7 @@ mod alert_search;
 mod baseline;
 mod cleanup;
 mod evidence;
-mod guard;
+pub(super) mod guard;
 mod provision;
 mod requests;
 mod settle;
