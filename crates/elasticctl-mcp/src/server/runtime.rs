@@ -91,12 +91,31 @@ where
 pub struct TestOptions {
     pub audit_writer: Box<dyn Fn(&str) + Send + Sync>,
     pub legacy_wait: Option<std::time::Duration>,
+    /// Test-only plan life override; `None` keeps the production life.
+    pub plan_life: Option<std::time::Duration>,
 }
 impl<F: Fn(&str) + Send + Sync + 'static> From<F> for TestOptions {
     fn from(writer: F) -> Self {
         Self {
             audit_writer: Box::new(writer),
             legacy_wait: None,
+            plan_life: None,
+        }
+    }
+}
+impl Default for TestOptions {
+    fn default() -> Self {
+        Self::from(|_: &str| {})
+    }
+}
+impl TestOptions {
+    fn configure(self, state: &mut ServerState) {
+        state.audit = crate::plan::audit::AuditSink::production(self.audit_writer);
+        if let Some(wait) = self.legacy_wait {
+            state.legacy_wait = wait;
+        }
+        if let Some(life) = self.plan_life {
+            state.plan_life = life;
         }
     }
 }
@@ -147,10 +166,7 @@ where
     );
     state.allow_mutations = options.allow_mutations;
     if let Some(test) = test {
-        state.audit = crate::plan::audit::AuditSink::production(test.audit_writer);
-        if let Some(wait) = test.legacy_wait {
-            state.legacy_wait = wait;
-        }
+        test.configure(&mut state);
     }
     let state = Arc::new(state);
     let mut cancel_on_drop = CancelSessionOnDrop::new(root.clone());
@@ -322,6 +338,88 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plan_life_defaults_are_unset() {
+        assert_eq!(super::TestOptions::default().plan_life, None);
+        assert_eq!(super::TestOptions::from(|_: &str| {}).plan_life, None);
+    }
+
+    #[test]
+    fn server_plan_life_reaches_expiry_and_text() {
+        use crate::plan::store::{Plan, PlanState, PlanStore};
+        let target = elasticctl_core::Resolved {
+            name: "test".into(),
+            source: elasticctl_core::Source::Profile,
+            profile: elasticctl_core::Profile {
+                kibana_url: "http://127.0.0.1:9200".into(),
+                es_url: Some("http://127.0.0.1:9200".into()),
+                api_key: Some("test-key".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            },
+        };
+        let options = super::ServerOptions::default();
+        let context = super::validate_target(&target, &options).unwrap();
+        let mut state = super::ServerState::new(context, target, options.call_timeout, false);
+        assert_eq!(state.plan_life, Duration::from_secs(900));
+        let now = tokio::time::Instant::now();
+        for (test, seconds, minutes) in [
+            (super::TestOptions::default(), 900, 15),
+            (
+                super::TestOptions {
+                    plan_life: Some(Duration::from_secs(61)),
+                    ..Default::default()
+                },
+                61,
+                2,
+            ),
+            (
+                super::TestOptions {
+                    plan_life: Some(Duration::from_secs(960)),
+                    ..Default::default()
+                },
+                960,
+                16,
+            ),
+        ] {
+            test.configure(&mut state);
+            assert_eq!(state.plan_life, Duration::from_secs(seconds));
+            let content = crate::plan::store::tests::sample(now).content;
+            let plan = Plan::with_life(content, now, state.plan_life).unwrap();
+            assert_eq!(plan.expires_in_secs(now), seconds);
+            assert_eq!(
+                crate::plan::view::view(&plan, true, false, now)["plan"]["expires_in_secs"],
+                seconds
+            );
+            assert_eq!(
+                crate::plan::view::list_row(&plan, now)["expires_in_secs"],
+                seconds
+            );
+            assert!(
+                plan.consent_text(now)
+                    .contains(&format!("Expires in {minutes} min."))
+            );
+            let id = plan.id.clone();
+            let mut store = PlanStore::default();
+            store.insert(plan, now).unwrap();
+            let before = now + Duration::from_secs(seconds - 1);
+            let plan = store.get(&id, before).unwrap();
+            assert_eq!(plan.state, PlanState::Open);
+            assert_eq!(plan.expires_in_secs(before), 1);
+            assert!(plan.consent_text(before).contains("Expires in 1 min."));
+            assert_eq!(
+                store
+                    .get(&id, now + Duration::from_secs(seconds))
+                    .unwrap()
+                    .state,
+                PlanState::Expired
+            );
+        }
+    }
+
     #[test]
     fn audit_writer_options_leave_legacy_wait_unset() {
         let options = super::TestOptions::from(|_: &str| {});
