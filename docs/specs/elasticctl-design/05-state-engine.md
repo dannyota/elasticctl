@@ -317,6 +317,9 @@ directory that holds `value-lists/`, an entry of any kind, with
 elasticctl 0.10 or later`. The refusal comes before any request, lock, or
 file write. 0.10 writes value lists there (the 0.10 value lists design),
 and a 0.9 binary would otherwise push such a mirror's exceptions without its value
-lists, or pull into it and leave its value lists stale. 0.9.0 to 0.9.3 do not
-have this check.
+lists, or pull into it and leave its value lists stale. If the entry cannot
+be inspected, for example because the mirror is not searchable, the command
+fails closed with `error` and a message beginning `checking the mirror for
+value-lists/:`, rather than treating the mirror as free of value lists. 0.9.0
+to 0.9.3 do not have this check.
 

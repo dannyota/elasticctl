@@ -106,3 +106,83 @@ refusal_test!(diff_dangling_symlink, "diff", "symlink");
 refusal_test!(push_dangling_symlink, "push", "symlink");
 #[cfg(unix)]
 refusal_test!(pull_dangling_symlink, "pull", "symlink");
+
+/// A mirror whose entries cannot be inspected is not treated as a mirror
+/// without `value-lists/`: the guard fails closed before any request or file.
+#[cfg(unix)]
+#[tokio::test]
+async fn unreadable_mirror_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    for operation in ["diff", "push", "pull"] {
+        let stack = MockStack::new().await;
+        let root = tempfile::tempdir().unwrap();
+        let mirror = root.path().join("mirror");
+        std::fs::create_dir(&mirror).unwrap();
+        std::fs::set_permissions(&mirror, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if std::fs::symlink_metadata(mirror.join("value-lists")).is_ok()
+            || std::fs::symlink_metadata(mirror.join("value-lists"))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            // Permissions are not enforced here (for example, as root).
+            std::fs::set_permissions(&mirror, std::fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+        let identity = StackIdentity {
+            profile: "test".into(),
+            host: "localhost".into(),
+            space: "default".into(),
+        };
+        let error = match operation {
+            "diff" => state::diff(
+                stack.transport(),
+                &mirror,
+                &[],
+                None,
+                None,
+                RuleSource::Custom,
+            )
+            .await
+            .unwrap_err(),
+            "push" => state::plan_push(
+                stack.transport(),
+                &mirror,
+                &[],
+                None,
+                None,
+                RuleSource::Custom,
+                &identity,
+            )
+            .await
+            .unwrap_err(),
+            _ => state::pull(
+                stack.transport(),
+                &mirror,
+                Format::Ndjson,
+                &[],
+                None,
+                None,
+                RuleSource::Custom,
+            )
+            .await
+            .unwrap_err(),
+        };
+        std::fs::set_permissions(&mirror, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(error.kind, ErrorKind::Error, "{operation}: {error}");
+        assert!(
+            error
+                .message
+                .starts_with("checking the mirror for value-lists/: "),
+            "{operation}: {error}"
+        );
+        assert!(
+            stack.requests().await.is_empty(),
+            "{operation} sent a request"
+        );
+        let parent: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(parent, ["mirror"], "{operation} created a file");
+        assert_eq!(std::fs::read_dir(&mirror).unwrap().count(), 0);
+    }
+}
