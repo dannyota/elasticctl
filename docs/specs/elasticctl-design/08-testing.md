@@ -356,3 +356,16 @@ every target:
 
 The [findings](../../conformance/v0.8.2/findings.md) record the product
 client matrix, measurements M11 and M12.
+
+The 0.9.2 measured matrix adds `mcp_mutations_plan_and_confirm`; all thirteen
+contracts pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 13 pass | Verified | [report](../../conformance/v0.9.2/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 13 pass | Verified | [report](../../conformance/v0.9.2/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 13 pass | Verified | [report](../../conformance/v0.9.2/traditional-9.5.1.json) |
+
+The self-managed leg ran in `live-lab.yml` on a fresh CI lab. The
+[findings](../../conformance/v0.9.2/findings.md) record the mutation contract
+and the product client matrix on Hosted.
