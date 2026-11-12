@@ -60,7 +60,8 @@ assertions:
   reference, for another entry of a referencing item, for a second list of
   that item, for an item that references the list twice, and for a rule that
   drops a shared container in the same run, and its allowed first-creation
-  case, the apply order, the
+  case, with the refusal when that run also detaches a rule from a container
+  receiving the first reference, the apply order, the
   container re-read
   before exception writes, and the report and summary for every outcome,
   including the example of section 7.5;

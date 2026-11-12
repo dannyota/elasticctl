@@ -107,9 +107,15 @@ ones from the scan of D26, and desired ones from the local items the run would
 leave in place or write, with retained and out-of-scope installed references
 kept as they are. If the two sets differ in any way, an added, removed,
 replaced, or changed entry, and the list's values or type also change, `push`
-refuses and names both changes. The one exception is a list that does not
-exist and has no installed reference: `push` creates it with its values and
-then writes its first references, in the order of this section.
+refuses and names both changes.
+
+The one exception is a list that does not exist and has no installed
+reference. In that run, `push` may create the list with its values, write
+the items that first reference it, and add rule bindings, in the order of
+this section. It may not remove or replace any rule's binding to a container
+that receives one of those items: rules are written last, so a rule losing
+the binding would apply the new reference for a moment, which neither the old
+nor the new policy does.
 
 These refusals replace the 0.9 behavior, which printed a preview line for a
 missing list and applied anyway (shared design 7.7). Before it writes the
