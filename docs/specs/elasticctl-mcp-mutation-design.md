@@ -15,7 +15,7 @@ The [shared design](elasticctl-design.md) defines existing behavior and the
 [0.7 MCP design](elasticctl-mcp-design.md) defines the server this extends.
 [Research](../plans/v0.9-research.md) records sources, probes, and unmeasured
 claims. Plans: [0.9.0](../plans/v0.9.0.md), [0.9.1](../plans/v0.9.1.md),
-[0.9.2](../plans/v0.9.2.md).
+[0.9.2](../plans/v0.9.2.md), and the [0.9.3](../plans/v0.9.3.md) cleanup.
 
 0.9 answers one question: what consent means when the caller is a model. The
 answer is that a model can ask for a change and a person at the client agrees
