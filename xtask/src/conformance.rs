@@ -177,7 +177,9 @@ fn test_command(
             "--ignored",
             "--exact",
             "--test-threads=1",
-        ]);
+        ])
+        // Only the runner may confirm Fleet setup; never inherit the marker.
+        .env_remove("ELASTICCTL_CONFORMANCE_FLEET_SETUP");
     if fleet_setup_confirmed
         && contract
             .features
@@ -1118,9 +1120,15 @@ mod tests {
             name == std::ffi::OsStr::new("ELASTICCTL_LIVE")
                 && value == Some(std::ffi::OsStr::new("1"))
         }));
-        assert!(!mutation_command.get_envs().any(|(name, _)| {
-            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
-        }));
+        assert!(fleet_setup_removed(&mutation_command));
+    }
+
+    /// The child inherits the controller's environment, so a marker left in
+    /// the caller's shell must be removed, not only left unset.
+    fn fleet_setup_removed(command: &std::process::Command) -> bool {
+        command.get_envs().any(|(name, value)| {
+            name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP") && value.is_none()
+        })
     }
 
     #[test]
@@ -1137,9 +1145,7 @@ mod tests {
                     && value == Some(std::ffi::OsStr::new("1"))
             }));
             let command = test_command(std::path::Path::new("/workspace"), contract, false);
-            assert!(!command.get_envs().any(|(name, _)| {
-                name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP")
-            }));
+            assert!(fleet_setup_removed(&command));
         }
     }
 
