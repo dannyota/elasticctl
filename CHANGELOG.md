@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.2 — TBD
+
+### Changed
+
+- The MCP mutation contract is the thirteenth live conformance contract and
+  passes on Serverless 9.7.0, Hosted 9.5.6, and self-managed 9.5.1. The
+  self-managed leg runs in the CI lab, which now runs all thirteen contracts.
+- Offline protocol tests cover the consent flow end to end: both rounds of the
+  `2026-07-28` path through the `rmcp` client, accepts that do not confirm,
+  equal plan hashes across protocol paths, concurrent applies, every mutation
+  tool against its output schema, and the exact audit sequence of each
+  outcome. They found no server defect.
+- TBD: the consent flow is checked with two product clients on the Hosted
+  test deployment, Claude Code <version> and Codex CLI <version>, and what
+  each one showed. The server is unchanged.
+- The conformance runner no longer passes a Fleet setup marker inherited
+  from the caller's environment to a contract child.
+
 ## 0.9.1 — 2026-11-12
 
 ### Added
