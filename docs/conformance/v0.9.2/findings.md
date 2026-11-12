@@ -4,20 +4,25 @@
 versions, protocol paths, outcomes, counts, cleanup. No host, id, user, or
 raw failure text (mutation design 9.4). -->
 
-TBD: one-paragraph result. All thirteen contracts on three targets, the
-client matrix on Hosted, and whether any server code changed in this patch.
+All thirteen contracts passed on all three targets, including the new MCP
+mutation contract. TBD: the client matrix result on Hosted, and whether any
+server code changed in this patch.
 
 | Flavor | Version | Result | Report |
 | --- | --- | --- | --- |
-| Serverless | TBD | TBD of 13 pass | TBD |
-| Elastic Cloud Hosted | TBD | TBD of 13 pass | TBD |
-| Self-managed | 9.5.1 | TBD of 13 pass | TBD |
+| Serverless | 9.7.0 | 13 pass | [serverless-9.7.0.json](serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 13 pass | [ech-9.5.6.json](ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 13 pass | [traditional-9.5.1.json](traditional-9.5.1.json) |
 
-TBD: the source commit of every leg; the UTC window of the Cloud matrix
-process; the Live lab run and its window. The self-managed leg is the
-`traditional` job of `live-lab.yml` (mutation design D35); no local lab
-started. Record the matrix step's duration against the job's 22-minute
-budget, since the job now also runs the mutation contract.
+Every leg ran at source commit `b88164f0b6e5c0a5b9905a93195a3e426e0206c7`.
+The two Cloud legs ran in one matrix process from `2026-11-12T04:03:23Z` to
+`04:26:10Z`. The read-only preflight found both answering `doctor`, with
+2,263 prebuilt rules and no marker rule. The self-managed leg is the `traditional` job of Live lab run
+43152069032, dispatched on `dev-0.9.2` (mutation design D35); no local lab
+started. Its matrix step ran from `04:04:51Z` to `04:17:04Z`, 733 seconds of
+the job's 22-minute budget, now including the mutation contract, and the
+teardown step succeeded. The published report is byte-identical to the run's
+`live-lab-public` artifact.
 
 ## Mutation contract
 
@@ -26,17 +31,22 @@ budget, since the job now also runs the mutation contract.
 The harness answer is test consent: it proves the protocol mechanics on a
 live stack, not that a product client asks a person.
 
-| Step | Serverless | Hosted | Self-managed |
-| --- | --- | --- | --- |
-| Baseline before and after | TBD | TBD | TBD |
-| Child A, current protocol: `rules_set_enabled` applied and read back | TBD | TBD | TBD |
-| Child A: `alerts_set_status`, `alerts_set_tags` | TBD | TBD | TBD |
-| Child A: `cases_create`, `cases_comment`, `cases_set_status` | TBD | TBD | TBD |
-| Child A: `rules_create`, read back disabled | TBD | TBD | TBD |
-| Child A: decline, then `plan_stale` after an outside change, then replay | TBD | TBD | TBD |
-| Child B, legacy protocol: toggle through the server-sent form | TBD | TBD | TBD |
-| Child B: no elicitation declared, `confirmation_unavailable` | TBD | TBD | TBD |
-| Child C, no `--allow-mutations`: every mutation tool unknown | TBD | TBD | TBD |
+It passed on all three flavors. One pass means every step below held,
+because the contract asserts each one and stops at the first failure:
+
+- The baseline audit before and after the contract.
+- Child A, current protocol, every shipped class: a rule toggle applied and
+  read back, then replayed with `replayed: true` and no second change, then a
+  decline with no change, then `plan_stale` after an outside change. Then
+  each of the six 0.9.1 kinds is planned, accepted, and read back through the
+  API: `alerts_set_status`, `alerts_set_tags`, `cases_create`,
+  `cases_comment`, `cases_set_status`, and `rules_create`, with the created
+  rule read back disabled.
+- Child B, legacy protocol: a toggle confirmed through the server-sent form.
+- A session that declares no elicitation, on each path:
+  `confirmation_unavailable` with no change.
+- Child C, without `--allow-mutations`: every mutation tool name is an
+  unknown method (`-32601`) with no change.
 
 Closed marker alerts are the accepted residue of the triage steps.
 
@@ -120,10 +130,17 @@ TBD: client behaviors that are not server defects, or "None".
 
 ## Cleanup
 
-TBD: every contract and end-of-leg audit passed, or what failed; the marker
-rule and each case the client runs created were removed through `elkctl rules
-delete` and `elkctl cases delete`, and the preflight found no marker object
-apart from closed marker alerts; the scratch directory held every client file.
+Every contract and end-of-leg audit passed on all three legs: rule counts,
+the default data view, the Fleet marker inventories, and the installed
+packages matched their baselines, and no marker object remained apart from
+closed marker alerts. A runner writes its report only after the final audit,
+so each report also stands for its cleanup. The CI lab was torn down with its
+runner.
+
+TBD: the marker rule and each case the client runs created were removed
+through `elkctl rules delete` and `elkctl cases delete`, a preflight then
+found no marker object apart from closed marker alerts, and the scratch
+directory held every client file.
 
 ## Evidence limits
 
