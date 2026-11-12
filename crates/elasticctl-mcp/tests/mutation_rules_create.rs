@@ -453,6 +453,22 @@ async fn post_conflict_bad_request_and_enabled_response_classification() {
                 json!(status)
             }
         );
+        // Design 8.4: a plan that becomes stale writes one plan_closed, after
+        // apply_finished. Failed and unknown plans write none.
+        let finished = audit
+            .iter()
+            .position(|a| a["event"] == "apply_finished")
+            .unwrap();
+        let closed: Vec<usize> = (0..audit.len())
+            .filter(|&i| audit[i]["event"] == "plan_closed")
+            .collect();
+        if state == "stale" {
+            assert_eq!(closed.len(), 1, "{audit:?}");
+            assert!(closed[0] > finished, "{audit:?}");
+            assert_eq!(audit[closed[0]]["state"], "stale");
+        } else {
+            assert!(closed.is_empty(), "{audit:?}");
+        }
         let requests = s.received_requests().await.unwrap();
         let post = requests
             .iter()

@@ -396,7 +396,12 @@ async fn write(s: &ServerState, c: &CallContext, p: &Stored) -> Result<()> {
         }
     };
     store(s, c, |st| st.finish(&p.id, state, outcome, Instant::now()))?;
-    event(s, c, &get(s, c, &p.id)?, Event::ApplyFinished(status));
+    let finished = get(s, c, &p.id)?;
+    event(s, c, &finished, Event::ApplyFinished(status));
+    // A 409 closes the plan as stale, and design 8.4 logs every stale close.
+    if state == PlanState::Stale {
+        event(s, c, &finished, Event::PlanClosed);
+    }
     error.map_or(Ok(()), Err)
 }
 
