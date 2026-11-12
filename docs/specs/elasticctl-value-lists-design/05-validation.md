@@ -33,16 +33,26 @@ stored values in dash form, duplicates included (section 3.6).
   repair, and is allowed, with any container update it carries.
 
 The message says that Kibana 9.5.1, 9.5.6, and 9.7.0 suppress every event
-for an `is in list` exception on such a list (V11), and gives the remedy:
-write a single address as `a/32` or `a/128` and a range as CIDR blocks.
+for an exception on such a list, with either operator (V11, V12), and gives
+the remedy: write a single address as `a/32` or `a/128` and a range as CIDR
+blocks. V12 measured the boundary: exactly 200 stored dash values behave
+correctly, 201 stored values of which 200 are distinct do not, and CIDR
+values do not count.
 
 Reads (`get`, `pull`, `diff`) report a list above 200 as a warning, and `diff`
-counts it as not clean (section 7.3). Whether exactly 200 is safe, whether
-Kibana counts stored or distinct values, and how the `is not in list`
-operator behaves are V12 measurements. Until they are in, the stored count
-and the limit of 200 stand.
+counts it as not clean (section 7.3).
 
-### 5.3 Size warnings
+### 5.3 Empty lists
+
+D28 is checked on the same three states for every list that an installed
+reference (D26) or a desired reference uses, of every type. A final state or
+a between-phases state with no values refuses the write with `unsupported`,
+and so does creating a list that an installed reference already names. The
+message says that an empty list under `is in list` suppresses every event
+(V12) and names the references. A values file may be empty only for a list
+that nothing references, such as one written by `value-lists import`.
+
+### 5.4 Size warnings
 
 Kibana documents that a list with 65,536 or more `keyword` or `ip` values,
 65,536 or more `ip_range` values in CIDR form, or any `text` list works only

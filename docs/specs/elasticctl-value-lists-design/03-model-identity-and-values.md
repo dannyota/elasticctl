@@ -39,9 +39,9 @@ rather than dropped, so a typo cannot pass as a change.
 ### 3.3 The values file
 
 `value-lists/<stem>.txt` holds the values: UTF-8, one value per line, LF line
-endings, a trailing newline, sorted by byte order, each value once. A list
-with no values has an empty file. `pull` writes this form. `validate` and
-`push` accept CRLF and unsorted input and normalize it.
+endings, a trailing newline, sorted by byte order, each value once. An empty
+file is valid only for a list no reference uses (D28). `pull` writes this
+form. `validate` and `push` accept CRLF and unsorted input and normalize it.
 
 A line is one value. There are no CSV columns: Kibana stores `10.0.0.13,x` as
 one keyword (V5).
@@ -71,9 +71,13 @@ refuses the rest with a message giving the accepted spelling.
 | `ip` | One IPv4 address in dotted-quad form, or one IPv6 address in RFC 5952 form | As written. Any other spelling, a CIDR, or other text is refused; Kibana answers 400 for a CIDR (V4). |
 | `ip_range` | One address, a CIDR block with no host bits set, or a dash range `a-b` of one family with `a <= b` | A bare address becomes `a/32` or `a/128` (D11). A CIDR block and a dash range are kept as written, with each address in the spelling the `ip` row requires. |
 
-The IPv6 rule, the refusal of host bits, and the dash-range rules stand until
-the V12 measurements show how Kibana stores the other spellings. Any form V12
-shows Kibana rewrites stays refused.
+V12 showed that Kibana stores each spelling as sent: IPv6 case and
+compression are kept, host bits are kept, and a mixed-family range is stored.
+The same address in two spellings is then two stored values, so elasticctl
+writes one spelling: RFC 5952 for IPv6, no host bits, and only same-family,
+ascending ranges. A reversed range is a 400 from the item API and is dropped
+silently by import (V12), so it is refused locally. A pulled value in another
+spelling stays as stored, as `a-a` does.
 
 ### 3.6 What the stack holds
 

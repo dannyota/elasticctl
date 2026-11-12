@@ -73,9 +73,9 @@ change names the container fields that differ and lists every value to add
 and remove (D10). `clean` is true only when all three blocks are clean (D20).
 
 The block also reports, per list, the conditions push would refuse (7.4): a
-dangling reference, a type mismatch, and a dash count above 200. Each makes
-`clean` false. Duplicates, size warnings, and `unreferenced` pairs are
-warnings and leave `clean` alone.
+dangling reference, a type mismatch, a dash count above 200, and an empty
+list that a reference uses. Each makes `clean` false. Duplicates, size
+warnings, and `unreferenced` pairs are warnings and leave `clean` alone.
 
 ### 7.4 `push`
 
@@ -91,11 +91,21 @@ every remote item of a retained container (7.1):
 - that source's type must equal the entry's `list.type`, or `push` refuses
   with `conflict` naming both types (D4);
 - an `ip_range` list's final stored dash count must pass D12, from the local
-  values or, for a list read from the stack, from its stored values.
+  values or, for a list read from the stack, from its stored values;
+- a list that any reference uses must not be empty, finally or between
+  phases, and a list that an installed reference names must not be created
+  (D28).
 
 `push` also refuses with `conflict` a run that changes a list's values and
-also changes an entry that references it, its operator, field, or list
-(D27). The message names both changes and asks for two runs.
+also changes its references (D27). The references of a list are every
+(container, item, field, operator) entry that names it: installed ones from
+the scan of D26, and desired ones from the local items the run would leave in
+place or write, with retained and out-of-scope installed references kept as
+they are. If the two sets differ in any way, an added, removed, replaced, or
+changed entry, and the list's values or type also change, `push` refuses and
+names both changes. The one exception is a list that does not exist and has
+no installed reference: `push` creates it with its values and then writes its
+first references, in the order of this section.
 
 These refusals replace the 0.9 behavior, which printed a preview line for a
 missing list and applied anyway (shared design 7.7). Before it writes the
@@ -126,9 +136,13 @@ Each entry carries:
 - `outcome`: the list's outcome of section 6.7, the same on every entry of
   the list.
 
-A list that ends `unknown` adds one `read_back` entry with `missing` and
-`extra`: the counts the last read-back saw. A `not_reached` list adds one
-entry with its planned counts and no values.
+A list that ends `unknown` adds one `read_back` entry. Its `observed` is
+true when a read-back completed, and then it carries `missing` and `extra`,
+the counts the last completed read-back saw. When no read-back completed, for
+example because every export failed, `observed` is false, the counts are
+absent rather than zero, and `read_error` carries the last read's error kind
+and status. A `not_reached` list adds one entry with its planned counts and
+no values.
 
 The push summary gains `value_lists_created`, `value_lists_updated`,
 `values_added`, `values_removed`, `value_lists_unknown`, and
@@ -145,9 +159,15 @@ summary is:
  "value_lists_unknown": 1, "value_lists_not_reached": 1}
 ```
 
-The report holds `a`'s entries, `b`'s first chunk as `accepted` and its
-second as `uncertain`, `b`'s `read_back` entry, and `c`'s `not_reached`
-entry. The `-api` apply returns this evidence for every
+The report holds `a`'s entries, `b`'s first chunk as `accepted`, its second
+as `uncertain` and its third as `not_sent`, `b`'s `read_back` entry, and
+`c`'s `not_reached` entry. If every export of `b` failed, its `read_back`
+entry would be:
+
+```json
+{"action": "read_back", "rule_id": "b", "outcome": "unknown",
+ "observed": false, "read_error": {"kind": "timeout"}}
+``` The `-api` apply returns this evidence for every
 outcome, and the report is written before the command exits, so a partial
 apply is never unreported (shared design 5).
 

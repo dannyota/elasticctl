@@ -25,12 +25,21 @@ assertions:
   a value too large for one request;
 - the dash rule: final and between-phase counts at 200 and 201, duplicates
   counted, and a repair that lowers an existing count;
+- the empty rule: a referenced list emptied finally or between phases, the
+  `{a}` to `{b}` replacement under `is in list` (adds first, never empty),
+  and creating a list that an installed reference names;
 - reconciliation: remove only, add only, both, and nothing; each D22 order
   for installed `included`, `excluded`, mixed, and absent references found by
   the D26 scan, including references outside the selection; packing at the
   8,000,000-byte bound; a 409, a 4xx, and a 5xx at each write;
 - uncertain writes: a 5xx import or delete followed by a matching read-back
   (verified, run continues) and by a non-matching one (`unknown`, run stops);
+  a 5xx create or PATCH settled by the container read either way; a
+  delete-by-value 404 that continues; every export failing after an
+  uncertain write, with `observed: false`;
+- the scan of D26: a reference outside the selection, both namespaces, a
+  container it cannot read, an undecodable entry, and installed references
+  that change between the preview and the apply;
 - read-back: a phase verified on the first read, after several reads, and
   never, with `unknown`, no second import, and no later phase or list; a
   slow export that uses the budget;
@@ -41,7 +50,9 @@ assertions:
   Windows device names, a half pair, the `pull` refusal of D23, the
   `value_lists` diff block and `clean`, the D4 and D12 refusals on unchanged
   items, retained containers, and stack-only lists, a reference whose list
-  has no source, the D27 refusal, the apply order, the container re-read
+  has no source, the D27 refusal for an added, removed, replaced, and changed
+  reference and its allowed first-creation case, the apply order, the
+  container re-read
   before exception writes, and the report and summary for every outcome,
   including the example of section 7.5;
 - `delete`: the 409 with `references`, the 5xx followed by a 404 read, and no

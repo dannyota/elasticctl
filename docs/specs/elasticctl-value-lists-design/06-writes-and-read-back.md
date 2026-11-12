@@ -16,21 +16,34 @@ container with `GET /api/lists?id=` and the stored values with
 `POST /api/lists/items/_export?list_id=`. The preview is computed from these
 reads.
 
-At apply, after `--yes`, the command reads each list again. If a container's
-`id`, `type`, or `_version`, or its stored values, differ from the preview's
-read, it stops with `conflict` before its first write and asks for a re-run.
+Before the preview the command also runs the scan of installed references
+(D26) once. A container or item it cannot read, a result past the read
+window, or a `list` entry whose `id` or `type` does not decode refuses the
+command before any write; an unread container is never counted as "no
+references".
+
+At apply, after `--yes`, the command reads each list again and runs the scan
+again. If a container's `id`, `type`, or `_version`, its stored values, or
+its installed references differ from the preview's read, it stops with
+`conflict` before its first write and asks for a re-run.
 
 **Concurrency limit.** Nothing locks a list. Item writes do not move the
 container's `_version` (V6), and another writer's import can become visible
 after this command's read-back matched (V5). Two writers to one list must be
-coordinated outside elasticctl. The design says so in the wiki and does not
-present the read-back as proof that no one else wrote.
+coordinated outside elasticctl, and so must anyone who edits an exception
+that references a list while elasticctl writes it. The design says so in the
+wiki and does not present the read-back or the second scan as proof that no
+one else wrote.
 
 ### 6.2 Create
 
 `POST /api/lists` with `id`, `type`, `name`, `description`, and `meta` when
 present. A 409 means the `id` exists and is reported as `conflict`. The
-values are then added as the add phase of 6.3, with nothing to remove.
+values are then added as the add phase of 6.3, with nothing to remove. The
+list is empty until they land, so creating a list that an installed
+reference already names is refused (D28); with no installed reference, no
+exception reads the list yet, because exception items are written after its
+values verify (section 7.4).
 
 ### 6.3 Update and exact reconciliation
 
@@ -47,7 +60,8 @@ Values are compared as sets (section 3.6). The change runs in two phases
 - **Remove phase.** For each value in the remote set and not in the local
   set: `DELETE /api/lists/items?list_id=<id>&value=<stored value>`. The
   answer is an array of the deleted items, every copy of the value (V9). A 404
-  means the value is already gone and is left to the read-back.
+  means the value is already gone: it is the one 4xx that is not a failure,
+  and the phase goes on to its next value and its read-back.
 - **Add phase.** For the values in the local set and not in the remote set:
   `POST /api/lists/items/_import?list_id=<id>`, with the multipart field
   `file`, the file name `<stem>.txt`, and the values joined by LF with a
@@ -56,16 +70,17 @@ Values are compared as sets (section 3.6). The change runs in two phases
   that cannot fit. The bound keeps each request under Kibana's 9,000,000-byte
   limit (V5) with room for the multipart framing. Requests go one at a time.
 
-D22 picks the order from the references installed on the stack, found by
-the scan of D26 before the preview: removes first when every installed
-reference is `included`, adds first when every one is `excluded`, and removes
-first when both are in use or none is, in which case the preview names each
-`excluded` reference that may briefly suppress more. `state push` and
-`value-lists import --overwrite` use the same scan. `state push` writes
-values before exception items, so the installed references are the ones in
-force while the values change; D27 refuses a run that would change both a
-list's values and a reference to it. The between-phase state of section 5.2
-is the remote set less the removes, or the remote set plus the adds.
+D22 picks the order from the references installed on the stack: adds first,
+unless every installed reference is `included` and the remote set less the
+removes is non-empty, in which case removes first. With adds first, the
+between-phases set is the remote set plus the adds: never empty when the
+final set is not, and never suppressing more than the list does now or will
+after. `state push` and `value-lists import --overwrite` use the same scan.
+`state push` writes values before exception items, so the installed
+references are the ones in force while the values change; D27 refuses a run
+that would change both a list's values and its references. The
+between-phases state of sections 5.2 and 5.3 is the remote set less the
+removes, or the remote set plus the adds.
 
 ### 6.4 Read-back
 
@@ -90,12 +105,26 @@ values.
 
 **Uncertain writes.** A write whose answer is a 5xx, a timeout, a connection
 loss after sending, or an undecodable body is uncertain (D17). The command
-sends no further write in that phase and goes straight to the phase's
-read-back. If the read-back observes the phase's expected set, the uncertain
-write evidently applied: the phase is verified and the run continues. If it
-does not, because the write did not apply or because later chunks were never
-sent, the list ends `unknown`. A 4xx is not uncertain: Kibana refused the
+sends no further write for that list and settles the uncertain write by a
+read, within the same 120-second budget:
+
+- a value write goes to its phase's read-back. If the read-back observes the
+  phase's expected set, the write evidently applied: the phase is verified
+  and the run continues. If not, because the write did not apply or because
+  later chunks were never sent, the list ends `unknown`;
+- a container create or update reads `GET /api/lists?id=`. If the container
+  exists with the planned `type`, `name`, `description`, and `meta`, the
+  write is verified and the run continues; anything else ends the list
+  `unknown`.
+
+A 4xx other than the delete-by-value 404 is not uncertain: Kibana refused the
 request, and the list ends `failed` without a read-back.
+
+**Recovery.** A list that ended `unknown` may still change: an import Kibana
+accepted can become visible later (V5). Re-running `push` at once could add
+the same values again, and duplicates count toward D12 (V12). After
+`unknown`, wait, run `diff`, and push again only when its preview is what
+you expect. The wiki says so.
 
 ### 6.5 Delete
 
