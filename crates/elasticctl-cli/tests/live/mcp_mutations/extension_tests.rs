@@ -139,7 +139,7 @@ fn fixture(name: &str) -> Value {
 }
 #[test]
 fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
-    for missing_marker in [false, true] {
+    for (missing_marker, attachment_unavailable) in [(false, false), (true, false), (false, true)] {
         let rt = runtime().unwrap();
         let server = rt.block_on(MockServer::start());
         let stored = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
@@ -154,7 +154,10 @@ fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
                 c["tags"] = if missing_marker { json!([]) } else { body["tags"].clone() };
                 c["settings"] = body["settings"].clone(); c["totalAlerts"] = json!(0);
             }
-            if path.ends_with("/comments") { c["totalAlerts"] = json!(1); }
+            if path.ends_with("/comments") {
+                if attachment_unavailable { return ResponseTemplate::new(503); }
+                c["totalAlerts"] = json!(1);
+            }
             if path.ends_with("/signals/search") {
                 return ResponseTemplate::new(200).set_body_json(json!({"hits":{"total":{"value":1},"hits":[{"_id":"alert-owned","_index":".alerts-offline","_source":{"kibana.alert.rule.rule_id":"elasticctl-live-test","kibana.alert.rule.tags":[LIVE_TAG,"elasticctl-live-test"],"kibana.alert.workflow_status":"open","kibana.alert.rule.uuid":"offline-rule-uuid","kibana.alert.rule.name":"marker rule"}}]}}));
             }
@@ -184,9 +187,14 @@ fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
             assert!(registry.cases.is_empty());
             assert!(s.child.sent.is_empty());
         } else {
-            result.unwrap();
-            assert_eq!(s.child.sent.len(), 1);
-            assert_eq!(s.child.sent[0]["params"]["name"], "cases_set_status_plan");
+            if attachment_unavailable {
+                assert!(result.is_err());
+                assert!(s.child.sent.is_empty());
+            } else {
+                result.unwrap();
+                assert_eq!(s.child.sent.len(), 1);
+                assert_eq!(s.child.sent[0]["params"]["name"], "cases_set_status_plan");
+            }
             registry.rules.clear();
             registry.alerts.clear();
             rt.block_on(clean(&t, &registry)).unwrap();
@@ -197,6 +205,13 @@ fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
             .filter(|r| r.method != "GET" && !r.url.path().ends_with("/signals/search"))
             .collect();
         assert_eq!(writes.len(), if missing_marker { 1 } else { 3 });
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.url.path().ends_with("/comments"))
+                .count(),
+            usize::from(!missing_marker)
+        );
         if !missing_marker {
             assert_eq!(writes[1].url.path(), "/api/cases/case-created/comments");
             assert_eq!(writes[2].method, "DELETE");
@@ -214,7 +229,7 @@ fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
                     .iter()
                     .filter(|r| r.url.path().ends_with("/signals/search"))
                     .count()
-                    >= 3
+                    >= if attachment_unavailable { 1 } else { 3 }
             );
         }
     }

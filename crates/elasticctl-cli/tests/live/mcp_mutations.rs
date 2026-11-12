@@ -214,7 +214,7 @@ async fn toggle(t: &Transport, registry: &Registry, id: &str, enabled: bool) -> 
     exact_targets(&p.targets, &[id.into()])?;
     let o = safe(elasticctl_api::rules_ops::apply_set_enabled(t, &p, enabled).await)?;
     require(o.failed == 0 && o.total == 1)?;
-    require(owned_rule(t, id).await?.enabled() == enabled)
+    require(owned_rule(t, id).await?.as_map().get("enabled") == Some(&json!(enabled)))
 }
 fn contract(
     config: &Path,

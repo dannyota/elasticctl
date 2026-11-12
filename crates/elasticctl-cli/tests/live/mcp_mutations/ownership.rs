@@ -226,7 +226,7 @@ async fn clean_registered(t: &Transport, registry: &Registry) -> TestResult {
     for id in &registry.rules {
         match elasticctl_api::rules::get(t, id).await {
             Ok(_) => {
-                require(!owned_rule(t, id).await?.enabled())?;
+                require(owned_rule(t, id).await?.as_map().get("enabled") == Some(&json!(false)))?;
                 safe(elasticctl_api::rules::delete(t, id).await)?;
             }
             Err(e) if e.kind == ErrorKind::NotFound => {}

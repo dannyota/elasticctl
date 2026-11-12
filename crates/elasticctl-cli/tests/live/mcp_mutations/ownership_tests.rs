@@ -26,6 +26,9 @@ enum Fault {
     AlertUnclosed,
     AlertNoop,
     Reenabled,
+    MissingEnabled,
+    StringEnabled,
+    NullEnabled,
 }
 struct Stack {
     fault: Fault,
@@ -106,6 +109,16 @@ impl wiremock::Respond for Responder {
             s.reads_after_toggle += 1;
         }
         rule["enabled"] = json!(matches!(s.fault, Fault::Reenabled) && s.reads_after_toggle >= 2);
+        if request.method == "GET" && s.reads_after_toggle >= 2 {
+            match s.fault {
+                Fault::MissingEnabled => {
+                    rule.as_object_mut().unwrap().remove("enabled");
+                }
+                Fault::StringEnabled => rule["enabled"] = json!("true"),
+                Fault::NullEnabled => rule["enabled"] = Value::Null,
+                _ => {}
+            }
+        }
         if request.method == "POST" && path == "/api/detection_engine/rules" {
             s.created = true;
             if matches!(s.fault, Fault::WrongCreate) {
@@ -436,4 +449,28 @@ fn reenabled_rule_stops_cleanup_before_exact_delete() {
     assert_eq!(class, "cleanup_failed");
     assert_eq!(trace.len(), 2);
     assert!(!trace.iter().any(|(method, _, _)| method == "DELETE"));
+}
+
+#[test]
+fn missing_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::MissingEnabled);
+}
+#[test]
+fn string_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::StringEnabled);
+}
+#[test]
+fn null_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::NullEnabled);
+}
+fn assert_unverified_disabled(fault: Fault) {
+    let (class, trace, _) = exercise(fault);
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .count(),
+        0
+    );
+    assert_eq!(class, "cleanup_failed");
 }

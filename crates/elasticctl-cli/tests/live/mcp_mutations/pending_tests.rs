@@ -10,6 +10,9 @@ enum Fault {
     Unknown,
     Unmarked,
     Unavailable,
+    MissingEnabled,
+    StringEnabled,
+    NullEnabled,
 }
 #[derive(Default)]
 struct State {
@@ -58,6 +61,14 @@ fn exercise(kind: &'static str, fault: Fault) {
     object["title"] = json!(TOKEN);
     object["rule_id"] = json!(TOKEN);
     object["enabled"] = json!(false);
+    match fault {
+        Fault::MissingEnabled => {
+            object.as_object_mut().unwrap().remove("enabled");
+        }
+        Fault::StringEnabled => object["enabled"] = json!("true"),
+        Fault::NullEnabled => object["enabled"] = Value::Null,
+        _ => {}
+    }
     object["tags"] = if matches!(fault, Fault::Unmarked) {
         json!([TOKEN])
     } else {
@@ -163,7 +174,9 @@ fn exercise(kind: &'static str, fault: Fault) {
         let reply = |id, v: Value| json!({"jsonrpc":"2.0","id":id,"result":{"resultType":"complete","content":[{"type":"text","text":v.to_string()}],"structuredContent":v}});
         let outcome = match fault {
             Fault::Malformed => json!({}),
-            Fault::Unknown => json!({"data":{"plan":{"state":"unknown"}}}),
+            Fault::Unknown | Fault::MissingEnabled | Fault::StringEnabled | Fault::NullEnabled => {
+                json!({"data":{"plan":{"state":"unknown"}}})
+            }
             _ => {
                 json!({"data":{"plan":{"state":"applied"},"replayed":false,"outcome":{"complete":true,"failed":0,"created":{"case_id":"case-owned","rule_id":TOKEN}}}})
             }
@@ -195,7 +208,10 @@ fn exercise(kind: &'static str, fault: Fault) {
     assert!(result.is_err());
     assert!(state.lock().unwrap().object.is_some());
     let cleanup = rt.block_on(clean(&t, &registry));
-    if matches!(fault, Fault::Unmarked) {
+    if matches!(
+        fault,
+        Fault::Unmarked | Fault::MissingEnabled | Fault::StringEnabled | Fault::NullEnabled
+    ) {
         assert!(cleanup.is_err());
         assert!(state.lock().unwrap().object.is_some());
         assert!(
@@ -247,4 +263,17 @@ fn pending_unmarked_candidate_is_never_deleted() {
 #[test]
 fn refusal_persisted_503_is_sent_once_and_cleaned() {
     exercise("refusal", Fault::Unavailable);
+}
+
+#[test]
+fn pending_missing_enabled_is_never_deleted() {
+    exercise("rule", Fault::MissingEnabled);
+}
+#[test]
+fn pending_string_enabled_is_never_deleted() {
+    exercise("rule", Fault::StringEnabled);
+}
+#[test]
+fn pending_null_enabled_is_never_deleted() {
+    exercise("rule", Fault::NullEnabled);
 }
