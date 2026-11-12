@@ -23,6 +23,8 @@ const EXCEPTION: &str = "elasticctl-live-vl-exception";
 const ITEM: &str = "elasticctl-live-vl-exception-item";
 const ABSENT: &str = "elasticctl-live-vl-absent";
 const MARKER: &str = "elasticctl-live-marker";
+const ES_URL_USAGE: &str =
+    "usage: record-value-lists requires ELASTICCTL_ES_URL for the orphan-item audit";
 
 #[derive(Clone, Copy)]
 struct Timing {
@@ -102,6 +104,10 @@ impl<'a> Session<'a> {
 
 /// Record only after both the pass and its cleanup have succeeded.
 pub(crate) async fn record_value_lists() {
+    if std::env::var("ELASTICCTL_ES_URL").is_err() {
+        eprintln!("{ES_URL_USAGE}");
+        std::process::exit(2);
+    }
     std::panic::set_hook(Box::new(|_| {
         eprintln!("record-value-lists: operation panicked")
     }));
@@ -131,6 +137,9 @@ where
     I: FnMut() -> F,
     F: std::future::Future<Output = ()>,
 {
+    if !session.t.has_es_url() {
+        return Err(recording_error(ES_URL_USAGE));
+    }
     let work = guarded(steps::record(session, flavor), None, interrupt()).await;
     let already_interrupted = matches!(work, Ended::Interrupted);
     let mut cleanup_interrupted = false;

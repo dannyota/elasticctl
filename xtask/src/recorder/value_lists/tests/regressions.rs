@@ -1,5 +1,111 @@
 use super::*;
 
+#[tokio::test]
+async fn missing_es_url_refuses_before_any_request() {
+    let server = MockServer::start().await;
+    let t = Transport::new(&Profile {
+        kibana_url: server.uri(),
+        es_url: None,
+        api_key: Some("test".into()),
+        username: None,
+        password: None,
+        space: "default".into(),
+        verify: true,
+        timeout_secs: 1,
+    })
+    .unwrap();
+    let mut session = Session::new(&t, fast());
+    let error = run(&mut session, None, std::future::pending::<()>)
+        .await
+        .err()
+        .unwrap();
+    assert!(error.message.starts_with("usage:"), "{}", error.message);
+    assert!(error.message.contains("ELASTICCTL_ES_URL"));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(session.evidence.fixtures.is_empty());
+}
+
+#[tokio::test]
+async fn unexpected_refusal_status_fails_without_resending() {
+    for patch in [false, true] {
+        for status in [400, 503] {
+            let (server, state) = stack(Stack::default()).await;
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = calls.clone();
+            Mock::given(method(if patch { "PATCH" } else { "POST" }))
+                .and(path(if patch {
+                    "/api/lists"
+                } else {
+                    "/api/lists/items/_import"
+                }))
+                .and(move |request: &Request| {
+                    if patch {
+                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+                    } else {
+                        String::from_utf8_lossy(&request.body).contains(".json\"")
+                    }
+                })
+                .respond_with(response(status, json!({"message": "unexpected refusal"})))
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            let t = transport(&server);
+            let mut session = Session::new(
+                &t,
+                Timing {
+                    budget: Duration::from_millis(150),
+                    ..fast()
+                },
+            );
+            let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                !error.message.contains("cleanup failed"),
+                "{}",
+                error.message
+            );
+            if status == 400 {
+                assert!(error.message.contains("expected HTTP"), "{}", error.message);
+            } else {
+                assert_eq!(error.http_status, Some(503));
+            }
+            let requests = server.received_requests().await.unwrap();
+            if patch {
+                assert_eq!(requests.iter().filter(|r| r.method == "PATCH").count(), 2);
+            } else {
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|r| {
+                            r.url.path().ends_with("/_import")
+                                && String::from_utf8_lossy(&r.body).contains(".json\"")
+                        })
+                        .count(),
+                    1
+                );
+                let settled = requests.iter().any(|r| {
+                    r.url.path() == "/api/lists/items/_find"
+                        && r.url
+                            .query_pairs()
+                            .any(|(k, v)| k == "list_id" && v == RANGES)
+                });
+                assert_eq!(settled, status == 503);
+            }
+            let name = if patch {
+                "container_patch_stale"
+            } else {
+                "import_wrong_extension"
+            };
+            assert!(session.evidence.fixtures.iter().all(|f| f.name != name));
+            let state = state.lock().unwrap();
+            assert!(state.lists.is_empty());
+            assert!(!state.bootstrapped);
+        }
+    }
+}
+
 async fn uncertain_delete(delayed: bool) {
     let mut errors = Vec::new();
     let server = MockServer::start().await;

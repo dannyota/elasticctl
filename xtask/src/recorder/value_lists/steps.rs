@@ -130,14 +130,17 @@ async fn container(session: &mut Session<'_>) -> Result<()> {
     if updated["_version"] == current["_version"] {
         return Err(recording_error("PATCH did not change the version"));
     }
-    let error = session
+    let (status, body) = session
         .t
-        .patch_once("/api/lists", &request)
-        .await
-        .err()
-        .ok_or_else(|| recording_error("stale PATCH unexpectedly succeeded"))?;
-    require_status(error.http_status, 409)?;
-    session.evidence.refusal("container_patch_stale", error);
+        .patch_once_response("/api/lists", &request)
+        .await?;
+    if (200..300).contains(&status) {
+        return Err(recording_error("stale PATCH unexpectedly succeeded"));
+    }
+    require_status(Some(status), 409)?;
+    session
+        .evidence
+        .http_response("container_patch_stale", status, body);
     let request = json!({"id": LIST, "name": "elasticctl-live-vl-updated", "description": MARKER,
         "type": "keyword", "_version": updated["_version"],
         "meta": {"marker": MARKER, "recorder_nonce": session.nonce}});
@@ -377,26 +380,23 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
             session.lists.push(list);
         }
         session.pending_imports.insert(list.to_string());
-        let result = session
+        let (status, body) = session
             .t
-            .post_multipart_once_named(
+            .post_multipart_once_named_response(
                 &format!("/api/lists/items/_import?list_id={list}&refresh=wait_for"),
                 filename,
                 "text/plain",
                 &content,
             )
-            .await;
-        if result
-            .as_ref()
-            .is_err_and(|error| matches!(error.http_status, Some(400..=499)))
-        {
+            .await?;
+        if (400..500).contains(&status) {
             session.pending_imports.remove(list);
         }
-        let error = result
-            .err()
-            .ok_or_else(|| recording_error("import refusal unexpectedly succeeded"))?;
-        require_status(error.http_status, expected)?;
-        session.evidence.refusal(name, error);
+        if (200..300).contains(&status) {
+            return Err(recording_error("import refusal unexpectedly succeeded"));
+        }
+        require_status(Some(status), expected)?;
+        session.evidence.http_response(name, status, body);
     }
     Ok(())
 }

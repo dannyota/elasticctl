@@ -439,6 +439,36 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
     ] {
         assert!(!text.contains(private), "leaked {private}");
     }
+    let dir = std::env::temp_dir().join(format!(
+        "value-list-refusals-{}-{}",
+        std::process::id(),
+        server.address().port()
+    ));
+    write_recording(Recording {
+        dir: dir.clone(),
+        ..recording
+    })
+    .unwrap();
+    for (name, status, message) in [
+        ("container_patch_stale", 409, "stale version"),
+        ("import_too_large", 413, "file too large"),
+        ("import_wrong_extension", 415, "unsupported extension"),
+        ("import_absent_list", 409, "list does not exist"),
+    ] {
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("{name}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(document["http_status"], status, "{name}");
+        assert_eq!(
+            document["response"],
+            json!({
+                "status_code": status, "message": message, "created_by": "REDACTED"
+            }),
+            "{name}"
+        );
+        assert!(document.get("error").is_none(), "{name}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]

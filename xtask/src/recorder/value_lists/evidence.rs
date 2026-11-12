@@ -87,6 +87,11 @@ impl Evidence {
         self.exchange(name, Value::Null, body);
     }
 
+    pub(super) fn http_response(&mut self, name: &'static str, status: u16, body: Value) {
+        self.response(name, body);
+        self.fixtures.last_mut().unwrap().document["http_status"] = json!(status);
+    }
+
     pub(super) fn exchange(&mut self, name: &'static str, mut request: Value, mut body: Value) {
         register_ids(&request, &mut self.ids);
         register_ids(&body, &mut self.ids);
@@ -112,8 +117,6 @@ impl Evidence {
     }
 
     pub(super) fn refusal(&mut self, name: &'static str, mut error: elasticctl_core::Error) {
-        // The transport exposes a classified error here, not the original refusal body.
-        // Retaining that body needs a transport change outside this recorder.
         // A remote error's prose can quote identities outside the named scrub fields.
         error.message = "value-list recording endpoint refused request".to_string();
         self.fixtures

@@ -1,7 +1,7 @@
 use super::*;
 
 // This fake provides minimal shapes for recorder control flow. Its bodies are
-// never saved as fixtures and make no claim about Elastic's response model.
+// never saved as Elastic evidence and make no claim about its response model.
 #[derive(Default)]
 pub(super) struct Stack {
     pub(super) lists: std::collections::BTreeMap<String, serde_json::Value>,
@@ -117,7 +117,11 @@ impl Stack {
             ("PATCH", "/api/lists") => {
                 let value = self.lists.get_mut(body["id"].as_str().unwrap()).unwrap();
                 if body["_version"] != value["_version"] {
-                    return response(409, json!({}));
+                    return response(
+                        409,
+                        json!({"status_code": 409,
+                        "message": "stale version", "created_by": "private-user"}),
+                    );
                 }
                 value["name"] = body["name"].clone();
                 value["_version"] = json!("v2");
@@ -177,12 +181,20 @@ impl Stack {
             }
             ("POST", "/api/lists/items/_import") => {
                 if request.body.len() > 9_000_000 {
-                    return response(413, json!({}));
+                    return response(
+                        413,
+                        json!({"status_code": 413,
+                        "message": "file too large", "created_by": "private-user"}),
+                    );
                 }
                 if String::from_utf8_lossy(&request.body).contains(".json\"")
                     && self.fail != Some("wrong_extension")
                 {
-                    return response(415, json!({}));
+                    return response(
+                        415,
+                        json!({"status_code": 415,
+                        "message": "unsupported extension", "created_by": "private-user"}),
+                    );
                 }
                 if list == ABSENT && self.fail == Some("absent_import") {
                     let mut parent = self.lists[RANGES].clone();
@@ -190,7 +202,11 @@ impl Stack {
                     self.lists.insert(ABSENT.into(), parent);
                 }
                 if !self.lists.contains_key(&list) {
-                    return response(409, json!({}));
+                    return response(
+                        409,
+                        json!({"status_code": 409,
+                        "message": "list does not exist", "created_by": "private-user"}),
+                    );
                 }
                 self.imported_pending = true;
                 self.import_reads = 0;
