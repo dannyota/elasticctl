@@ -25,6 +25,10 @@ enum Fault {
     AlertWrongTotal,
     AlertUnclosed,
     AlertNoop,
+    Reenabled,
+    MissingEnabled,
+    StringEnabled,
+    NullEnabled,
 }
 struct Stack {
     fault: Fault,
@@ -32,6 +36,7 @@ struct Stack {
     deleted: bool,
     mutations: usize,
     closed: bool,
+    reads_after_toggle: usize,
 }
 struct Responder(Arc<Mutex<Stack>>);
 impl wiremock::Respond for Responder {
@@ -100,7 +105,20 @@ impl wiremock::Respond for Responder {
         } else {
             json!([LIVE_TAG, ID])
         };
-        rule["enabled"] = json!(false);
+        if s.mutations > 0 && request.method == "GET" {
+            s.reads_after_toggle += 1;
+        }
+        rule["enabled"] = json!(matches!(s.fault, Fault::Reenabled) && s.reads_after_toggle >= 2);
+        if request.method == "GET" && s.reads_after_toggle >= 2 {
+            match s.fault {
+                Fault::MissingEnabled => {
+                    rule.as_object_mut().unwrap().remove("enabled");
+                }
+                Fault::StringEnabled => rule["enabled"] = json!("true"),
+                Fault::NullEnabled => rule["enabled"] = Value::Null,
+                _ => {}
+            }
+        }
         if request.method == "POST" && path == "/api/detection_engine/rules" {
             s.created = true;
             if matches!(s.fault, Fault::WrongCreate) {
@@ -140,6 +158,7 @@ fn exercise(fault: Fault) -> (String, Vec<(String, String, Value)>, Registry) {
         deleted: false,
         mutations: 0,
         closed: false,
+        reads_after_toggle: 0,
     }));
     rt.block_on(
         Mock::given(wiremock::matchers::any())
@@ -422,4 +441,36 @@ fn already_closed_alerts_allow_cleanup_after_readback() {
         12
     );
     assert_eq!(trace.last().unwrap().0, "DELETE");
+}
+
+#[test]
+fn reenabled_rule_stops_cleanup_before_exact_delete() {
+    let (class, trace, _) = exercise(Fault::Reenabled);
+    assert_eq!(class, "cleanup_failed");
+    assert_eq!(trace.len(), 2);
+    assert!(!trace.iter().any(|(method, _, _)| method == "DELETE"));
+}
+
+#[test]
+fn missing_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::MissingEnabled);
+}
+#[test]
+fn string_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::StringEnabled);
+}
+#[test]
+fn null_enabled_stops_cleanup_before_exact_delete() {
+    assert_unverified_disabled(Fault::NullEnabled);
+}
+fn assert_unverified_disabled(fault: Fault) {
+    let (class, trace, _) = exercise(fault);
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .count(),
+        0
+    );
+    assert_eq!(class, "cleanup_failed");
 }

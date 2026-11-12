@@ -8,6 +8,8 @@ use std::sync::{
 #[derive(Default)]
 pub(super) struct Registry {
     pub rules: BTreeSet<String>,
+    pub pending_rules: BTreeSet<String>,
+    pub pending_cases: BTreeSet<String>,
     pub cases: BTreeMap<String, String>,
     pub indices: BTreeSet<String>,
     pub alerts: BTreeMap<String, String>,
@@ -67,6 +69,7 @@ pub(super) async fn register_case(
     id: &str,
     token: &str,
 ) -> TestResult {
+    marker(token)?;
     let c = safe(elasticctl_api::cases::get(t, id).await)?;
     require(
         c.id == id
@@ -75,6 +78,7 @@ pub(super) async fn register_case(
             && c.tags.contains(&token.into()),
     )?;
     registry.cases.insert(id.into(), token.into());
+    registry.pending_cases.remove(token);
     Ok(())
 }
 pub(super) async fn create_index(
@@ -119,6 +123,52 @@ pub(super) fn cleanup_transport(profile: &Profile) -> TestResult<Transport> {
     ))
 }
 pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
+    let mut resolved = Registry {
+        rules: registry.rules.clone(),
+        cases: registry.cases.clone(),
+        indices: registry.indices.clone(),
+        alerts: registry.alerts.clone(),
+        ..Default::default()
+    };
+    for id in &registry.pending_rules {
+        marker(id)?;
+        match elasticctl_api::rules::get(t, id).await {
+            Ok(_) => {
+                owned_rule(t, id).await?;
+                resolved.rules.insert(id.clone());
+            }
+            Err(e) if e.kind == ErrorKind::NotFound => {}
+            Err(_) => return Err("cleanup_failed".into()),
+        }
+    }
+    for token in &registry.pending_cases {
+        marker(token)?;
+        let filter = elasticctl_api::cases_ops::CaseFilter {
+            tag: Some(token.clone()),
+            ..Default::default()
+        };
+        let mut seen = BTreeSet::new();
+        for page in 1.. {
+            let query = elasticctl_api::cases_ops::find_query(&filter, page, 100);
+            let (batch, total) = safe(elasticctl_api::cases::find_page(t, &query).await)?;
+            require(!batch.is_empty() || seen.len() as u64 == total)?;
+            for candidate in batch {
+                require(seen.insert(candidate.id.clone()))?;
+                register_case(t, &mut resolved, &candidate.id, token).await?;
+            }
+            if seen.len() as u64 == total {
+                break;
+            }
+            require((seen.len() as u64) < total)?;
+        }
+    }
+    clean_registered(t, &resolved).await?;
+    if let Some(lease) = &registry.lab {
+        lab_identity::clean(lease).await?;
+    }
+    Ok(())
+}
+async fn clean_registered(t: &Transport, registry: &Registry) -> TestResult {
     // Every ? stops the trace. No retry or Drop path sends another mutation.
     for rule in &registry.rules {
         match elasticctl_api::rules::get(t, rule).await {
@@ -176,7 +226,7 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
     for id in &registry.rules {
         match elasticctl_api::rules::get(t, id).await {
             Ok(_) => {
-                owned_rule(t, id).await?;
+                require(owned_rule(t, id).await?.as_map().get("enabled") == Some(&json!(false)))?;
                 safe(elasticctl_api::rules::delete(t, id).await)?;
             }
             Err(e) if e.kind == ErrorKind::NotFound => {}
@@ -205,7 +255,7 @@ pub(super) fn orchestrate(
     body: impl FnOnce(&mut Registry) -> TestResult,
 ) -> TestResult {
     // SIGKILL cannot be cleaned. The next guarded baseline refuses marker
-    // leftovers before creating anything; uncertain creates are never deleted.
+    // leftovers before creating anything. Pending creates require marker reads.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rt.block_on(baseline(t))
             .map_err(|_| "baseline_failed".to_string())?;
