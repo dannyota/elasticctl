@@ -232,8 +232,8 @@ pub(super) fn run<C: Child>(
     )?;
     let after = rt.block_on(case(t, registry, &case_id))?;
     require(after.total_comment == c.total_comment.unwrap_or(0).checked_add(1))?;
-    let raw = rt.block_on(safe_case_read(t, &case_id))?;
-    require(raw["comments"].as_array().is_some_and(|v| {
+    let found = rt.block_on(case_comments(t, &case_id))?;
+    require(found["comments"].as_array().is_some_and(|v| {
         v.iter()
             .any(|v| v["comment"] == LIVE_TAG && v["type"] == "user")
     }))?;
@@ -255,7 +255,7 @@ pub(super) fn run<C: Child>(
     let canonical = rule_state(&created);
     let expected = rule_state(&body);
     require(
-        !created.enabled()
+        created.as_map().get("enabled") == Some(&json!(false))
             && expected
                 .as_map()
                 .iter()
@@ -264,8 +264,16 @@ pub(super) fn run<C: Child>(
     require(result["data"]["outcome"]["created"]["rule_id"] == new_rule)?;
     refusal(s, rt, t, registry, &ids[1])
 }
-async fn safe_case_read(t: &Transport, id: &str) -> TestResult<Value> {
-    safe(t.get(&cases::case_path(id)).await)
+// A case read does not carry its comments on every stack, so the comment is
+// read through the comment search, one page of the largest size.
+async fn case_comments(t: &Transport, id: &str) -> TestResult<Value> {
+    safe(
+        t.get(&format!(
+            "{}/_find?page=1&perPage=100",
+            cases::comments_path(id)
+        ))
+        .await,
+    )
 }
 
 pub(super) fn refusal<C: Child>(
