@@ -28,7 +28,9 @@ assertions:
   times, one removed and two added, refused at 201), and a repair that lowers
   an existing count;
 - the two codec levels: pull, then validate, then push of a list holding each
-  V12 spelling unchanged, and the refusal to add a non-canonical one;
+  V12 spelling unchanged, including two spellings of one address, the
+  refusal to add a non-canonical value, and a bare `ip_range` address read
+  as CIDR;
 - the empty rule: a referenced list emptied finally or between phases, the
   `{a}` to `{b}` replacement under `is in list` (adds first, never empty),
   and creating a list that an installed reference names;
@@ -55,8 +57,10 @@ assertions:
   `value_lists` diff block and `clean`, the D4 and D12 refusals on unchanged
   items, retained containers, and stack-only lists, a reference whose list
   has no source, the D27 refusal for an added, removed, replaced, and changed
-  reference, for another entry of a referencing item, and for a second list
-  of that item, and its allowed first-creation case, the apply order, the
+  reference, for another entry of a referencing item, for a second list of
+  that item, for an item that references the list twice, and for a rule that
+  drops a shared container in the same run, and its allowed first-creation
+  case, the apply order, the
   container re-read
   before exception writes, and the report and summary for every outcome,
   including the example of section 7.5;

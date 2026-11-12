@@ -97,8 +97,11 @@ every remote item of a retained container (7.1):
   (D28).
 
 `push` also refuses with `conflict` a run that changes a list's values and
-also changes its references, any exception item that references it, or the
-values of another list such an item references (D27). The references of a list
+also changes anything in the list's **dependency cone** (D27): any exception
+item that references the list, the values of any other list those items
+reference, or any rule's binding to a container that holds such an item,
+added or removed. It refuses a value change, too, when one installed item
+references the list in more than one entry. The references of a list
 are every (container, item, field, operator) entry that names it: installed
 ones from the scan of D26, and desired ones from the local items the run would
 leave in place or write, with retained and out-of-scope installed references

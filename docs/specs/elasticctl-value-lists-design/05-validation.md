@@ -18,8 +18,8 @@ command; no list is written while another is invalid.
 | A value the command would add is canonical (section 3.5) | `push` and `import`: `error`, with the canonical spelling. `validate`: a warning, since it does not know what is already stored |
 | No single value, with its line feed, is larger than 8,000,000 bytes | `error`: an import request carries whole values only (section 6.3) |
 
-A value that canonicalizes to one already seen is not an error: the set
-collapses it.
+A value repeated with the same spelling is not an error: the set collapses
+it. Two spellings of one address are two values (section 3.5).
 
 ### 5.2 Dash values in `ip_range` lists
 

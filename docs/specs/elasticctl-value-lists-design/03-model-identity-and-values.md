@@ -56,7 +56,10 @@ file with the line number:
 3. Refuse an empty result. A blank or whitespace-only line is not a value,
    and Kibana drops it on import without an error (V5).
 4. Refuse a control character.
-5. Parse by type (3.5) and produce the canonical form.
+5. Check that the value is readable for its type (3.5). The value is kept
+   as written, with one rewrite: a bare address in an `ip_range` file is
+   read as `a/32` or `a/128` (D11), because Kibana cannot store a bare
+   address and would turn it into `a-a`.
 
 ### 3.5 Canonical values per type
 
@@ -67,18 +70,22 @@ returns. The codec has two levels:
   spelling, such as uppercase IPv6, a CIDR with host bits, or a mixed-family
   range (V12). A pulled file holds readable values, and `validate` accepts
   them;
-- **canonical**: the one spelling of the table below. elasticctl writes only
+- **canonical**: the one spelling of the table below. elasticctl adds only
   canonical values. A readable value that is not canonical is a warning in
   `validate` and `diff`, and `push` and `import` refuse to add one, naming
   the canonical spelling. A non-canonical value already stored on the stack
   and kept unchanged is not refused, so pull, validate, and push round-trip.
 
-| Type | Accepted | Canonical form |
+Values are compared and deduplicated by their exact spelling after the
+parsing order, never by the address they denote. `2001:DB8::1` and
+`2001:db8::1` are two values, as Kibana stores them (V12).
+
+| Type | Readable | Canonical, for values elasticctl adds |
 | --- | --- | --- |
 | `keyword` | Any text | The trimmed text. Commas and Unicode are kept (V4). |
 | `text` | Any text | The trimmed text. |
-| `ip` | One IPv4 address in dotted-quad form, or one IPv6 address in RFC 5952 form | As written. Any other spelling, a CIDR, or other text is refused; Kibana answers 400 for a CIDR (V4). |
-| `ip_range` | One address, a CIDR block with no host bits set, or a dash range `a-b` of one family with `a <= b` | A bare address becomes `a/32` or `a/128` (D11). A CIDR block and a dash range are kept as written, with each address in the spelling the `ip` row requires. |
+| `ip` | One IPv4 or IPv6 address in any spelling Kibana stores (V12). A CIDR is not readable; Kibana answers 400 (V4) | IPv4 in dotted-quad form; IPv6 in RFC 5952 form |
+| `ip_range` | One address, a CIDR block, or a dash range in any spelling Kibana stores, including host bits and a mixed-family range (V12). A reversed range is not readable | A CIDR block with no host bits set, or a dash range `a-b` of one family with `a <= b`, each address spelled as for `ip`. A bare address is read as `a/32` or `a/128` (step 5 of 3.4) |
 
 V12 showed that Kibana stores each spelling as sent: IPv6 case and
 compression are kept, host bits are kept, and a mixed-family range is stored.
