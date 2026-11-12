@@ -3,7 +3,6 @@
 mod address;
 mod codec;
 mod model;
-mod sha256;
 mod stems;
 mod validation;
 

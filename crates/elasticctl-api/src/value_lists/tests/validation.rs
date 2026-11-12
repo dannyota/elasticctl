@@ -112,11 +112,22 @@ fn local_reader_accepts_either_half_and_refuses_missing_or_non_regular_files() {
 
 #[test]
 fn noncanonical_stored_values_round_trip_but_new_additions_are_refused() {
-    for (kind, values) in [
-        ("ip", "2001:DB8::1\n2001:db8::1\n"),
+    for (kind, values, stored_values) in [
+        (
+            "ip",
+            "2001:DB8::1\n2001:db8::1\n",
+            vec!["2001:DB8::1", "2001:db8::1", "2001:DB8::1"],
+        ),
         (
             "ip_range",
-            "10.0.0.7/24\n10.0.0.1-2001:db8::1\n2001:DB8::1-2001:DB8::1\n",
+            "10.0.0.7/24\n10.0.0.1-2001:db8::1\n2001:DB8::1-2001:DB8::1\n2001:db8::1-2001:db8::1\n",
+            vec![
+                "10.0.0.7/24",
+                "10.0.0.1-2001:db8::1",
+                "2001:DB8::1-2001:DB8::1",
+                "2001:db8::1-2001:db8::1",
+                "2001:DB8::1-2001:DB8::1",
+            ],
         ),
     ] {
         let yaml = super::codec::YAML.replace("keyword", kind);
@@ -124,13 +135,25 @@ fn noncanonical_stored_values_round_trip_but_new_additions_are_refused() {
         assert!(result.findings.refusals.is_empty());
         assert!(!result.findings.warnings.is_empty());
         let pair = result.pair.unwrap();
-        let stored = StoredValues::new(pair.values.iter().cloned().collect());
+        let stored = StoredValues::new(
+            stored_values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+        );
         let additions: ValueSet = pair.values.difference(&stored.set()).cloned().collect();
+        let removals: ValueSet = stored.set().difference(&pair.values).cloned().collect();
         assert!(
             validate_additions(&pair.container.list_type, &additions)
                 .refusals
                 .is_empty()
         );
+        for order in [PhaseOrder::AddsFirst, PhaseOrder::RemovesFirst] {
+            let states = project_states(&stored, &additions, &removals, order);
+            for projected in [states.current, states.between, states.final_values] {
+                assert_eq!(projected.values, stored_values);
+            }
+        }
         let findings = validate_additions(&pair.container.list_type, &pair.values);
         assert!(!findings.refusals.is_empty());
         assert!(

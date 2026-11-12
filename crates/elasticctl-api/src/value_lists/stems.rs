@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use elasticctl_core::Result;
+use sha2::{Digest, Sha256};
 
-use super::{invalid, sha256};
+use super::invalid;
 
 pub(super) fn validate_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
@@ -44,7 +45,14 @@ pub fn file_stem(id: &str) -> String {
     }
     prefix.truncate(end);
     let prefix = prefix.trim_end_matches('.');
-    format!("{prefix}-{}", &sha256::hex(id.as_bytes())[..12])
+    format!("{prefix}-{}", &sha256_hex(id.as_bytes())[..12])
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn device_name(id: &str) -> bool {
@@ -96,4 +104,33 @@ pub fn plan_stems<'a>(ids: impl IntoIterator<Item = &'a str>) -> Result<BTreeMap
         )));
     }
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_hex as hex;
+
+    #[test]
+    fn hashes_standard_vectors_across_padding_boundaries() {
+        for (input, expected) in [
+            (
+                "",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "abc",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
+        ] {
+            assert_eq!(hex(input.as_bytes()), expected);
+        }
+        assert_eq!(
+            hex(&vec![b'a'; 1_000_000]),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
 }

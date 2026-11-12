@@ -127,7 +127,6 @@ fn readable_and_canonical_levels_cover_address_spellings() {
             Some("2001:db8::1-2001:db8::2"),
         ),
         (ValueListType::IpRange, "10.0.0.1-2001:db8::1", None),
-        (ValueListType::IpRange, "2001:db8::1-10.0.0.1", None),
         (
             ValueListType::IpRange,
             "10.0.0.5-10.0.0.5",
@@ -166,9 +165,6 @@ fn readable_and_canonical_levels_cover_address_spellings() {
             canonical != Some(value),
             "{value}"
         );
-        let stored = StoredValues::new(values.iter().cloned().collect());
-        let additions = values.difference(&stored.set()).cloned().collect();
-        assert!(validate_additions(&kind, &additions).refusals.is_empty());
         assert_eq!(
             !validate_additions(&kind, &values).refusals.is_empty(),
             canonical != Some(value),
@@ -191,6 +187,43 @@ fn readable_and_canonical_levels_cover_address_spellings() {
 }
 
 #[test]
+fn mixed_family_ranges_check_order_in_ipv4_mapped_space() {
+    let kind = ValueListType::IpRange;
+    for value in [
+        "10.0.0.1-2001:db8::1",
+        "::1-10.0.0.1",
+        "10.0.0.1-::ffff:10.0.0.1",
+        "::ffff:10.0.0.1-10.0.0.1",
+    ] {
+        let values = decode_values(&kind, value).unwrap();
+        assert!(values.contains(value));
+        assert_eq!(canonical_value(&kind, value).unwrap(), None);
+        let yaml = YAML.replace("keyword", "ip_range");
+        let local = validate_local_pair("blocked", yaml.as_bytes(), Some(value.as_bytes()));
+        assert!(local.findings.refusals.is_empty());
+        assert!(
+            local
+                .findings
+                .warnings
+                .iter()
+                .any(|warning| warning.kind == WarningKind::NonCanonical)
+        );
+        assert!(!validate_additions(&kind, &values).refusals.is_empty());
+    }
+    for value in [
+        "2001:db8::1-10.0.0.1",
+        "10.0.0.1-::1",
+        "::ffff:10.0.0.2-10.0.0.1",
+    ] {
+        let error = decode_values(&kind, &format!("10.0.0.0/8\n{value}\n")).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Error);
+        assert!(error.message.contains("line 2"), "{error}");
+        assert!(error.message.contains(value), "{error}");
+        assert!(error.message.contains("reversed IP range"), "{error}");
+    }
+}
+
+#[test]
 fn bare_range_addresses_rewrite_without_changing_spelling() {
     let values = decode_values(&ValueListType::IpRange, "10.0.0.5\n2001:DB8::1\n").unwrap();
     assert_eq!(encode_values(&values), "10.0.0.5/32\n2001:DB8::1/128\n");
@@ -208,4 +241,20 @@ fn stored_views_keep_duplicates_and_exact_spellings() {
     let local = decode_values(&ValueListType::Ip, "2001:DB8::1\n2001:db8::1\n").unwrap();
     assert_eq!(stored.set(), local);
     assert_eq!(encode_values(&local), "2001:DB8::1\n2001:db8::1\n");
+    let additions = local.difference(&stored.set()).cloned().collect();
+    let removals = stored.set().difference(&local).cloned().collect();
+    assert!(
+        validate_additions(&ValueListType::Ip, &additions)
+            .refusals
+            .is_empty()
+    );
+    for order in [PhaseOrder::AddsFirst, PhaseOrder::RemovesFirst] {
+        let states = project_states(&stored, &additions, &removals, order);
+        for projected in [states.current, states.between, states.final_values] {
+            assert_eq!(
+                projected.values,
+                ["2001:DB8::1", "2001:db8::1", "2001:DB8::1"]
+            );
+        }
+    }
 }

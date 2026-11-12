@@ -87,6 +87,9 @@ parsing order, never by the address they denote. `2001:DB8::1` and
 | `ip` | One IPv4 or IPv6 address in any spelling Kibana stores (V12). A CIDR is not readable; Kibana answers 400 (V4) | IPv4 in dotted-quad form; IPv6 in RFC 5952 form |
 | `ip_range` | One address, a CIDR block, or a dash range in any spelling Kibana stores, including host bits and a mixed-family range (V12). A reversed range is not readable | A CIDR block with no host bits set, or a dash range `a-b` of one family with `a <= b`, each address spelled as for `ip`. A bare address is read as `a/32` or `a/128` (step 5 of 3.4) |
 
+elasticctl compares range endpoints in IPv6 address space, mapping IPv4
+endpoints to IPv4-mapped IPv6 addresses before checking their order.
+
 V12 showed that Kibana stores each spelling as sent: IPv6 case and
 compression are kept, host bits are kept, and a mixed-family range is stored.
 The same address in two spellings is then two stored values, so elasticctl

@@ -6,7 +6,7 @@ use super::{ValueListType, invalid};
 
 /// Return the canonical spelling of a readable, parsed value.
 ///
-/// A mixed-family range is readable but has no single canonical spelling,
+/// An ascending mixed-family range is readable but has no canonical spelling,
 /// so it returns `None`. This function never rewrites a stored value.
 pub fn canonical_value(kind: &ValueListType, value: &str) -> Result<Option<String>> {
     kind.require_supported()?;
@@ -34,11 +34,11 @@ fn address(value: &str) -> Result<IpAddr> {
 fn range(value: &str) -> Result<Option<String>> {
     if let Some((start, end)) = value.split_once('-') {
         let (start, end) = (address(start)?, address(end)?);
+        if mapped_address(start) > mapped_address(end) {
+            return Err(invalid(format!("reversed IP range {value:?}")));
+        }
         if start.is_ipv4() != end.is_ipv4() {
             return Ok(None);
-        }
-        if start > end {
-            return Err(invalid(format!("reversed IP range {value:?}")));
         }
         return Ok(Some(format!("{start}-{end}")));
     }
@@ -68,6 +68,13 @@ fn range(value: &str) -> Result<Option<String>> {
         "{ip}/{}",
         if ip.is_ipv4() { 32 } else { 128 }
     )))
+}
+
+fn mapped_address(ip: IpAddr) -> Ipv6Addr {
+    match ip {
+        IpAddr::V4(ip) => ip.to_ipv6_mapped(),
+        IpAddr::V6(ip) => ip,
+    }
 }
 
 pub(super) fn rewrite_bare_range(kind: &ValueListType, value: &str) -> String {
