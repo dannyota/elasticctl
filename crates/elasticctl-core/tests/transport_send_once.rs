@@ -201,6 +201,35 @@ async fn send_once_calls_return_shared_503_errors_without_replaying() {
     }
 }
 
+/// A 429 is retryable on the ordinary transport. PATCH and the upload must
+/// still send once and return the shared rate-limit error; DELETE returns
+/// the 429 itself (see the response test above).
+#[tokio::test]
+async fn patch_and_upload_return_shared_429_errors_without_replaying() {
+    for operation in [Operation::Patch, Operation::Multipart] {
+        let server = MockServer::start().await;
+        mutation_mock(operation)
+            .respond_with(
+                ResponseTemplate::new(429).set_body_string(r#"{"message":"rate limited"}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let transport = Transport::new(&profile(server.uri())).unwrap();
+        let error = operation.send(&transport, "/api/lists").await.unwrap_err();
+        let expected = Error::from_response_body(429, r#"{"message":"rate limited"}"#);
+        assert_eq!(error.kind, expected.kind, "{operation:?}");
+        assert_eq!(error.http_status, expected.http_status, "{operation:?}");
+        assert_eq!(error.message, expected.message, "{operation:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "{operation:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn send_once_calls_return_shared_timeout_errors_without_replaying() {
     for operation in OPERATIONS {
