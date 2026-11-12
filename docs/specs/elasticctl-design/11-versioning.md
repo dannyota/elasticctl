@@ -71,6 +71,10 @@ The 0.9 MCP mutation capability area is described in
 [0.9.0](../../plans/v0.9.0.md), [0.9.1](../../plans/v0.9.1.md), and
 [0.9.2](../../plans/v0.9.2.md).
 
+The 0.10 value-list capability area is described in
+[`elasticctl-value-lists-design.md`](../elasticctl-value-lists-design.md), with
+[research](../../plans/v0.10-research.md).
+
 Neither grants release or publication approval. Every 0.8 and 0.9 release
 passes the three-flavor conformance matrix; when a trial deployment ends first,
 the release waits for replacement deployments.
