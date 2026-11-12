@@ -4,7 +4,7 @@
 
 | Version | Deliverable | Evidence before it ships |
 | --- | --- | --- |
-| 0.9.4 | `state diff` and `state push` refuse a mirror that holds `value-lists/` (D21) | Offline tests of the refusal; the thirteen-contract matrix is unaffected, because no current mirror holds the directory |
+| 0.9.4 | `state pull`, `state diff`, and `state push` refuse a mirror that holds `value-lists/` (D21) | Offline tests of the refusal; the thirteen-contract matrix is unaffected, because no current mirror holds the directory |
 | 0.10.0 | The `value-lists` commands, the state engine changes, the three transport calls, the `doctor` text, the recorded fixtures, the spec changes of section 8.4, and the fourteenth contract | Fixtures from three flavors; the offline tests of section 9.2; snapshots; an independent adversarial review of the write and reconcile path; the fourteen-contract matrix on three flavors; a whole-range review |
 
 0.9.4 ships first, so a team can move its 0.9 users onto a binary that

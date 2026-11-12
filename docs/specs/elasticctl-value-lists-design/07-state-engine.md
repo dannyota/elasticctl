@@ -187,8 +187,10 @@ apply is never unreported (shared design 5).
 
 A 0.9 binary reads only `rules/` and `exceptions/`. It would push a 0.10
 mirror's exceptions without its value lists and print a preview line for each
-missing one. 0.9.4 refuses `state diff` and `state push` on a mirror that
-holds `value-lists/`, naming 0.10 as the version that can read it (D21). A
+missing one, and a 0.9 `pull` into such a mirror would leave its value lists
+stale. 0.9.4 refuses `state pull`, `state diff`, and `state push` on a mirror
+that holds `value-lists/`, naming 0.10 as the version that can read it
+(D21). A
 binary from 0.9.0 to 0.9.3 cannot be changed; the 0.10 CHANGELOG, the README,
 and the state wiki page record that a mirror with `value-lists/` needs 0.9.4
 to refuse it and 0.10 to push it.
