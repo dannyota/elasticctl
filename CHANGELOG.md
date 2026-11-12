@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.9.1 — Unreleased
+
+### Added
+
+- MCP mutation classes `alerts-triage`, `cases`, and `rules-create` for
+  `mcp serve --allow-mutations`, beside `rules-toggle`. There is still no
+  `all` value. With all four classes the catalog has 35 tools, or 37 with
+  `--allow-query-tools`. With no class, or with `rules-toggle` alone, the
+  catalog and schemas are unchanged.
+- MCP planner tools, each listed only when its class is enabled:
+  `alerts_set_status_plan` and `alerts_set_tags_plan` (`alerts-triage`) set
+  the workflow status, or add and remove tags, of 1 to 20 alerts named by
+  `_id`; `cases_create_plan`, `cases_comment_plan`, and
+  `cases_set_status_plan` (`cases`) create one case, add one comment, or
+  close or reopen 1 to 20 cases; `rules_create_plan` (`rules-create`) creates
+  one rule, always disabled. Each apply is one write request. No tool selects
+  alerts by query, sets assignees, or creates an enabled rule. A second call
+  does not restore an alert's workflow user and time or its earlier tags, and
+  no tool removes a posted comment.
+- The tool error `case_sync_alerts`, kind `unsupported`. A case status plan
+  is refused, at planning and at both checks, unless every case has
+  `settings.syncAlerts` set to a JSON `false`, because Kibana would also
+  change the attached alerts. A new case is created with `syncAlerts: false`.
+- A rule create plan shows every field of the rule in full and carries its
+  own consent note: Kibana creates the rule disabled and without an API key,
+  and the credential that first enables it gives it a key. Its
+  `cli_equivalent` is `null`. A 409 answer to a case status or rule create
+  write makes the plan `stale`.
+- Rust source changes, outside the CLI and MCP compatibility promise:
+  `elasticctl_mcp::MutationClass` gains `AlertsTriage`, `Cases`, and
+  `RulesCreate`, and `catalog::ToolId` gains six variants, so `ToolId::ALL`
+  holds 37.
+
+### Changed
+
+- MCP planning refuses an organization-level Elastic Cloud API key
+  (`_cloud_api_key`) with `credential_unsuitable` for every mutation kind,
+  before any other read.
+- The `doctor` `key_scope` warning for an organization-level key says the key
+  is not supported, that MCP planning refuses it, and that rule changes may
+  fail on some deployments, and asks for a project- or deployment-scoped
+  Elasticsearch API key.
+- The consent text's action line holds one line: a line feed from the stack
+  shows there as U+FFFD, and a new case title with a line feed is
+  `invalid_argument`. A rule create plan shows its `rule_id` line first.
+
+### Fixed
+
+- Alert status, tag, and assignee reports (`alerts ack`, `open`, `close`,
+  `tag`, and `assign`, and MCP alert plans) add their failure counters with
+  checked arithmetic. An overflowing sum is an `http` error that says the
+  counters are unreadable.
+- MCP maps every apply report with checked arithmetic, including a rule
+  toggle's. A report whose counters overflow or pass the planned count
+  records the plan as `unknown` with no outcome.
+
 ## 0.9.0 — 2026-11-11
 
 ### Added

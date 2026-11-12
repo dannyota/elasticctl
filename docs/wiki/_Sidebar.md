@@ -17,6 +17,7 @@
 - [Fleet](Fleet.md)
 - [MCP](MCP.md)
 - [MCP Mutations](MCP-Mutations.md)
+- [MCP Mutation Kinds](MCP-Mutation-Kinds.md)
 
 **Reference**
 

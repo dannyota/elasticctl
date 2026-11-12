@@ -32,8 +32,10 @@ install method puts both names on `PATH`.
   Saved Objects bundles.
 - [Fleet](Fleet.md): agent policies and integration policies.
 - [MCP](MCP.md): serve read-only tools to an MCP client.
-- [MCP Mutations](MCP-Mutations.md): let an MCP client toggle rules after a
-  person confirms each change.
+- [MCP Mutations](MCP-Mutations.md): let an MCP client change rules, alerts,
+  and cases after a person confirms each change.
+- [MCP Mutation Kinds](MCP-Mutation-Kinds.md): each mutation class, its tools
+  and inputs, and what a second call does not restore.
 
 ## Reference
 
