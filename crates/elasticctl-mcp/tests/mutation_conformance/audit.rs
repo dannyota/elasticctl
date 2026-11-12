@@ -89,30 +89,45 @@ async fn flow(scenario: &str) {
     }
     let sink = h.audit.clone();
     finish(h).await;
-    let after = unix_seconds();
     let lines = sink.lock().unwrap().clone();
-    assert_eq!(lines.len(), expected.len(), "{scenario}: {lines:?}");
+    let base = base(&p, &s, "rules_set_enabled", "rules-toggle");
+    assert_lines(scenario, &lines, base, expected, before..=unix_seconds());
+    if matches!(scenario, "stale" | "discarded") {
+        assert_writes(&s, 0).await;
+    }
+}
+fn base(p: &Value, s: &MockServer, kind: &str, class: &str) -> Value {
+    json!({"plan_id":p["plan_id"],"hash":p["hash"],"kind":kind,"class":class,"profile":"test",
+        "host":s.address().to_string(),"space":"default","credential":p["credential"],"protocol":"2026-07-28"})
+}
+/// Requires exactly the expected events, in order, each with only the
+/// common fields of design 8.4 plus its own, and a `ts` in Unix seconds
+/// inside the flow's window.
+fn assert_lines(
+    label: &str,
+    lines: &[String],
+    base: Value,
+    expected: Vec<(&str, Value)>,
+    window: std::ops::RangeInclusive<u64>,
+) {
+    assert_eq!(lines.len(), expected.len(), "{label}: {lines:?}");
+    assert!(!window.contains(&1));
+    assert!(!window.contains(&(window.start() * 1000)));
     for (line, (event, extra)) in lines.iter().zip(expected) {
         let value: Value = serde_json::from_str(line).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 1);
         let a = &value["audit"];
-        let mut exact = json!({"ts":a["ts"],"event":event,"plan_id":id,"hash":p["hash"],
-            "kind":"rules_set_enabled","class":"rules-toggle","profile":"test",
-            "host":s.address().to_string(),"space":"default","credential":p["credential"],"protocol":"2026-07-28"});
-        let window = before..=after;
         assert!(
             window.contains(&a["ts"].as_u64().unwrap()),
-            "{scenario}: {line}"
+            "{label}: {line}"
         );
-        assert!(!window.contains(&1));
-        assert!(!window.contains(&(before * 1000)));
+        let mut exact = base.clone();
+        exact["ts"] = a["ts"].clone();
+        exact["event"] = json!(event);
         for (k, v) in extra.as_object().unwrap() {
             exact[k] = v.clone();
         }
-        assert_eq!(a, &exact, "{scenario}: {line}");
-    }
-    if matches!(scenario, "stale" | "discarded") {
-        assert_writes(&s, 0).await;
+        assert_eq!(a, &exact, "{label}: {line}");
     }
 }
 /// Extends mutation_apply::accepted_write_and_replay and write_status_classification_and_malformed_success:
@@ -137,4 +152,64 @@ async fn stale_discarded_audit_is_exact() {
     for scenario in ["stale", "discarded"] {
         flow(scenario).await;
     }
+}
+/// Extends mutation_rules_create::post_conflict_bad_request_and_enabled_response_classification
+/// with the exact audit sequence of a 409 at write time: the plan goes from
+/// `applying` to `stale`, so `apply_finished` is followed by one `plan_closed`.
+#[tokio::test]
+async fn write_conflict_stale_audit_is_exact() {
+    let before = unix_seconds();
+    let (s, mut h) = setup().await;
+    let r = call(
+        &mut h,
+        "rules_create_plan",
+        json!({"rule":{"rule_id":"new-rule","name":"New rule","type":"query","query":"event.kind: event"}}),
+    )
+    .await;
+    let p = data(&r)["plan"].clone();
+    assert_eq!(p["state"], "open", "{r}");
+    let id = &p["plan_id"];
+    let q = question(&mut h, id).await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules"))
+        .respond_with(
+            ResponseTemplate::new(409).set_body_json(json!({"status_code":409,"message":"exists"})),
+        )
+        .expect(1)
+        .mount(&s)
+        .await;
+    send(&mut h, 2, answer(id, &q, accept())).await;
+    let r = receive(&mut h).await;
+    assert_eq!(code(&r), "plan_stale", "{r}");
+    let sink = h.audit.clone();
+    finish(h).await;
+    let lines = sink.lock().unwrap().clone();
+    let expected = vec![
+        ("plan_created", json!({"targets":["new-rule"]})),
+        ("confirmation_requested", json!({"prompt":1})),
+        ("confirmation_answered", json!({"result":"confirmed"})),
+        ("apply_started", json!({})),
+        (
+            "apply_finished",
+            json!({"state":"stale","outcome":null,"http_status":409}),
+        ),
+        ("plan_closed", json!({"state":"stale"})),
+    ];
+    let base = base(&p, &s, "rules_create", "rules-create");
+    assert_lines(
+        "write conflict",
+        &lines,
+        base,
+        expected,
+        before..=unix_seconds(),
+    );
+    let writes: Vec<_> = s
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method != "GET")
+        .collect();
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(writes[0].url.path(), "/api/detection_engine/rules");
 }
