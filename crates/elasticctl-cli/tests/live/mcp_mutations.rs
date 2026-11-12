@@ -253,7 +253,14 @@ fn contract(
         frames::code(&frames::content(stale, a.path)?, "plan_stale")?;
         require(read()? == outside)?;
     }
-    extension::run(&mut a, &rt, &t, registry, id, index)?;
+    extension::run(
+        &mut a,
+        &rt,
+        &cleanup_transport(profile)?,
+        registry,
+        id,
+        index,
+    )?;
     a.child.shutdown()?;
     let mut b = Session::spawn(config, McpProtocolPath::Legacy, true, true)?;
     b.owned = registry.rules.clone();
@@ -369,3 +376,7 @@ mod extension;
 #[cfg(test)]
 #[path = "mcp_mutations/extension_conformance.rs"]
 mod extension_conformance;
+
+#[cfg(test)]
+#[path = "mcp_mutations/pending_tests.rs"]
+mod pending_tests;

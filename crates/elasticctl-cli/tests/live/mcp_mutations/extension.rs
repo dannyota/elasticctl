@@ -215,14 +215,7 @@ pub(super) fn run<C: Child>(
     let token = unique_name("mutation-created-case");
     marker(&token)?;
     s.owned.insert(token.clone());
-    let args =
-        json!({"title":token,"description":LIVE_TAG,"tags":[LIVE_TAG,token],"severity":"low"});
-    let result = s.extension_change("cases_create_plan", args, &token, None)?;
-    let case_id = result["data"]["outcome"]["created"]["case_id"]
-        .as_str()
-        .ok_or("contract")?
-        .to_owned();
-    rt.block_on(register_case(t, registry, &case_id, &token))?;
+    let case_id = create_mcp_case(s, rt, t, registry, &token)?;
     s.owned.insert(case_id.clone());
     let c = rt.block_on(case(t, registry, &case_id))?;
     require(
@@ -258,9 +251,7 @@ pub(super) fn run<C: Child>(
     marker(&new_rule)?;
     s.owned.insert(new_rule.clone());
     let body = rule_body(&new_rule, index)?;
-    let result = s.extension_change("rules_create_plan", json!({"rule":body}), &new_rule, None)?;
-    let created = rt.block_on(owned_rule(t, &new_rule))?;
-    registry.rules.insert(new_rule.clone());
+    let (result, created) = create_mcp_rule(s, rt, t, registry, &new_rule, &body)?;
     let canonical = rule_state(&created);
     let expected = rule_state(&body);
     require(
@@ -286,12 +277,7 @@ pub(super) fn refusal<C: Child>(
 ) -> TestResult {
     let token = unique_name("mutation-sync-case");
     marker(&token)?;
-    let raw = rt.block_on(async {
-        check_cancelled()?;
-        safe(t.post(cases::CASES_PATH, Some(&json!({"title":token,"description":LIVE_TAG,"tags":[LIVE_TAG,token],"owner":cases::OWNER,"connector":{"id":"none","name":"none","type":".none","fields":null},"settings":{"syncAlerts":true}}))).await)
-    })?;
-    let id = raw["id"].as_str().ok_or("contract")?.to_owned();
-    rt.block_on(register_case(t, registry, &id, &token))?;
+    let id = rt.block_on(create_refusal_case(t, registry, &token))?;
     let h = rt.block_on(alert(t, registry, alert_id))?;
     require(h.source["kibana.alert.workflow_status"] == "open")?;
     let rule = registry.alerts.get(alert_id).ok_or("contract")?;
@@ -329,4 +315,53 @@ pub(super) fn refusal<C: Child>(
         rt.block_on(case(t, registry, &id))? == before
             && rt.block_on(alert(t, registry, alert_id))?.source == alert_before.source,
     )
+}
+
+pub(super) fn create_mcp_case<C: Child>(
+    s: &mut Session<C>,
+    rt: &tokio::runtime::Runtime,
+    t: &Transport,
+    registry: &mut Registry,
+    token: &str,
+) -> TestResult<String> {
+    marker(token)?;
+    registry.pending_cases.insert(token.into());
+    let args =
+        json!({"title":token,"description":LIVE_TAG,"tags":[LIVE_TAG,token],"severity":"low"});
+    let result = s.extension_change("cases_create_plan", args, token, None)?;
+    let case_id = result["data"]["outcome"]["created"]["case_id"]
+        .as_str()
+        .ok_or("contract")?
+        .to_owned();
+    rt.block_on(register_case(t, registry, &case_id, token))?;
+    Ok(case_id)
+}
+pub(super) fn create_mcp_rule<C: Child>(
+    s: &mut Session<C>,
+    rt: &tokio::runtime::Runtime,
+    t: &Transport,
+    registry: &mut Registry,
+    id: &str,
+    body: &elasticctl_api::model::Rule,
+) -> TestResult<(Value, elasticctl_api::model::Rule)> {
+    marker(id)?;
+    registry.pending_rules.insert(id.into());
+    let result = s.extension_change("rules_create_plan", json!({"rule":body}), id, None)?;
+    let created = rt.block_on(owned_rule(t, id))?;
+    registry.rules.insert(id.into());
+    registry.pending_rules.remove(id);
+    Ok((result, created))
+}
+pub(super) async fn create_refusal_case(
+    t: &Transport,
+    registry: &mut Registry,
+    token: &str,
+) -> TestResult<String> {
+    marker(token)?;
+    registry.pending_cases.insert(token.into());
+    check_cancelled()?;
+    let raw = safe(t.post_once(cases::CASES_PATH, Some(&json!({"title":token,"description":LIVE_TAG,"tags":[LIVE_TAG,token],"owner":cases::OWNER,"connector":{"id":"none","name":"none","type":".none","fields":null},"settings":{"syncAlerts":true}}))).await)?;
+    let id = raw["id"].as_str().ok_or("contract")?.to_owned();
+    register_case(t, registry, &id, token).await?;
+    Ok(id)
 }

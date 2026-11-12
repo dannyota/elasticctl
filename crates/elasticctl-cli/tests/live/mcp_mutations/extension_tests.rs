@@ -168,7 +168,7 @@ fn sync_case_refusal_reads_both_objects_and_cleanup_deletes_exact_case() {
             json!({"kibana_url":server.uri(),"es_url":server.uri(),"api_key":"offline"}),
         )
         .unwrap();
-        let t = Transport::new(&profile).unwrap();
+        let t = cleanup_transport(&profile).unwrap();
         let mut registry = Registry::default();
         registry.rules.insert("elasticctl-live-test".into());
         registry
