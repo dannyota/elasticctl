@@ -369,3 +369,14 @@ contracts pass on every target:
 The self-managed leg ran in `live-lab.yml` on a fresh CI lab. The
 [findings](../../conformance/v0.9.2/findings.md) record the mutation contract
 and the product client matrix on Hosted.
+
+The 0.9.3 measured matrix reruns the thirteen contracts with the API key
+passed only through each child's environment; all pass on every target:
+
+| Flavor | Version | Contracts | Cleanup | Report |
+| --- | --- | --- | --- | --- |
+| Serverless | 9.7.0 | 13 pass | Verified | [report](../../conformance/v0.9.3/serverless-9.7.0.json) |
+| Elastic Cloud Hosted | 9.5.6 | 13 pass | Verified | [report](../../conformance/v0.9.3/ech-9.5.6.json) |
+| Self-managed | 9.5.1 | 13 pass | Verified | [report](../../conformance/v0.9.3/traditional-9.5.1.json) |
+
+The [findings](../../conformance/v0.9.3/findings.md) record the run.
