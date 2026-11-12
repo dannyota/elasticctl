@@ -18,6 +18,13 @@ list shared with containers outside the scope is in the set, because `pull`
 writes a list's values in full whenever it writes the list, so the local set
 is never a partial view (shared design 5.4).
 
+`push` also checks the **retained** references: an in-scope local rule may
+point at an exception container that is on the stack but not in the mirror,
+which `push` leaves as it is. The `list` entries of that container's remote
+items are dependencies of the rule, so `push` reads them and checks them by
+7.4. They are read and checked only: a list they name that is not in the
+selected set is never written.
+
 A local pair outside the selected set is reported as `unreferenced` by
 `diff` and `push`, and is never written. A list nothing in the mirror
 references is not part of a rules-as-code mirror; `value-lists export` and
@@ -34,15 +41,17 @@ config/
 ```
 
 A value list's `<stem>` is its `id` when the `id` is at most 64 bytes, uses
-only lowercase ASCII letters, digits, `-`, `_`, and `.`, and does not start
-with `.`. Any other `id` gets the stem `<prefix>-<hash>`: `<prefix>` is the
-first 48 bytes of the `id` passed through the rule-file sanitizer and
-lowercased, and `<hash>` is the first 12 hex digits of the SHA-256 of the
-`id`. The container file always carries the true `id`. Stems are compared
-without regard to case. Names are planned for every rule, exception list,
-and value list before the first file is written, and a collision is refused
-naming every colliding pair at once (shared design 5). `export`, `import`,
-and `validate` use the same stem rule.
+only lowercase ASCII letters, digits, `-`, `_`, and `.`, does not start or end
+with `.`, and is not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`
+to `com9`, `lpt1` to `lpt9`, alone or before a `.`). Any other `id` gets the
+stem `<prefix>-<hash>`. `<prefix>` is the `id` passed through the rule-file
+sanitizer, then lowercased, then cut to at most 48 bytes at a character
+boundary, with a trailing `.` removed. `<hash>` is the first 12 hex digits of
+the SHA-256 of the `id`'s UTF-8 bytes. The container file always carries the
+true `id`. Stems are compared without regard to case. Names are planned for
+every rule, exception list, and value list before the first file is written,
+and a collision is refused naming every colliding pair at once (shared design
+5). `export`, `import`, and `validate` use the same stem rule.
 
 The pull transaction and its journal cover `value-lists/` like the other
 roots. Mirror reads fail closed (shared design 6.3): `value-lists/` must be a
@@ -72,14 +81,21 @@ warnings and leave `clean` alone.
 
 `push` validates every pair in the selected set by section 5 before any
 request. Then it checks every `list` entry of every local exception item in
-the selected containers, whether `push` would write the item or not:
+the selected containers, whether `push` would write the item or not, and of
+every remote item of a retained container (7.1):
 
-- the list must be in the selected set or exist on the stack, or `push`
+- the list must have a source: a local pair that passed validation and that
+  this run writes, or a container that `GET /api/lists?id=` returned and that
+  decoded. Membership in the selected set is not enough. Otherwise `push`
   refuses with `not_found` naming the list and the item (D4);
-- the list's type, from the local file or the stack, must equal the entry's
-  `list.type`, or `push` refuses with `conflict` naming both types (D4);
-- an `ip_range` list's final stored dash count must pass D12, including a
-  list that is only on the stack.
+- that source's type must equal the entry's `list.type`, or `push` refuses
+  with `conflict` naming both types (D4);
+- an `ip_range` list's final stored dash count must pass D12, from the local
+  values or, for a list read from the stack, from its stored values.
+
+`push` also refuses with `conflict` a run that changes a list's values and
+also changes an entry that references it, its operator, field, or list
+(D27). The message names both changes and asks for two runs.
 
 These refusals replace the 0.9 behavior, which printed a preview line for a
 missing list and applied anyway (shared design 7.7). Before it writes the
@@ -96,18 +112,44 @@ are reconciled exactly (D8), with the phases of section 6.
 
 The change-evidence report records value-list mutations with the actions
 `create_value_list`, `update_value_list`, `remove_values`, and `add_values`,
-in the order they ran. Each entry carries:
+in the order they ran. `remove_values` has one entry per value and
+`add_values` one entry per import request, so a partial phase is visible.
+Each entry carries:
 
 - `rule_id`: the list `id`, as exception entries already reuse that field,
   and `name`: the list name;
-- `outcome`: `applied`, `failed`, `unknown`, or `not_reached` (section 6.7);
-- for the value actions, `values`: every value written, and `verified`: the
-  read-back result;
-- for `unknown`, `missing` and `extra`: the counts the last read-back saw.
+- `values`: the values that request carried, in byte order;
+- `sent`: `accepted` (2xx), `refused` (4xx, with its status), `uncertain`
+  (section 6.4), or `not_sent`;
+- `phase_verified`: whether the read-back of that phase observed its
+  expected set;
+- `outcome`: the list's outcome of section 6.7, the same on every entry of
+  the list.
 
-The `-api` apply returns this evidence for every outcome, including when a
-list stops the run. The report is written before the command exits, so a
-partial apply is never unreported (shared design 5).
+A list that ends `unknown` adds one `read_back` entry with `missing` and
+`extra`: the counts the last read-back saw. A `not_reached` list adds one
+entry with its planned counts and no values.
+
+The push summary gains `value_lists_created`, `value_lists_updated`,
+`values_added`, `values_removed`, `value_lists_unknown`, and
+`value_lists_not_reached`, each omitted when zero, so a mirror without value
+lists reports exactly what 0.9 reported. `value_lists_created` and
+`value_lists_updated` count lists that ended `applied`; `values_added` and
+`values_removed` count only values in a verified phase. For a run where list
+`a` applies with 1,200 adds and 3 removes, list `b` sends two import chunks
+and the second times out without a match, and list `c` is not reached, the
+summary is:
+
+```json
+{"value_lists_updated": 1, "values_added": 1200, "values_removed": 3,
+ "value_lists_unknown": 1, "value_lists_not_reached": 1}
+```
+
+The report holds `a`'s entries, `b`'s first chunk as `accepted` and its
+second as `uncertain`, `b`'s `read_back` entry, and `c`'s `not_reached`
+entry. The `-api` apply returns this evidence for every
+outcome, and the report is written before the command exits, so a partial
+apply is never unreported (shared design 5).
 
 ### 7.6 Older binaries
 

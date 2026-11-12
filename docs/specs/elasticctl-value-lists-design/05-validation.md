@@ -30,7 +30,7 @@ stored values in dash form, duplicates included (section 3.6).
 - A final state above 200 refuses the write with `unsupported`.
 - A between-phases state above 200 refuses the write, unless it is no higher
   than the current state: a write that only lowers an existing count is a
-  repair, and is allowed.
+  repair, and is allowed, with any container update it carries.
 
 The message says that Kibana 9.5.1, 9.5.6, and 9.7.0 suppress every event
 for an `is in list` exception on such a list (V11), and gives the remedy:

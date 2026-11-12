@@ -56,12 +56,16 @@ Values are compared as sets (section 3.6). The change runs in two phases
   that cannot fit. The bound keeps each request under Kibana's 9,000,000-byte
   limit (V5) with room for the multipart framing. Requests go one at a time.
 
-D22 picks the order from the mirror's references to the list: removes first
-when every reference is `included`, adds first when every reference is
-`excluded`, and removes first otherwise. A `value-lists import --overwrite`
-outside the mirror sees no references, so it removes first. The between-phase
-state of section 5.2 is the remote set less the removes, or the remote set
-plus the adds.
+D22 picks the order from the references installed on the stack, found by
+the scan of D26 before the preview: removes first when every installed
+reference is `included`, adds first when every one is `excluded`, and removes
+first when both are in use or none is, in which case the preview names each
+`excluded` reference that may briefly suppress more. `state push` and
+`value-lists import --overwrite` use the same scan. `state push` writes
+values before exception items, so the installed references are the ones in
+force while the values change; D27 refuses a run that would change both a
+list's values and a reference to it. The between-phase state of section 5.2
+is the remote set less the removes, or the remote set plus the adds.
 
 ### 6.4 Read-back
 
@@ -83,6 +87,15 @@ A match ends the phase as verified. No match within the budget ends it as
 the command sends nothing further for that list or any list after it. The
 read-back only reads: it never sends a second import, which could duplicate
 values.
+
+**Uncertain writes.** A write whose answer is a 5xx, a timeout, a connection
+loss after sending, or an undecodable body is uncertain (D17). The command
+sends no further write in that phase and goes straight to the phase's
+read-back. If the read-back observes the phase's expected set, the uncertain
+write evidently applied: the phase is verified and the run continues. If it
+does not, because the write did not apply or because later chunks were never
+sent, the list ends `unknown`. A 4xx is not uncertain: Kibana refused the
+request, and the list ends `failed` without a read-back.
 
 ### 6.5 Delete
 
@@ -113,10 +126,10 @@ both streams true. Anything else is an `http` error with the flow's status.
 
 | Answer to a write | Outcome of that list |
 | --- | --- |
-| 2xx for every write, and every phase verified | `applied` |
+| Every phase verified by read-back, whatever the answers to its writes | `applied` |
 | 409 | `failed`, kind `conflict` |
 | Other 4xx | `failed`, with Kibana's message and status |
-| 5xx, timeout, connection loss after sending, an undecodable body, or a read-back past its budget | `unknown`, with the observed set's missing and extra counts |
+| A phase not verified within its budget, after an uncertain write or not | `unknown`, with the observed set's missing and extra counts |
 | Not attempted because an earlier list failed or is unknown | `not_reached` |
 
 A command that writes several lists stops at the first `failed` or `unknown`
