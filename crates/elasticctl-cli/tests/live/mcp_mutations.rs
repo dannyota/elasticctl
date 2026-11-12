@@ -339,11 +339,12 @@ fn live_run(measurements: bool, started: &std::cell::Cell<bool>) -> TestResult {
 }
 #[path = "mcp_mutations/measure.rs"]
 mod measure;
-fn finish_contract(result: TestResult, started: bool) {
-    if let Err(error) = result {
+fn run_classified(run: impl FnOnce(&std::cell::Cell<bool>) -> TestResult) {
+    let started = std::cell::Cell::new(false);
+    if let Err(error) = run(&started) {
         let class = match error.as_str() {
             "cleanup_failed" => ConformanceFailureClass::Cleanup,
-            "baseline_failed" if !started => ConformanceFailureClass::Harness,
+            "baseline_failed" if !started.get() => ConformanceFailureClass::Harness,
             "baseline_failed" => ConformanceFailureClass::Cleanup,
             _ => ConformanceFailureClass::Contract,
         };
@@ -354,9 +355,7 @@ pub(super) fn run_contract() {
     if skip_unless_live() {
         return;
     }
-    let started = std::cell::Cell::new(false);
-    let result = live_run(false, &started);
-    finish_contract(result, started.get());
+    run_classified(|started| live_run(false, started));
 }
 pub(super) fn run_measurements() {
     if skip_unless_live() {
