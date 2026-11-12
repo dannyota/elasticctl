@@ -1,9 +1,11 @@
 # elasticctl 0.9 MCP mutation design
 
-Status: 0.9.0 implements the consent mechanism and the `rules-toggle` class.
-The [live findings](../conformance/v0.9.0-findings.md) and the
-[review record](../reviews/v0.9.0.md) hold its evidence. Release and
-publication each need separate approval. 0.9.1 and 0.9.2 are designed.
+Status: 0.9.0 implements the consent mechanism and the `rules-toggle` class,
+and 0.9.1 the `alerts-triage`, `cases`, and `rules-create` classes. The live
+findings ([0.9.0](../conformance/v0.9.0-findings.md),
+[0.9.1](../conformance/v0.9.1-findings.md)) and the review records
+([0.9.0](../reviews/v0.9.0.md), [0.9.1](../reviews/v0.9.1.md)) hold the
+evidence. 0.9.2 is designed.
 
 The [shared design](elasticctl-design.md) defines existing behavior and the
 [0.7 MCP design](elasticctl-mcp-design.md) defines the server this extends.

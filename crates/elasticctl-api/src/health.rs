@@ -79,9 +79,8 @@ pub fn check(name: &str, status: Status, message: impl Into<String>) -> DoctorCh
     }
 }
 
-/// `_es_api_key` can mint a rule API key for the caller; `_cloud_api_key`
-/// cannot. Other realms are not API keys, so the result names the realm
-/// without claiming otherwise.
+/// `_es_api_key` is scoped; `_cloud_api_key` is an unsupported organization
+/// key. Other realms are named without claiming they are API keys.
 fn key_scope_check(realm: &str) -> DoctorCheck {
     match realm {
         "_es_api_key" => check(
@@ -92,9 +91,9 @@ fn key_scope_check(realm: &str) -> DoctorCheck {
         "_cloud_api_key" => check(
             "key_scope",
             Status::Warn,
-            "Organization-level API key: reads and deletes work, but enabling a \
-             rule will fail. Create a project-scoped Elasticsearch API key in \
-             Kibana under Management > API keys.",
+            "Organization-level API key: not supported. MCP planning refuses it, and \
+             rule changes may fail on some deployments. Create a project- or \
+             deployment-scoped Elasticsearch API key in Kibana under Management > API keys.",
         ),
         other => check(
             "key_scope",
@@ -215,10 +214,8 @@ async fn value_list_index_check(t: &Transport) -> DoctorCheck {
 /// Run the stack-reading checks.
 ///
 /// The connectivity check gates the rest: without a capability probe there is
-/// no flavor, no realm, and no rule access to report. Spec 7.2: the realm is
-/// the signal for whether rule mutation will work — `_cloud_api_key` cannot
-/// enable a rule, and an operator must learn that here rather than from a 400
-/// in the middle of a push.
+/// no flavor, no realm, and no rule access to report. The realm identifies
+/// unsupported organization keys, which may fail for rule changes (spec 7.2).
 pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
     let mut checks = Vec::new();
 
@@ -311,7 +308,10 @@ mod tests {
     fn key_scope_check_warns_for_an_organization_cloud_api_key() {
         let c = key_scope_check("_cloud_api_key");
         assert_eq!(c.status, Status::Warn);
-        assert!(c.detail.contains("Organization-level"));
+        assert_eq!(
+            c.detail,
+            "Organization-level API key: not supported. MCP planning refuses it, and rule changes may fail on some deployments. Create a project- or deployment-scoped Elasticsearch API key in Kibana under Management > API keys."
+        );
     }
 
     #[test]

@@ -52,6 +52,7 @@ pub(super) fn run(
         create_rule(t, cleanup, &gone, index).await?;
         check_cancelled()?;
         require(cleanup.rules.contains(&gone))?;
+        require(owned_rule(t, &gone).await?.as_map().get("enabled") == Some(&json!(false)))?;
         safe(rules::delete(t, &gone).await)?;
         let plan = safe(rules_ops::plan_set_enabled(t, &[id.into()], false).await)?;
         exact_targets(&plan.targets, &[id.into()])?;

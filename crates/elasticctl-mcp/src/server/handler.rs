@@ -382,6 +382,12 @@ impl ServerHandler for McpServer {
             dispatch,
             DispatchTarget::Adapter(
                 crate::catalog::ToolId::RulesSetEnabledPlan
+                    | crate::catalog::ToolId::AlertsSetStatusPlan
+                    | crate::catalog::ToolId::AlertsSetTagsPlan
+                    | crate::catalog::ToolId::CasesCommentPlan
+                    | crate::catalog::ToolId::CasesCreatePlan
+                    | crate::catalog::ToolId::CasesSetStatusPlan
+                    | crate::catalog::ToolId::RulesCreatePlan
                     | crate::catalog::ToolId::PlanApply
                     | crate::catalog::ToolId::PlanGet
                     | crate::catalog::ToolId::PlanList

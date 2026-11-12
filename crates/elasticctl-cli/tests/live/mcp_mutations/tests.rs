@@ -43,9 +43,9 @@ fn no_step_names_an_unmarked_object() {
 }
 
 #[derive(Default)]
-struct FakeChild {
-    sent: Vec<Value>,
-    replies: std::collections::VecDeque<Value>,
+pub(super) struct FakeChild {
+    pub(super) sent: Vec<Value>,
+    pub(super) replies: std::collections::VecDeque<Value>,
 }
 impl Child for FakeChild {
     fn send(&mut self, frame: Value) -> TestResult {
@@ -82,6 +82,7 @@ fn fake_current_child_receives_retry_outside_arguments() {
         form: true,
         next: 10,
         owned: ["elasticctl-live-test".into()].into(),
+        checks: Default::default(),
         plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     frames::applied(&s.apply("pln_test", true).unwrap(), false).unwrap();
@@ -115,6 +116,7 @@ fn fake_legacy_child_receives_elicitation_response() {
         form: true,
         next: 10,
         owned: ["elasticctl-live-test".into()].into(),
+        checks: Default::default(),
         plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     s.apply("pln_test", false).unwrap();
@@ -131,6 +133,7 @@ fn missing_marker_stops_before_a_child_call() {
         form: true,
         next: 10,
         owned: ["elasticctl-live-test".into()].into(),
+        checks: Default::default(),
         plans: [("pln_test".into(), "elasticctl-live-test".into())].into(),
     };
     assert!(s.plan("unmarked", true).is_err());
@@ -175,4 +178,12 @@ fn rule_state_ignores_a_run_and_keeps_a_real_change() {
         "a toggle is a change"
     );
     assert!(rule_state(&before).enabled());
+}
+
+#[test]
+fn shipped_classes_cover_every_mutation_class() {
+    assert_eq!(
+        SHIPPED_CLASSES,
+        ["rules-toggle", "alerts-triage", "cases", "rules-create"]
+    );
 }

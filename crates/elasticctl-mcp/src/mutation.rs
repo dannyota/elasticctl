@@ -5,12 +5,18 @@ use elasticctl_core::{Error, ErrorKind, Result};
 /// An explicitly enabled mutation class.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MutationClass {
+    AlertsTriage,
+    Cases,
+    RulesCreate,
     RulesToggle,
 }
 
 impl MutationClass {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::AlertsTriage => "alerts-triage",
+            Self::Cases => "cases",
+            Self::RulesCreate => "rules-create",
             Self::RulesToggle => "rules-toggle",
         }
     }
@@ -30,6 +36,15 @@ impl MutationClasses {
         for value in values {
             for piece in value.as_ref().split(',') {
                 match piece {
+                    "alerts-triage" => {
+                        classes.insert(MutationClass::AlertsTriage);
+                    }
+                    "cases" => {
+                        classes.insert(MutationClass::Cases);
+                    }
+                    "rules-create" => {
+                        classes.insert(MutationClass::RulesCreate);
+                    }
                     "rules-toggle" => {
                         classes.insert(MutationClass::RulesToggle);
                     }

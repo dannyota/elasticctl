@@ -71,16 +71,17 @@ It can:
   resolve `rule_readiness` uses, which returns counts only.
 - With `--allow-query-tools`, run synchronous ES|QL queries and index searches
   with the selected credential.
-- With `--allow-mutations rules-toggle`, enable or disable named rules: one
-  rule bulk action request per plan, after a person confirms the plan in the
-  client. See [MCP Mutations](MCP-Mutations.md).
+- With `--allow-mutations`, send one write request per plan, after a person
+  confirms the plan in the client: a rule bulk action, an alert status or tag
+  update, a case create, comment, or status update, or a disabled rule
+  create. See [MCP Mutation Kinds](MCP-Mutation-Kinds.md).
 
 It cannot:
 
-- Send a request that changes the stack, other than the rule bulk action of a
-  confirmed plan. It sends no `PUT`, `PATCH`, or `DELETE`, and no Fleet setup,
-  rule preview, import, async query, or point in time request. It deletes
-  nothing and never runs `state push`.
+- Send a request that changes the stack, other than the one write of a
+  confirmed plan. It sends no `PUT` or `DELETE`, no `PATCH` other than a case
+  status update, and no Fleet setup, rule preview, import, async query, or
+  point in time request. It deletes nothing and never runs `state push`.
 - Change its target. No tool accepts a profile, space, host, URL, credential,
   configuration path, timeout, debug option, or file path.
 - Read or write local files. Startup reads only the selected configuration and

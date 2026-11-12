@@ -79,7 +79,9 @@ coercing a malformed value to zero, "unknown", or an empty result:
   that differs from the plan target before sending it. Its response must then
   return each requested case id exactly once at that target status. A
   contradictory, missing, duplicate, or unexpected result is an `http` error,
-  never "nothing happened".
+  never "nothing happened". Alert report failure counters use checked addition;
+  an overflowing sum is a statusless `http` decode error saying the counters
+  are unreadable.
 - **Read outcomes.** A recognized export trailer decodes or fails with its
   line number; a preview-hits body requires `hits.total.value` and
   `hits.hits`; an `_authenticate` body requires `username` and

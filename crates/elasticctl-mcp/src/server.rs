@@ -1434,3 +1434,33 @@ mod path_id_tests {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod outcome_test_support {
+    pub(crate) fn state(url: String) -> super::ServerState {
+        let resolved = elasticctl_core::Resolved {
+            name: "test".into(),
+            source: elasticctl_core::Source::Profile,
+            profile: elasticctl_core::Profile {
+                kibana_url: url,
+                es_url: None,
+                api_key: Some("test-key".into()),
+                username: None,
+                password: None,
+                space: "default".into(),
+                verify: true,
+                timeout_secs: 30,
+            },
+        };
+        super::ServerState::new(
+            crate::TargetContext {
+                profile: "test".into(),
+                host: "example.test".into(),
+                space: "default".into(),
+            },
+            resolved,
+            std::time::Duration::from_secs(30),
+            false,
+        )
+    }
+}

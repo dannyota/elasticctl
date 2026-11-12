@@ -250,3 +250,34 @@ async fn doctor_does_not_print_the_full_api_key_id() {
         "the realm is the useful signal and stays: {text}"
     );
 }
+
+#[tokio::test]
+async fn doctor_reports_organization_key_in_full() {
+    let server = doctor_server("operator", "_cloud_api_key").await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config_for(dir.path(), &server.uri());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&cfg, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = bin()
+        .args(["doctor", "--json", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report,
+        json!({"checks": [
+        {"check":"config", "status":"ok", "message":"profile 'default'"},
+        {"check":"connectivity", "status":"ok", "message":server.uri()},
+        {"check":"flavor", "status":"ok", "message":"serverless 9.6.0"},
+        {"check":"auth", "status":"ok", "message":"operator via _cloud_api_key"},
+        {"check":"key_scope", "status":"warn", "message":"Organization-level API key: not supported. MCP planning refuses it, and rule changes may fail on some deployments. Create a project- or deployment-scoped Elasticsearch API key in Kibana under Management > API keys."},
+        {"check":"rules_access", "status":"fail", "message":"decoding rule _find response field page: must be an unsigned integer"},
+        {"check":"value_list_index", "status":"warn", "message":"value-list data streams are not bootstrapped; an exception entry of type 'list' cannot work until POST /api/lists/index runs"}
+    ], "ok":false})
+    );
+}

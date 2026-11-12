@@ -4,7 +4,7 @@ use super::{
     audit::{self, Answer, Event},
     confirm, hash,
     kind::Operation,
-    store::{Outcome, Plan, PlanState, PlanStore},
+    store::{Plan, PlanState, PlanStore},
     view,
 };
 use crate::{
@@ -88,6 +88,10 @@ async fn check(s: &ServerState, c: &CallContext, p: &Stored) -> Result<()> {
         .observe(t)
         .await
         .map_err(|e| error::core(&e))?;
+    if let Err(error) = p.content.payload.check_observed(&seen) {
+        close(s, c, &p.id, PlanState::Stale)?;
+        return Err(error.tool_error());
+    }
     let values: Vec<Value> = seen
         .clone()
         .sorted()
@@ -384,47 +388,20 @@ async fn write(s: &ServerState, c: &CallContext, p: &Stored) -> Result<()> {
         Err(e) => Err(e),
     };
     let (state, outcome, status, error) = match result {
-        Ok(r) => {
-            let requested = p.content.targets.len() as u64;
-            let failed = r.failed + r.skipped + requested.saturating_sub(r.total);
-            (
-                PlanState::Applied,
-                Some(Outcome {
-                    requested,
-                    updated: r.succeeded,
-                    unchanged: 0,
-                    failed,
-                    complete: r.succeeded == requested && failed == 0,
-                    created: None,
-                }),
-                None,
-                None,
-            )
-        }
+        Ok(r) => (PlanState::Applied, Some(r), None, None),
         Err(e) => {
             let status = e.http_status;
-            let failed = status.is_some_and(|s| (400..500).contains(&s));
-            let error = if failed {
-                error::core(&e)
-            } else {
-                let mut error = PlanError::ApplyOutcomeUnknown(e.kind).tool_error();
-                error.http_status = status;
-                error
-            };
-            (
-                if failed {
-                    PlanState::Failed
-                } else {
-                    PlanState::Unknown
-                },
-                None,
-                status,
-                Some(error),
-            )
+            let (state, error) = p.content.payload.kind().classify(&e);
+            (state, None, status, Some(error))
         }
     };
     store(s, c, |st| st.finish(&p.id, state, outcome, Instant::now()))?;
-    event(s, c, &get(s, c, &p.id)?, Event::ApplyFinished(status));
+    let finished = get(s, c, &p.id)?;
+    event(s, c, &finished, Event::ApplyFinished(status));
+    // A 409 closes the plan as stale, and design 8.4 logs every stale close.
+    if state == PlanState::Stale {
+        event(s, c, &finished, Event::PlanClosed);
+    }
     error.map_or(Ok(()), Err)
 }
 
@@ -440,6 +417,93 @@ mod tests {
             (PlanState::Stale, "plan_stale"),
         ] {
             assert_eq!(answer_open(state).unwrap_err().code, code);
+        }
+    }
+}
+
+#[cfg(test)]
+mod malformed_counter_tests {
+    use super::*;
+    use elasticctl_api::{alerts::AlertStatus, alerts_ops};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn overflowing_alert_counters_finish_unknown_without_applied_outcome() {
+        for body in [
+            json!({"total":1,"updated":18446744073709551615_u64,"noops":2,
+                "version_conflicts":0,"failures":[]}),
+            json!({"total":1,"updated":1,"noops":0,
+                "version_conflicts":u64::MAX,"failures":[{}]}),
+        ] {
+            for tags in [false, true] {
+                let mock = wiremock::MockServer::start().await;
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body.clone()))
+                    .expect(1)
+                    .mount(&mock)
+                    .await;
+                let mut s = crate::server::outcome_test_support::state(mock.uri());
+                let (sink, lines) = audit::AuditSink::collecting();
+                s.audit = sink;
+                let payload = if tags {
+                    Operation::AlertsSetTags {
+                        plan: alerts_ops::TagsPlan {
+                            targets: vec!["a".into()],
+                            add: vec!["x".into()],
+                            remove: vec![],
+                            preview_action: "Tag".into(),
+                            preview_details: vec![],
+                        },
+                    }
+                } else {
+                    Operation::AlertsSetStatus {
+                        plan: alerts_ops::StatusPlan {
+                            status: AlertStatus::Closed,
+                            reason: None,
+                            targets: vec!["a".into()],
+                            preview_action: "Close".into(),
+                            preview_details: vec![],
+                        },
+                    }
+                };
+                let now = Instant::now();
+                let p = Plan::new(
+                    super::super::store::PlanContent {
+                        kind: payload.kind().name(),
+                        class: payload.kind().class(),
+                        target: s.target().clone(),
+                        binding: json!({}),
+                        credential: "a".repeat(64),
+                        operation: payload.json(),
+                        preconditions: vec![],
+                        action: "Change".into(),
+                        details: vec![],
+                        targets: vec!["a".into()],
+                        note: None,
+                        cli_equivalent: None,
+                        payload,
+                    },
+                    now,
+                )
+                .unwrap();
+                {
+                    let mut store = s.plans.lock().unwrap();
+                    store.insert(p.clone(), now).unwrap();
+                    store.begin_apply(&p.id, now).unwrap();
+                }
+                let error = write(&s, &CallContext::default(), &p).await.unwrap_err();
+                assert_eq!(error.code, "apply_outcome_unknown");
+                assert!(error.http_status.is_none());
+                let final_plan = get(&s, &CallContext::default(), &p.id).unwrap();
+                assert_eq!(final_plan.state, PlanState::Unknown);
+                assert!(final_plan.outcome.is_none());
+                let lines = lines.lock().unwrap();
+                assert_eq!(lines.len(), 1);
+                let line: Value = serde_json::from_str(&lines[0]).unwrap();
+                assert_eq!(line["audit"]["event"], "apply_finished");
+                assert_eq!(line["audit"]["state"], "unknown");
+                assert!(line["audit"]["outcome"].is_null());
+            }
         }
     }
 }
