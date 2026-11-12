@@ -183,24 +183,45 @@ impl Transport {
         body: Option<&Value>,
         attempt_limit: u32,
     ) -> Result<Response> {
+        self.send_with_client_options(client, method, path, body, attempt_limit, false)
+            .await
+    }
+
+    /// As [`Self::send_with_client_attempt_limit`]; with `return_client_errors`
+    /// a 4xx answer is returned as a response instead of an error.
+    async fn send_with_client_options(
+        &self,
+        client: &Client,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+        return_client_errors: bool,
+    ) -> Result<Response> {
         let url = self.url(path)?;
         let request_method = method.clone();
-        self.send_retrying(method, &url, attempt_limit, || {
-            let mut req = client
-                .request(request_method.clone(), &url)
-                .header("Authorization", &self.auth_header)
-                .header("elastic-api-version", API_VERSION);
+        self.send_retrying_with_client_errors(
+            method,
+            &url,
+            attempt_limit,
+            return_client_errors,
+            || {
+                let mut req = client
+                    .request(request_method.clone(), &url)
+                    .header("Authorization", &self.auth_header)
+                    .header("elastic-api-version", API_VERSION);
 
-            // Kibana rejects any state-changing request without this header.
-            if request_method != Method::GET {
-                req = req.header("kbn-xsrf", "true");
-            }
-            if let Some(b) = body {
-                req = req.json(b);
-            }
+                // Kibana rejects any state-changing request without this header.
+                if request_method != Method::GET {
+                    req = req.header("kbn-xsrf", "true");
+                }
+                if let Some(b) = body {
+                    req = req.json(b);
+                }
 
-            Ok(req)
-        })
+                Ok(req)
+            },
+        )
         .await
     }
 
@@ -373,6 +394,41 @@ impl Transport {
         self.send_json_once(Method::PATCH, path, Some(body)).await
     }
 
+    /// Send a JSON PATCH exactly once and retain the status and JSON body for
+    /// 2xx and 4xx, as [`Self::delete_once_response`] does.
+    pub async fn patch_once_response(&self, path: &str, body: &Value) -> Result<(u16, Value)> {
+        let method = Method::PATCH;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(
+                &self.one_shot_client,
+                method.clone(),
+                path,
+                Some(body),
+                1,
+                true,
+            )
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
+    /// The status and the JSON body of a response; an empty body is null.
+    async fn status_and_body(
+        &self,
+        method: &Method,
+        url: &str,
+        response: Response,
+    ) -> Result<(u16, Value)> {
+        let status = response.status().as_u16();
+        let text = self.response_text(method, url, response).await?;
+        let body = if text.trim().is_empty() {
+            Value::Null
+        } else {
+            parse_response_json(&text)?
+        };
+        Ok((status, body))
+    }
+
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.send_json(Method::DELETE, path, None).await
     }
@@ -404,14 +460,7 @@ impl Transport {
                     .header("kbn-xsrf", "true"))
             })
             .await?;
-        let status = response.status().as_u16();
-        let text = self.response_text(&method, &url, response).await?;
-        let body = if text.trim().is_empty() {
-            Value::Null
-        } else {
-            parse_response_json(&text)?
-        };
-        Ok((status, body))
+        self.status_and_body(&method, &url, response).await
     }
 
     /// GET Elasticsearch without a Kibana space prefix.
@@ -532,25 +581,53 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path)?;
         let response = self
-            .send_retrying(method.clone(), &url, 1, || {
-                let part = reqwest::multipart::Part::text(body.to_string())
-                    .file_name(filename.to_string())
-                    .mime_str(content_type)
-                    .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
-                let form = reqwest::multipart::Form::new().part("file", part);
-
-                Ok(self
-                    .one_shot_client
-                    .post(&url)
-                    .header("Authorization", &self.auth_header)
-                    .header("elastic-api-version", API_VERSION)
-                    .header("kbn-xsrf", "true")
-                    .multipart(form))
-            })
+            .send_multipart_once(&url, filename, content_type, body, false)
             .await?;
-
         let text = self.response_text(&method, &url, response).await?;
         parse_response_json(&text)
+    }
+
+    /// Upload one multipart file exactly once and retain the status and JSON
+    /// body for 2xx and 4xx, as [`Self::delete_once_response`] does.
+    pub async fn post_multipart_once_named_response(
+        &self,
+        path: &str,
+        filename: &str,
+        content_type: &str,
+        body: &str,
+    ) -> Result<(u16, Value)> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_multipart_once(&url, filename, content_type, body, true)
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
+    async fn send_multipart_once(
+        &self,
+        url: &str,
+        filename: &str,
+        content_type: &str,
+        body: &str,
+        return_client_errors: bool,
+    ) -> Result<Response> {
+        self.send_retrying_with_client_errors(Method::POST, url, 1, return_client_errors, || {
+            let part = reqwest::multipart::Part::text(body.to_string())
+                .file_name(filename.to_string())
+                .mime_str(content_type)
+                .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
+            let form = reqwest::multipart::Form::new().part("file", part);
+
+            Ok(self
+                .one_shot_client
+                .post(url)
+                .header("Authorization", &self.auth_header)
+                .header("elastic-api-version", API_VERSION)
+                .header("kbn-xsrf", "true")
+                .multipart(form))
+        })
+        .await
     }
 
     /// Upload a multipart NDJSON file for Kibana import with the requested filename.

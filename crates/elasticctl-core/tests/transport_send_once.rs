@@ -14,19 +14,23 @@ enum Operation {
     Patch,
     Multipart,
     DeleteResponse,
+    PatchResponse,
+    MultipartResponse,
 }
 
-const OPERATIONS: [Operation; 3] = [
+const OPERATIONS: [Operation; 5] = [
     Operation::Patch,
     Operation::Multipart,
     Operation::DeleteResponse,
+    Operation::PatchResponse,
+    Operation::MultipartResponse,
 ];
 
 impl Operation {
     fn method(self) -> &'static str {
         match self {
-            Self::Patch => "PATCH",
-            Self::Multipart => "POST",
+            Self::Patch | Self::PatchResponse => "PATCH",
+            Self::Multipart | Self::MultipartResponse => "POST",
             Self::DeleteResponse => "DELETE",
         }
     }
@@ -45,6 +49,19 @@ impl Operation {
             }
             Self::DeleteResponse => transport
                 .delete_once_response(path)
+                .await
+                .map(|(_, body)| body),
+            Self::PatchResponse => transport
+                .patch_once_response(path, &json!({"name": "updated"}))
+                .await
+                .map(|(_, body)| body),
+            Self::MultipartResponse => transport
+                .post_multipart_once_named_response(
+                    path,
+                    "values.txt",
+                    "text/plain",
+                    "alpha\nβeta\n",
+                )
                 .await
                 .map(|(_, body)| body),
         }
@@ -154,6 +171,56 @@ async fn delete_once_response_preserves_success_and_client_error_statuses_and_js
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert!(requests[0].body.is_empty());
+    }
+}
+
+/// The PATCH and upload variants return Kibana's own 2xx and 4xx bodies, so
+/// the recorder can store a 409, 413, or 415 exactly as Kibana sent it.
+#[tokio::test]
+async fn patch_and_upload_responses_preserve_success_and_client_error_bodies() {
+    for operation in [Operation::PatchResponse, Operation::MultipartResponse] {
+        for (status, body) in [
+            (200, json!({"id": "list", "_version": "WzEsMV0="})),
+            (
+                409,
+                json!({"statusCode": 409, "message": "version conflict"}),
+            ),
+            (
+                413,
+                json!({"statusCode": 413, "message": "Payload content length greater than maximum allowed: 9000000"}),
+            ),
+            (
+                415,
+                json!({"statusCode": 415, "message": "File must be one of the following types: [.csv, .txt]"}),
+            ),
+            (429, json!({"message": "rate limited"})),
+        ] {
+            let server = MockServer::start().await;
+            mutation_mock(operation)
+                .respond_with(ResponseTemplate::new(status).set_body_json(&body))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let transport = Transport::new(&profile(server.uri())).unwrap();
+            let answer = match operation {
+                Operation::PatchResponse => transport
+                    .patch_once_response("/api/lists", &json!({"name": "updated"}))
+                    .await
+                    .unwrap(),
+                _ => transport
+                    .post_multipart_once_named_response(
+                        "/api/lists",
+                        "values.txt",
+                        "text/plain",
+                        "alpha\n",
+                    )
+                    .await
+                    .unwrap(),
+            };
+            assert_eq!(answer, (status, body), "{operation:?} {status}");
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
     }
 }
 
@@ -325,6 +392,8 @@ async fn send_once_calls_reject_undecodable_bodies_without_replaying() {
         .chain([
             (Operation::DeleteResponse, 409),
             (Operation::DeleteResponse, 404),
+            (Operation::PatchResponse, 409),
+            (Operation::MultipartResponse, 413),
         ])
     {
         let server = MockServer::start().await;
