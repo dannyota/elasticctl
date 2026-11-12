@@ -7,6 +7,10 @@ mod frames;
 #[path = "mcp_mutations/tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "mcp_mutations/classification_tests.rs"]
+mod classification_tests;
+
 #[path = "mcp_mutations/conformance.rs"]
 mod conformance;
 
@@ -290,7 +294,7 @@ fn contract(
     c.child.shutdown()
 }
 
-fn live_run(measurements: bool) -> TestResult {
+fn live_run(measurements: bool, started: &std::cell::Cell<bool>) -> TestResult {
     let _serial = serialize_live();
     let dir = tempfile::tempdir().map_err(|_| "contract")?;
     let config = write_live_config(dir.path());
@@ -319,6 +323,7 @@ fn live_run(measurements: bool) -> TestResult {
             assert_clean_baseline(&config, &audit, baseline.clone().ok_or("baseline_failed")?)
         },
         |registry| {
+            started.set(true);
             let id = unique_name("mutation-rule");
             let index = unique_name("mutation-index");
             rt.block_on(create_rule(&t, registry, &id, &index))?;
@@ -334,19 +339,30 @@ fn live_run(measurements: bool) -> TestResult {
 }
 #[path = "mcp_mutations/measure.rs"]
 mod measure;
+fn finish_contract(result: TestResult, started: bool) {
+    if let Err(error) = result {
+        let class = match error.as_str() {
+            "cleanup_failed" => ConformanceFailureClass::Cleanup,
+            "baseline_failed" if !started => ConformanceFailureClass::Harness,
+            "baseline_failed" => ConformanceFailureClass::Cleanup,
+            _ => ConformanceFailureClass::Contract,
+        };
+        panic_conformance(class, error);
+    }
+}
 pub(super) fn run_contract() {
     if skip_unless_live() {
         return;
     }
-    if let Err(class) = live_run(false) {
-        panic!("{class}");
-    }
+    let started = std::cell::Cell::new(false);
+    let result = live_run(false, &started);
+    finish_contract(result, started.get());
 }
 pub(super) fn run_measurements() {
     if skip_unless_live() {
         return;
     }
-    if let Err(class) = live_run(true) {
+    if let Err(class) = live_run(true, &std::cell::Cell::new(false)) {
         panic!("{class}");
     }
 }
