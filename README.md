@@ -92,7 +92,7 @@ and [Rules as Code][state].
 | Alerts and cases | Alert status, tags, and assignees; case create, comment, attach, close, reopen, delete | [Alerts and Cases][triage] |
 | Data views and dashboards | Portable files, the default data view, reference-safe delete, Saved Objects bundles | [Data Views and Dashboards][content] |
 | Fleet | Agent and integration policies as portable files | [Fleet][fleet] |
-| MCP | Twenty-four read-only tools, among them the task tools `alert_context`, `rule_health`, `detection_coverage`, and `rule_readiness`; two opt-in query tools; opt-in rule enable and disable through stored plans a person confirms | [MCP][mcp], [MCP Mutations][mcp-mutations] |
+| MCP | Twenty-four read-only tools, among them the task tools `alert_context`, `rule_health`, `detection_coverage`, and `rule_readiness`; two opt-in query tools; opt-in rule enable, disable, and disabled create, alert status and tags, and case create, comment, and status, through stored plans a person confirms | [MCP][mcp], [MCP Mutations][mcp-mutations] |
 | Stack | Profiles, `doctor`, and `info` | [Configuration][config] |
 
 ## MCP server
@@ -116,14 +116,28 @@ ES|QL and Query DSL tools. By default no tool changes the stack, and no tool
 selects local files or changes the target. See [MCP][mcp] for the client
 stanza, limits, and tested clients.
 
-`--allow-mutations rules-toggle` adds tools that enable or disable named rules.
-A planner tool reads the stack and stores a plan; `plan_apply` takes only the
-plan id and asks the person at the client to confirm it in a form. No tool
-argument confirms a change, and a client without form elicitation cannot
-apply: the plan names the CLI command to run instead. The profile needs
-`es_url`. A rule without an API key that is enabled this way then runs with the
-server's credential; a rule that has a key keeps it. For a client that uses an
-`mcpServers` object, this placeholder stanza starts such a server:
+`--allow-mutations <CLASSES>` adds tools that change Elastic. A planner tool
+reads the stack and stores a plan; `plan_apply` takes only the plan id and
+asks the person at the client to confirm it in a form. No tool argument
+confirms a change, and a client without form elicitation cannot apply: the
+plan names the CLI command to run instead. The profile needs `es_url`, and
+an organization-level Cloud key is refused. The four classes:
+
+- `rules-toggle` enables or disables named rules. A rule without an API key
+  that is enabled this way then runs with the server's credential; a rule that
+  has a key keeps it.
+- `alerts-triage` sets the status or tags of alerts named by id. It cannot
+  close alerts by query or assign them.
+- `cases` creates a case, comments on one, or closes and reopens cases whose
+  alert sync (`syncAlerts`) is off. It cannot set assignees.
+- `rules-create` creates one rule, always disabled; it cannot create an
+  enabled rule. The rule has no API key until it is first enabled, when it
+  takes the key of the enabling credential.
+
+No change is exactly reversible. A second call does not restore an alert's
+workflow user and time or the tags it had before, and nothing in elasticctl
+removes a posted comment; see [MCP Mutation Kinds][mcp-kinds]. For a client
+that uses an `mcpServers` object, this placeholder stanza starts such a server:
 
 ```json
 {
@@ -139,10 +153,11 @@ server's credential; a rule that has a key keeps it. For a client that uses an
 
 The server can check that an answer came through the form, not that a person
 gave it: a client hook can accept for the person, and a model with a shell can
-run `elkctl ... --yes` without MCP. Rule names in the form are data from the
-stack and cannot change its fixed lines. A model can plan and ask again after
-a decline; each plan asks at most three times, and at most eight plans are
-open. A change made between the last check and the write is not seen.
+run `elkctl ... --yes` without MCP. Rule names and case titles in the form are
+data from the stack and cannot change its fixed lines. A model can plan and
+ask again after a decline; each plan asks at most three times, and at most
+eight plans are open. A change made between the last check and the write is
+not seen.
 See [MCP Mutations][mcp-mutations] for the flow, the audit trail, and the
 limits of this consent model.
 
@@ -186,7 +201,7 @@ See the [CLI reference][cli] for output, errors, and selectors, and
 - Guides: [Rules as Code][state], [Rules][rules], [Exceptions][exceptions],
   [Search][search], [Alerts and Cases][triage],
   [Data Views and Dashboards][content], [Fleet][fleet], [MCP][mcp],
-  [MCP Mutations][mcp-mutations].
+  [MCP Mutations][mcp-mutations], [MCP Mutation Kinds][mcp-kinds].
 - [Security][security]: the dry-run guard, credentials, and MCP reach.
 - [Limitations][limitations]: Elastic behaviors the tool works around.
 - [Changelog](CHANGELOG.md): changes by version.
@@ -215,6 +230,7 @@ Licensed under [Apache 2.0](LICENSE).
 [mcp]: https://github.com/dannyota/elasticctl/wiki/MCP
 [mcp-resources]: https://github.com/dannyota/elasticctl/wiki/MCP#resources-and-prompts
 [mcp-mutations]: https://github.com/dannyota/elasticctl/wiki/MCP-Mutations
+[mcp-kinds]: https://github.com/dannyota/elasticctl/wiki/MCP-Mutation-Kinds
 [cc-resources]: https://code.claude.com/docs/en/mcp#use-mcp-resources
 [cc-prompts]: https://code.claude.com/docs/en/mcp#use-mcp-prompts-as-commands
 [security]: https://github.com/dannyota/elasticctl/wiki/Security

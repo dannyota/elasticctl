@@ -27,7 +27,7 @@ reversible. The "not restored" column says what a second call leaves behind.
 | 4 | Case status (close, reopen) | `cases` | 0.9.1 | The same tool sets the status back | Close time and closing user | Kibana rejects a stale `version` |
 | 5 | Case comment | `cases` | 0.9.1 | Nothing in elasticctl removes a comment | The comment stays | Case status and title |
 | 6 | Case create (no assignees) | `cases` | 0.9.1 | `cases delete` in the CLI removes it | Nothing once deleted. A retry would add a second case, so a plan applies once | None needed |
-| 7 | Rule create, always disabled | `rules-create` | 0.9.1 | `rules delete` in the CLI removes it | Nothing once deleted. While it exists, it carries this credential's key and model-written content | The `rule_id` must be absent |
+| 7 | Rule create, always disabled | `rules-create` | 0.9.1 | `rules delete` in the CLI removes it | Nothing once deleted. While it exists, it carries model-written content; it has no API key until its first enable (D40) | The `rule_id` must be absent |
 
 Impact is a separate question. Disabling a rule stops a detection, and
 enabling one starts query load and alerts. That is the highest impact in the
@@ -101,7 +101,7 @@ Further rules:
 - Free text reasons are not accepted for alert close. The enum is the
   documented set.
 - `rules_create_plan` requires a string `rule_id`, `name`, and `type`. It
-  rejects `enabled: true`, any key in `VOLATILE_FIELDS`, a non-empty
+  rejects an `enabled` value other than `false`, any key in `VOLATILE_FIELDS`, a non-empty
   `exceptions_list`, a non-empty `actions`, and a non-empty
   `response_actions`. It sets `enabled: false` in the stored rule. It refuses
   a `rule_id` that already exists.

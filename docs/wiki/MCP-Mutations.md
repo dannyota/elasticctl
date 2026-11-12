@@ -3,8 +3,9 @@
 `elkctl mcp serve --allow-mutations <CLASSES>` lets an MCP client change a
 bounded set of Elastic Security objects, one stored plan at a time, after a
 person at the client confirms each plan. Without the flag the server is the
-read-only server described in [MCP](MCP.md). This version ships one class,
-`rules-toggle`: enable or disable named detection rules.
+read-only server described in [MCP](MCP.md). Four classes cover rule enable
+and disable, alert status and tags, case create, comment, and status, and
+disabled rule create; see [MCP Mutation Kinds](MCP-Mutation-Kinds.md).
 
 ## How consent works
 
@@ -53,9 +54,9 @@ elkctl --profile analyst --space default mcp serve \
 
 - The value is a comma-separated list of class names, and the flag may
   repeat. Duplicates fold into one set.
-- `rules-toggle` is the only class in this version. There is no `all` value
-  and no wildcard, so a class added in a later version is never granted by an
-  existing command line.
+- Class names are `rules-toggle`, `alerts-triage`, `cases`, and
+  `rules-create`. There is no `all` value and no wildcard, so a class added in
+  a later version is never granted by an existing command line.
 - An empty value, an unknown name, a trailing comma, or surrounding
   whitespace stops startup with exit code 2 and the static stderr message
   `Invalid MCP serve arguments.`, which never echoes the value.
@@ -78,8 +79,9 @@ these lines; without the flag, such a profile serves the read-only tools.
 ```
 
 With at least one class enabled, startup writes this warning line to stderr
-before the protocol starts. Startup makes no Elastic request; a credential
-that cannot perform a class is found when a plan is made.
+before the protocol starts, with the classes in name order. Startup makes no
+Elastic request; a credential that cannot perform a class is found when a plan
+is made.
 
 ```json
 {"warning":{"kind":"mutations_enabled","message":"MCP mutation tools are enabled.","classes":["rules-toggle"]}}
@@ -87,31 +89,23 @@ that cannot perform a class is found when a plan is made.
 
 ## Tools
 
-With `--allow-mutations rules-toggle` the catalog has 29 tools, or 31 with
-`--allow-query-tools`. Without the flag the five tools below are unknown: a
-call is the protocol error for an unknown tool.
+The four plan tools are listed when any class is enabled, and each planner
+only when its class is enabled: 35 tools with all four classes, or 37 with
+`--allow-query-tools`. A call to a tool that is not listed is the protocol
+error for an unknown tool.
 
 | Tool | Inputs | Returns |
 | --- | --- | --- |
-| `rules_set_enabled_plan` | `selectors`: 1 to 20 unique strings, each a `rule_id` or exact rule name of at most 1,024 bytes. `enabled`: boolean, required | A new open plan |
+| A planner: `rules_set_enabled_plan`, `alerts_set_status_plan`, `alerts_set_tags_plan`, `cases_create_plan`, `cases_comment_plan`, `cases_set_status_plan`, or `rules_create_plan` | Per kind; see [MCP Mutation Kinds](MCP-Mutation-Kinds.md) | A new open plan |
 | `plan_apply` | `plan_id` | The plan with its outcome, after a person confirms |
 | `plan_get` | `plan_id` | The plan and its outcome |
 | `plan_list` | None | `{"plans": [...]}`: open plans, then final records, newest first, each with `plan_id`, `kind`, `class`, `state`, `action`, and `expires_in_secs` |
 | `plan_discard` | `plan_id` | The plan. An open plan is closed as `discarded`, a final plan is returned unchanged, and a plan that is applying returns `plan_not_open` |
 
-`rules_set_enabled_plan` resolves each selector to a `rule_id` as `rules_get`
-does; see [Selectors](CLI.md#selectors). It reads the credential identity and
-each rule, and sends no write.
-
-- Two selectors that resolve to the same rule fail with `invalid_argument`.
-- A rule already in the requested state stays in the plan and shows as
-  `enabled -> enabled` or `disabled -> disabled`.
-- An organization-level Elastic Cloud API key is refused with
-  `credential_unsuitable` before anyone is asked: it reaches the whole
-  organization and its role scope cannot be read, so the plan cannot show what
-  it may do. Use a scoped key ([which key](Configuration.md#which-api-key-to-use)).
-- A read that returns a rule with another `rule_id` than the one asked for
-  fails with `elastic_conflict`, and no plan is stored.
+A planner reads the credential identity and each object it names, and sends
+no write. Every planner refuses an organization-level Elastic Cloud API key
+with `credential_unsuitable` before any other read; use a scoped key
+([which key](Configuration.md#which-api-key-to-use)).
 
 With no class enabled the [server instructions](MCP.md#server-instructions)
 are unchanged. With a class enabled, the sentence "It never changes Elastic or
@@ -141,12 +135,12 @@ Planners, `plan_get`, and `plan_apply` return the usual
 
 | Field | Meaning |
 | --- | --- |
-| `hash` | SHA-256 of the kind, class, target, credential, operation, and the rule state the planner read. The same change against the same state gives the same hash |
+| `hash` | SHA-256 of the kind, class, target, credential, operation, and the object state the planner read. The same change against the same state gives the same hash |
 | `expires_in_secs` | Seconds left for an open plan; 0 for any other state |
 | `credential` | The first 12 hex characters of a fingerprint of the credential. The username, realm, and key id are never returned |
-| `action`, `details`, `targets`, `operation` | The change, as the CLI preview prints it. Rule names come from the stack and are [untrusted data](MCP.md#returned-data-is-untrusted) |
+| `action`, `details`, `targets`, `operation` | The change, as the CLI preview prints it. Rule names and case titles come from the stack, and planner inputs from the caller; both are [untrusted data](MCP.md#returned-data-is-untrusted) |
 | `confirmation` | `elicitation` when the client that asked can show a form, `unavailable` when it cannot |
-| `cli_equivalent` | The CLI arguments after the binary name and global flags, without `--yes` |
+| `cli_equivalent` | The CLI arguments after the binary name and global flags, without `--yes`. `null` for a rule create |
 | `outcome`, `replayed` | See [Results](#results) and [Replay](#replay) |
 
 ## Confirmation
@@ -179,23 +173,22 @@ Decline, or leave it false, and nothing changes.
 - Claude Code shows only the first three lines of the form. Read the full
   plan with `plan_get` before you accept.
 - A line at the left margin was written by elasticctl. An indented line is
-  data. For a rule toggle each detail line is
-  `<rule_id>  <name>  <from> -> <to>`, one per rule.
-- A value that spans lines continues on lines that start with `  | `, so text
-  from the stack or the model cannot produce a line at the left margin, change
-  the target line, or hide a rule. Control characters, Unicode line and
-  paragraph separators, and bidirectional controls from the stack show as
-  U+FFFD.
+  data. Each object has its own detail line that names it by identity;
+  [MCP Mutation Kinds](MCP-Mutation-Kinds.md) shows the lines of each kind.
+- A detail value that spans lines continues on lines that start with `  | `.
+  The action line holds one line: a line break from the stack shows there as
+  U+FFFD. Text from the stack or the model therefore cannot produce a line at
+  the left margin, change the target line, or hide an object. Control
+  characters, Unicode line and paragraph separators, and bidirectional
+  controls from the stack show as U+FFFD.
 - Nothing is truncated or summarized. A plan whose text would pass 8,192 bytes
   is refused when it is made, with `plan_too_large`. The text names no URL.
 - `<n>` is the remaining life in minutes, rounded up. `Hash` is the start of
   the plan's `hash`.
 
-For a rule toggle the `Note:` line is:
-
-```text
-Note: Kibana runs each rule listed with the credential it already has. A rule that has none gets this server's credential (<12 hex>) when it is enabled, and then runs with that credential's privileges.
-```
+The `Note:` line appears only for a rule toggle and a rule create; see the
+[toggle note](MCP-Mutation-Kinds.md#rules-toggle) and the
+[create note](MCP-Mutation-Kinds.md#rules-create).
 
 The form has one boolean field, "Apply this change", with default `false`.
 Only `accept` with it set to `true` continues to the second drift check and
@@ -234,7 +227,7 @@ The question travels differently on the two supported revisions:
 | `failed` | The stack refused the write. Nothing changed | Yes |
 | `unknown` | The write was sent and no trustworthy answer came back | Yes |
 | `declined` | A person declined, or three prompts passed without a confirmation | Yes |
-| `stale` | A drift check found a change | Yes |
+| `stale` | A drift check found a change, or the stack refused the write with 409 because the object changed | Yes |
 | `expired` | The plan's life ended while it was open | Yes |
 | `discarded` | `plan_discard` closed it | Yes |
 
@@ -243,7 +236,7 @@ The question travels differently on the two supported revisions:
 | Plans open or applying | 8 | A planner returns `too_many_plans` |
 | Final plan records kept | 32 | The oldest is dropped; its id then returns `plan_not_found` |
 | Plan life | 15 minutes from creation | An open plan becomes `expired`. No call extends it |
-| Rules per plan | 20 | `invalid_argument` before any request |
+| Objects per plan | 20 | `invalid_argument` before any request |
 | Consent text | 8,192 bytes | `plan_too_large`; nothing is stored |
 | Plan body | 262,144 bytes | `plan_too_large`; nothing is stored |
 | Prompts per plan | 3 | The plan becomes `declined` |
@@ -257,19 +250,21 @@ later process answers `plan_not_found`.
 
 ### Drift
 
-A plan is bound to the target, the credential, the exact rules and value, and
-the state of each rule the planner read. `plan_apply` checks that binding
+A plan is bound to the target, the credential, the exact operation, and the
+state of each object the planner read. `plan_apply` checks that binding
 twice: before it asks the person, and after the person accepts, right before
-the write. Each check reads the credential identity and each rule again.
+the write. Each check reads the credential identity and each object again.
 
-- If the credential differs, a rule is missing, or a rule changed, the plan
-  becomes `stale` and the call returns `plan_stale`. The error does not say
-  what changed; plan again to see the new state. Fields the server maintains,
-  such as `revision`, update times, and execution status, do not count.
+- If the credential differs, an object is missing or changed, or a rule to be
+  created now exists, the plan becomes `stale` and the call returns
+  `plan_stale`. The error does not say what changed; plan again to see the
+  new state. What counts as a change differs by [kind](MCP-Mutation-Kinds.md).
 - If a read fails, the call returns the Elastic error and the plan stays
   open. After a failed second check the person is asked again.
-- A change made between the second check and the write is not seen: the stack
-  has no conditional rule toggle, so the window is one request long.
+- A case status write carries the case `version`, and a rule create collides
+  on `rule_id`. A 409 answer to either also makes the plan `stale`.
+- A rule toggle or an alert write has no conditional form, so a change made
+  between the second check and the write is not seen.
 
 ### Replay
 
@@ -290,11 +285,11 @@ An applied plan carries an outcome; any other state has `outcome: null`.
  "complete": false, "created": null}
 ```
 
-For a rule toggle, `requested` is the number of rules, `updated` the rules the
-stack reports as changed, and `failed` the rules it reports as failed or
-skipped plus any it did not report. `complete` is `true` when every rule
-updated. `complete: false` is a successful result, not an error. Per-rule
-failure text is not returned; read the rules with `rules_get`.
+[Outcomes](MCP-Mutation-Kinds.md#outcomes) gives each kind's counters.
+`complete: false` is a successful result, not an error. Per-object failure
+text is not returned; read the objects with the read tools. A report whose
+counters overflow or pass the planned count is not mapped: the plan becomes
+`unknown` with no outcome, and the call returns `apply_outcome_unknown`.
 
 ### Errors
 
@@ -316,6 +311,7 @@ message that never includes a plan id, an object id, or stack text.
 | `confirmation_pending` | `error` | Another confirmation is waiting (`2025-11-25`) |
 | `confirmation_timeout` | `timeout` | No answer in 240 seconds (`2025-11-25`) |
 | `credential_unsuitable` | `permission` | The credential cannot perform this kind of change |
+| `case_sync_alerts` | `unsupported` | A case in the plan has `syncAlerts` on or unreadable; see [alert sync refusal](MCP-Mutation-Kinds.md#alert-sync-refusal) |
 | `apply_pending` | `timeout` | The write was sent; the call ended before its answer |
 | `apply_outcome_unknown` | The error's kind | The write was sent; its result is not known |
 
@@ -331,9 +327,9 @@ it is never sent twice. Two codes need you to check the stack:
   Call `plan_get` later; it shows `applied`, `failed`, or `unknown`.
 - **`apply_outcome_unknown`:** the write was sent and the answer does not say
   whether it landed: a status of 500 or more (in `http_status`), a timeout, a
-  lost connection, or a response that does not decode. Read the rules with
-  `rules_get` and decide. To try again, make a new plan; the person is asked
-  again.
+  lost connection, or a response that does not decode. Read the objects with
+  the read tools and decide. To try again, make a new plan; the person is
+  asked again.
 
 Cancelling `plan_apply` before the write stops it with nothing written and the
 plan open. After the write is sent it runs to its response and its outcome is
@@ -362,12 +358,13 @@ and `protocol`.
 | `apply_interrupted` | The server stopped with a plan applying | None |
 | `plan_closed` | A plan became `stale`, `expired`, `discarded`, or `declined` | `state` |
 
-`targets` holds rule ids, JSON-escaped; they are the only text from the stack
-in the trail. Rule names, tags, rule bodies, queries, usernames, API key ids,
-URLs, and error messages never appear. elasticctl writes no audit file: the
-trail lasts as long as you keep the server's stderr, and `plan_list` shows up
-to 32 final records while the process runs. The trail records what this
-process did; it is not proof against someone who controls the process.
+`targets` holds object ids, JSON-escaped; they are the only text from the
+stack in the trail. Rule names, case titles, tags, messages, rule bodies,
+queries, usernames, API key ids, URLs, and error messages never appear.
+elasticctl writes no audit file: the trail lasts as long as you keep the
+server's stderr, and `plan_list` shows up to 32 final records while the
+process runs. The trail records what this process did; it is not proof
+against someone who controls the process.
 
 ## Limits of the model
 
@@ -382,9 +379,9 @@ It cannot check that a person gave it.
 - **A model with a shell does not need MCP.** A coding client can let the
   model run `elkctl ... --yes` with the same profile. The client's command
   approval is the control there.
-- **The form shows text from the stack.** Rule names appear as indented data.
-  They cannot change the fixed lines, the target line, or the number of rules
-  listed.
+- **The form shows text from the stack.** Rule names and case titles appear
+  as data. They cannot change the fixed lines, the target line, or the number
+  of objects listed.
 - **A person can be asked often.** A model can plan again after a decline. A
   declined plan is closed, each plan prompts at most three times, and at most
   eight plans are open. That bounds the rate; it does not stop it.
@@ -393,8 +390,11 @@ It cannot check that a person gave it.
 - **A rule without a key takes the server's credential.** Kibana gives a rule
   an API key on its first enable. Enabled through MCP, such a rule then runs
   with this credential's privileges and stops if the key is deleted; a later
-  disable keeps the key. A rule that already has a key keeps it.
+  disable keeps the key. A rule that already has a key keeps it. A rule
+  created through MCP has no key until its first enable.
+- **No kind is exactly reversible.** See
+  [what a second call leaves](MCP-Mutation-Kinds.md#what-a-second-call-leaves).
 
-MCP deletes nothing, changes no rule content or exception list, and never
-runs `state push`. To limit what the server can change, start it with a
-credential that holds only the privileges you intend it to use.
+MCP deletes nothing, edits no existing rule's content or any exception list,
+and never runs `state push`. To limit what the server can change, start it
+with a credential that holds only the privileges you intend it to use.
