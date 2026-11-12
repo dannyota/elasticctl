@@ -320,30 +320,38 @@ struct Gate {
     arrivals: Arc<AtomicUsize>,
     departures: Arc<AtomicUsize>,
     release: Arc<tokio::sync::Semaphore>,
-    task: tokio::task::JoinHandle<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Gate {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
 impl Gate {
     async fn start(server: &MockServer) -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut target = target_for(server);
-        target.profile.kibana_url = format!("http://{}", listener.local_addr().unwrap());
-        target.profile.es_url = Some(target.profile.kibana_url.clone());
         let upstream = *server.address();
         let arrivals = Arc::new(AtomicUsize::new(0));
         let departures = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let (a, d, r) = (arrivals.clone(), departures.clone(), release.clone());
-        let task = tokio::spawn(async move {
+        let (ready, listening) = tokio::sync::oneshot::channel();
+        let (shutdown, mut stopping) = tokio::sync::oneshot::channel();
+        let task = async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            ready.send(listener.local_addr().unwrap()).unwrap();
             let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
+                    biased;
+                    _ = &mut stopping => break,
                     socket = listener.accept() => {
                         let (socket, _) = socket.unwrap();
                         let (a, d, r) = (a.clone(), d.clone(), r.clone());
@@ -378,13 +386,27 @@ impl Gate {
                     Some(result) = connections.join_next(), if !connections.is_empty() => { result.unwrap(); }
                 }
             }
+        };
+        // The test runtime can stop polling while MCP's deadline keeps running.
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(task);
+            // Dropping the JoinSet aborts every connection, including held replies.
+            runtime.shutdown_timeout(Duration::from_secs(1));
         });
+        let mut target = target_for(server);
+        target.profile.kibana_url = format!("http://{}", listening.await.unwrap());
+        target.profile.es_url = Some(target.profile.kibana_url.clone());
         Self {
             target,
             arrivals,
             departures,
             release,
-            task,
+            shutdown: Some(shutdown),
+            thread: Some(thread),
         }
     }
 
