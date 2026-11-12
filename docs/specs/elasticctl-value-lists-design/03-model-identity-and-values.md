@@ -10,7 +10,8 @@ two lists (V10). elasticctl always sends `id` on create and never lets Kibana
 pick one, because Kibana's default is a random UUID.
 
 An `id` is a non-empty string of at most 512 bytes, the limit of an
-Elasticsearch `_id`. Its file name follows section 7.2.
+Elasticsearch `_id`, with no control character. Its file name follows
+section 7.2.
 
 Volatile container fields are `_version`, `version`, `tie_breaker_id`,
 `created_at`, `created_by`, `updated_at`, and `updated_by`. Item `id`,
@@ -19,7 +20,7 @@ is its value.
 
 ### 3.2 The container file
 
-`value-lists/<id>.yaml` holds the container:
+`value-lists/<stem>.yaml` holds the container:
 
 ```yaml
 id: blocked-ranges
@@ -37,36 +38,55 @@ rather than dropped, so a typo cannot pass as a change.
 
 ### 3.3 The values file
 
-`value-lists/<id>.txt` holds the values: UTF-8, one value per line, LF line
+`value-lists/<stem>.txt` holds the values: UTF-8, one value per line, LF line
 endings, a trailing newline, sorted by byte order, each value once. A list
 with no values has an empty file. `pull` writes this form. `validate` and
-`push` accept CRLF and unsorted input, normalize it, and refuse an empty
-line, because a blank line is not a value and Kibana drops it on import
-without an error (V5).
+`push` accept CRLF and unsorted input and normalize it.
 
 A line is one value. There are no CSV columns: Kibana stores `10.0.0.13,x` as
 one keyword (V5).
 
-### 3.4 Canonical values per type
+### 3.4 Parsing order
 
-The diff compares canonical values on both sides. A value is canonical when
-it is in the form Kibana returns for it.
+Each line is processed in this order, and the first failing step refuses the
+file with the line number:
+
+1. Remove a trailing CR.
+2. Trim leading and trailing spaces and tabs. Kibana trims them (V4).
+3. Refuse an empty result. A blank or whitespace-only line is not a value,
+   and Kibana drops it on import without an error (V5).
+4. Refuse a control character.
+5. Parse by type (3.5) and produce the canonical form.
+
+### 3.5 Canonical values per type
+
+A value is canonical when it is the exact string elasticctl sends and Kibana
+returns. elasticctl accepts only spellings whose stored form is measured, and
+refuses the rest with a message giving the accepted spelling.
 
 | Type | Accepted | Canonical form |
 | --- | --- | --- |
-| `keyword` | Any text without a line break | Leading and trailing spaces removed; Kibana trims them (V4). Inner text, commas, and Unicode are kept. |
-| `text` | Any text without a line break | As for `keyword`. |
-| `ip` | One IPv4 or IPv6 address | Trimmed. A CIDR or other text is refused; Kibana answers 400 (V4). |
-| `ip_range` | One address, a CIDR block, or a dash range `a-b` | A single address becomes `a/32` or `a/128` (D11). A CIDR block and a dash range are kept as written. |
+| `keyword` | Any text | The trimmed text. Commas and Unicode are kept (V4). |
+| `text` | Any text | The trimmed text. |
+| `ip` | One IPv4 address in dotted-quad form, or one IPv6 address in RFC 5952 form | As written. Any other spelling, a CIDR, or other text is refused; Kibana answers 400 for a CIDR (V4). |
+| `ip_range` | One address, a CIDR block with no host bits set, or a dash range `a-b` of one family with `a <= b` | A bare address becomes `a/32` or `a/128` (D11). A CIDR block and a dash range are kept as written, with each address in the spelling the `ip` row requires. |
 
-Kibana reads a single address in an `ip_range` list back as `a-a` (V4). On
-read, elasticctl keeps `a-a` as it is stored, so a pulled list shows what the
-stack holds and section 5.2 can count its dash values. On write, a local
-`a-a` is sent as written: the canonical `/32` form applies only to a bare
-address, and a mirror moves to CIDR only when someone edits it.
+The IPv6 rule, the refusal of host bits, and the dash-range rules stand until
+the V12 measurements show how Kibana stores the other spellings. Any form V12
+shows Kibana rewrites stays refused.
 
-Duplicates collapse. Kibana stores the same value twice when it arrives in two
-requests or two imports (V4, V5), and its export keeps both copies (V8). The
-remote set is the set of distinct canonical values. A remote duplicate does
-not change what the list matches, so it is reported as a warning and left
-alone: removing it by value would delete every copy (V9).
+### 3.6 What the stack holds
+
+A read keeps two views of a list:
+
+- the **stored values**: every line of `_export`, in the stored spelling,
+  duplicates included (V8);
+- the **set**: the distinct stored values.
+
+Comparison uses the set. Safety checks use the stored values: the dash count
+of D12 counts every stored line in dash form, duplicates included. A pulled
+`a-a` stays `a-a` in the mirror, because that is what the stack holds; only a
+bare address that someone writes becomes CIDR.
+
+A remote duplicate does not change the set, so `diff` reports it as a warning
+and leaves it. Removing it by value would delete every copy (V9).

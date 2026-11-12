@@ -21,16 +21,17 @@ shared design 4.2.
   shared design 4.7 does for other objects. A container of an unsupported
   type is listed with its type and marked `unsupported`, so the operator sees
   it rather than a silent gap.
-- **`get`** prints one container, its distinct value count, its duplicate
-  count, and the dash-value warning of section 5.2. `--values` adds the
-  canonical values. The values come from `_export`.
+- **`get`** prints one container, its distinct value count, its stored
+  value count, and the warnings of section 5. `--values` adds the set. The
+  values come from `_export`.
 - **`validate`** checks a container file and its sibling values file, or a
   values file and its sibling container file, by sections 3 and 5, and sends
   nothing.
-- **`export`** writes `<id>.yaml` and `<id>.txt` for each `id` in the mirror's
-  form, into `--dir` (default: the current directory). It refuses to overwrite
-  an existing file. Without `--dir` and with one `id`, `--json` prints the
-  container and its values as one object instead.
+- **`export`** writes the container and values files of each `id` in the
+  mirror's form and with its file stem (section 7.2), into `--dir` (default:
+  the current directory). It refuses to overwrite an existing file. Without
+  `--dir` and with one `id`, `--json` prints the container and its values as
+  one object instead.
 - **`import`** reads `FILE` (the `.yaml` or the `.txt` of a pair) and creates
   the list with its values. An existing `id` is refused with `conflict`
   unless `--overwrite` is given; then the container is updated and the
@@ -49,10 +50,12 @@ a file, and `import` and `state push` already create.
 
 `import`, `delete`, and `init` preview before they apply and need `--yes`,
 with the banner of shared design 6.1. A value preview shows, per list, the
-container action, the number of values to add and to remove, and the first
-twenty of each in byte order. `--json` lists every value. A preview reads the
+container action, every value to add and every value to remove in byte order
+(D10), the phase order and why (D22), and the warnings of section 5. Under
+`--json` the preview is one object with the same arrays, not rendered text,
+so a reviewer or a script sees the complete change. A preview reads the
 list's current state; the apply reads it again and stops with `conflict` if
-it changed (section 6.3).
+it changed (section 6.1).
 
 ### 4.2 Output
 

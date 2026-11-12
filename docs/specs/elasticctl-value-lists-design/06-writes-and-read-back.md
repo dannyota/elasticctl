@@ -12,19 +12,25 @@ values (V5), and a retried delete can answer for a request that already ran.
 Before a preview, a write command reads `GET /api/lists/index`. Unless both
 `list_index` and `list_item_index` are true, it refuses with `unsupported`
 and names `value-lists init` (D6). It then reads each target list: the
-container with `GET /api/lists?id=` and the values with
+container with `GET /api/lists?id=` and the stored values with
 `POST /api/lists/items/_export?list_id=`. The preview is computed from these
 reads.
 
 At apply, after `--yes`, the command reads each list again. If a container's
-`_version` or its distinct value set differs from the preview's read, it
-stops with `conflict` before its first write and asks for a re-run.
+`id`, `type`, or `_version`, or its stored values, differ from the preview's
+read, it stops with `conflict` before its first write and asks for a re-run.
+
+**Concurrency limit.** Nothing locks a list. Item writes do not move the
+container's `_version` (V6), and another writer's import can become visible
+after this command's read-back matched (V5). Two writers to one list must be
+coordinated outside elasticctl. The design says so in the wiki and does not
+present the read-back as proof that no one else wrote.
 
 ### 6.2 Create
 
 `POST /api/lists` with `id`, `type`, `name`, `description`, and `meta` when
 present. A 409 means the `id` exists and is reported as `conflict`. The
-values are then added as in 6.3.
+values are then added as the add phase of 6.3, with nothing to remove.
 
 ### 6.3 Update and exact reconciliation
 
@@ -35,31 +41,46 @@ before the preview (D15), with `conflict` naming both types. Recreating the
 list under the new type is a `delete` and an `import`, each asked for by
 name.
 
-Values are compared as distinct canonical sets (section 3.4):
+Values are compared as sets (section 3.6). The change runs in two phases
+(D14), in the order of D22:
 
-- **Add** the local values missing remotely with
-  `POST /api/lists/items/_import?list_id=<id>`. The multipart field is `file`,
-  its file name `<id>.txt`, its body the missing values joined by LF with a
-  trailing LF. A body that would pass 8,000,000 bytes is split into several
-  imports, which keeps each request under Kibana's 9,000,000-byte limit (V5)
-  with room for the multipart framing.
-- **Remove** each remote value missing locally with
-  `DELETE /api/lists/items?list_id=<id>&value=<value>`, one request per value.
-  The answer is an array of the deleted items (V9); a 404 means the value is
-  already gone and is left to the read-back.
+- **Remove phase.** For each value in the remote set and not in the local
+  set: `DELETE /api/lists/items?list_id=<id>&value=<stored value>`. The
+  answer is an array of the deleted items, every copy of the value (V9). A 404
+  means the value is already gone and is left to the read-back.
+- **Add phase.** For the values in the local set and not in the remote set:
+  `POST /api/lists/items/_import?list_id=<id>`, with the multipart field
+  `file`, the file name `<stem>.txt`, and the values joined by LF with a
+  trailing LF. Values are packed into requests of at most 8,000,000 bytes of
+  body, split only between whole lines; section 5.1 refuses a single value
+  that cannot fit. The bound keeps each request under Kibana's 9,000,000-byte
+  limit (V5) with room for the multipart framing. Requests go one at a time.
 
-Adds go before removes, so a list being replaced never passes through empty
-while an exception points at it.
+D22 picks the order from the mirror's references to the list: removes first
+when every reference is `included`, adds first when every reference is
+`excluded`, and removes first otherwise. A `value-lists import --overwrite`
+outside the mirror sees no references, so it removes first. The between-phase
+state of section 5.2 is the remote set less the removes, or the remote set
+plus the adds.
 
 ### 6.4 Read-back
 
-After its writes to a list, the command exports the list again, once per
-second, until the distinct remote set equals the planned set, for at most 120
-seconds. V5 measured 100,000 imported values settling in 6 to 9 seconds.
+Each phase ends with a read-back before the next phase or the next list
+starts. The command exports the list until the remote set equals the
+phase's expected set: after a remove phase, none of the removed values; after
+an add phase, all of the added values, and after the last phase, exactly the
+local set.
 
-A match records the list as verified. No match at the deadline records it as
+Each phase has a budget of 120 seconds on a monotonic clock. The budget
+covers every export request, its retries, and the pauses between them. An
+export starts at least one second after the previous one ended, and its
+request timeout is capped at the time left. V5 measured 100,000 imported
+values settling in 6 to 9 seconds, and V9 a 100,000-value export taking 9 to
+15 seconds.
+
+A match ends the phase as verified. No match within the budget ends it as
 `unknown`, with the counts of values still missing and still present, and
-the command ends with an `http` error naming the list and both counts. The
+the command sends nothing further for that list or any list after it. The
 read-back only reads: it never sends a second import, which could duplicate
 values.
 
@@ -68,9 +89,11 @@ values.
 `DELETE /api/lists?id=<id>` with no reference flags. Kibana deletes the
 values with the container.
 
-- A 409 with `references` means an exception item uses the list. The command
-  reports `conflict` and names each referencing item by `list_id` and
-  `item_id`. It never sends `deleteReferences` or `ignoreReferences`.
+- A 409 carries `references`, the exception items that use the list. The
+  command reports `conflict` with Kibana's status and names each referencing
+  item by `list_id` and `item_id`. It never sends `deleteReferences` or
+  `ignoreReferences`. This needs the 409 body, which the shared error path
+  drops; section 8.1 adds the transport call that keeps it.
 - A 404 before the preview is `not_found`.
 - A 5xx, a timeout, or an undecodable answer is `unknown` (D17). The command
   then reads `GET /api/lists?id=`: a 404 records the delete as applied, and
@@ -88,12 +111,16 @@ both streams true. Anything else is an `http` error with the flow's status.
 
 ### 6.7 Outcomes
 
-| Answer to a write | Outcome |
+| Answer to a write | Outcome of that list |
 | --- | --- |
-| 2xx, then a matching read-back | applied |
-| 409 | `conflict`, nothing further sent for that list |
-| Other 4xx | failed with Kibana's message and status; nothing further sent for that list |
-| 5xx, timeout, connection loss after sending, or an undecodable body | `unknown`; the read-back or a read of the container decides |
+| 2xx for every write, and every phase verified | `applied` |
+| 409 | `failed`, kind `conflict` |
+| Other 4xx | `failed`, with Kibana's message and status |
+| 5xx, timeout, connection loss after sending, an undecodable body, or a read-back past its budget | `unknown`, with the observed set's missing and extra counts |
+| Not attempted because an earlier list failed or is unknown | `not_reached` |
 
-A command that writes several lists stops at the first failed or unknown
-list and reports the lists it did not reach as not applied.
+A command that writes several lists stops at the first `failed` or `unknown`
+list. It still returns the outcome of every list: applied, the one that
+stopped it, and every `not_reached` one. The CLI renders and publishes that
+evidence (section 7.5), then exits 1 with the error of the list that stopped
+it.

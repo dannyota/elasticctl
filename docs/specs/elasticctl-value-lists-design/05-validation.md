@@ -11,28 +11,36 @@ command; no list is written while another is invalid.
 | Check | Refusal |
 | --- | --- |
 | The container file has exactly `id`, `type`, `name`, `description`, and optional `meta`, with string values and an object `meta` | `error`, naming the key |
-| `id` is non-empty, at most 512 bytes, and its file name under section 7.2 equals the file's stem | `error` |
+| `id` is valid (section 3.1) and its stem (section 7.2) equals the file's stem | `error` |
 | `type` is one of the four types | `unsupported`, naming the type and the four supported ones |
 | The values file exists beside the container file and is UTF-8 | `error` |
-| No empty line | `error`, with the line number |
-| Each value is valid for the type (section 3.4) | `error`, with the line number and the value |
-| The request for any one import chunk stays under 9,000,000 bytes (section 6.2) | Never refused: chunking handles size |
+| Each line passes the parsing order of section 3.4 | `error`, with the line number and the value |
+| No single value, with its line feed, is larger than 8,000,000 bytes | `error`: an import request carries whole values only (section 6.3) |
 
-A value that canonicalizes to one already seen is not an error: duplicates
-collapse.
+A value that canonicalizes to one already seen is not an error: the set
+collapses it.
 
 ### 5.2 Dash values in `ip_range` lists
 
-An `ip_range` list holding more than 200 values in dash form is refused for
-every write with `unsupported` (D12). The message says that Kibana 9.5.1,
-9.5.6, and 9.7.0 then suppress every event for an `is in list` exception
-(V11), and names the remedy: write a single address as `a/32` or `a/128` and
-a range as CIDR blocks. Reads (`get`, `pull`, `diff`) report the same
-condition as a warning on the list and write nothing.
+D12 is checked on three stored states of each `ip_range` list a command would
+write: the current state on the stack, the state between the two phases
+(section 6.3), and the final state. A state's dash count is the number of its
+stored values in dash form, duplicates included (section 3.6).
 
-The count is of values in dash form after canonicalization. A bare address
-written by the operator is already CIDR (D11) and does not count. A pulled
-`a-a` value does count, because that is what the stack holds.
+- A final state above 200 refuses the write with `unsupported`.
+- A between-phases state above 200 refuses the write, unless it is no higher
+  than the current state: a write that only lowers an existing count is a
+  repair, and is allowed.
+
+The message says that Kibana 9.5.1, 9.5.6, and 9.7.0 suppress every event
+for an `is in list` exception on such a list (V11), and gives the remedy:
+write a single address as `a/32` or `a/128` and a range as CIDR blocks.
+
+Reads (`get`, `pull`, `diff`) report a list above 200 as a warning, and `diff`
+counts it as not clean (section 7.3). Whether exactly 200 is safe, whether
+Kibana counts stored or distinct values, and how the `is not in list`
+operator behaves are V12 measurements. Until they are in, the stored count
+and the limit of 200 stand.
 
 ### 5.3 Size warnings
 
