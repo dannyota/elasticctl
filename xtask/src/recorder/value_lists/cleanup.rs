@@ -36,12 +36,16 @@ pub(super) fn owns(
 }
 
 pub(super) async fn delete_owned(
-    session: &Session<'_>,
+    session: &mut Session<'_>,
     path: &str,
     id: &str,
     exception: bool,
     item: bool,
 ) -> Result<Option<Value>> {
+    if session.attempted_deletes.contains(path) {
+        wait_deleted(session, path, id).await?;
+        return Ok(None);
+    }
     let read = async {
         loop {
             match session.t.get(path).await {
@@ -73,19 +77,36 @@ pub(super) async fn delete_owned(
         }
         Ok(_) => {}
     }
-    let (status, body) = session.t.delete_once_response(path).await?;
-    if status != 200 && status != 404 {
-        return Err(recording_error(format!(
-            "cleanup delete of {id} returned HTTP {status}"
-        )));
-    }
-    match session.t.get(path).await {
-        Err(error) if error.http_status == Some(404) => Ok((status == 200).then_some(body)),
-        Err(error) => Err(error),
-        Ok(_) => Err(recording_error(format!(
-            "cleanup verification still found {id}"
-        ))),
-    }
+    // Record before sending so a lost answer or cancellation cannot cause a resend.
+    session.attempted_deletes.insert(path.to_string());
+    let answer = session.t.delete_once_response(path).await;
+    wait_deleted(session, path, id).await?;
+    Ok(answer
+        .ok()
+        .and_then(|(status, body)| (status == 200).then_some(body)))
+}
+
+async fn wait_deleted(session: &Session<'_>, path: &str, id: &str) -> Result<()> {
+    let reads = async {
+        loop {
+            if session
+                .t
+                .get(path)
+                .await
+                .is_err_and(|error| error.http_status == Some(404))
+            {
+                return;
+            }
+            tokio::time::sleep(session.timing.interval).await;
+        }
+    };
+    tokio::time::timeout(session.timing.budget, reads)
+        .await
+        .map_err(|_| {
+            recording_error(format!(
+                "cleanup verification still found {id} or could not prove its absence"
+            ))
+        })
 }
 
 pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
@@ -93,10 +114,6 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
         return Ok(());
     }
     let mut failures = Vec::new();
-    if session.pending_import {
-        // Accepted imports can continue writing after the HTTP answer is lost.
-        tokio::time::sleep(session.timing.budget).await;
-    }
     if session.exception_item {
         match delete_owned(session, &exception_path(true), ITEM, true, true).await {
             Ok(_) => session.exception_item = false,
@@ -113,6 +130,13 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
     for id in session.lists.clone().into_iter().rev() {
         if id == super::LIST && session.exception_item {
             continue;
+        }
+        if session.pending_imports.contains(id) {
+            if let Err(error) = settle_import(session, id).await {
+                failures.push(failure(id, error));
+                continue;
+            }
+            session.pending_imports.remove(id);
         }
         match delete_owned(
             session,
@@ -147,6 +171,39 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
     Ok(())
 }
 
+async fn settle_import(session: &Session<'_>, id: &str) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + session.timing.budget;
+    let mut previous = None;
+    loop {
+        let body = tokio::time::timeout_at(
+            deadline,
+            session.t.get(&format!(
+                "/api/lists/items/_find?list_id={}&per_page=1&page=1",
+                urlencode(id)
+            )),
+        )
+        .await
+        .map_err(|_| recording_error(format!("pending import for {id} did not settle")))??;
+        let total = inventory::total(&body)?;
+        let stable = previous == Some(total);
+        previous = Some(total);
+        // No import completion token exists. Observe the whole window, since old totals can be stable.
+        tokio::time::sleep_until(
+            deadline.min(tokio::time::Instant::now() + session.timing.interval),
+        )
+        .await;
+        if tokio::time::Instant::now() >= deadline {
+            return if stable {
+                Ok(())
+            } else {
+                Err(recording_error(format!(
+                    "pending import for {id} did not settle"
+                )))
+            };
+        }
+    }
+}
+
 pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
     if !session.before_absent || session.evidence.flavor == "traditional" || !session.init_attempted
     {
@@ -155,6 +212,9 @@ pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
     let body = session.t.get("/api/lists/_find?per_page=1").await?;
     if inventory::total(&body)? != 0 {
         return Ok(());
+    }
+    if !session.attempted_deletes.insert("/api/lists/index".into()) {
+        return wait_deleted(session, "/api/lists/index", "value-list indices").await;
     }
     let (status, body) = session.t.delete_once_response("/api/lists/index").await?;
     if status != 200 {

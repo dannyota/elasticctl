@@ -33,7 +33,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 fn transport(server: &MockServer) -> Transport {
     Transport::new(&Profile {
         kibana_url: server.uri(),
-        es_url: None,
+        es_url: Some(server.uri()),
         api_key: Some("test".into()),
         username: None,
         password: None,
@@ -94,6 +94,8 @@ async fn marker_refusal_names_all_ids_and_sends_zero_writes() {
             json!({"total": exceptions.as_array().unwrap().len(), "data": exceptions}),
         )
         .await;
+        page(&server, "/.items-default/_search", json!({"timed_out": false,
+            "_shards": {"failed": 0}, "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}})).await;
         let t = transport(&server);
         let mut session = Session::new(&t, fast());
         let error = run(&mut session, None, std::future::pending::<()>)
@@ -586,7 +588,7 @@ async fn cleanup_refuses_a_replaced_object_and_never_deletes_by_prefix() {
 async fn cleanup_rechecks_after_delete_and_reports_a_survivor() {
     let server = MockServer::start().await;
     let t = transport(&server);
-    let session = Session::new(&t, fast());
+    let mut session = Session::new(&t, fast());
     page(
         &server,
         "/api/lists",
@@ -599,7 +601,7 @@ async fn cleanup_rechecks_after_delete_and_reports_a_survivor() {
         .mount(&server)
         .await;
     let error = cleanup::delete_owned(
-        &session,
+        &mut session,
         &format!("/api/lists?id={LIST}"),
         LIST,
         false,
@@ -609,13 +611,9 @@ async fn cleanup_rechecks_after_delete_and_reports_a_survivor() {
     .unwrap_err();
     assert!(error.message.contains("verification still found"));
     let requests = server.received_requests().await.unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|r| r.method.as_str())
-            .collect::<Vec<_>>(),
-        ["GET", "DELETE", "GET"]
-    );
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[1].method, "DELETE");
+    assert!(requests[2..].iter().all(|request| request.method == "GET"));
 }
 
 #[tokio::test]
@@ -626,7 +624,10 @@ async fn preflight_checks_later_cursor_pages_and_both_exception_namespaces() {
     Mock::given(method("GET")).respond_with(move |r: &Request| {
         captured.lock().unwrap().push(r.url.to_string());
         let query: std::collections::BTreeMap<_, _> = r.url.query_pairs().into_owned().collect();
-        if r.url.path() == "/api/lists/_find" {
+        if r.url.path() == "/.items-default/_search" {
+            response(200, json!({"timed_out": false, "_shards": {"failed": 0},
+                "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}}))
+        } else if r.url.path() == "/api/lists/_find" {
             if query.get("page").map(String::as_str) == Some("1") {
                 response(200, json!({"total": 2, "data": [{"id": "unrelated"}], "cursor": "cursor1"}))
             } else if query.get("page").map(String::as_str) == Some("2") && query.get("cursor").map(String::as_str) == Some("cursor1") {
@@ -646,7 +647,7 @@ async fn preflight_checks_later_cursor_pages_and_both_exception_namespaces() {
     ] {
         assert!(error.message.contains(id));
     }
-    assert_eq!(seen.lock().unwrap().len(), 4);
+    assert_eq!(seen.lock().unwrap().len(), 5);
 }
 
 #[tokio::test]
@@ -710,3 +711,5 @@ async fn cleanup_clears_a_definitely_refused_create_and_removes_its_parents() {
     assert!(state.exception.is_none());
     assert!(!state.bootstrapped);
 }
+
+mod regressions;

@@ -156,13 +156,13 @@ async fn add_item(session: &mut Session<'_>, list: &str, index: usize, value: &s
     let id = format!("{list}-item-{index}");
     session.items.push(id.clone());
     let request = json!({"id": id, "list_id": list, "value": value});
-    session.pending_import = true;
+    session.pending_imports.insert(list.to_string());
     session
         .t
         .post_once("/api/lists/items", Some(&request))
         .await?;
     settle(session.t, list, index as u64 + 1, session.timing).await?;
-    session.pending_import = false;
+    session.pending_imports.remove(list);
     Ok(())
 }
 
@@ -221,7 +221,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.evidence.response("items_export", json!(export));
-    session.pending_import = true;
+    session.pending_imports.insert(LIST.to_string());
     let imported = session
         .t
         .post_multipart_once_named(
@@ -234,14 +234,14 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     session.evidence.response("items_import", imported);
     let settled = settle(session.t, LIST, 6, session.timing).await?;
     session.evidence.response("items_import_settled", settled);
-    session.pending_import = false;
-    let (status, body) = session
-        .t
-        .delete_once_response(&format!(
-            "/api/lists/items?list_id={LIST}&value={}",
-            urlencode("10.0.0.5-10.0.0.5")
-        ))
-        .await?;
+    session.pending_imports.remove(LIST);
+    let delete_path = format!(
+        "/api/lists/items?list_id={LIST}&value={}",
+        urlencode("10.0.0.5-10.0.0.5")
+    );
+    session.attempted_deletes.insert(delete_path.clone());
+    session.pending_imports.insert(LIST.to_string());
+    let (status, body) = session.t.delete_once_response(&delete_path).await?;
     require_status(Some(status), 200)?;
     if body.as_array().is_none_or(|items| items.len() != 2) {
         return Err(recording_error(
@@ -250,6 +250,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     }
     session.evidence.response("items_delete_value", body);
     settle(session.t, LIST, 4, session.timing).await?;
+    session.pending_imports.remove(LIST);
     Ok(())
 }
 
@@ -311,11 +312,12 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.pending_creates.remove(ITEM);
-    let (status, body) = session
-        .t
-        .delete_once_response(&format!("/api/lists?id={LIST}"))
-        .await?;
+    let delete_path = format!("/api/lists?id={LIST}");
+    session.attempted_deletes.insert(delete_path.clone());
+    let (status, body) = session.t.delete_once_response(&delete_path).await?;
     require_status(Some(status), 409)?;
+    // A confirmed refusal permits the later delete after removing the reference.
+    session.attempted_deletes.remove(&delete_path);
     if !body["references"].is_array() || body["references"].as_array().is_some_and(Vec::is_empty) {
         return Err(recording_error("referenced delete has no references body"));
     }
@@ -371,7 +373,11 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
             409,
         ),
     ] {
-        let error = session
+        if !session.lists.contains(&list) {
+            session.lists.push(list);
+        }
+        session.pending_imports.insert(list.to_string());
+        let result = session
             .t
             .post_multipart_once_named(
                 &format!("/api/lists/items/_import?list_id={list}&refresh=wait_for"),
@@ -379,7 +385,14 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
                 "text/plain",
                 &content,
             )
-            .await
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|error| matches!(error.http_status, Some(400..=499)))
+        {
+            session.pending_imports.remove(list);
+        }
+        let error = result
             .err()
             .ok_or_else(|| recording_error("import refusal unexpectedly succeeded"))?;
         require_status(error.http_status, expected)?;

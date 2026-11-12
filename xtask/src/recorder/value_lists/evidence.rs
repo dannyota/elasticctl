@@ -112,6 +112,8 @@ impl Evidence {
     }
 
     pub(super) fn refusal(&mut self, name: &'static str, mut error: elasticctl_core::Error) {
+        // The transport exposes a classified error here, not the original refusal body.
+        // Retaining that body needs a transport change outside this recorder.
         // A remote error's prose can quote identities outside the named scrub fields.
         error.message = "value-list recording endpoint refused request".to_string();
         self.fixtures

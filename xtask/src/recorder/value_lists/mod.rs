@@ -50,7 +50,8 @@ struct Session<'a> {
     timing: Timing,
     nonce: String,
     pending_creates: std::collections::BTreeSet<String>,
-    pending_import: bool,
+    pending_imports: std::collections::BTreeSet<String>,
+    attempted_deletes: std::collections::BTreeSet<String>,
 }
 
 impl<'a> Session<'a> {
@@ -71,7 +72,8 @@ impl<'a> Session<'a> {
             timing,
             nonce,
             pending_creates: std::collections::BTreeSet::new(),
-            pending_import: false,
+            pending_imports: std::collections::BTreeSet::new(),
+            attempted_deletes: std::collections::BTreeSet::new(),
         }
     }
 
@@ -130,14 +132,49 @@ where
     F: std::future::Future<Output = ()>,
 {
     let work = guarded(steps::record(session, flavor), None, interrupt()).await;
+    let already_interrupted = matches!(work, Ended::Interrupted);
+    let mut cleanup_interrupted = false;
     let cleanup = guarded(
         cleanup::finish(session),
         Some(Duration::from_secs(300)),
-        interrupt(),
+        async {
+            if !already_interrupted {
+                interrupt().await;
+                cleanup_interrupted = true;
+            }
+            interrupt().await;
+        },
     )
     .await;
-    let step = ended(work, "recording");
-    let clean = ended(cleanup, "cleanup");
+    let step = ended(work, "recording").and_then(|()| {
+        if cleanup_interrupted {
+            Err(recording_error("recording interrupted during cleanup"))
+        } else {
+            Ok(())
+        }
+    });
+    let clean = ended(cleanup, "cleanup").map_err(|error| {
+        let mut ids = session
+            .lists
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        ids.extend(session.items.iter().cloned());
+        if session.exception {
+            ids.push(EXCEPTION.into());
+        }
+        if session.exception_item {
+            ids.push(ITEM.into());
+        }
+        ids.extend(session.pending_imports.iter().cloned());
+        ids.sort();
+        ids.dedup();
+        recording_error(format!(
+            "{}; survivors or unresolved ids: {}",
+            error.message,
+            ids.join(", ")
+        ))
+    });
     match (step, clean) {
         (Ok(()), Ok(())) => session.recording(),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),

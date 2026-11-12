@@ -15,6 +15,7 @@ pub(super) struct Stack {
     pub(super) late_list: Option<serde_json::Value>,
     pub(super) imported_pending: bool,
     pub(super) import_reads: u32,
+    pub(super) pending_list: Option<String>,
 }
 
 pub(super) fn response(status: u16, body: serde_json::Value) -> ResponseTemplate {
@@ -31,6 +32,25 @@ impl Stack {
         let list = query.get("list_id").cloned().unwrap_or_default();
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap_or(json!({}));
         match (method, path) {
+            ("GET", p) if p.ends_with("/_search") => {
+                let rows: Vec<_> = self
+                    .values
+                    .iter()
+                    .filter(|(list, _)| list.starts_with(PREFIX))
+                    .flat_map(|(list, values)| {
+                        values.iter().map(move |v| {
+                            json!({
+                                "_id": v["id"], "_source": {"list_id": list}
+                            })
+                        })
+                    })
+                    .collect();
+                response(
+                    200,
+                    json!({"timed_out": false, "_shards": {"failed": 0},
+                    "hits": {"total": {"value": rows.len(), "relation": "eq"}, "hits": rows}}),
+                )
+            }
             ("GET", "/api/status") => response(
                 200,
                 json!({"version": {"number": "9.5.1", "build_flavor": "traditional"}}),
@@ -118,7 +138,7 @@ impl Stack {
                 response(200, value)
             }
             ("GET", "/api/lists/items/_find") => {
-                if self.imported_pending && list == LIST {
+                if self.imported_pending && list == self.pending_list.as_deref().unwrap_or(LIST) {
                     self.import_reads += 1;
                     if self.import_reads >= 3 {
                         self.imported_pending = false;
@@ -159,13 +179,22 @@ impl Stack {
                 if request.body.len() > 9_000_000 {
                     return response(413, json!({}));
                 }
-                if String::from_utf8_lossy(&request.body).contains(".json\"") {
+                if String::from_utf8_lossy(&request.body).contains(".json\"")
+                    && self.fail != Some("wrong_extension")
+                {
                     return response(415, json!({}));
+                }
+                if list == ABSENT && self.fail == Some("absent_import") {
+                    let mut parent = self.lists[RANGES].clone();
+                    parent["id"] = json!(ABSENT);
+                    self.lists.insert(ABSENT.into(), parent);
                 }
                 if !self.lists.contains_key(&list) {
                     return response(409, json!({}));
                 }
                 self.imported_pending = true;
+                self.import_reads = 0;
+                self.pending_list = Some(list.clone());
                 if self.fail == Some("import") {
                     return response(400, json!({}));
                 }
