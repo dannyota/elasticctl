@@ -21,7 +21,11 @@ Three send-once transport calls are added beside the existing `post_once`,
   `references` from a 409 (section 6.5). The shared error kinds and statuses
   are built from it as usual.
 
-All three use the one-shot client with an attempt limit of 1, like the other
+`patch_once_response` and `post_multipart_once_named_response` return the
+status and body of a 2xx or 4xx in the same way, so the fixture recorder can
+store Kibana's own 409, 413, and 415 bodies and tests can serve them.
+
+All five use the one-shot client with an attempt limit of 1, like the other
 `_once` calls. `post_text` already reads a non-JSON body and serves
 `_export`. No other transport behavior changes.
 
