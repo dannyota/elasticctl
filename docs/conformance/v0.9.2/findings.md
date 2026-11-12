@@ -17,9 +17,9 @@ this patch.
 Every leg ran at source commit `b88164f0b6e5c0a5b9905a93195a3e426e0206c7`.
 The two Cloud legs ran in one matrix process from `2026-11-12T04:03:23Z` to
 `04:26:10Z`. The read-only preflight found both answering `doctor`, with
-2,263 prebuilt rules and no marker rule. The self-managed leg is the `traditional` job of Live lab run
-43152069032, dispatched on `dev-0.9.2` (mutation design D35); no local lab
-started. Its matrix step ran from `04:04:51Z` to `04:17:04Z`, 733 seconds of
+2,263 prebuilt rules and no marker rule. The self-managed leg is the
+`traditional` job of Live lab run 43152069032, dispatched on `dev-0.9.2`
+(mutation design D35); no local lab started. Its matrix step ran from `04:04:51Z` to `04:17:04Z`, 733 seconds of
 the job's 22-minute budget, now including the mutation contract, and the
 teardown step succeeded. The published report is byte-identical to the run's
 `live-lab-public` artifact.
@@ -76,9 +76,9 @@ Each test names the earlier test it extends.
 - A 262,145-byte `plan_apply` line ends the connection on both paths with
   nothing applied.
 - The audit sink receives exactly the 8.4 sequence, fields, and Unix-second
-  `ts` for accept, failed, unknown, decline, dismiss, stale at the second
+  `ts` for accept, failed, unknown, decline, dismiss, stale at the first
   check, discarded, and a 409 at write, which ends with `plan_closed` after
-  `apply_finished`.
+  `apply_finished`. Expiry has no end-to-end case (see the evidence limits).
 
 ## Product clients
 

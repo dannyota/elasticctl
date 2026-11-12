@@ -121,7 +121,8 @@ pass taken from its documents.
 
 Measured in 0.9.2 on Hosted
 ([findings](../../conformance/v0.9.2/findings.md)). Claude Code 2.1.322 ran
-every row on both paths. Codex CLI 0.167.1 ran on the legacy path only,
+every row, with accept, decline, and dismiss on both paths and the rest on
+the current path. Codex CLI 0.167.1 ran on the legacy path only,
 because it does not negotiate the current one. In every row an apply needed
 a person; with a hook, that person answers only the permission card. Two
 client limits stand by owner decision. Claude Code collapses the form after

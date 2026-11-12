@@ -10,11 +10,11 @@
 - Offline protocol tests cover the consent flow end to end: both rounds of the
   `2026-07-28` path through the `rmcp` client, accepts that do not confirm,
   equal plan hashes across protocol paths, concurrent applies, every mutation
-  tool against its output schema, and the exact audit sequence of each
-  outcome. They found no server defect.
+  tool against its output schema, and the exact audit sequence of every
+  outcome except expiry. They found no server defect.
 - The consent flow is checked with two product clients on the Hosted test
-  deployment, Claude Code 2.1.322 on both protocol paths and Codex CLI
-  0.167.1 on the legacy path. In every scenario an apply needed a person.
+  deployment: Claude Code 2.1.322, with accept, decline, and dismiss on both
+  protocol paths, and Codex CLI 0.167.1 on the legacy path. In every scenario an apply needed a person.
   Claude Code shows only the form's first three lines, and Codex CLI's form
   has no decline button; the MCP Mutations wiki page says how to work with
   each. The server is unchanged.
