@@ -46,16 +46,28 @@ pub struct Harness {
 
 impl Harness {
     pub fn start(target: Resolved, options: ServerOptions) -> Self {
+        Self::start_with_plan_life(target, options, None)
+    }
+
+    pub fn start_with_plan_life(
+        target: Resolved,
+        options: ServerOptions,
+        plan_life: Option<Duration>,
+    ) -> Self {
         let (input, server_input) = tokio::io::duplex(1_048_576);
         let (server_output, output) = tokio::io::duplex(1_048_576);
         let audit = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = audit.clone();
+        let mut test = elasticctl_mcp::server::TestOptions::from(move |line: &str| {
+            sink.lock().unwrap().push(line.to_owned())
+        });
+        test.plan_life = plan_life;
         let task = tokio::spawn(elasticctl_mcp::server::serve_io_with_audit(
             target,
             options,
             server_input,
             server_output,
-            move |line: &str| sink.lock().unwrap().push(line.to_owned()),
+            test,
         ));
         Self {
             audit,

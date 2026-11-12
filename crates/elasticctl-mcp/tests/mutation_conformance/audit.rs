@@ -1,6 +1,4 @@
-//! End-to-end expiry delivery is not covered: `src/server/runtime.rs:158-170`
-//! runs each session on a separate thread with a fresh runtime, beyond the test runtime's paused clock.
-//! `src/plan/store.rs` and `src/plan/audit.rs` cover expiry and its line format at unit level.
+//! Exact audit delivery through the server, including expiry with a test-only plan life.
 use super::*;
 
 fn unix_seconds() -> u64 {
@@ -11,11 +9,30 @@ fn unix_seconds() -> u64 {
 }
 async fn flow(scenario: &str) {
     let before = unix_seconds();
-    let (s, mut h) = setup().await;
+    let (s, mut h) = if scenario == "expired" {
+        let s = stack().await;
+        let h = Harness::start_with_plan_life(target(&s), options(), Some(Duration::from_secs(1)));
+        (s, h)
+    } else {
+        setup().await
+    };
     let p = plan(&mut h).await;
+    let received_plan = tokio::time::Instant::now();
     let id = &p["plan_id"];
     let mut expected = vec![("plan_created", json!({"targets":["r"]}))];
     match scenario {
+        "expired" => {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while received_plan.elapsed() < Duration::from_secs(1) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("plan life passes within the wait bound");
+            let r = call(&mut h, "plan_apply", json!({"plan_id":id})).await;
+            assert_eq!(code(&r), "plan_expired", "{r}");
+            expected.push(("plan_closed", json!({"state":"expired"})));
+        }
         "discarded" => {
             let r = call(&mut h, "plan_discard", json!({"plan_id":id})).await;
             assert_eq!(data(&r)["plan"]["state"], "discarded");
@@ -92,9 +109,13 @@ async fn flow(scenario: &str) {
     let lines = sink.lock().unwrap().clone();
     let base = base(&p, &s, "rules_set_enabled", "rules-toggle");
     assert_lines(scenario, &lines, base, expected, before..=unix_seconds());
-    if matches!(scenario, "stale" | "discarded") {
+    if matches!(scenario, "stale" | "discarded" | "expired") {
         assert_writes(&s, 0).await;
     }
+}
+#[tokio::test]
+async fn expired_audit_is_exact() {
+    flow("expired").await;
 }
 fn base(p: &Value, s: &MockServer, kind: &str, class: &str) -> Value {
     json!({"plan_id":p["plan_id"],"hash":p["hash"],"kind":kind,"class":class,"profile":"test",

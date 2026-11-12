@@ -1,6 +1,6 @@
 use super::{
     MAX_FINAL_RECORDS, MAX_OBJECTS_PER_PLAN, MAX_OPEN_PLANS, MAX_PLAN_BODY_BYTES,
-    MAX_PROMPTS_PER_PLAN, PLAN_LIFE_SECS, PlanError, consent, hash,
+    MAX_PROMPTS_PER_PLAN, PlanError, consent, hash,
 };
 use crate::{TargetContext, ToolError};
 use serde::Serialize;
@@ -77,11 +77,20 @@ pub(crate) struct Plan<P = Value> {
     pub(crate) state: PlanState,
     pub(crate) outcome: Option<Outcome>,
     created: Instant,
+    life: Duration,
     prompts: u8,
     handle: Option<String>,
 }
 impl<P> Plan<P> {
-    pub(crate) fn new(mut content: PlanContent<P>, now: Instant) -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn new(content: PlanContent<P>, now: Instant) -> Result<Self> {
+        Self::with_life(content, now, Duration::from_secs(super::PLAN_LIFE_SECS))
+    }
+    pub(crate) fn with_life(
+        mut content: PlanContent<P>,
+        now: Instant,
+        life: Duration,
+    ) -> Result<Self> {
         if content.targets.len() > MAX_OBJECTS_PER_PLAN
             || content.preconditions.len() > MAX_OBJECTS_PER_PLAN
         {
@@ -97,37 +106,31 @@ impl<P> Plan<P> {
         }
         let id = hash::new_plan_id().map_err(|_| PlanError::Randomness.tool_error())?;
         let hash = hash::sha256_hex(&bytes);
-        let text = consent::render(
-            &content.target,
-            &content.action,
-            &content.details,
-            content.note.as_deref(),
-            &id,
-            &hash,
-            15,
-        );
-        consent::validate(&text).map_err(PlanError::tool_error)?;
-        Ok(Self {
+        let plan = Self {
             id,
             hash,
             content,
             state: PlanState::Open,
             outcome: None,
             created: now,
+            life,
             prompts: 0,
             handle: None,
-        })
+        };
+        consent::validate(&plan.consent_text(now)).map_err(PlanError::tool_error)?;
+        Ok(plan)
     }
     pub(crate) fn expires_in_secs(&self, now: Instant) -> u64 {
         if self.state != PlanState::Open {
             return 0;
         }
-        Duration::from_secs(PLAN_LIFE_SECS)
+        self.life
             .saturating_sub(now.saturating_duration_since(self.created))
             .as_secs()
     }
     pub(crate) fn consent_text(&self, now: Instant) -> String {
-        let remaining = Duration::from_secs(PLAN_LIFE_SECS)
+        let remaining = self
+            .life
             .saturating_sub(now.saturating_duration_since(self.created));
         let minutes = remaining.as_secs().div_ceil(60)
             + u64::from(remaining.subsec_nanos() != 0 && remaining.as_secs().is_multiple_of(60));
@@ -138,7 +141,7 @@ impl<P> Plan<P> {
             self.content.note.as_deref(),
             &self.id,
             &self.hash,
-            minutes.clamp(1, 15),
+            minutes.max(1),
         )
     }
     pub(crate) fn prompt_count(&self) -> u8 {
@@ -177,9 +180,7 @@ impl<P: Clone> PlanStore<P> {
     fn expire(&mut self, now: Instant) {
         let mut closed = Vec::new();
         for p in &mut self.plans {
-            if p.state == PlanState::Open
-                && now.saturating_duration_since(p.created) >= Duration::from_secs(PLAN_LIFE_SECS)
-            {
+            if p.state == PlanState::Open && now.saturating_duration_since(p.created) >= p.life {
                 p.state = PlanState::Expired;
                 p.handle = None;
                 self.closed.push(ClosedPlan {

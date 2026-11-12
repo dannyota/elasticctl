@@ -42,6 +42,7 @@ pub struct ServerState {
     pub(crate) audit: crate::plan::audit::AuditSink,
     pub(crate) pending_writes: Mutex<crate::plan::apply::PendingWrites>,
     pub(crate) legacy_wait: Duration,
+    pub(crate) plan_life: Duration,
     target: TargetContext,
     resolved: Resolved,
     transport: tokio::sync::OnceCell<Transport>,
@@ -64,6 +65,7 @@ impl ServerState {
             plans: Mutex::new(crate::plan::store::PlanStore::default()),
             pending_writes: Mutex::new(crate::plan::apply::PendingWrites::default()),
             legacy_wait: crate::plan::confirm::LEGACY_CONFIRM_WAIT,
+            plan_life: Duration::from_secs(crate::plan::PLAN_LIFE_SECS),
             audit: crate::plan::audit::AuditSink::production(|line| {
                 use std::io::Write;
                 let _ = std::io::stderr().lock().write_all(line.as_bytes());

@@ -38,6 +38,7 @@ impl Harness {
                         .push(serde_json::from_str(line).unwrap())
                 }),
                 legacy_wait: wait,
+                ..Default::default()
             },
         ));
         Self {

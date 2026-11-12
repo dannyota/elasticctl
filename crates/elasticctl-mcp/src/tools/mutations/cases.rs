@@ -217,7 +217,7 @@ async fn create(
         payload: operation,
     };
     let now = tokio::time::Instant::now();
-    let plan = Plan::new(content, now).map_err(local_error)?;
+    let plan = Plan::with_life(content, now, state.plan_life).map_err(local_error)?;
     let mut store = state.plans.lock().expect("plan store lock");
     let result = store.insert(plan.clone(), now);
     drain_closed(&state.audit, &mut store, context.protocol.as_str());

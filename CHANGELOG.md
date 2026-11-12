@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.3 — 2026-11-12
+
+### Changed
+
+- The live tests no longer write the API key into their config file; each
+  child process gets it through its environment.
+- Two tests no longer depend on timing: the shared permit check holds its
+  calls behind an explicit gate, and a plan's expiry is driven through the
+  server, with its exact audit lines.
+- Rust source change, outside the CLI and MCP compatibility promise:
+  `elasticctl_mcp::TestOptions` gains a hidden `plan_life` field for tests.
+  Production plans keep their 900-second life. The server is otherwise
+  unchanged.
+
 ## 0.9.2 — 2026-11-12
 
 ### Changed
