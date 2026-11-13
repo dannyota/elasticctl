@@ -32,6 +32,7 @@ pub(super) async fn reference_reads(session: &mut Session<'_>) -> Result<()> {
         json!({"namespace_type":"single", "per_page":10, "page":1, "filter":filter}),
         body,
     );
+    let filter = "exception-list-agnostic.attributes.list_id:elasticctl-live-vl-*";
     let path = format!(
         "/api/exception_lists/_find?namespace_type=agnostic&per_page=10000&page=1&filter={}",
         urlencode(filter)

@@ -143,6 +143,16 @@ impl Stack {
                     } else {
                         vec![]
                     };
+                if query.get("namespace_type").map(String::as_str) == Some("agnostic")
+                    && query.get("filter").is_some_and(|filter| {
+                        !filter.starts_with("exception-list-agnostic.attributes.")
+                    })
+                {
+                    return response(
+                        400,
+                        json!({"message": "This type exception-list is not allowed: Bad Request", "status_code": 400}),
+                    );
+                }
                 if self.fail == Some("agnostic_nonempty")
                     && query.get("namespace_type").map(String::as_str) == Some("agnostic")
                     && query.get("per_page").map(String::as_str) == Some("10000")
