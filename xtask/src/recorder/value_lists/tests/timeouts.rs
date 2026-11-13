@@ -85,11 +85,10 @@ async fn timed_out_create(route: &'static str, id: &'static str, settle: bool) {
     } else {
         assert!(cleanup.unwrap_err().message.contains("pending create"));
         assert!(session.pending_creates.contains(id));
-        assert!(
-            requests
-                .iter()
-                .all(|r| r.method != "DELETE" || (id == EXCEPTION && r.url.path() == "/api/lists"))
-        );
+        assert!(requests.iter().all(|r| r.method != "DELETE"
+            || (r.url.path() == "/api/lists"
+                && (id == EXCEPTION
+                    || r.url.query_pairs().any(|(k, v)| k == "id" && v == RANGES)))));
         assert!(state.lock().unwrap().bootstrapped);
         assert!(
             queued.lock().unwrap().is_some(),

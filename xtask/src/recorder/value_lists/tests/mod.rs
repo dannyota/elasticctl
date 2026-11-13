@@ -365,11 +365,13 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "items_import_settled",
             "items_delete_id",
             "items_delete_id_absent",
+            "spellings_create",
+            "lists_find_first",
+            "lists_find_next",
             "exception_create",
             "exception_item_create",
             "container_delete_referenced",
             "container_delete",
-            "spellings_create",
             "import_too_large",
             "import_wrong_extension",
             "import_absent_list",
@@ -387,6 +389,21 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             .document["response"],
         "2001:db8::/32\n10.0.0.1-2001:db8::1\n10.0.0.7/24\n2001:DB8:0:0::1-2001:DB8:0:0::1\n"
     );
+    for name in ["lists_find_first", "lists_find_next"] {
+        let document = &recording
+            .fixtures
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .document;
+        assert!(
+            document["response"]["data"][0]["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("elasticctl-fixture-")
+        );
+        assert_eq!(document["response"]["cursor"], "elasticctl-fixture-cursor");
+    }
     let referenced = &recording
         .fixtures
         .iter()
@@ -545,7 +562,8 @@ async fn cleanup_after_failure_uses_exact_ids_in_dependency_order_and_verifies_a
     assert!(deletes[0].1.contains(ITEM));
     assert_eq!(deletes[1].0, "/api/exception_lists");
     assert!(deletes[1].1.contains(EXCEPTION));
-    assert_eq!(deletes[2], ("/api/lists".into(), format!("id={LIST}")));
+    assert_eq!(deletes[2], ("/api/lists".into(), format!("id={RANGES}")));
+    assert_eq!(deletes[3], ("/api/lists".into(), format!("id={LIST}")));
     for (index, request) in requests
         .iter()
         .enumerate()

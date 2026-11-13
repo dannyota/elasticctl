@@ -40,8 +40,9 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
     initialize(session).await?;
     container(session).await?;
     values(session).await?;
-    references(session).await?;
     create_list(session, RANGES, "spellings_create").await?;
+    lists_find(session).await?;
+    references(session).await?;
     refusals(session).await?;
     for (index, value) in [
         "2001:DB8:0:0::1",
@@ -299,7 +300,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
             .ok()
             .or_else(|| result.as_ref().err().and_then(|e| e.http_status));
         session.clear_refused_import(LIST, status);
-        let (status, body) = result.map_err(|error| delete_error("items_delete_id", 200, error))?;
+        let (status, body) = result.map_err(|error| step_error("items_delete_id", 200, error))?;
         require_status("items_delete_id", status, 200)?;
         if index == 0 {
             session.evidence.response("items_delete_id", body);
@@ -312,11 +313,73 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         .t
         .delete_once_response(&path)
         .await
-        .map_err(|error| delete_error("items_delete_id_absent", 404, error))?;
+        .map_err(|error| step_error("items_delete_id_absent", 404, error))?;
     require_status("items_delete_id_absent", status, 404)?;
     session
         .evidence
         .http_response("items_delete_id_absent", status, body);
+    Ok(())
+}
+
+async fn lists_find(session: &mut Session<'_>) -> Result<()> {
+    let filter = "name:elasticctl-live-vl-*";
+    let path = format!(
+        "/api/lists/_find?per_page=1&page=1&filter={}",
+        urlencode(filter)
+    );
+    let (status, first) = session
+        .t
+        .get_response(&path)
+        .await
+        .map_err(|error| step_error("lists_find_first", 200, error))?;
+    require_status("lists_find_first", status, 200)?;
+    let rows = first["data"]
+        .as_array()
+        .filter(|rows| rows.len() == 1)
+        .ok_or_else(|| recording_error("lists_find_first: expected one row"))?;
+    if first["total"].as_u64() != Some(2) {
+        return Err(recording_error("lists_find_first: expected total 2"));
+    }
+    let first_id = rows[0]["id"]
+        .as_str()
+        .ok_or_else(|| recording_error("lists_find_first: row has no id"))?
+        .to_string();
+    let cursor = first["cursor"]
+        .as_str()
+        .filter(|cursor| !cursor.is_empty())
+        .ok_or_else(|| recording_error("lists_find_first: missing cursor"))?
+        .to_string();
+    session.evidence.exchange(
+        "lists_find_first",
+        json!({"per_page": 1, "page": 1, "filter": filter}),
+        first,
+    );
+    let path = format!(
+        "/api/lists/_find?per_page=1&page=2&filter={}&cursor={}",
+        urlencode(filter),
+        urlencode(&cursor)
+    );
+    let (status, second) = session
+        .t
+        .get_response(&path)
+        .await
+        .map_err(|error| step_error("lists_find_next", 200, error))?;
+    require_status("lists_find_next", status, 200)?;
+    let rows = second["data"]
+        .as_array()
+        .filter(|rows| rows.len() == 1)
+        .ok_or_else(|| recording_error("lists_find_next: expected one row"))?;
+    let second_id = rows[0]["id"]
+        .as_str()
+        .ok_or_else(|| recording_error("lists_find_next: row has no id"))?;
+    if !((first_id == LIST && second_id == RANGES) || (first_id == RANGES && second_id == LIST)) {
+        return Err(recording_error("lists_find_next: unexpected list ids"));
+    }
+    session.evidence.exchange(
+        "lists_find_next",
+        json!({"per_page": 1, "page": 2, "filter": filter, "cursor": cursor}),
+        second,
+    );
     Ok(())
 }
 
@@ -505,7 +568,7 @@ pub(super) async fn settle(session: &mut Session<'_>, list: &str, expected: u64)
         .map_err(|_| recording_error("item settle timed out"))?
 }
 
-fn delete_error(
+fn step_error(
     step: &str,
     expected: u16,
     mut error: elasticctl_core::Error,
@@ -513,7 +576,7 @@ fn delete_error(
     error.kind = elasticctl_core::ErrorKind::Error;
     error.message = match error.http_status {
         Some(status) => format!("{step}: expected HTTP {expected}, received {status}"),
-        None => format!("{step}: delete failed"),
+        None => format!("{step}: request failed"),
     };
     error
 }
