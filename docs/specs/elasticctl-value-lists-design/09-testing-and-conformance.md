@@ -27,10 +27,20 @@ not own.
 ### 9.2 Offline tests
 
 Tests drive the real `-api` and CLI code against wiremock, with exact request
-assertions. Every mock response is a recorded one. The one exception is an
-`initialize` flow that is not `ready`, which no stack can be made to answer on
-demand: that test takes the recorded `initialize` response and changes only
-the flow's status value, and its name says so.
+assertions. Every mock response body is a recorded one, with two exceptions
+for answers no stack can be made to give on demand:
+
+- an `initialize` flow that is not `ready`: the test takes the recorded
+  `initialize` response and changes only the flow's status value, and its name
+  says so;
+- faults: a 5xx status, a timeout, a connection reset, or a body that does not
+  decode is injected by the test. The status or the failure is synthetic; any
+  body it carries is a recorded one, and the test name says it injects a
+  fault.
+
+A production request that cannot be filtered to marker objects on a shared
+stack, such as the unfiltered scan of D26, is recorded with a marker filter.
+Its test asserts the production request and serves the recorded body.
 
 The cases:
 

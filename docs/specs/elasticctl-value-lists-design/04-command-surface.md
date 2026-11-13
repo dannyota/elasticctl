@@ -15,12 +15,13 @@ elasticctl value-lists init                                            [guarded]
 Every command acts on the profile's space and takes the global flags of
 shared design 4.2.
 
-- **`list`** reads containers through `_find` with `cursor` (D19) and prints
-  `id`, `type`, `name`, and `description`, ordered by `id`. `--type` filters on
-  one of the four types; `--search` matches `id` and `name` as substrings, as
-  shared design 4.7 does for other objects. A container of an unsupported
-  type is listed with its type and marked `unsupported`, so the operator sees
-  it rather than a silent gap.
+- **`list`** reads containers through `_find` with `cursor` (D19), starting
+  with `GET /api/lists/_find?page=1&per_page=1000` and sending no `filter`. It
+  prints `id`, `type`, `name`, and `description`, ordered by `id`. After the
+  read, `--type` keeps one of the four types and `--search` matches `id` and
+  `name` as substrings, as shared design 4.7 does for other objects. A
+  container of an unsupported type is listed with its type and marked
+  `unsupported`, so the operator sees it rather than a silent gap.
 - **`get`** prints one container, its distinct value count, its stored
   value count, and the warnings of section 5. `--values` adds the set. The
   values come from `_export`.
