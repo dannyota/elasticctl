@@ -45,6 +45,14 @@ exception-list pointer does not match the live list; `push` repairs it.
   the first remote change, so an unwritable path cannot leave an unreported
   change.
 
+Value-list previews show each container action (`create`, `update`, or
+`none`), adds, removes, and phase order. With value-list changes, `--json`
+prints a structured preview on stderr. Applied output includes every list's
+outcome and request evidence. The first `failed` or `unknown` list stops the
+push; its error and evidence appear with or without `--report`, before exit
+1. An `unknown` list may still change: wait, run `diff`, and push again only
+when its preview is what you expect.
+
 ```bash
 elkctl state push --dir state --report change-1234.json --yes
 ```

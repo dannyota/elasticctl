@@ -163,27 +163,6 @@ pub async fn plan_push(
             preview_details.push(format!("value list {}: {}", warning.id, warning.message));
         }
     }
-    for list in &values.plans {
-        if list.container_action != crate::value_lists::ContainerAction::None
-            || !list.adds.is_empty()
-            || !list.removes.is_empty()
-        {
-            preview_details.push(format!(
-                "value list {}: {:?}, {} adds, {} removes; {}",
-                list.local.container.id,
-                list.order,
-                list.adds.len(),
-                list.removes.len(),
-                list.order_reason
-            ));
-            for value in &list.adds {
-                preview_details.push(format!("  + {value}"));
-            }
-            for value in &list.removes {
-                preview_details.push(format!("  - {value}"));
-            }
-        }
-    }
 
     let mut entries: Vec<ReportEntry> = Vec::new();
     let mut desired: BTreeMap<String, Rule> = BTreeMap::new();
@@ -325,7 +304,12 @@ async fn apply_push_with_clock<C: crate::value_lists::Clock>(
     let value_entries: Vec<_> = plan
         .value_list_outcomes
         .iter()
-        .flat_map(|outcome| outcome.evidence.iter().cloned())
+        .flat_map(|outcome| {
+            outcome.evidence.iter().cloned().map(move |mut evidence| {
+                evidence.error = outcome.error.clone();
+                evidence
+            })
+        })
         .map(ReportEntry::from)
         .collect();
     if plan

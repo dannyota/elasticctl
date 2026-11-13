@@ -26,6 +26,14 @@ pub async fn apply_plans<C: Clock>(
         Err((index, error)) => {
             outcomes[index] =
                 pending(&plans[index]).unwrap_or_else(|_| ListOutcome::not_reached(&plans[index]));
+            if outcomes[index].evidence.is_empty() {
+                let c = &plans[index].local.container;
+                let mut entry = Evidence::new(Action::CheckValueList, &c.id, &c.name);
+                entry.values = None;
+                entry.planned_adds = Some(0);
+                entry.planned_removes = Some(0);
+                outcomes[index].evidence.push(entry);
+            }
             outcomes[index].finish(Outcome::Failed, Some(error));
         }
         Ok(checked) => {
@@ -274,7 +282,10 @@ pub(super) async fn apply_one<C: Clock>(
                 Outcome::Unknown,
                 Some(Error::new(
                     ErrorKind::Http,
-                    "value-list outcome is unknown; wait, run diff, and review before retrying",
+                    format!(
+                        "value list {} outcome is unknown; wait, run diff, and push again only when its preview is what you expect",
+                        plan.local.container.id
+                    ),
                 )),
             );
         }

@@ -30,6 +30,7 @@ pub enum Action {
     ReadBack,
     NotReached,
     DeleteValueList,
+    CheckValueList,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -86,6 +87,8 @@ pub struct Evidence {
     pub planned_adds: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planned_removes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Failure>,
 }
 
 impl Evidence {
@@ -107,6 +110,7 @@ impl Evidence {
             read_error: None,
             planned_adds: None,
             planned_removes: None,
+            error: None,
         }
     }
 }

@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists/state_push.rs
+expression: "capture(root.path(), &server, &output, json_output)"
+---
+{
+  "code": 0,
+  "stdout": "{\n  \"applied\": false,\n  \"created\": 0,\n  \"updated\": 0,\n  \"skipped_remote_only\": 0,\n  \"failed\": 0,\n  \"pending\": 0,\n  \"lists_created\": 0,\n  \"lists_updated\": 0,\n  \"items_created\": 0,\n  \"items_updated\": 0,\n  \"items_removed\": 0,\n  \"value_lists\": []\n}\n",
+  "stderr": "{\"dry_run\":true,\"profile\":\"default\",\"host\":\"HOST\",\"space\":\"default\",\"command\":\"state push\",\"lists\":[{\"id\":\"elasticctl-fixture-value-list-id-3\",\"type\":\"ip_range\",\"container_action\":\"update\",\"adds\":[],\"removes\":[],\"phase_order\":\"none\",\"phase_reason\":\"every installed reference is included and removing values keeps the list non-empty\",\"warnings\":[{\"kind\":\"duplicates\",\"message\":\"4 stored values have 3 distinct spellings; duplicates are retained\"}]},{\"id\":\"elasticctl-fixture-value-list-id-3-later\",\"type\":\"ip_range\",\"container_action\":\"none\",\"adds\":[],\"removes\":[],\"phase_order\":\"none\",\"phase_reason\":\"every installed reference is included and removing values keeps the list non-empty\",\"warnings\":[{\"kind\":\"duplicates\",\"message\":\"4 stored values have 3 distinct spellings; duplicates are retained\"}]}],\"action\":\"Push 0 rule change(s), 0 exception list(s) and 0 item(s) from ROOT/mirror\",\"details\":[\"value list elasticctl-fixture-value-list-id-3: 4 stored values have 3 distinct spellings; duplicates are retained\",\"value list elasticctl-fixture-value-list-id-3-later: 4 stored values have 3 distinct spellings; duplicates are retained\"]}\n"
+}

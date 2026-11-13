@@ -101,6 +101,13 @@ async fn apply_and_delete_container_drift_conflicts_before_exporting_values() {
                     Outcome::Failed,
                     "{flavor} {drift} delete={deleting}"
                 );
+                assert!(
+                    !result.evidence.is_empty(),
+                    "unchanged lists need refusal evidence"
+                );
+                let evidence = serde_json::to_value(&result.evidence[0]).unwrap();
+                assert_eq!(evidence["outcome"], "failed");
+                assert_eq!(evidence["sent"], "not_sent");
                 assert_eq!(
                     result.error.unwrap().kind,
                     "conflict",
