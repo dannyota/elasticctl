@@ -1,0 +1,38 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "lists_find_next",
+  "request": {
+    "per_page": 1,
+    "page": 2,
+    "filter": "name:elasticctl-live-vl-*",
+    "cursor": "elasticctl-fixture-cursor"
+  },
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-3",
+        "type": "ip_range",
+        "name": "elasticctl-live-vl-updated",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "recorder_nonce": "REDACTED",
+          "marker": "elasticctl-live-marker"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 3,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzIsMV0="
+      }
+    ],
+    "page": 2,
+    "per_page": 1,
+    "total": 2,
+    "cursor": "elasticctl-fixture-cursor"
+  }
+}
