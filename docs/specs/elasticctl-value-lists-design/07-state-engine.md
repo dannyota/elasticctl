@@ -147,8 +147,9 @@ Each entry carries:
   the list.
 
 A list that ends `unknown` adds one `read_back` entry with `of`: `values` or
-`container`, naming what the last read looked at. Its `observed` is true when
-that read completed. A completed values read carries `missing` and `extra`,
+`container`, naming what the reads looked at. Its `observed` is true when any
+read in the budget completed, and the counts or fields below are those of the
+last completed read; a later failed read adds its `read_error` beside them. A completed values read carries `missing` and `extra`,
 the counts of the exported set against the expected one. A completed container
 read carries `mismatched`, the container fields that differed from the plan.
 When no read completed, for example because every export failed, `observed` is

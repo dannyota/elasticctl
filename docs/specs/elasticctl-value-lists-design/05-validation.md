@@ -53,7 +53,9 @@ reference (D26) or a desired reference uses, of every type. A final state or
 a between-phases state with no values refuses the write with `unsupported`,
 and so does creating a list that an installed reference already names. The
 message says that an empty list under `is in list` suppresses every event
-(V12) and names the references. A values file may be empty only for a list
+(V12) and names the references. A container update leaves the values as they
+are, so on a list that is already empty it is not refused: the value phases
+after it are the repair, as with D12. A values file may be empty only for a list
 that nothing references, such as one written by `value-lists import`.
 
 ### 5.4 Size warnings
