@@ -1,0 +1,111 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "cli_lists_all",
+  "request": {
+    "path": "/api/lists/_find?page=1&per_page=1000&filter=name%3Aelasticctl-live-vl-%2A"
+  },
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-3",
+        "type": "ip_range",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzYsMV0="
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-28",
+        "type": "ip",
+        "name": "elasticctl-fixture-value-list-id-28",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzcsMV0="
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-9",
+        "type": "long",
+        "name": "elasticctl-fixture-value-list-id-9",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzEzLDFd"
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-56",
+        "type": "text",
+        "name": "elasticctl-fixture-value-list-id-56",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzE0LDFd"
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-14",
+        "type": "keyword",
+        "name": "elasticctl-fixture-value-list-id-14",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzExLDFd"
+      }
+    ],
+    "page": 1,
+    "per_page": 1000,
+    "total": 5,
+    "cursor": "elasticctl-fixture-cursor"
+  }
+}

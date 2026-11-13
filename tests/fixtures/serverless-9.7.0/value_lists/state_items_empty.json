@@ -1,0 +1,14 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "state_items_empty",
+  "request": {
+    "path": "/api/exception_lists/items/_find?list_id=elasticctl-fixture-value-list-id-10&namespace_type=single&page=1&per_page=10000"
+  },
+  "response": {
+    "data": [],
+    "page": 1,
+    "per_page": 10000,
+    "total": 0
+  }
+}

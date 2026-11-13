@@ -349,7 +349,7 @@
         },
         "fleet": {
           "level": "available",
-          "summary": "Fleet is setting up",
+          "summary": "Fleet is available",
           "reported": true
         },
         "urlForwarding": {

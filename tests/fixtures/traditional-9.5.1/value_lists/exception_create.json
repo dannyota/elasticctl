@@ -3,8 +3,8 @@
   "version": "9.5.1",
   "operation": "exception_create",
   "request": {
-    "list_id": "elasticctl-fixture-value-list-id-10",
-    "name": "elasticctl-fixture-value-list-id-10",
+    "list_id": "elasticctl-fixture-value-list-id-9",
+    "name": "elasticctl-fixture-value-list-id-9",
     "description": "elasticctl-live-marker",
     "type": "detection",
     "namespace_type": "single",
@@ -14,10 +14,10 @@
     ]
   },
   "response": {
-    "id": "elasticctl-fixture-value-list-id-11",
-    "list_id": "elasticctl-fixture-value-list-id-10",
+    "id": "elasticctl-fixture-value-list-id-10",
+    "list_id": "elasticctl-fixture-value-list-id-9",
     "type": "detection",
-    "name": "elasticctl-fixture-value-list-id-10",
+    "name": "elasticctl-fixture-value-list-id-9",
     "description": "elasticctl-live-marker",
     "immutable": false,
     "namespace_type": "single",

@@ -11,10 +11,10 @@
   "response": {
     "data": [
       {
-        "id": "elasticctl-fixture-value-list-id-11",
-        "list_id": "elasticctl-fixture-value-list-id-10",
+        "id": "elasticctl-fixture-value-list-id-10",
+        "list_id": "elasticctl-fixture-value-list-id-9",
         "type": "detection",
-        "name": "elasticctl-fixture-value-list-id-10",
+        "name": "elasticctl-fixture-value-list-id-9",
         "description": "elasticctl-live-marker",
         "immutable": false,
         "namespace_type": "single",

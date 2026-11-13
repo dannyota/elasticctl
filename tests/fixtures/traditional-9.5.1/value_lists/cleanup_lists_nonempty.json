@@ -1,0 +1,35 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "cleanup_lists_nonempty",
+  "request": {
+    "path": "/api/lists/_find?per_page=1&filter=name%3Aelasticctl-live-vl-%2A"
+  },
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-13",
+        "type": "keyword",
+        "name": "elasticctl-fixture-value-list-id-13",
+        "description": "elasticctl-live-marker",
+        "immutable": false,
+        "meta": {
+          "marker": "elasticctl-live-marker",
+          "recorder_nonce": "REDACTED"
+        },
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "version": 1,
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzExLDFd"
+      }
+    ],
+    "page": 1,
+    "per_page": 1,
+    "total": 1,
+    "cursor": "elasticctl-fixture-cursor"
+  }
+}

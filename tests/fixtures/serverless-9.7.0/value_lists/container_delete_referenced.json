@@ -47,7 +47,7 @@
               "tie_breaker_id": "REDACTED",
               "type": "simple",
               "updated_at": "2026-01-01T00:00:00.000Z",
-              "_version": "WzQwMDk1LDFd"
+              "_version": "WzQwMTAzLDFd"
             },
             "exception_list": {
               "version": 1,
@@ -68,7 +68,7 @@
               "type": "detection",
               "updated_at": "2026-01-01T00:00:00.000Z",
               "updated_by": "REDACTED",
-              "_version": "WzQwMDk0LDFd"
+              "_version": "WzQwMTAyLDFd"
             }
           }
         ],

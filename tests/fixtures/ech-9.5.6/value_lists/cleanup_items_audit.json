@@ -1,0 +1,26 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "cleanup_items_audit",
+  "request": {
+    "path": "/.items-default/_search?size=100&track_total_hits=true&q=list_id%3Aelasticctl-live-vl-%2A"
+  },
+  "response": {
+    "took": 1,
+    "timed_out": false,
+    "_shards": {
+      "total": 1,
+      "successful": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "hits": {
+      "total": {
+        "value": 0,
+        "relation": "eq"
+      },
+      "max_score": null,
+      "hits": []
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "export_p_spellings",
+  "response": "2001:db8::1\n2001:DB8::1\n"
+}

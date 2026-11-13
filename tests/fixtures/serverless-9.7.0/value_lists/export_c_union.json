@@ -1,0 +1,6 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "export_c_union",
+  "response": "10.0.0.5/32\n10.0.0.6/32\n10.0.0.0/8\n"
+}

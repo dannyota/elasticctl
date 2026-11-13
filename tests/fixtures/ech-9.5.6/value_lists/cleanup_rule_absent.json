@@ -1,0 +1,13 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "cleanup_rule_absent",
+  "request": {
+    "path": "/api/detection_engine/rules?rule_id=elasticctl-fixture-value-list-id-37"
+  },
+  "response": {
+    "message": "rule_id: \"elasticctl-fixture-value-list-id-37\" not found",
+    "status_code": 404
+  },
+  "http_status": 404
+}

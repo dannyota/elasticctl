@@ -1,0 +1,47 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "state_items_included",
+  "request": {
+    "path": "/api/exception_lists/items/_find?list_id=elasticctl-fixture-value-list-id-9&namespace_type=single&page=1&per_page=10000"
+  },
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-32",
+        "item_id": "elasticctl-fixture-value-list-id-33",
+        "list_id": "elasticctl-fixture-value-list-id-9",
+        "type": "simple",
+        "name": "elasticctl-fixture-value-list-id-33",
+        "description": "elasticctl-live-marker",
+        "entries": [
+          {
+            "type": "list",
+            "field": "source.ip",
+            "list": {
+              "id": "elasticctl-fixture-value-list-id-13",
+              "type": "ip_range"
+            },
+            "operator": "included"
+          }
+        ],
+        "namespace_type": "single",
+        "os_types": [],
+        "tags": [
+          "elasticctl-live-marker",
+          "REDACTED"
+        ],
+        "comments": [],
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzE4LDFd"
+      }
+    ],
+    "page": 1,
+    "per_page": 10000,
+    "total": 1
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "export_s_two_spellings",
+  "response": "2001:db8::/32\n2001:DB8:0:0::1-2001:DB8:0:0::1\n10.0.0.1-2001:db8::1\n2001:db8:0:0::1-2001:db8:0:0::1\n10.0.0.7/24\n"
+}
