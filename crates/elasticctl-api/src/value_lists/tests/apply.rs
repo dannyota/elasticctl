@@ -506,10 +506,14 @@ async fn adds_first_removal_uses_the_verified_exports_copy_count_and_evidence() 
             .as_str()
             .unwrap()
             .to_owned();
-        let added = fixture(flavor, "items_find_next")["response"]["data"]
-            .as_array()
-            .unwrap()
-            .iter()
+        let added = ["items_find_first", "items_find_next"]
+            .into_iter()
+            .flat_map(|name| {
+                fixture(flavor, name)["response"]["data"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            })
             .find(|v| v["value"] != removed)
             .unwrap()["value"]
             .as_str()
