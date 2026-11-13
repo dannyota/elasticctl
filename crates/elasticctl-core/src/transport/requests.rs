@@ -134,12 +134,15 @@ impl Transport {
 
             let status = response.status();
             self.debug_log(&method, url, status.as_u16(), attempt);
-            if status.is_success() || (return_client_errors && status.is_client_error()) {
+            if status.is_success()
+                || (return_client_errors
+                    && status.is_client_error()
+                    && (status != StatusCode::TOO_MANY_REQUESTS || attempt >= attempt_limit))
+            {
                 return Ok(response);
             }
 
-            // Retry transient failures only. Retrying a 4xx repeats the same
-            // caller error.
+            // Retry 429 and server errors only.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if transient && attempt < attempt_limit {
                 // A configured limit applies to error bodies too. Read the
@@ -735,6 +738,84 @@ mod tests {
                 .unwrap(),
             (404, body)
         );
+    }
+
+    #[tokio::test]
+    async fn get_response_retries_429_then_returns_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_json(serde_json::json!({"message": "rate limited"})),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let body = serde_json::json!({"list_index": true, "list_item_index": true});
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (200, body)
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_response_retries_429_then_returns_last_body() {
+        let server = MockServer::start().await;
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                ResponseTemplate::new(429).set_body_json(
+                    serde_json::json!({"message": "rate limited", "attempt": attempt}),
+                )
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (
+                429,
+                serde_json::json!({"message": "rate limited", "attempt": 3})
+            )
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn post_once_response_returns_429_without_replaying() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({"message": "rate limited"});
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .post_once_response("/api/lists/index", None)
+                .await
+                .unwrap(),
+            (429, body)
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

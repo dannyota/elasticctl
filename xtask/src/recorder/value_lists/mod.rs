@@ -26,6 +26,10 @@ const MARKER: &str = "elasticctl-live-marker";
 const ES_URL_USAGE: &str =
     "usage: record-value-lists requires ELASTICCTL_ES_URL for the orphan-item audit";
 
+fn definite_refusal(status: Option<u16>) -> bool {
+    matches!(status, Some(400..=499)) && status != Some(408)
+}
+
 #[derive(Clone, Copy)]
 struct Timing {
     budget: Duration,
@@ -87,7 +91,7 @@ impl<'a> Session<'a> {
     }
 
     fn clear_refused_import(&mut self, list: &str, status: Option<u16>) {
-        if matches!(status, Some(400..=499)) && status != Some(408) {
+        if definite_refusal(status) {
             self.pending_imports.remove(list);
         }
     }

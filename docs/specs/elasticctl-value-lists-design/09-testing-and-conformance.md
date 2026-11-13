@@ -15,6 +15,12 @@ references (the 409 body), and the 413, 415, and 409 refusals. It restores
 "not bootstrapped" where it started so (D5). The recorded set replaces the
 404 `lists_index.json` fixtures as the only value-list evidence.
 
+Recorder cleanup treats 4xx except 408 as definite refusals. A 408 retains
+pending creates and imports: an early 404 cannot prove a create absent, and
+an import with an unknown final count blocks parent deletion and bootstrap
+restoration. A create 409 proves an existing object that the session does
+not own.
+
 ### 9.2 Offline tests
 
 Tests drive the real `-api` and CLI code against wiremock, with exact request

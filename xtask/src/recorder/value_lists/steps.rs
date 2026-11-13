@@ -1,6 +1,8 @@
 //! Requests are sent once for writes and retained only after cleanup succeeds.
 
-use super::{ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, cleanup, inventory};
+use super::{
+    ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, cleanup, definite_refusal, inventory,
+};
 use crate::diagnostics::recording_error;
 use crate::scrub::scrub_status;
 use elasticctl_core::{Result, urlencode};
@@ -105,7 +107,7 @@ async fn create_list(
     let result = session.t.post_once("/api/lists", Some(&request)).await;
     if result
         .as_ref()
-        .is_err_and(|e| matches!(e.http_status, Some(400..=499)))
+        .is_err_and(|e| definite_refusal(e.http_status))
     {
         session.pending_creates.remove(id);
     }
@@ -289,7 +291,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
         .await;
     if result
         .as_ref()
-        .is_err_and(|e| matches!(e.http_status, Some(400..=499)))
+        .is_err_and(|e| definite_refusal(e.http_status))
     {
         session.pending_creates.remove(EXCEPTION);
     }
@@ -317,7 +319,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
         .await;
     if result
         .as_ref()
-        .is_err_and(|e| matches!(e.http_status, Some(400..=499)))
+        .is_err_and(|e| definite_refusal(e.http_status))
     {
         session.pending_creates.remove(ITEM);
     }
@@ -410,7 +412,7 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
                 &content,
             )
             .await?;
-        if (400..500).contains(&status) {
+        if definite_refusal(Some(status)) {
             session.pending_imports.remove(list);
         }
         if (200..300).contains(&status) {
