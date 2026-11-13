@@ -405,8 +405,19 @@ impl Transport {
         response: Response,
     ) -> Result<(u16, Value)> {
         let status = response.status().as_u16();
-        let text = self.response_text(method, url, response).await?;
-        let body = if text.trim().is_empty() {
+        let text = self
+            .response_text(method, url, response)
+            .await
+            .map_err(|error| {
+                if (400..500).contains(&status) {
+                    Error::with_status(ErrorKind::from_status(status), status, error.message)
+                } else {
+                    error
+                }
+            })?;
+        let body = if (400..500).contains(&status) {
+            parse_response_json(&text).unwrap_or_else(|_| Value::String(text))
+        } else if text.trim().is_empty() {
             Value::Null
         } else {
             parse_response_json(&text)?
@@ -513,6 +524,15 @@ impl Transport {
         let method = Method::POST;
         let url = self.url(path)?;
         let response = self.send(method.clone(), path, body).await?;
+        self.response_text(&method, &url, response).await
+    }
+
+    pub async fn post_text_once(&self, path: &str, body: Option<&Value>) -> Result<String> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_attempt_limit(&self.one_shot_client, method.clone(), path, body, 1)
+            .await?;
         self.response_text(&method, &url, response).await
     }
 

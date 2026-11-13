@@ -29,7 +29,10 @@ All five use the one-shot client with an attempt limit of 1, like the other
 `_once` calls. The `_response` calls return a 4xx whose body is not JSON with
 its status and the body as a JSON string, so a 4xx stays a refusal (section
 6.4). `post_text` already reads a non-JSON body and serves
-`_export`. No other transport behavior changes.
+`_export` for `pull`, `get`, and `export`. The read-back of section 6.4 uses
+`post_text_once`, the same call with an attempt limit of 1, so the read-back
+itself owns every retry, the one-second pause, and the 120-second budget.
+No other transport behavior changes.
 
 ### 8.2 `elasticctl-api`
 

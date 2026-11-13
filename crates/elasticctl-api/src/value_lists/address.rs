@@ -4,10 +4,6 @@ use elasticctl_core::Result;
 
 use super::{ValueListType, invalid};
 
-/// Return the canonical spelling of a readable, parsed value.
-///
-/// An ascending mixed-family range is readable but has no canonical spelling,
-/// so it returns `None`. This function never rewrites a stored value.
 pub fn canonical_value(kind: &ValueListType, value: &str) -> Result<Option<String>> {
     kind.require_supported()?;
     let value = value.trim_matches([' ', '\t']);

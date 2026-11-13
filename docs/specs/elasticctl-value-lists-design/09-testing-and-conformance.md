@@ -58,9 +58,10 @@ The cases:
   item-delete 404 that continues; every export failing after an uncertain
   write, with `observed: false`;
 - the remove phase: every stored copy deleted by `id`; an `ip_range` list
-  holding `10.0.0.5-10.0.0.5` and `10.0.0.0/8` where only the first leaves,
-  with no request naming a value; an item `_find` that disagrees with the
-  apply-time export, refused as `conflict` before any delete;
+  holding `10.0.0.5/32` and `10.0.0.0/8` (the recorded `contain_*` set) where
+  only the first leaves, with no request naming a value; an item `_find` that
+  disagrees with the last read before the phase, refused as `conflict` before
+  any delete;
 - the scan of D26: a reference outside the selection, both namespaces, a
   container it cannot read, an undecodable entry, and installed references
   that change between the preview and the apply;
