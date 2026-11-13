@@ -113,4 +113,5 @@ of D12 counts every stored line in dash form, duplicates included. A pulled
 bare address that someone writes becomes CIDR.
 
 A remote duplicate does not change the set, so `diff` reports it as a warning
-and leaves it. Removing it by value would delete every copy (V9).
+and leaves it. A value that leaves the set has every stored copy deleted by
+item `id` (section 6.3).
