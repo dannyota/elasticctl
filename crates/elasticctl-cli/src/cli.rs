@@ -8,6 +8,8 @@ mod content;
 mod detection;
 mod fleet;
 mod triage;
+mod value_lists;
+pub use value_lists::ValueListsAction;
 
 pub use content::{
     DashboardBundleAction, DashboardsAction, DataViewDefaultAction, DataViewsAction,
@@ -172,6 +174,11 @@ pub enum Command {
     Exceptions {
         #[command(subcommand)]
         action: ExceptionsAction,
+    },
+    #[command(about = "Manage value lists")]
+    ValueLists {
+        #[command(subcommand)]
+        action: ValueListsAction,
     },
     /// Manage Kibana data views
     DataViews {

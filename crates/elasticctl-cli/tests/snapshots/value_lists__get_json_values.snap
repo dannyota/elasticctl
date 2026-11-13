@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "{\n  \"id\": \"elasticctl-fixture-value-list-id-3\",\n  \"type\": \"ip_range\",\n  \"name\": \"elasticctl-fixture-value-list-id-3\",\n  \"description\": \"elasticctl-live-marker\",\n  \"meta\": {\n    \"marker\": \"elasticctl-live-marker\",\n    \"recorder_nonce\": \"REDACTED\"\n  },\n  \"distinct_values\": 3,\n  \"stored_values\": 4,\n  \"warnings\": [\n    {\n      \"kind\": \"duplicates\",\n      \"message\": \"4 stored values have 3 distinct spellings; duplicates are retained\"\n    }\n  ],\n  \"values\": [\n    \"10.0.0.5-10.0.0.5\",\n    \"10.0.0.6/32\",\n    \"10.0.0.7/32\"\n  ]\n}\n",
+  "stderr": ""
+}

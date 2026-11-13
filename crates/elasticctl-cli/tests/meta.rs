@@ -119,7 +119,7 @@ fn data_view_command_tree_has_the_documented_guarded_paths() {
 }
 
 #[test]
-fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_one_mutations() {
+fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_four_mutations() {
     fn count_mutations(node: &serde_json::Value) -> usize {
         usize::from(node["mutates"] == true)
             + node["subcommands"]
@@ -159,7 +159,7 @@ fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_one_mutation
             .iter()
             .map(count_mutations)
             .sum::<usize>(),
-        31
+        34
     );
 }
 

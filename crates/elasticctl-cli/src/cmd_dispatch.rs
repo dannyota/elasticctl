@@ -8,6 +8,8 @@ mod diagnostics;
 pub(crate) use diagnostics::{doctor, info};
 mod rules;
 pub(crate) use rules::rules;
+mod value_lists;
+pub(crate) use value_lists::value_lists;
 mod exceptions;
 pub(crate) use exceptions::exceptions;
 mod data_views;
