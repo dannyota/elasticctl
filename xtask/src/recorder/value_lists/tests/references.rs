@@ -146,3 +146,72 @@ async fn preflight_refuses_incomplete_or_undecodable_item_pages() {
         );
     }
 }
+
+#[tokio::test]
+async fn new_steps_fail_closed_and_clean_owned_objects() {
+    for failure in [
+        "exception_lists_find",
+        "exception_items_find",
+        "missing_operator",
+        "changed_operator",
+        "contain_create",
+        "contain_add_item_0",
+        "contain_add_item_1",
+        "contain_export",
+        "contain_delete_id",
+        "contain_export_after",
+        "contain_missing_range",
+    ] {
+        let (server, state) = stack(Stack {
+            fail: Some(failure),
+            ..Stack::default()
+        })
+        .await;
+        let t = transport(&server);
+        let mut session = Session::new(&t, fast());
+        let error = run(&mut session, None, std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        let expected = match failure {
+            "missing_operator" | "changed_operator" => "exception_items_find",
+            "contain_missing_range" => "contain_export_after",
+            _ => failure,
+        };
+        assert!(
+            error.message.contains(expected),
+            "{failure}: {}",
+            error.message
+        );
+        assert!(!error.message.contains("private-body"));
+        {
+            let stack = state.lock().unwrap();
+            assert!(stack.lists.is_empty(), "{failure}");
+            assert!(
+                stack.exception.is_none() && stack.item.is_none(),
+                "{failure}"
+            );
+        }
+        let requests = server.received_requests().await.unwrap();
+        for (path, key, id) in [
+            ("/api/lists", "id", LIST),
+            ("/api/exception_lists", "list_id", EXCEPTION),
+            ("/api/exception_lists/items", "item_id", ITEM),
+        ] {
+            assert!(
+                requests.iter().any(|r| r.method == "DELETE"
+                    && r.url.path() == path
+                    && r.url.query_pairs().any(|(k, v)| k == key && v == id)),
+                "{failure}: {id}"
+            );
+        }
+        if failure.starts_with("contain_") {
+            assert!(
+                requests.iter().any(|r| r.method == "DELETE"
+                    && r.url.path() == "/api/lists"
+                    && r.url.query_pairs().any(|(k, v)| k == "id" && v == CONTAIN)),
+                "{failure}"
+            );
+        }
+    }
+}

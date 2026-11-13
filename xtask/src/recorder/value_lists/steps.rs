@@ -1,5 +1,6 @@
 use super::{
     ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, cleanup, definite_refusal, inventory,
+    scenarios,
 };
 use crate::diagnostics::recording_error;
 use crate::scrub::scrub_status;
@@ -43,6 +44,7 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
     create_list(session, RANGES, "spellings_create").await?;
     lists_find(session).await?;
     references(session).await?;
+    scenarios::containment(session).await?;
     refusals(session).await?;
     for (index, value) in [
         "2001:DB8:0:0::1",
@@ -94,7 +96,7 @@ async fn initialize(session: &mut Session<'_>) -> Result<()> {
     Ok(())
 }
 
-async fn create_list(
+pub(super) async fn create_list(
     session: &mut Session<'_>,
     id: &'static str,
     name: &'static str,
@@ -166,7 +168,12 @@ async fn container(session: &mut Session<'_>) -> Result<()> {
     Ok(())
 }
 
-async fn add_item(session: &mut Session<'_>, list: &str, index: usize, value: &str) -> Result<()> {
+pub(super) async fn add_item(
+    session: &mut Session<'_>,
+    list: &str,
+    index: usize,
+    value: &str,
+) -> Result<()> {
     let id = format!("{list}-item-{index}");
     session.items.push(id.clone());
     let request = json!({"id": id, "list_id": list, "value": value});
@@ -415,7 +422,8 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     session.pending_creates.insert(ITEM.to_string());
     let request = json!({"item_id": ITEM, "list_id": EXCEPTION, "name": ITEM, "description": MARKER,
         "type": "simple", "namespace_type": "single", "tags": [MARKER, session.nonce],
-        "entries": [{"type": "list", "list": {"id": LIST, "type": "ip_range"}, "field": "source.ip", "operator": "included"}]});
+        "entries": [{"type": "list", "list": {"id": LIST, "type": "ip_range"}, "field": "source.ip", "operator": "included"},
+            {"type": "list", "list": {"id": LIST, "type": "ip_range"}, "field": "destination.ip", "operator": "excluded"}]});
     let result = session
         .t
         .post_once("/api/exception_lists/items", Some(&request))
@@ -441,6 +449,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.pending_creates.remove(ITEM);
+    scenarios::reference_reads(session).await?;
     let delete_path = format!("/api/lists?id={LIST}");
     session.attempted_deletes.insert(delete_path.clone());
     let (status, body) = session.t.delete_once_response(&delete_path).await?;
@@ -530,7 +539,7 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
     Ok(())
 }
 
-fn require_status(step: &str, actual: u16, expected: u16) -> Result<()> {
+pub(super) fn require_status(step: &str, actual: u16, expected: u16) -> Result<()> {
     if actual == expected {
         Ok(())
     } else {
@@ -568,7 +577,7 @@ pub(super) async fn settle(session: &mut Session<'_>, list: &str, expected: u64)
         .map_err(|_| recording_error("item settle timed out"))?
 }
 
-fn step_error(
+pub(super) fn step_error(
     step: &str,
     expected: u16,
     mut error: elasticctl_core::Error,
