@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "import_absent_list",
+  "response": {
+    "message": "list id: \"REDACTED\" does not exist",
+    "status_code": 409
+  },
+  "http_status": 409
+}

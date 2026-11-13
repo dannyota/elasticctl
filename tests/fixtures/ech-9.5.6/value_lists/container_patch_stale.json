@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "container_patch_stale",
+  "response": {
+    "message": "Conflict: versions mismatch. Provided versions:{\"if_primary_term\":1,\"if_seq_no\":0} does not match {\"if_primary_term\":1,\"if_seq_no\":1}",
+    "status_code": 409
+  },
+  "http_status": 409
+}

@@ -1,0 +1,29 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "container_patch",
+  "request": {
+    "id": "elasticctl-fixture-value-list-id-3",
+    "name": "elasticctl-live-vl-updated",
+    "_version": "WzAsMV0="
+  },
+  "response": {
+    "id": "elasticctl-fixture-value-list-id-3",
+    "type": "ip_range",
+    "name": "elasticctl-live-vl-updated",
+    "description": "elasticctl-live-marker",
+    "immutable": false,
+    "meta": {
+      "marker": "elasticctl-live-marker",
+      "recorder_nonce": "REDACTED"
+    },
+    "@timestamp": "2026-01-01T00:00:00.000Z",
+    "version": 2,
+    "updated_by": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "created_by": "REDACTED",
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "_version": "WzEsMV0="
+  }
+}

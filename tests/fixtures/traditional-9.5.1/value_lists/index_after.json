@@ -1,0 +1,9 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "index_after",
+  "response": {
+    "list_index": true,
+    "list_item_index": true
+  }
+}

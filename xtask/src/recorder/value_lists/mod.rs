@@ -121,6 +121,12 @@ pub(crate) async fn record_value_lists() {
         eprintln!("{ES_URL_USAGE}");
         std::process::exit(2);
     }
+    for name in ["ELASTICCTL_KIBANA_URL", "ELASTICCTL_API_KEY"] {
+        if std::env::var(name).is_err() {
+            eprintln!("usage: record-value-lists requires {name}; the lab key is in lab/.env");
+            std::process::exit(2);
+        }
+    }
     std::panic::set_hook(Box::new(|_| {
         eprintln!("record-value-lists: operation panicked")
     }));
