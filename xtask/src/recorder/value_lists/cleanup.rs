@@ -1,5 +1,3 @@
-//! Exact-id cleanup runs before any fixture is published.
-
 use super::{EXCEPTION, ITEM, MARKER, Session, inventory};
 use crate::diagnostics::{recording_error, safe_recording_error_summary};
 use elasticctl_core::{Result, urlencode};
@@ -77,7 +75,6 @@ pub(super) async fn delete_owned(
         }
         Ok(_) => {}
     }
-    // Record before sending so a lost answer or cancellation cannot cause a resend.
     session.attempted_deletes.insert(path.to_string());
     let answer = session.t.delete_once_response(path).await;
     if let Ok((_, body)) = &answer {
@@ -127,7 +124,6 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
             Err(error) => failures.push(failure(EXCEPTION, error)),
         }
     }
-    // A surviving reference blocks its value list. Other owned lists can still be cleaned.
     for id in session.lists.clone().into_iter().rev() {
         if id == super::LIST && session.exception_item {
             continue;

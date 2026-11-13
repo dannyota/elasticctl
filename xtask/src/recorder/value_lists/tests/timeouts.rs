@@ -99,7 +99,6 @@ async fn timed_out_create(route: &'static str, id: &'static str, settle: bool) {
             assert!(state.lock().unwrap().lists.contains_key(LIST));
             assert!(state.lock().unwrap().exception.is_some());
         }
-        // Complete only after cleanup has returned, with its parents preserved.
         let body = queued.lock().unwrap().take().unwrap();
         let mut state = state.lock().unwrap();
         match id {
@@ -160,7 +159,6 @@ async fn refusal_import_408_keeps_parent_for_late_completion() {
             .message
             .contains("pending import")
     );
-    // Complete the timed-out import after cleanup has returned.
     {
         let mut state = state.lock().unwrap();
         state

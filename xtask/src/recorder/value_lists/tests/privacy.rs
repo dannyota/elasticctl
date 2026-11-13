@@ -103,7 +103,6 @@ async fn common_identity_recording_preserves_markers_text_and_versions() {
         assert_eq!(create[root]["description"], "elasticctl-live-marker");
         assert_eq!(create[root]["meta"]["recorder_nonce"], "REDACTED");
     }
-    // Comparing written bytes covers import/export text and every opaque version.
     assert_eq!(common, ordinary);
 }
 

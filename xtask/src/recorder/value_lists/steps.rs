@@ -1,5 +1,3 @@
-//! Requests are sent once for writes and retained only after cleanup succeeds.
-
 use super::{
     ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, cleanup, definite_refusal, inventory,
 };
@@ -342,7 +340,6 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     session.attempted_deletes.insert(delete_path.clone());
     let (status, body) = session.t.delete_once_response(&delete_path).await?;
     require_status(Some(status), 409)?;
-    // A confirmed refusal permits the later delete after removing the reference.
     session.attempted_deletes.remove(&delete_path);
     if !body["references"].is_array() || body["references"].as_array().is_some_and(Vec::is_empty) {
         return Err(recording_error("referenced delete has no references body"));
@@ -434,7 +431,6 @@ fn require_status(actual: Option<u16>, expected: u16) -> Result<()> {
     }
 }
 
-/// Require the known count on two consecutive reads. An unchanged old total is not settled.
 pub(super) async fn settle(session: &mut Session<'_>, list: &str, expected: u64) -> Result<Value> {
     let timing = session.timing;
     let work = async {

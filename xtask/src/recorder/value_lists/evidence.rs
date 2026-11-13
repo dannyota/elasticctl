@@ -1,5 +1,3 @@
-//! Value-list envelopes preserve opaque concurrency tokens.
-
 use crate::fixtures::{RecordedFixture, exchange_fixture};
 use crate::scrub::hosts::scrub_hosts;
 use crate::scrub::{scrub_alert_timestamps, scrub_placeholder_values};
@@ -16,7 +14,6 @@ pub(super) struct Evidence {
     identities: BTreeSet<String>,
 }
 
-// Remove versions before shared scrubbing, then restore them at their paths.
 fn take_versions(value: &mut Value, path: String, versions: &mut Vec<(String, Value)>) {
     match value {
         Value::Object(map) => {
@@ -65,7 +62,6 @@ fn register_private_values(original: &Value, scrubbed: &Value, identities: &mut 
         }
         (Value::Object(original), Value::Object(scrubbed)) => {
             for (key, value) in original {
-                // Opaque versions stay public and must survive unchanged.
                 if key != "_version"
                     && let Some(redacted) = scrubbed.get(key)
                 {
@@ -194,7 +190,6 @@ impl Evidence {
         self.observe(&request);
         self.observe(&body);
         let mut versions = Vec::new();
-        // Export strings remain byte-for-byte as received, including order and duplicates.
         for (root, value) in [("/request", &mut request), ("/response", &mut body)] {
             take_versions(value, root.to_string(), &mut versions);
             let item_values = matches!(

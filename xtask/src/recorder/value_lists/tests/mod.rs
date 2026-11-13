@@ -1,7 +1,6 @@
 use super::*;
 use serde_json::json;
 
-// These are scrubber inputs, not recorded endpoint responses.
 #[test]
 fn fixture_preserves_versions_and_scrubs_identity() {
     let mut evidence = Evidence::default();
@@ -52,7 +51,6 @@ fn fast() -> Timing {
 }
 
 async fn page(server: &MockServer, route: &str, body: serde_json::Value) {
-    // Minimal control-flow shapes, never fixture evidence or API response models.
     Mock::given(method("GET"))
         .and(path(route))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))

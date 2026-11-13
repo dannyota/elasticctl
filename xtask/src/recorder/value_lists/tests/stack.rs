@@ -1,7 +1,5 @@
 use super::*;
 
-// This fake provides minimal shapes for recorder control flow. Its bodies are
-// never saved as Elastic evidence and make no claim about its response model.
 #[derive(Default)]
 pub(super) struct Stack {
     pub(super) lists: std::collections::BTreeMap<String, serde_json::Value>,

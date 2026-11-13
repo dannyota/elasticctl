@@ -142,7 +142,6 @@ impl Transport {
                 return Ok(response);
             }
 
-            // Retry 429 and server errors only.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if transient && attempt < attempt_limit {
                 // A configured limit applies to error bodies too. Read the
@@ -272,7 +271,6 @@ impl Transport {
         self.send_json(Method::GET, path, None).await
     }
 
-    /// GET and retain the status and JSON body for 2xx and 4xx.
     pub async fn get_response(&self, path: &str) -> Result<(u16, Value)> {
         let method = Method::GET;
         let url = self.url(path)?;
@@ -391,7 +389,6 @@ impl Transport {
         self.send_json_once(Method::POST, path, body).await
     }
 
-    /// POST exactly once and retain the status and JSON body for 2xx and 4xx.
     pub async fn post_once_response(
         &self,
         path: &str,

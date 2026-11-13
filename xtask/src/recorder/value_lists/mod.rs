@@ -1,5 +1,3 @@
-//! Separate value-list recording with exact marker ownership and baseline restoration.
-
 mod cleanup;
 mod evidence;
 mod inventory;
@@ -99,7 +97,6 @@ impl<'a> Session<'a> {
     fn recording(&mut self) -> Result<Recording> {
         let flavor = &self.evidence.flavor;
         let version = &self.evidence.version;
-        // The directory comes from status and an environment override, never a remote path.
         if [flavor, version].iter().any(|part| {
             part.is_empty()
                 || !part
@@ -119,7 +116,6 @@ impl<'a> Session<'a> {
     }
 }
 
-/// Record only after both the pass and its cleanup have succeeded.
 pub(crate) async fn record_value_lists() {
     if std::env::var("ELASTICCTL_ES_URL").is_err() {
         eprintln!("{ES_URL_USAGE}");

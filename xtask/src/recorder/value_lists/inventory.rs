@@ -1,5 +1,3 @@
-//! Marker inventory reads are private and fail closed on incomplete pages.
-
 use super::{PREFIX, Session};
 use crate::diagnostics::recording_error;
 use elasticctl_core::{Result, urlencode};
@@ -176,7 +174,6 @@ async fn marker_items(
             "marker item audit requires an explicit Elasticsearch URL",
         ));
     }
-    // Read the items stream directly. A late import can leave items after its container is gone.
     let path = format!(
         "/.items-{}/_search?size=100&track_total_hits=true&q={}",
         urlencode(session.t.space()),

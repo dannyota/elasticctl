@@ -274,7 +274,6 @@ async fn unresolved_refusal_import(failure: &'static str, unowned: bool) {
             }
         })
         .respond_with(move |_: &Request| {
-            // These bodies are minimal shapes driving control flow.
             if unowned {
                 changed
                     .lock()
@@ -315,7 +314,6 @@ async fn unresolved_refusal_import(failure: &'static str, unowned: bool) {
         .await
         .err()
         .unwrap();
-    // Release the queued items only after cleanup and its final audit have returned.
     if target == ABSENT {
         release.notify_one();
         tokio::time::timeout(Duration::from_secs(1), completed.notified())
@@ -420,7 +418,6 @@ async fn interrupt_case(during_cleanup: bool, twice: bool) {
         "/api/lists/items"
     };
     let verb = if during_cleanup { "DELETE" } else { "POST" };
-    // Notify from the request after ownership has been registered.
     let trigger = Arc::new(tokio::sync::Notify::new());
     let notify = trigger.clone();
     Mock::given(method(verb))
