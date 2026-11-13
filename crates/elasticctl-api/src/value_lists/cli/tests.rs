@@ -16,6 +16,34 @@ fn fixture(operation: &str) -> Value {
         .unwrap_or_else(|| panic!("missing {operation}"))
 }
 
+fn id(operation: &str) -> String {
+    fixture(operation)["response"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn values(operation: &str) -> ValueSet {
+    fixture(operation)["response"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn pairs() -> Vec<(String, &'static str, &'static str)> {
+    let mut pairs: Vec<_> = [
+        ("contain_create", "contain_export"),
+        ("container_read", "items_export"),
+    ]
+    .into_iter()
+    .map(|(container, export)| (id(container), container, export))
+    .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
 fn transport(server: &MockServer) -> Transport {
     Transport::with_options(
         &Profile {
@@ -57,17 +85,27 @@ async fn mount_pair(server: &MockServer, id: &str, container: &str, values: &str
 #[tokio::test]
 async fn get_projects_distinct_values_and_keeps_stored_duplicate_warnings() {
     let server = MockServer::start().await;
-    let id = "elasticctl-fixture-value-list-id-3";
-    mount_pair(&server, id, "container_read", "items_export").await;
+    let id = id("container_read");
+    mount_pair(&server, &id, "container_read", "items_export").await;
     let report =
-        serde_json::to_value(get_op(&transport(&server), id, true).await.unwrap()).unwrap();
-    assert_eq!(report["distinct_values"], 3);
-    assert_eq!(report["stored_values"], 4);
-    assert_eq!(report["warnings"][0]["kind"], "duplicates");
-    assert_eq!(
-        report["values"],
-        json!(["10.0.0.5-10.0.0.5", "10.0.0.6/32", "10.0.0.7/32"])
+        serde_json::to_value(get_op(&transport(&server), &id, true).await.unwrap()).unwrap();
+    let stored = fixture("items_export");
+    let count = stored["response"].as_str().unwrap().lines().count();
+    let expected = values("items_export");
+    assert!(
+        count > expected.len(),
+        "fixture must include stored duplicates"
     );
+    assert_eq!(report["distinct_values"], expected.len());
+    assert_eq!(report["stored_values"], count);
+    assert!(
+        report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning["kind"] == "duplicates")
+    );
+    assert_eq!(report["values"], json!(expected));
     assert!(report.get("_version").is_none());
     assert!(report.get("created_by").is_none());
     let requests = server.received_requests().await.unwrap();
@@ -103,15 +141,19 @@ async fn export_refuses_all_existing_destinations_without_fetching_or_writing() 
 #[tokio::test]
 async fn export_writes_canonical_pairs_for_multiple_ids_in_id_order() {
     let server = MockServer::start().await;
-    let first = "elasticctl-fixture-value-list-id-14";
-    let second = "elasticctl-fixture-value-list-id-3";
-    mount_pair(&server, first, "contain_create", "contain_export").await;
-    mount_pair(&server, second, "container_read", "items_export").await;
+    let pairs = pairs();
+    for (id, container, export) in &pairs {
+        mount_pair(&server, id, container, export).await;
+    }
     let dir = tempfile::tempdir().unwrap();
     let destination = dir.path().join("new");
     let ExportReport::Files(files) = export_op(
         &transport(&server),
-        &[second.into(), first.into()],
+        &pairs
+            .iter()
+            .rev()
+            .map(|(id, _, _)| id.clone())
+            .collect::<Vec<_>>(),
         Some(&destination),
         true,
         None,
@@ -125,41 +167,51 @@ async fn export_writes_canonical_pairs_for_multiple_ids_in_id_order() {
             .iter()
             .map(|file| file.id.as_str())
             .collect::<Vec<_>>(),
-        [first, second]
+        pairs
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect::<Vec<_>>()
     );
+    for file in &files {
+        let (_, container, export) = pairs.iter().find(|(id, _, _)| *id == file.id).unwrap();
+        let expected = values(export);
+        let text: String = expected.iter().map(|value| format!("{value}\n")).collect();
+        assert_eq!(std::fs::read_to_string(&file.values).unwrap(), text);
+        let pair = read_pair(&file.container).unwrap();
+        let body = &fixture(container)["response"];
+        assert_eq!(
+            serde_json::to_value(pair.container).unwrap(),
+            json!({"id": body["id"], "type": body["type"], "name": body["name"], "description": body["description"], "meta": body["meta"]})
+        );
+        assert_eq!(pair.values, expected);
+    }
     assert_eq!(
-        std::fs::read_to_string(destination.join(format!("{first}.txt"))).unwrap(),
-        "10.0.0.0/8\n10.0.0.5/32\n"
+        server.received_requests().await.unwrap().len(),
+        pairs.len() * 2
     );
-    assert_eq!(
-        std::fs::read_to_string(destination.join(format!("{second}.txt"))).unwrap(),
-        "10.0.0.5-10.0.0.5\n10.0.0.6/32\n10.0.0.7/32\n"
-    );
-    let pair = read_pair(&files[1].container).unwrap();
-    assert_eq!(pair.container.id, second);
-    assert_eq!(pair.values.len(), 3);
-    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }
 
 #[tokio::test]
 async fn export_injected_http_fault_on_a_later_read_writes_nothing() {
     let server = MockServer::start().await;
-    let first = "elasticctl-fixture-value-list-id-14";
-    let second = "elasticctl-fixture-value-list-id-3";
-    mount_pair(&server, first, "contain_create", "contain_export").await;
+    let pairs = pairs();
+    let (first, container, export) = &pairs[0];
+    let (second, failing_container, _) = &pairs[1];
+    mount_pair(&server, first, container, export).await;
     Mock::given(method("GET"))
         .and(path("/api/lists"))
         .and(query_param("id", second))
         .respond_with(
-            ResponseTemplate::new(503).set_body_json(&fixture("container_read")["response"]),
+            ResponseTemplate::new(503).set_body_json(&fixture(failing_container)["response"]),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     assert!(
         export_op(
             &transport(&server),
-            &[first.into(), second.into()],
+            &[first.clone(), second.clone()],
             Some(dir.path()),
             false,
             None,
@@ -168,6 +220,14 @@ async fn export_injected_http_fault_on_a_later_read_writes_nothing() {
         .is_err()
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].url.query().unwrap(), format!("id={first}"));
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].url.query().unwrap(), format!("list_id={first}"));
+    assert_eq!(requests[2].method, "GET");
+    assert_eq!(requests[2].url.query().unwrap(), format!("id={second}"));
 }
 
 #[test]

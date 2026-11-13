@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "[\n  {\n    \"id\": \"elasticctl-fixture-value-list-id-13\",\n    \"type\": \"keyword\",\n    \"name\": \"elasticctl-fixture-value-list-id-13\",\n    \"description\": \"elasticctl-live-marker\",\n    \"supported\": true\n  },\n  {\n    \"id\": \"elasticctl-fixture-value-list-id-27\",\n    \"type\": \"ip\",\n    \"name\": \"elasticctl-fixture-value-list-id-27\",\n    \"description\": \"elasticctl-live-marker\",\n    \"supported\": true\n  },\n  {\n    \"id\": \"elasticctl-fixture-value-list-id-3\",\n    \"type\": \"ip_range\",\n    \"name\": \"elasticctl-fixture-value-list-id-3\",\n    \"description\": \"elasticctl-live-marker\",\n    \"supported\": true\n  },\n  {\n    \"id\": \"elasticctl-fixture-value-list-id-55\",\n    \"type\": \"text\",\n    \"name\": \"elasticctl-fixture-value-list-id-55\",\n    \"description\": \"elasticctl-live-marker\",\n    \"supported\": true\n  },\n  {\n    \"id\": \"elasticctl-fixture-value-list-id-8\",\n    \"type\": \"long\",\n    \"name\": \"elasticctl-fixture-value-list-id-8\",\n    \"description\": \"elasticctl-live-marker\",\n    \"supported\": false\n  }\n]\n",
+  "stderr": ""
+}

@@ -5,5 +5,5 @@ expression: "vl::capture(root.path(), &server.uri(), &out)"
 {
   "code": 0,
   "stdout": "{\n  \"applied\": false,\n  \"total\": 1\n}\n",
-  "stderr": "{\"dry_run\":true,\"profile\":\"default\",\"host\":\"HOST\",\"space\":\"default\",\"command\":\"value-lists import\",\"lists\":[{\"id\":\"elasticctl-fixture-value-list-id-14\",\"type\":\"ip_range\",\"container_action\":\"update\",\"adds\":[\"10.0.0.8/32\",\"10.0.0.9/32\"],\"removes\":[\"10.0.0.5/32\"],\"phase_order\":\"removes_first\",\"phase_reason\":\"every installed reference is included and removing values keeps the list non-empty\",\"warnings\":[]}]}\n"
+  "stderr": "{\"dry_run\":true,\"profile\":\"default\",\"host\":\"HOST\",\"space\":\"default\",\"command\":\"value-lists import\",\"lists\":[{\"id\":\"elasticctl-fixture-value-list-id-13\",\"type\":\"ip_range\",\"container_action\":\"update\",\"adds\":[\"10.0.0.8/32\",\"10.0.0.9/32\"],\"removes\":[\"10.0.0.5/32\"],\"phase_order\":\"removes_first\",\"phase_reason\":\"every installed reference is included and removing values keeps the list non-empty\",\"warnings\":[]}]}\n"
 }

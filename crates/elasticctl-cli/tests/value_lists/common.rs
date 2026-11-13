@@ -5,7 +5,25 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 pub const FLAVORS: [&str; 3] = ["traditional-9.5.1", "ech-9.5.6", "serverless-9.7.0"];
-pub const ID: &str = "elasticctl-fixture-value-list-id-3";
+pub fn id(flavor: &str) -> String {
+    fixture(flavor, "container_read")["response"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+pub fn values(flavor: &str, operation: &str) -> std::collections::BTreeSet<String> {
+    fixture(flavor, operation)["response"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn values_text(values: &std::collections::BTreeSet<String>) -> String {
+    values.iter().map(|value| format!("{value}\n")).collect()
+}
 
 pub fn fixture(flavor: &str, operation: &str) -> Value {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -77,21 +95,22 @@ pub async fn server(flavor: &str, ready: bool, delete: &str) -> MockServer {
 pub fn local_pair(root: &Path, flavor: &str) -> PathBuf {
     let body = &fixture(flavor, "container_read")["response"];
     let container = json!({"id": body["id"], "type": body["type"], "name": body["name"], "description": body["description"], "meta": body["meta"]});
-    let file = root.join(format!("{ID}.yaml"));
+    let file = root.join(format!("{}.yaml", id(flavor)));
     std::fs::write(&file, serde_json::to_vec(&container).unwrap()).unwrap();
     std::fs::write(
         file.with_extension("txt"),
-        "10.0.0.5-10.0.0.5\n10.0.0.6/32\n10.0.0.7/32\n",
+        values_text(&values(flavor, "items_export")),
     )
     .unwrap();
     file
 }
 
-pub fn run(root: &Path, uri: &str, args: &[&str]) -> std::process::Output {
+pub fn run(root: &Path, uri: &str, flavor: &str, args: &[&str]) -> std::process::Output {
     let cfg = crate::common::config_for(root, uri);
+    let id = id(flavor);
     let expanded: Vec<_> = args
         .iter()
-        .map(|a| a.replace("ROOT", root.to_str().unwrap()).replace("ID", ID))
+        .map(|a| a.replace("ROOT", root.to_str().unwrap()).replace("ID", &id))
         .collect();
     let mut cmd = Command::cargo_bin("elasticctl").unwrap();
     for key in [
@@ -138,12 +157,18 @@ pub fn normalize(root: &Path, uri: &str, bytes: &[u8]) -> String {
         let end = rest
             .find(|c: char| !(c.is_alphanumeric() || "._-/\\".contains(c)))
             .unwrap_or(rest.len());
-        out.push_str(&rest[..end].replace("\\\\", "/").replace('\\', "/"));
+        if cfg!(windows) {
+            out.push_str(&rest[..end].replace("\\\\", "/").replace('\\', "/"));
+        } else {
+            out.push_str(&rest[..end]);
+        }
         rest = &rest[end..];
     }
     out.push_str(rest);
-    out.replace("elasticctl.exe", "elasticctl")
-        .replace(uri, "HOST")
+    if cfg!(windows) {
+        out = out.replace("elasticctl.exe", "elasticctl");
+    }
+    out.replace(uri, "HOST")
         .replace(uri.trim_start_matches("http://"), "HOST")
 }
 
@@ -191,7 +216,7 @@ pub async fn mount_index(
 pub async fn mount_get(server: &MockServer, flavor: &str, operation: &str, times: u64) {
     Mock::given(method("GET"))
         .and(path("/api/lists"))
-        .and(query_param("id", ID))
+        .and(query_param("id", id(flavor)))
         .respond_with(response(flavor, operation))
         .up_to_n_times(times)
         .with_priority(1)

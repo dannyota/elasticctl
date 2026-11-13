@@ -104,7 +104,7 @@ async fn get_reports_stored_and_distinct_counts_and_optional_values() {
                 if json {
                     args.push("--json");
                 }
-                let out = vl::run(root.path(), &server.uri(), &args);
+                let out = vl::run(root.path(), &server.uri(), flavor, &args);
                 assert!(
                     out.status.success(),
                     "{:?}",
@@ -112,8 +112,15 @@ async fn get_reports_stored_and_distinct_counts_and_optional_values() {
                 );
                 if json {
                     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-                    assert_eq!(value["distinct_values"], 3);
-                    assert_eq!(value["stored_values"], 4);
+                    let stored = vl::fixture(flavor, "items_export");
+                    assert_eq!(
+                        value["distinct_values"],
+                        vl::values(flavor, "items_export").len()
+                    );
+                    assert_eq!(
+                        value["stored_values"],
+                        stored["response"].as_str().unwrap().lines().count()
+                    );
                     assert_eq!(value.get("values").is_some(), values);
                 }
                 if flavor == vl::FLAVORS[0] {
@@ -140,6 +147,7 @@ async fn export_inline_or_files_preserves_the_pair_and_routes_only_the_report() 
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &["value-lists", "export", "ID", "--json"],
     );
     assert!(
@@ -150,10 +158,15 @@ async fn export_inline_or_files_preserves_the_pair_and_routes_only_the_report() 
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         value["values"],
-        serde_json::json!(["10.0.0.5-10.0.0.5", "10.0.0.6/32", "10.0.0.7/32"])
+        serde_json::json!(vl::values(flavor, "items_export"))
     );
-    assert_eq!(value["container"]["id"], vl::ID);
-    assert!(!root.path().join(format!("{}.yaml", vl::ID)).exists());
+    assert_eq!(value["container"]["id"], vl::id(flavor));
+    assert!(
+        !root
+            .path()
+            .join(format!("{}.yaml", vl::id(flavor)))
+            .exists()
+    );
     insta::assert_json_snapshot!(
         "export_inline",
         vl::capture(root.path(), &server.uri(), &out)
@@ -165,11 +178,16 @@ async fn export_inline_or_files_preserves_the_pair_and_routes_only_the_report() 
         if json {
             args.push("--json");
         }
-        let out = vl::run(root.path(), &server.uri(), &args);
+        let out = vl::run(root.path(), &server.uri(), flavor, &args);
         assert!(out.status.success());
         assert_eq!(
-            std::fs::read_to_string(root.path().join(dir).join(format!("{}.txt", vl::ID))).unwrap(),
-            "10.0.0.5-10.0.0.5\n10.0.0.6/32\n10.0.0.7/32\n"
+            std::fs::read_to_string(
+                root.path()
+                    .join(dir)
+                    .join(format!("{}.txt", vl::id(flavor)))
+            )
+            .unwrap(),
+            vl::values_text(&vl::values(flavor, "items_export"))
         );
         insta::assert_json_snapshot!(
             format!("export_{dir}"),
@@ -179,6 +197,7 @@ async fn export_inline_or_files_preserves_the_pair_and_routes_only_the_report() 
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &[
             "value-lists",
             "export",
@@ -196,14 +215,23 @@ async fn export_inline_or_files_preserves_the_pair_and_routes_only_the_report() 
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
     assert!(
-        std::fs::read_to_string(root.path().join("routed").join(format!("{}.yaml", vl::ID)))
-            .unwrap()
-            .contains("type: ip_range")
+        std::fs::read_to_string(
+            root.path()
+                .join("routed")
+                .join(format!("{}.yaml", vl::id(flavor)))
+        )
+        .unwrap()
+        .contains(&format!(
+            "type: {}",
+            vl::fixture(flavor, "container_read")["response"]["type"]
+                .as_str()
+                .unwrap()
+        ))
     );
     assert!(
         std::fs::read_to_string(root.path().join("report"))
             .unwrap()
-            .contains(vl::ID)
+            .contains(&vl::id(flavor))
     );
     vl::assert_read_only(&server).await;
 }
@@ -218,7 +246,7 @@ async fn init_previews_and_applies_only_the_initialize_flow() {
             if json {
                 args.push("--json");
             }
-            let out = vl::run(root.path(), &server.uri(), &args);
+            let out = vl::run(root.path(), &server.uri(), flavor, &args);
             assert!(
                 out.status.success(),
                 "{:?}",
@@ -252,7 +280,7 @@ async fn init_previews_and_applies_only_the_initialize_flow() {
                 .mount(&server)
                 .await;
             args.push("--yes");
-            let out = vl::run(root.path(), &server.uri(), &args);
+            let out = vl::run(root.path(), &server.uri(), flavor, &args);
             assert!(
                 out.status.success(),
                 "{:?}",
@@ -289,7 +317,7 @@ async fn import_and_delete_preview_without_writes_and_publish_apply_evidence() {
                     if apply {
                         args.push("--yes");
                     }
-                    let out = vl::run(root.path(), &server.uri(), &args);
+                    let out = vl::run(root.path(), &server.uri(), flavor, &args);
                     assert!(
                         out.status.success(),
                         "{:?}",
@@ -299,8 +327,11 @@ async fn import_and_delete_preview_without_writes_and_publish_apply_evidence() {
                         let preview: serde_json::Value =
                             serde_json::from_slice(&out.stderr).unwrap();
                         assert_eq!(preview["dry_run"], !apply);
-                        assert_eq!(preview["lists"][0]["id"], vl::ID);
-                        assert_eq!(preview["lists"][0]["type"], "ip_range");
+                        assert_eq!(preview["lists"][0]["id"], vl::id(flavor));
+                        assert_eq!(
+                            preview["lists"][0]["type"],
+                            vl::fixture(flavor, "container_read")["response"]["type"]
+                        );
                         assert_eq!(preview["command"], format!("value-lists {verb}"));
                     }
                     if !apply {
@@ -321,7 +352,10 @@ async fn import_and_delete_preview_without_writes_and_publish_apply_evidence() {
             for request in server.received_requests().await.unwrap() {
                 if request.method == "DELETE" {
                     assert_eq!(request.url.path(), "/api/lists");
-                    assert_eq!(request.url.query().unwrap(), format!("id={}", vl::ID));
+                    assert_eq!(
+                        request.url.query().unwrap(),
+                        format!("id={}", vl::id(flavor))
+                    );
                     assert!(request.body.is_empty());
                 }
             }
@@ -337,6 +371,7 @@ async fn delete_conflict_publishes_evidence_and_the_reference_error_before_exit_
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &[
             "value-lists",
             "delete",
@@ -354,8 +389,25 @@ async fn delete_conflict_publishes_evidence_and_the_reference_error_before_exit_
     assert_eq!(report["lists"][0]["result"]["outcome"], "failed");
     assert_eq!(report["lists"][0]["result"]["error"]["kind"], "conflict");
     let stderr = String::from_utf8(out.stderr.clone()).unwrap();
-    assert!(stderr.contains("elasticctl-fixture-value-list-id-10-item"));
-    assert!(stderr.contains("namespace") || stderr.contains("single"));
+    let conflict = vl::fixture(flavor, "container_delete_referenced");
+    let references = conflict["response"]["message"]["error"]["references"]
+        .as_array()
+        .unwrap();
+    assert!(!references.is_empty());
+    let expected: Vec<_> = references.iter().map(|reference| {
+        let item = &reference["exception_item"];
+        serde_json::json!({"container": {"list_id": item["list_id"], "namespace_type": item["namespace_type"]}, "item_id": item["item_id"]})
+    }).collect();
+    assert_eq!(
+        report["lists"][0]["references"],
+        serde_json::json!(expected)
+    );
+    for reference in references {
+        let item = &reference["exception_item"];
+        assert!(stderr.contains(item["item_id"].as_str().unwrap()));
+        assert!(stderr.contains(item["list_id"].as_str().unwrap()));
+        assert!(stderr.contains(item["namespace_type"].as_str().unwrap()));
+    }
     insta::assert_json_snapshot!(
         "delete_conflict",
         vl::capture(root.path(), &server.uri(), &out)
@@ -371,6 +423,7 @@ async fn import_refuses_existing_without_overwrite_and_rechecks_before_apply() {
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &["value-lists", "import", "--path", "ROOT/ID.yaml", "--json"],
     );
     assert_eq!(out.status.code(), Some(1));
@@ -389,6 +442,7 @@ async fn import_refuses_existing_without_overwrite_and_rechecks_before_apply() {
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &[
             "value-lists",
             "import",
@@ -413,13 +467,14 @@ async fn import_refuses_existing_without_overwrite_and_rechecks_before_apply() {
 #[test]
 fn validate_snapshots_and_import_validation_precedes_context() {
     let root = tempfile::tempdir().unwrap();
-    vl::local_pair(root.path(), vl::FLAVORS[0]);
+    let flavor = vl::FLAVORS[0];
+    vl::local_pair(root.path(), flavor);
     for json in [false, true] {
         let mut args = vec!["value-lists", "validate", "--path", "ROOT/ID.yaml"];
         if json {
             args.push("--json");
         }
-        let out = vl::run(root.path(), "http://127.0.0.1:1", &args);
+        let out = vl::run(root.path(), "http://127.0.0.1:1", flavor, &args);
         assert!(out.status.success());
         insta::assert_json_snapshot!(
             format!("validate_{}", if json { "json" } else { "text" }),
@@ -442,7 +497,14 @@ fn validate_snapshots_and_import_validation_precedes_context() {
 async fn import_preview_includes_every_add_remove_and_phase_reason() {
     let flavor = vl::FLAVORS[0];
     let server = vl::server(flavor, true, "container_delete").await;
-    let id = "elasticctl-fixture-value-list-id-14";
+    let container = vl::fixture(flavor, "contain_create")["response"].clone();
+    let id = container["id"].as_str().unwrap();
+    let before = vl::values(flavor, "contain_export");
+    let mut desired = vl::values(flavor, "contain_export_after");
+    desired.extend(["10.0.0.9/32".to_owned(), "10.0.0.8/32".to_owned()]);
+    let adds: std::collections::BTreeSet<_> = desired.difference(&before).cloned().collect();
+    let removes: std::collections::BTreeSet<_> = before.difference(&desired).cloned().collect();
+    assert!(!adds.is_empty() && !removes.is_empty());
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/api/lists"))
         .and(wiremock::matchers::query_param("id", id))
@@ -461,21 +523,17 @@ async fn import_preview_includes_every_add_remove_and_phase_reason() {
     let path = root.path().join(format!("{id}.yaml"));
     std::fs::write(
         &path,
-        format!("id: {id}\ntype: ip_range\nname: Updated\ndescription: elasticctl-live-marker\n"),
+        serde_json::to_vec(&serde_json::json!({"id": id, "type": container["type"], "name": "Updated", "description": container["description"], "meta": container["meta"]})).unwrap(),
     )
     .unwrap();
-    std::fs::write(
-        path.with_extension("txt"),
-        "10.0.0.9/32\n10.0.0.0/8\n10.0.0.8/32\n",
-    )
-    .unwrap();
+    std::fs::write(path.with_extension("txt"), vl::values_text(&desired)).unwrap();
     for json in [false, true] {
         let file = path.to_str().unwrap();
         let mut args = vec!["value-lists", "import", "--path", file, "--overwrite"];
         if json {
             args.push("--json");
         }
-        let out = vl::run(root.path(), &server.uri(), &args);
+        let out = vl::run(root.path(), &server.uri(), flavor, &args);
         assert!(
             out.status.success(),
             "{:?}",
@@ -494,11 +552,8 @@ async fn import_preview_includes_every_add_remove_and_phase_reason() {
                 ["dry_run", "profile", "host", "space", "command", "lists"]
             );
             let list = &preview["lists"][0];
-            assert_eq!(
-                list["adds"],
-                serde_json::json!(["10.0.0.8/32", "10.0.0.9/32"])
-            );
-            assert_eq!(list["removes"], serde_json::json!(["10.0.0.5/32"]));
+            assert_eq!(list["adds"], serde_json::json!(adds));
+            assert_eq!(list["removes"], serde_json::json!(removes));
             assert_eq!(list["container_action"], "update");
             assert_eq!(list["phase_order"], "removes_first");
             assert!(!list["phase_reason"].as_str().unwrap().is_empty());
@@ -513,13 +568,15 @@ async fn import_preview_includes_every_add_remove_and_phase_reason() {
 
 #[tokio::test]
 async fn export_checks_every_destination_before_writing_any_pair() {
-    let server = vl::server(vl::FLAVORS[0], true, "container_delete").await;
+    let flavor = vl::FLAVORS[0];
+    let server = vl::server(flavor, true, "container_delete").await;
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("occupied.yaml"), "unchanged").unwrap();
     std::fs::write(root.path().join("occupied.txt"), "unchanged\n").unwrap();
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &[
             "value-lists",
             "export",
@@ -533,7 +590,12 @@ async fn export_checks_every_destination_before_writing_any_pair() {
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("occupied.yaml") && err.contains("occupied.txt"));
-    assert!(!root.path().join(format!("{}.yaml", vl::ID)).exists());
+    assert!(
+        !root
+            .path()
+            .join(format!("{}.yaml", vl::id(flavor)))
+            .exists()
+    );
     assert_eq!(
         std::fs::read_to_string(root.path().join("occupied.txt")).unwrap(),
         "unchanged\n"
@@ -547,14 +609,15 @@ async fn export_checks_every_destination_before_writing_any_pair() {
 
 #[tokio::test]
 async fn init_already_bootstrapped_never_writes_even_with_yes() {
-    let server = vl::server(vl::FLAVORS[0], true, "container_delete").await;
+    let flavor = vl::FLAVORS[0];
+    let server = vl::server(flavor, true, "container_delete").await;
     let root = tempfile::tempdir().unwrap();
     for json in [false, true] {
         let mut args = vec!["value-lists", "init", "--yes"];
         if json {
             args.push("--json");
         }
-        let out = vl::run(root.path(), &server.uri(), &args);
+        let out = vl::run(root.path(), &server.uri(), flavor, &args);
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("already bootstrapped"));
         insta::assert_json_snapshot!(
@@ -584,6 +647,7 @@ async fn init_non_ready_flow_derived_from_recorded_initialize_fails() {
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &["value-lists", "init", "--yes", "--json"],
     );
     assert_eq!(out.status.code(), Some(1));
@@ -614,6 +678,7 @@ async fn import_apply_updates_the_container_once_with_the_apply_time_version() {
     let out = vl::run(
         root.path(),
         &server.uri(),
+        flavor,
         &[
             "value-lists",
             "import",
@@ -637,10 +702,9 @@ async fn import_apply_updates_the_container_once_with_the_apply_time_version() {
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0].method, "PATCH");
     let body: serde_json::Value = serde_json::from_slice(&writes[0].body).unwrap();
-    assert_eq!(
-        body,
-        serde_json::json!({"id": vl::ID, "name": "elasticctl-live-vl-updated", "description": "elasticctl-live-marker", "meta": {"marker": "elasticctl-live-marker", "recorder_nonce": "REDACTED"}, "_version": "WzAsMV0="})
-    );
+    container.as_object_mut().unwrap().remove("type");
+    container["_version"] = vl::fixture(flavor, "container_read")["response"]["_version"].clone();
+    assert_eq!(body, container);
     insta::assert_json_snapshot!(
         "import_update",
         vl::capture(root.path(), &server.uri(), &out)
@@ -648,7 +712,6 @@ async fn import_apply_updates_the_container_once_with_the_apply_time_version() {
 }
 
 #[tokio::test]
-#[ignore = "awaiting cli_lists_all recorded response on all three flavors"]
 async fn list_reads_unfiltered_and_filters_locally_with_text_and_json_snapshots() {
     use serde_json::{Value, json};
     use wiremock::matchers::{method, path};
@@ -678,7 +741,7 @@ async fn list_reads_unfiltered_and_filters_locally_with_text_and_json_snapshots(
                 if json_output {
                     args.push("--json");
                 }
-                let out = vl::run(root.path(), &server.uri(), &args);
+                let out = vl::run(root.path(), &server.uri(), flavor, &args);
                 assert!(
                     out.status.success(),
                     "{:?}",
@@ -722,7 +785,8 @@ async fn list_reads_unfiltered_and_filters_locally_with_text_and_json_snapshots(
 
 #[tokio::test]
 async fn export_refuses_report_paths_that_alias_either_exported_file() {
-    let server = vl::server(vl::FLAVORS[0], true, "container_delete").await;
+    let flavor = vl::FLAVORS[0];
+    let server = vl::server(flavor, true, "container_delete").await;
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("destination")).unwrap();
     let mut outputs = vec![
@@ -735,7 +799,8 @@ async fn export_refuses_report_paths_that_alias_either_exported_file() {
         std::os::unix::fs::symlink(root.path().join("destination"), root.path().join("alias"))
             .unwrap();
         std::os::unix::fs::symlink(
-            root.path().join(format!("destination/{}.txt", vl::ID)),
+            root.path()
+                .join(format!("destination/{}.txt", vl::id(flavor))),
             root.path().join("report-link"),
         )
         .unwrap();
@@ -745,6 +810,7 @@ async fn export_refuses_report_paths_that_alias_either_exported_file() {
         let out = vl::run(
             root.path(),
             &server.uri(),
+            flavor,
             &[
                 "value-lists",
                 "export",
