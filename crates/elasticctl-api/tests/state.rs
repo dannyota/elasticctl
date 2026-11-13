@@ -1,3 +1,5 @@
+mod state_values_support;
+
 use elasticctl_api::rules_ops;
 use elasticctl_api::state::{self, StackIdentity};
 use elasticctl_api::{Change, FieldChange, Format, ListChange, RuleFilter, RuleSource};
@@ -1346,7 +1348,7 @@ fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::Tem
                     "name": "item i1", "namespace_type": "single",
                     "entries": [{
                         "field": "source.ip", "operator": "included", "type": "list",
-                        "list": {"id": value_list_id, "type": "ip"}
+                        "list": {"id": value_list_id, "type": "ip_range"}
                     }]
                 }]
             })
@@ -1357,7 +1359,7 @@ fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::Tem
 }
 
 #[tokio::test]
-async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
+async fn push_refuses_an_exception_entry_when_value_lists_are_not_initialized() {
     let stack = MockStack::with_value_lists_absent().await;
     let dir = mirror_with_item_referencing_value_list("ip-allowlist");
     let plan = state::plan_push(
@@ -1370,20 +1372,17 @@ async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
         &identity(),
     )
     .await
-    .unwrap();
-    assert!(
-        plan.preview_details
-            .iter()
-            .any(|d| d.contains("ip-allowlist")),
-        "{:?}",
-        plan.preview_details
-    );
+    .unwrap_err();
+    assert_eq!(plan.kind, ErrorKind::Unsupported);
+    assert!(plan.message.contains("init"));
+    assert!(stack.write_requests().await.is_empty());
 }
 
 #[tokio::test]
 async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
     let stack = MockStack::with_value_lists(&["ip-allowlist"]).await;
-    let dir = mirror_with_item_referencing_value_list("ip-allowlist");
+    let id = state_values_support::reads(stack.server(), true).await;
+    let dir = mirror_with_item_referencing_value_list(&id);
     let plan = state::plan_push(
         stack.transport(),
         dir.path(),
@@ -1396,10 +1395,7 @@ async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
     .await
     .unwrap();
     assert!(
-        !plan
-            .preview_details
-            .iter()
-            .any(|d| d.contains("ip-allowlist")),
+        !plan.preview_details.iter().any(|d| d.contains(&id)),
         "{:?}",
         plan.preview_details
     );
@@ -1433,6 +1429,7 @@ async fn malformed_value_list_index_response_fails_planning() {
 #[tokio::test]
 async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
     let stack = MockStack::with_value_lists(&[]).await;
+    state_values_support::reads(stack.server(), false).await;
     let dir = mirror_with_item_referencing_value_list("missing");
     let plan = state::plan_push(
         stack.transport(),
@@ -1444,15 +1441,10 @@ async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
         &identity(),
     )
     .await
-    .unwrap();
-
-    assert!(
-        plan.preview_details
-            .iter()
-            .any(|line| line.contains("missing")),
-        "{:?}",
-        plan.preview_details
-    );
+    .unwrap_err();
+    assert_eq!(plan.kind, ErrorKind::NotFound);
+    assert!(plan.message.contains("missing"));
+    assert!(stack.write_requests().await.is_empty());
 }
 
 fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
@@ -1501,7 +1493,7 @@ fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
                         "name": item_id, "namespace_type": "single",
                         "entries": [{
                             "field": "source.ip", "operator": "included", "type": "list",
-                            "list": {"id": value_list_id, "type": "ip"}
+                            "list": {"id": value_list_id, "type": "ip_range"}
                         }]
                     }]
                 })
@@ -1515,7 +1507,13 @@ fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
 #[tokio::test]
 async fn scoped_push_checks_each_reachable_value_list_once() {
     let stack = MockStack::with_value_lists(&["ip-allowlist", "dns-allowlist"]).await;
+    let id = state_values_support::reads(stack.server(), true).await;
     let dir = mirror_with_selected_and_unselected_value_list_refs();
+    let selected = dir.path().join("exceptions/detect-a.ndjson");
+    let body = std::fs::read_to_string(&selected)
+        .unwrap()
+        .replace("ip-allowlist", &id);
+    std::fs::write(selected, body).unwrap();
     state::plan_push(
         stack.transport(),
         dir.path(),
@@ -1528,7 +1526,7 @@ async fn scoped_push_checks_each_reachable_value_list_once() {
     .await
     .unwrap();
 
-    assert_eq!(stack.value_list_lookups("ip-allowlist").await, 1);
+    assert_eq!(stack.value_list_lookups(&id).await, 1);
     assert_eq!(stack.value_list_lookups("dns-allowlist").await, 0);
 }
 

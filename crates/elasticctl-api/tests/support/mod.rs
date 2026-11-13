@@ -79,6 +79,10 @@ impl MockStack {
         self.server.uri()
     }
 
+    pub fn server(&self) -> &MockServer {
+        &self.server
+    }
+
     pub fn transport(&self) -> &Transport {
         &self.transport
     }

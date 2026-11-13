@@ -1,7 +1,8 @@
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ReportEntry {
     pub rule_id: String,
     pub name: String,
@@ -10,6 +11,43 @@ pub struct ReportEntry {
     pub after: Option<Value>,
     pub applied: bool,
     pub error: Option<String>,
+    pub value_list: Option<crate::value_lists::Evidence>,
+}
+
+impl Serialize for ReportEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        if let Some(evidence) = &self.value_list {
+            return evidence.serialize(serializer);
+        }
+        let mut value = serializer.serialize_struct("ReportEntry", 7)?;
+        value.serialize_field("rule_id", &self.rule_id)?;
+        value.serialize_field("name", &self.name)?;
+        value.serialize_field("action", &self.action)?;
+        value.serialize_field("before", &self.before)?;
+        value.serialize_field("after", &self.after)?;
+        value.serialize_field("applied", &self.applied)?;
+        value.serialize_field("error", &self.error)?;
+        value.end()
+    }
+}
+
+impl From<crate::value_lists::Evidence> for ReportEntry {
+    fn from(evidence: crate::value_lists::Evidence) -> Self {
+        Self {
+            rule_id: evidence.rule_id.clone(),
+            name: evidence.name.clone(),
+            action: serde_json::to_value(evidence.action)
+                .expect("action serializes")
+                .as_str()
+                .unwrap()
+                .into(),
+            before: None,
+            after: None,
+            applied: evidence.outcome == crate::value_lists::Outcome::Applied,
+            error: None,
+            value_list: Some(evidence),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +103,7 @@ mod tests {
             after: None,
             applied,
             error: error.map(String::from),
+            value_list: None,
         }
     }
 

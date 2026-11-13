@@ -153,7 +153,8 @@ async fn value_list_index_check(t: &Transport) -> DoctorCheck {
             "value_list_index",
             Status::Warn,
             "value-list data streams are not bootstrapped; an exception entry of type \
-             'list' cannot work until POST /api/lists/index runs",
+             'list' cannot work until elasticctl value-lists init runs \
+             POST /api/security_solution/initialize with the create-list-indices flow",
         ),
         Err(e) => check("value_list_index", Status::Fail, e.message),
     }

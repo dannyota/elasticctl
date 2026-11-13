@@ -18,6 +18,10 @@ pub struct PullReport {
     pub dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub value_lists: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub value_list_warnings: Vec<crate::value_lists::Warning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -27,6 +31,8 @@ pub struct DiffReport {
     pub remote: usize,
     pub changes: Vec<Change>,
     pub exceptions: ExceptionDrift,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_lists: Option<super::values::ValueListDrift>,
     #[serde(skip_serializing_if = "is_zero")]
     pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,6 +55,18 @@ pub struct PushReport {
     pub items_updated: usize,
     pub items_removed: usize,
     #[serde(skip_serializing_if = "is_zero")]
+    pub value_lists_created: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub value_lists_updated: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub values_added: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub values_removed: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub value_lists_unknown: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub value_lists_not_reached: usize,
+    #[serde(skip_serializing_if = "is_zero")]
     pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<usize>,
@@ -65,6 +83,8 @@ pub struct Mirror {
     pub rules: Vec<Rule>,
     pub lists: Vec<ExceptionList>,
     pub items: Vec<ExceptionItem>,
+    pub value_lists: Vec<crate::value_lists::LocalPair>,
+    pub has_value_lists: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
