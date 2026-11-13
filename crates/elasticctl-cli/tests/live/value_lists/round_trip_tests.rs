@@ -294,6 +294,180 @@ async fn injected_push_preflight_fault_is_classified_and_cleanup_removes_every_o
     clean_after_failure(&server, flavor, &mut lease, result, 4).await;
 }
 
+async fn read_back_case(flavor: &str, keyword: bool, change: &str) -> StepResult {
+    let server = MockServer::start().await;
+    let _lease = current(&server, flavor).await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = mcp_smoke::mcp_subprocess_config(dir.path(), &server.uri());
+    let run = case(&dir, &config, flavor);
+    let values = |changed| {
+        let values = if changed && change == "duplicate" {
+            vec!["10.0.0.7/32", "10.0.0.6/32", "10.0.0.5-10.0.0.5"]
+        } else {
+            vec!["10.0.0.0/8", "10.0.0.5/32"]
+        };
+        values.into_iter().map(str::to_owned).collect()
+    };
+    let expected = [
+        (
+            run.ip.as_str(),
+            api::ValueListType::IpRange,
+            values(!keyword),
+        ),
+        (
+            run.keyword.as_str(),
+            api::ValueListType::Keyword,
+            values(keyword),
+        ),
+    ];
+    for (id, changed) in [(&run.ip, !keyword), (&run.keyword, keyword)] {
+        let operation = if changed {
+            match change {
+                "missing" => "contain_export_single",
+                "extra" => "export_c_union",
+                "duplicate" => "items_export",
+                "exact" => "contain_export",
+                _ => panic!("unknown read-back case"),
+            }
+        } else {
+            "contain_export"
+        };
+        Mock::given(method("POST"))
+            .and(path("/api/lists/items/_export"))
+            .and(query_param("list_id", id))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(fixture(flavor, operation)["response"].as_str().unwrap()),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let result = at_step(4, run.read_back(&transport(&server), expected).await);
+    let requests = server.received_requests().await.unwrap();
+    let changed_id = if keyword { &run.keyword } else { &run.ip };
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method == "POST"
+                && r.url.path() == "/api/lists/items/_export"
+                && r.url
+                    .query_pairs()
+                    .any(|(key, value)| key == "list_id" && value == *changed_id))
+            .count(),
+        1
+    );
+    assert!(
+        requests.iter().all(|r| r.method == "GET"
+            || (r.method == "POST" && r.url.path() == "/api/lists/items/_export"))
+    );
+    result
+}
+
+async fn read_back_refusal(change: &str) {
+    for flavor in FLAVORS {
+        for keyword in [false, true] {
+            let result = read_back_case(flavor, keyword, change).await;
+            assert_eq!(
+                result,
+                Err(StepError::Step(4)),
+                "{flavor} {keyword} {change}"
+            );
+            assert_eq!(
+                classify(Ok(()), result, Ok(()), Ok(())),
+                Err(Failure::Contract)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_back_rejects_missing_remote_values_with_contract_class() {
+    read_back_refusal("missing").await;
+}
+
+#[tokio::test]
+async fn read_back_rejects_extra_remote_values_with_contract_class() {
+    read_back_refusal("extra").await;
+}
+
+#[tokio::test]
+async fn read_back_rejects_duplicate_remote_values_with_contract_class() {
+    read_back_refusal("duplicate").await;
+}
+
+#[tokio::test]
+async fn read_back_accepts_exact_remote_multisets_in_a_different_order() {
+    for flavor in FLAVORS {
+        assert_eq!(read_back_case(flavor, false, "exact").await, Ok(()));
+    }
+}
+
+async fn preview_fault(response: ResponseTemplate) {
+    let flavor = FLAVORS[2];
+    let server = MockServer::start().await;
+    let mut lease = current(&server, flavor).await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = mcp_smoke::mcp_subprocess_config(dir.path(), &server.uri());
+    let run = case(&dir, &config, flavor);
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/preview"))
+        .respond_with(response)
+        .with_priority(1)
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/detection_engine/rules/preview"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(root_fixture(flavor, "rules_preview")),
+        )
+        .mount(&server)
+        .await;
+    let result = at_step(5, run.preview(&transport(&server), &lease, false).await);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.path() == "/api/detection_engine/rules/preview")
+            .count(),
+        1
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.method == "GET" || r.url.path() == "/api/detection_engine/rules/preview")
+    );
+    clean_after_failure(&server, flavor, &mut lease, result, 5).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_preview_503_is_sent_once_and_classified_as_contract_failure() {
+    preview_fault(
+        ResponseTemplate::new(503).set_body_json(root_fixture(FLAVORS[2], "rules_preview")),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_preview_502_is_sent_once_and_classified_as_contract_failure() {
+    preview_fault(
+        ResponseTemplate::new(502).set_body_json(root_fixture(FLAVORS[2], "rules_preview")),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_preview_timeout_is_sent_once_and_classified_as_contract_failure() {
+    preview_fault(
+        ResponseTemplate::new(200)
+            .set_body_json(root_fixture(FLAVORS[2], "rules_preview"))
+            .set_delay(Duration::from_secs(2)),
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn preview_without_identity_is_classified_and_cleaned_for_both_phases() {
     for after in [false, true] {

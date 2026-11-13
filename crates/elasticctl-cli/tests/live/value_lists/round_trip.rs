@@ -261,8 +261,12 @@ impl<'a> RoundTrip<'a> {
         serde_json::to_value(objects).map_err(|_| StepError::Failed)
     }
 
-    pub(super) async fn read_back(&self, t: &Transport, after: bool) -> StepResult {
-        for (id, kind, values) in self.expected(after) {
+    pub(super) async fn read_back(
+        &self,
+        t: &Transport,
+        expected: [(&str, api::ValueListType, Vec<String>); 2],
+    ) -> StepResult {
+        for (id, kind, values) in expected {
             let remote = checked_step(api::read_list(t, id).await)?.ok_or(StepError::Failed)?;
             require(
                 remote.container.container.list_type == kind
@@ -287,23 +291,10 @@ impl<'a> RoundTrip<'a> {
         lease.check_interrupt()?;
         self.disabled(t).await?;
         lease.check_interrupt()?;
-        let output = self
-            .command()
-            .args([
-                "rules",
-                "preview",
-                &self.rule,
-                "--invocations",
-                "1",
-                "--sample",
-                "100",
-                "--json",
-            ])
-            .output()
-            .map_err(|_| StepError::Failed)?;
-        require(output.status.success())?;
-        let report: Value =
-            serde_json::from_slice(&output.stdout).map_err(|_| StepError::Failed)?;
+        let report = checked_step(
+            elasticctl_api::rules_ops::preview_rule(t, &self.rule, 1, 100, t.space()).await,
+        )?;
+        let report = serde_json::to_value(report).map_err(|_| StepError::Failed)?;
         verify_alerts(
             &report,
             if after {
@@ -377,7 +368,7 @@ impl<'a> RoundTrip<'a> {
                 && summary["values_removed"] == 2
                 && summary["value_lists_unknown"].as_u64().unwrap_or(0) == 0,
         )?;
-        self.read_back(t, true).await
+        self.read_back(t, self.expected(true)).await
     }
 }
 
