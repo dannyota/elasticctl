@@ -1,0 +1,6 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "contain_export_single",
+  "response": "10.0.0.5/32\n"
+}

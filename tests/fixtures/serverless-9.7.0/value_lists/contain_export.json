@@ -2,5 +2,5 @@
   "flavor": "serverless",
   "version": "9.7.0",
   "operation": "contain_export",
-  "response": "10.0.0.5/32\n10.0.0.0/8\n"
+  "response": "10.0.0.0/8\n10.0.0.5/32\n"
 }

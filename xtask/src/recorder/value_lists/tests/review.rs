@@ -109,7 +109,9 @@ async fn inventory_recording(
         Mock::given(method("GET")).and(path("/api/exception_lists/_find"))
             .respond_with(move |r: &Request| {
                 let mut rows = if r.url.query_pairs().any(|(k, _)| k == "filter") { vec![] } else { vec![json!({"id": "unrelated-container", "list_id": "unrelated-list", "created_by": "10"})] };
-                rows.extend(containers.lock().unwrap().exception.iter().cloned());
+                if !r.url.query_pairs().any(|(k, v)| k == "namespace_type" && v == "agnostic") {
+                    rows.extend(containers.lock().unwrap().exception.iter().cloned());
+                }
                 response(200, json!({"total": rows.len(), "data": rows}))
             }).with_priority(1).mount(&server).await;
         let items = state.clone();
@@ -249,9 +251,9 @@ async fn uncertain_writes_keep_pending_totals_and_block_restore() {
             assert_eq!(
                 session.pending_imports[LIST],
                 Some(if verb == "DELETE" {
-                    5
+                    3
                 } else if route.ends_with("_import") {
-                    6
+                    4
                 } else {
                     1
                 })

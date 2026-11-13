@@ -361,23 +361,29 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "items_find_first",
             "items_find_next",
             "items_export",
-            "items_import",
-            "items_import_settled",
             "items_delete_id",
             "items_delete_id_absent",
+            "items_export_after_delete",
+            "items_import",
+            "items_import_settled",
             "spellings_create",
             "lists_find_first",
             "lists_find_next",
             "exception_create",
             "exception_item_create",
             "exception_lists_find",
+            "exception_lists_find_agnostic",
             "exception_items_find",
             "container_delete_referenced",
             "container_delete",
             "contain_create",
+            "contain_export_single",
+            "contain_items_find",
             "contain_export",
             "contain_delete_id",
             "contain_export_after",
+            "contain_import",
+            "contain_export_imported",
             "import_too_large",
             "import_wrong_extension",
             "import_absent_list",
@@ -435,7 +441,7 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
         .iter()
         .filter(|r| r.url.path().ends_with("/_import"))
         .collect();
-    assert_eq!(imports.len(), 4);
+    assert_eq!(imports.len(), 5);
     for request in imports {
         assert!(
             request
@@ -470,7 +476,7 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             format!("{LIST}-item-0"),
             format!("{LIST}-item-1"),
             format!("{LIST}-item-0"),
-            format!("{CONTAIN}-item-1")
+            format!("{CONTAIN}-item-0")
         ]
     );
     for request in requests.iter().filter(|r| r.method == "DELETE") {
