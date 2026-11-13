@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_thirteen_in_order() {
+    fn contract_table_is_the_approved_fourteen_in_order() {
         assert_eq!(
             CONTRACTS
                 .iter()
@@ -516,8 +516,12 @@ mod tests {
                 "mcp_reads_existing_verticals",
                 "mcp_answers_across_verticals",
                 "mcp_mutations_plan_and_confirm",
+                "value_list_round_trip",
             ]
         );
+        let value_lists = &CONTRACTS[13];
+        assert_eq!(value_lists.test, "value_list_round_trip");
+        assert_eq!(value_lists.features[0].feature, Feature::ExceptionLists);
         let mutations = &CONTRACTS[12];
         assert_eq!(mutations.test, mutations.name);
         assert!(mutations.features.is_empty());
@@ -640,6 +644,7 @@ mod tests {
                 ContractResult::pass("mcp_reads_existing_verticals"),
                 ContractResult::pass("mcp_answers_across_verticals"),
                 ContractResult::pass("mcp_mutations_plan_and_confirm"),
+                ContractResult::pass("value_list_round_trip"),
             ],
         };
         assert_eq!(
@@ -710,6 +715,11 @@ mod tests {
                     },
                     {
                         "contract": "mcp_mutations_plan_and_confirm",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "value_list_round_trip",
                         "result": "pass",
                         "error_class": null,
                     },
