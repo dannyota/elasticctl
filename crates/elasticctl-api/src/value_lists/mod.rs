@@ -1,5 +1,6 @@
 mod address;
 mod apply;
+mod cli;
 mod codec;
 mod evidence;
 pub(crate) mod legacy;
@@ -14,6 +15,10 @@ mod validation;
 
 pub use address::canonical_value;
 pub use apply::apply_plans;
+pub use cli::{
+    ExportFiles, ExportPair, ExportReport, GetReport, ImportPreview, ListSummary, MutationReport,
+    ValidationReport, export_op, get_op, list_op, validate_path,
+};
 pub use codec::{decode_container, decode_values, encode_container, encode_values, read_pair};
 pub use evidence::{Action, Evidence, Failure, ListOutcome, Outcome, ReadOf, Sent};
 pub use lifecycle::{

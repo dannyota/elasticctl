@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "(no results)",
+  "stderr": ""
+}

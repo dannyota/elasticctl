@@ -1,0 +1,127 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: group
+---
+{
+  "name": "value-lists",
+  "about": "Manage value lists",
+  "mutates": false,
+  "args": [],
+  "subcommands": [
+    {
+      "name": "list",
+      "about": "List value-list containers",
+      "mutates": false,
+      "args": [
+        {
+          "name": "list_type",
+          "required": false,
+          "takes_value": false,
+          "help": "Keep containers of this type"
+        },
+        {
+          "name": "search",
+          "required": false,
+          "takes_value": false,
+          "help": "Match id or name by substring, ignoring case"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "get",
+      "about": "Show a value list, counts, and warnings",
+      "mutates": false,
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "takes_value": false,
+          "help": "Value list id"
+        },
+        {
+          "name": "values",
+          "required": false,
+          "takes_value": false,
+          "help": "Include the distinct values"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "validate",
+      "about": "Validate a local value-list pair without server contact",
+      "mutates": false,
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "takes_value": false,
+          "help": "Path to the container or values file"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "export",
+      "about": "Export value-list pairs without overwriting files",
+      "mutates": false,
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "takes_value": true,
+          "help": "Value list ids to export"
+        },
+        {
+          "name": "dir",
+          "required": false,
+          "takes_value": false,
+          "help": "Destination directory; defaults to the current directory"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "import",
+      "about": "Import a value-list pair with exact value reconciliation",
+      "mutates": true,
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "takes_value": false,
+          "help": "Path to the container or values file"
+        },
+        {
+          "name": "overwrite",
+          "required": false,
+          "takes_value": false,
+          "help": "Update an existing container and reconcile its values exactly"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "delete",
+      "about": "Delete value lists and their values",
+      "mutates": true,
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "takes_value": true,
+          "help": "Value list ids to delete"
+        }
+      ],
+      "subcommands": []
+    },
+    {
+      "name": "init",
+      "about": "Bootstrap the space's list data streams",
+      "mutates": true,
+      "args": [],
+      "subcommands": []
+    }
+  ]
+}

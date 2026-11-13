@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "applied  total  \nfalse    1      \n",
+  "stderr": "[DRY RUN] value-lists delete (profile: default @ HOST, space: default)\n  elasticctl-fixture-value-list-id-3 (ip_range)\nPass --yes to apply.\n"
+}

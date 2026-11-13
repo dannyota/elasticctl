@@ -63,6 +63,7 @@ async fn main() {
         Command::Info => cmd_dispatch::info(&args).await,
         Command::Rules { action } => cmd_dispatch::rules(&args, action).await,
         Command::Exceptions { action } => cmd_dispatch::exceptions(&args, action).await,
+        Command::ValueLists { action } => cmd_dispatch::value_lists(&args, action).await,
         Command::DataViews { action } => cmd_dispatch::data_views(&args, action).await,
         Command::Dashboards { action } => cmd_dispatch::dashboards(&args, action).await,
         Command::Fleet { action } => cmd_dispatch::fleet(&args, action).await,

@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "applied  total  \nfalse    1      \n",
+  "stderr": "[DRY RUN] value-lists import (profile: default @ HOST, space: default)\n  elasticctl-fixture-value-list-id-13 (ip_range)\n  container: update\n  add: 10.0.0.8/32\n  add: 10.0.0.9/32\n  remove: 10.0.0.5/32\n  phase order: removes_first\n  phase reason: every installed reference is included and removing values keeps the list non-empty\nPass --yes to apply.\n"
+}

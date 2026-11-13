@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), \"http://127.0.0.1:1\", &out)"
+---
+{
+  "code": 0,
+  "stdout": "valid  id                                  warnings  \ntrue   elasticctl-fixture-value-list-id-3  []        \n",
+  "stderr": ""
+}

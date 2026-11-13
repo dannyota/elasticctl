@@ -1,7 +1,10 @@
+mod value_lists;
+pub use value_lists::{ValueListPreview, check_value_lists};
+
 use crate::context::Context;
 use elasticctl_core::Resolved;
 
-pub(crate) const MUTATING: [&str; 31] = [
+pub(crate) const MUTATING: [&str; 34] = [
     "rules enable",
     "rules disable",
     "rules delete",
@@ -9,6 +12,9 @@ pub(crate) const MUTATING: [&str; 31] = [
     "rules prebuilt install",
     "exceptions delete",
     "exceptions import",
+    "value-lists import",
+    "value-lists delete",
+    "value-lists init",
     "data-views import",
     "data-views delete",
     "data-views default set",

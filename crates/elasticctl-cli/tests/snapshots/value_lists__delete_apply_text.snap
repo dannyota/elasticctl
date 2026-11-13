@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "applied  lists                                                                                                                                                                                                                                                                                                                     \ntrue     [{\"result\":{\"id\":\"elasticctl-fixture-value-list-id-3\",\"outcome\":\"applied\",\"evidence\":[{\"action\":\"delete_value_list\",\"rule_id\":\"elasticctl-fixture-value-list-id-3\",\"name\":\"elasticctl-fixture-value-list-id-3\",\"values\":[],\"sent\":\"accepted\",\"status\":200,\"phase_verified\":true,\"outcome\":\"applied\"}]},\"references\":[]}]  \n",
+  "stderr": "Applying: value-lists delete (profile: default @ HOST, space: default)\n  elasticctl-fixture-value-list-id-3 (ip_range)\n"
+}
