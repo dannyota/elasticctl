@@ -240,8 +240,9 @@ It limits the application retry loop to one attempt and sets the `reqwest`
 retry policy to never, but the client it configures still pools connections,
 and the reused apply functions call the ordinary `post` and `patch`, not
 `post_once`. A request placed on a pooled socket that the peer has closed can
-be started again by the HTTP stack on a new connection; the comment on the
-one-shot client in `transport.rs` records this. Core already avoids
+be started again by the HTTP stack on a new connection: hyper-util retries a
+canceled checkout only through its connection pool, so a client with no idle
+connections cannot replay an unstarted write. Core already avoids
 this for `post_once`, `put_once`, and `delete_once` with a separate client
 whose idle pool is zero. There is no `patch_once`, and switching the shared
 apply functions to the `_once` calls would change CLI retry behavior.

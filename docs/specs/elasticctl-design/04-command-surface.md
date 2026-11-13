@@ -42,11 +42,20 @@ push`, and a flag surface for arbitrary nested `entries` would be worse than a
 file. It has no `attach`/`detach` either, because attaching a list to a rule is
 a rule mutation and `state push` is how rule mutations are made.
 
+`doctor` is most useful when the configuration is broken, so it never stops
+at `Context::build`: it reports the failure as a `config` check with status
+`fail` and skips the checks that need a resolved, credentialed target. A
+failed transport is a `connectivity` failure, and reporting continues. A
+permissive config file mode is a `config_permissions` check with status
+`warn` in the report, not a stderr warning. Each check is `ok`, `warn`, or
+`fail`; only `fail` makes the report's `ok` false.
+
 ### 4.1 Rule identity
 
 Engineers think in names; the API has `rule_id` (a stable UUID) and `id` (a
 volatile saved-object id). Commands accept either a name or a `rule_id`. A
-`rule_id` is tried first. A name lookup occurs only when it misses. The lookup
+`rule_id` is tried first. A name lookup occurs only when it misses with a 404;
+any other failure, such as a 401, is returned unchanged. The lookup
 is a **single `_find` filtered server-side on `alert.attributes.name`**, never
 a walk of the whole space. Walking took 8.8 seconds against 2,066 rules just
 to report no match.
@@ -106,6 +115,21 @@ from the uploaded NDJSON and never affect the exit code — a rule the server wa
 never asked to change is not a failure.
 
 The default is unchanged: without either flag, a conflict is a reported failure.
+
+A dry run of `rules import` or `exceptions import` without `--skip-existing`
+reads only the file, so it needs no credential. A missing file is reported
+before a missing credential.
+
+`rules export` writes the rules with the exception containers and items they
+reference in one NDJSON bundle, and `rules import` keeps all three so Kibana
+can recreate the containers. The upload carries only the containers and items
+that a rule scheduled for upload references: `rules import` is guarded as a
+rule mutation, so an exception-only or unreferenced object never becomes an
+unpreviewed write. Each readable reference gets a placeholder `id`, because
+Kibana validates the pointer as a string before it re-resolves it against the
+target. Both `rules import` and `exceptions import` re-encode the planned
+objects without the export trailer, so trailer counts never describe a skipped
+object.
 
 ### 4.5 Exception list identity
 

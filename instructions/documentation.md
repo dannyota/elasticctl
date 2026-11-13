@@ -37,7 +37,7 @@ A change to a public CLI or MCP surface (a command, flag, default, output field,
 
 A new wiki page is listed in `docs/wiki/_Sidebar.md` and `docs/wiki/Home.md`, and a new capability area also gets a row in the README "Coverage" table.
 
-`scripts/wiki-sync.sh` publishes `docs/wiki/` to the GitHub wiki; the wiki is a mirror, so edits made in its web UI are overwritten. Run `bash scripts/wiki-sync.sh --dry-run` after editing a page: it rejects relative links that leave `docs/wiki/` and links to missing pages. The `Wiki` workflow runs the same preview on a pull request and publishes on a push to `master`.
+`scripts/wiki-sync.sh` publishes `docs/wiki/` to the GitHub wiki; the wiki is a mirror, so edits made in its web UI are overwritten. Run `bash scripts/wiki-sync.sh --dry-run` after editing a page: it rejects relative links that leave `docs/wiki/` and links to missing pages. The `Wiki` workflow runs the same preview on a pull request and publishes on a push to `master`. Publishing needs `GH_TOKEN` with `contents: write`; `GITHUB_REPOSITORY` defaults to the `origin` remote. The script passes the auth header through `GIT_CONFIG_*` environment variables, so it never appears in a process argument, and it runs with GNU or BSD tools.
 
 ## Links
 

@@ -31,7 +31,8 @@ failures.
 `prepare_rules.py` gives every rule the `elasticctl-sample` marker: a `rule_id`
 prefix, a tag, `enabled: false`, and the sample data stream as its index. A run
 can then find and remove everything it created and cannot touch an untagged
-rule.
+rule. It strips server-owned fields so the import assigns its own, and skips a
+rule whose slug repeats an earlier one, since both would import as one rule.
 
 **License — Detection Rule License 1.1.** Redistributing a Sigma rule, modified
 or not, must retain the rule's `author` field, a link to the rule set, and the

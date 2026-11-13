@@ -73,7 +73,10 @@ routes.
   (`ELASTICCTL_*`) → profile → defaults. The CLI reads `ELASTICCTL_*` through a
   checked loader that fails on invalid Unicode and a non-integer timeout
   instead of silently dropping the value; `from_env` remains the lossy loader
-  for direct library callers. Returns the effective config *and its
+  for direct library callers. Its error names the variable, never its bytes.
+  A flag overrides its variable, so a stale invalid value under a field the
+  flags set does not fail the command; `config init --from-env` checks every
+  variable, because the environment is its source. Returns the effective config *and its
   provenance*, so the guard banner can name the profile about to be mutated.
   `kibana_url` and `es_url` are both identity: on a Cloud deployment they are
   two hosts of one stack, and on self-managed `es_url` is absent and the Kibana
@@ -100,7 +103,8 @@ routes.
   `?`, or `#` inside userinfo is malformed (RFC 3986 requires percent-encoding)
   and is out of contract; percent-encoded userinfo scrubs correctly.
 - **`auth`** — `ApiKey` (`Authorization: ApiKey <base64(id:key)>`) or `Basic`.
-  API key is the default; basic auth exists for the local lab.
+  API key is the default and wins when a profile holds both; basic auth exists
+  for the local lab.
 - **`transport`** — `reqwest` with `rustls` on `tokio`. Injects `kbn-xsrf: true`
   on every non-GET request, `elastic-api-version` where required, and prefixes
   space-scoped paths as `/s/<space>/api/...`. A request path must start with
@@ -146,7 +150,15 @@ routes.
   Response headers are captured and returned alongside the body, because the
   deployment flavor is not derivable from any response body — see
   `capabilities` below. They are carried, never logged: `--debug` still prints
-  no header because headers carry credentials.
+  no header because headers carry credentials. Only `x-found-handling-cluster`,
+  `x-found-handling-instance`, and `x-elastic-product` are kept, because
+  fixtures are public and keeping every header could record cookies,
+  rate-limit counters, or new proxy headers. Header lookup ignores case: the
+  Cloud proxy varies the casing of `x-found-handling-cluster` by endpoint.
+  A Kibana internal route gets `x-elastic-internal-origin: Kibana`, without
+  which the route family answers 400 "exists but is not available", and no
+  `elastic-api-version`, because internal routes sit outside the public API's
+  versioning.
 - **`capabilities`** — one probe at connect time reading `GET /api/status`.
   Yields `Capabilities { flavor, version }` and is cached once per transport.
   Exception-list, prebuilt-rule, and rule-source routes require the feature's

@@ -154,6 +154,14 @@ live project, which is a realistic failure mode after a project rename.
 
 ### 7.5 Preview results
 
+The preview request body is a rule create payload plus the required
+`invocationCount` (integer) and `timeframeEnd` (date-time)
+([Kibana schema](https://github.com/elastic/kibana/blob/main/x-pack/solutions/security/plugins/security_solution/common/api/detection_engine/rule_preview/rule_preview.schema.yaml)).
+elasticctl sends `timeframeEnd` as the current UTC time in
+`YYYY-MM-DDTHH:MM:SS.000Z` form, and strips the fields that identify a saved
+rule (`id`, `rule_id`, `immutable`, `rule_source`, `revision`, `version`)
+before sending.
+
 `POST /api/detection_engine/rules/preview` returns
 `{previewId, logs: [{errors, warnings}]}` and **no hit count**. A rule that
 matched four documents and one that matched none produce byte-identical
@@ -174,6 +182,10 @@ per-space preview alerts index and are searched with the returned `previewId`:
 In the recorded run, alerts were visible to the first search. A slower stack
 may not be, so the retry below accounts for that uncertainty. It does not claim
 the same result for every stack.
+
+The search sends `track_total_hits: true`, so the count is exact above 10,000,
+and `ignore_unavailable=true`, so a space whose preview index does not exist
+yet reads as zero hits instead of a 404.
 
 The read uses Elasticsearch rather than a Kibana route. The evaluation already
 recovered true hit counts from Elasticsearch with the same project-scoped key,

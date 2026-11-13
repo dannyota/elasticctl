@@ -118,6 +118,7 @@ async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, Str
         .expect("child was spawned with a piped stderr");
 
     let out_flavor = flavor.to_string();
+    // Not `lines()`: it errors on invalid UTF-8, the pipe stops draining, and the child can die of SIGPIPE: https://docs.rs/tokio/latest/tokio/io/trait.AsyncBufReadExt.html#method.lines
     let stdout_task = tokio::spawn(async move {
         let mut chunks = BufReader::new(stdout).split(b'\n');
         while let Ok(Some(chunk)) = chunks.next_segment().await {

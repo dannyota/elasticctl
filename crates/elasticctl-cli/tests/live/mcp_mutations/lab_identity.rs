@@ -38,6 +38,7 @@ fn random_hex(bytes: usize) -> TestResult<String> {
         }
         let mut data = vec![0u8; bytes];
         let length = bytes.try_into().map_err(|_| "contract")?;
+        // Flag 2 selects the system RNG and needs a null provider: https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgenrandom
         require(
             unsafe { bcrypt_gen_random(std::ptr::null_mut(), data.as_mut_ptr(), length, 2) } == 0,
         )?;

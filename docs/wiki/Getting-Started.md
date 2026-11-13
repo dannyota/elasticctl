@@ -69,7 +69,8 @@ elkctl doctor
 
 `doctor` checks configuration, connectivity, the deployment flavor,
 authentication, the key's scope, and rule access. Fix what it reports before
-going further. `elkctl info` shows the stack version, flavor, license tier, and
+going further. It still runs when the configuration is broken and reports that
+as a failed `config` check. A `warn` check does not fail the report. `elkctl info` shows the stack version, flavor, license tier, and
 spaces.
 
 ## First commands

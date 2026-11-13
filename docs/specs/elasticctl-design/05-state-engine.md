@@ -47,7 +47,9 @@ requested spelling is retained only for user-facing output and errors.
 The sibling lock is `.<mirror-name>.elasticctl-pull.lock`. A filesystem root
 has no safe sibling lock and is refused with `ErrorKind::Error`; its message
 contains `filesystem root has no safe sibling lock`. This applies to Unix `/`,
-Windows drive roots, and UNC share roots.
+Windows drive roots, and UNC share roots. A root is recognized by path shape
+before any filesystem access: an existence check or canonicalization of a
+missing UNC share goes over the network and fails unpredictably.
 
 ### 5.0.1 Report path identity and locking
 
