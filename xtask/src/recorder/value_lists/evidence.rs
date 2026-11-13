@@ -4,7 +4,7 @@ use crate::fixtures::{RecordedFixture, error_fixture, exchange_fixture};
 use crate::scrub::hosts::scrub_hosts;
 use crate::scrub::{scrub_alert_timestamps, scrub_placeholder_values};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(super) struct Evidence {
@@ -13,6 +13,7 @@ pub(super) struct Evidence {
     pub(super) fixtures: Vec<RecordedFixture>,
     pub(super) hosts: Vec<String>,
     ids: BTreeMap<String, String>,
+    identities: BTreeSet<String>,
 }
 
 // Remove versions before shared scrubbing, then restore them at their paths.
@@ -55,6 +56,79 @@ fn register_ids(value: &Value, ids: &mut BTreeMap<String, String>) {
     }
 }
 
+fn register_private_values(original: &Value, scrubbed: &Value, identities: &mut BTreeSet<String>) {
+    match (original, scrubbed) {
+        (Value::String(value), Value::String(redacted))
+            if redacted == "REDACTED" && !value.is_empty() =>
+        {
+            identities.insert(value.clone());
+        }
+        (Value::Object(original), Value::Object(scrubbed)) => {
+            for (key, value) in original {
+                // Opaque versions stay public and must survive unchanged.
+                if key != "_version"
+                    && let Some(redacted) = scrubbed.get(key)
+                {
+                    register_private_values(value, redacted, identities);
+                }
+            }
+        }
+        (Value::Array(original), Value::Array(scrubbed)) => {
+            for (value, redacted) in original.iter().zip(scrubbed) {
+                register_private_values(value, redacted, identities);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn token_character(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
+}
+
+fn scrub_identities(value: &mut Value, identities: &BTreeSet<String>) {
+    match value {
+        Value::String(text) => {
+            let mut redacted = String::new();
+            let mut copied = 0;
+            for (start, _) in text.char_indices() {
+                if start < copied
+                    || text[..start]
+                        .chars()
+                        .next_back()
+                        .is_some_and(token_character)
+                {
+                    continue;
+                }
+                let identity = identities
+                    .iter()
+                    .filter(|identity| {
+                        text[start..].starts_with(identity.as_str())
+                            && !text[start + identity.len()..]
+                                .chars()
+                                .next()
+                                .is_some_and(token_character)
+                    })
+                    .max_by_key(|identity| identity.len());
+                if let Some(identity) = identity {
+                    redacted.push_str(&text[copied..start]);
+                    redacted.push_str("REDACTED");
+                    copied = start + identity.len();
+                }
+            }
+            redacted.push_str(&text[copied..]);
+            *text = redacted;
+        }
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|value| scrub_identities(value, identities)),
+        Value::Array(array) => array
+            .iter_mut()
+            .for_each(|value| scrub_identities(value, identities)),
+        _ => {}
+    }
+}
+
 fn scrub_cursors(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -83,6 +157,13 @@ impl Evidence {
         self.ids.insert(value, "REDACTED".to_string());
     }
 
+    pub(super) fn observe(&mut self, value: &Value) {
+        register_ids(value, &mut self.ids);
+        let mut scrubbed = value.clone();
+        crate::scrub::scrub(&mut scrubbed);
+        register_private_values(value, &scrubbed, &mut self.identities);
+    }
+
     pub(super) fn response(&mut self, name: &'static str, body: Value) {
         self.exchange(name, Value::Null, body);
     }
@@ -93,12 +174,13 @@ impl Evidence {
     }
 
     pub(super) fn exchange(&mut self, name: &'static str, mut request: Value, mut body: Value) {
-        register_ids(&request, &mut self.ids);
-        register_ids(&body, &mut self.ids);
+        self.observe(&request);
+        self.observe(&body);
         let mut versions = Vec::new();
         // Export strings remain byte-for-byte as received, including order and duplicates.
         for (root, value) in [("/request", &mut request), ("/response", &mut body)] {
             take_versions(value, root.to_string(), &mut versions);
+            scrub_identities(value, &self.identities);
             scrub_placeholder_values(value, &self.ids);
             scrub_alert_timestamps(value);
             scrub_cursors(value);

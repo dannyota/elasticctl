@@ -52,7 +52,7 @@ struct Session<'a> {
     timing: Timing,
     nonce: String,
     pending_creates: std::collections::BTreeSet<String>,
-    pending_imports: std::collections::BTreeSet<String>,
+    pending_imports: std::collections::BTreeMap<String, Option<u64>>,
     attempted_deletes: std::collections::BTreeSet<String>,
 }
 
@@ -61,6 +61,7 @@ impl<'a> Session<'a> {
         let nonce = crate::recorder::markers::integration_recording_nonce();
         let mut evidence = Evidence::new(crate::scrub::hosts::recording_hosts());
         evidence.private(nonce.clone());
+        evidence.private(ABSENT.to_string());
         Self {
             t,
             evidence,
@@ -74,9 +75,15 @@ impl<'a> Session<'a> {
             timing,
             nonce,
             pending_creates: std::collections::BTreeSet::new(),
-            pending_imports: std::collections::BTreeSet::new(),
+            pending_imports: std::collections::BTreeMap::new(),
             attempted_deletes: std::collections::BTreeSet::new(),
         }
+    }
+
+    async fn get(&mut self, path: &str) -> Result<serde_json::Value> {
+        let body = self.t.get(path).await?;
+        self.evidence.observe(&body);
+        Ok(body)
     }
 
     fn recording(&mut self) -> Result<Recording> {
@@ -175,7 +182,7 @@ where
         if session.exception_item {
             ids.push(ITEM.into());
         }
-        ids.extend(session.pending_imports.iter().cloned());
+        ids.extend(session.pending_imports.keys().cloned());
         ids.sort();
         ids.dedup();
         recording_error(format!(

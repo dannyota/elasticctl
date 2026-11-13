@@ -46,9 +46,11 @@ pub(super) async fn delete_owned(
         wait_deleted(session, path, id).await?;
         return Ok(None);
     }
+    let budget = session.timing.budget;
+    let pending = session.pending_creates.contains(id);
     let read = async {
         loop {
-            match session.t.get(path).await {
+            match session.get(path).await {
                 Err(error)
                     if error.http_status == Some(404) && session.pending_creates.contains(id) =>
                 {
@@ -58,12 +60,10 @@ pub(super) async fn delete_owned(
             }
         }
     };
-    let found = if session.pending_creates.contains(id) {
-        tokio::time::timeout(session.timing.budget, read)
-            .await
-            .map_err(|_| {
-                recording_error(format!("cleanup could not resolve pending create for {id}"))
-            })?
+    let found = if pending {
+        tokio::time::timeout(budget, read).await.map_err(|_| {
+            recording_error(format!("cleanup could not resolve pending create for {id}"))
+        })?
     } else {
         read.await
     };
@@ -80,17 +80,20 @@ pub(super) async fn delete_owned(
     // Record before sending so a lost answer or cancellation cannot cause a resend.
     session.attempted_deletes.insert(path.to_string());
     let answer = session.t.delete_once_response(path).await;
+    if let Ok((_, body)) = &answer {
+        session.evidence.observe(body);
+    }
     wait_deleted(session, path, id).await?;
     Ok(answer
         .ok()
         .and_then(|(status, body)| (status == 200).then_some(body)))
 }
 
-async fn wait_deleted(session: &Session<'_>, path: &str, id: &str) -> Result<()> {
+async fn wait_deleted(session: &mut Session<'_>, path: &str, id: &str) -> Result<()> {
+    let budget = session.timing.budget;
     let reads = async {
         loop {
             if session
-                .t
                 .get(path)
                 .await
                 .is_err_and(|error| error.http_status == Some(404))
@@ -100,13 +103,11 @@ async fn wait_deleted(session: &Session<'_>, path: &str, id: &str) -> Result<()>
             tokio::time::sleep(session.timing.interval).await;
         }
     };
-    tokio::time::timeout(session.timing.budget, reads)
-        .await
-        .map_err(|_| {
-            recording_error(format!(
-                "cleanup verification still found {id} or could not prove its absence"
-            ))
-        })
+    tokio::time::timeout(budget, reads).await.map_err(|_| {
+        recording_error(format!(
+            "cleanup verification still found {id} or could not prove its absence"
+        ))
+    })
 }
 
 pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
@@ -131,7 +132,7 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
         if id == super::LIST && session.exception_item {
             continue;
         }
-        if session.pending_imports.contains(id) {
+        if session.pending_imports.contains_key(id) {
             if let Err(error) = settle_import(session, id).await {
                 failures.push(failure(id, error));
                 continue;
@@ -151,10 +152,11 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
             Err(error) => failures.push(failure(id, error)),
         }
     }
-    if let Err(error) = inventory::require_clear(session.t, session.before_absent).await {
+    if let Err(error) = inventory::require_clear(session).await {
         failures.push(failure("marker audit", error));
     }
     if failures.is_empty()
+        && session.pending_imports.is_empty()
         && session.lists.is_empty()
         && !session.exception
         && !session.exception_item
@@ -171,37 +173,22 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
     Ok(())
 }
 
-async fn settle_import(session: &Session<'_>, id: &str) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + session.timing.budget;
-    let mut previous = None;
-    loop {
-        let body = tokio::time::timeout_at(
-            deadline,
-            session.t.get(&format!(
-                "/api/lists/items/_find?list_id={}&per_page=1&page=1",
-                urlencode(id)
-            )),
-        )
+async fn settle_import(session: &mut Session<'_>, id: &str) -> Result<()> {
+    let unresolved = || {
+        recording_error(format!(
+            "pending import for {id} is unresolved; remove it by exact id after the import settles"
+        ))
+    };
+    let expected = session
+        .pending_imports
+        .get(id)
+        .copied()
+        .flatten()
+        .ok_or_else(unresolved)?;
+    super::steps::settle(session, id, expected)
         .await
-        .map_err(|_| recording_error(format!("pending import for {id} did not settle")))??;
-        let total = inventory::total(&body)?;
-        let stable = previous == Some(total);
-        previous = Some(total);
-        // No import completion token exists. Observe the whole window, since old totals can be stable.
-        tokio::time::sleep_until(
-            deadline.min(tokio::time::Instant::now() + session.timing.interval),
-        )
-        .await;
-        if tokio::time::Instant::now() >= deadline {
-            return if stable {
-                Ok(())
-            } else {
-                Err(recording_error(format!(
-                    "pending import for {id} did not settle"
-                )))
-            };
-        }
-    }
+        .map(|_| ())
+        .map_err(|_| unresolved())
 }
 
 pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
@@ -209,7 +196,7 @@ pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
     {
         return Ok(());
     }
-    let body = session.t.get("/api/lists/_find?per_page=1").await?;
+    let body = session.get("/api/lists/_find?per_page=1").await?;
     if inventory::total(&body)? != 0 {
         return Ok(());
     }
@@ -223,7 +210,7 @@ pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
         )));
     }
     session.evidence.response("index_delete", body);
-    match session.t.get("/api/lists/index").await {
+    match session.get("/api/lists/index").await {
         Err(error) if error.http_status == Some(404) => {
             session.evidence.refusal("index_restored", error);
             Ok(())

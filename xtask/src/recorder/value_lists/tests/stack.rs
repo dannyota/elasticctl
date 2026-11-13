@@ -16,6 +16,7 @@ pub(super) struct Stack {
     pub(super) imported_pending: bool,
     pub(super) import_reads: u32,
     pub(super) pending_list: Option<String>,
+    pub(super) created_by: Option<&'static str>,
 }
 
 pub(super) fn response(status: u16, body: serde_json::Value) -> ResponseTemplate {
@@ -90,10 +91,17 @@ impl Stack {
                     };
                 response(200, json!({"total": rows.len(), "data": rows}))
             }
+            ("GET", "/api/exception_lists/items/_find") => {
+                let rows: Vec<_> = self.item.iter().cloned().collect();
+                response(200, json!({"total": rows.len(), "data": rows}))
+            }
             ("POST", "/api/lists") => {
                 let key = body["id"].as_str().unwrap().to_string();
                 let mut value = body;
                 value["_version"] = json!("v1");
+                if let Some(user) = self.created_by {
+                    value["created_by"] = json!(user);
+                }
                 if self.fail == Some("late_create") {
                     self.late_list = Some(value);
                     return response(503, json!({}));
@@ -120,7 +128,7 @@ impl Stack {
                     return response(
                         409,
                         json!({"status_code": 409,
-                        "message": "stale version", "created_by": "private-user"}),
+                        "message": "stale version", "created_by": self.created_by.unwrap_or("private-user")}),
                     );
                 }
                 value["name"] = body["name"].clone();
@@ -184,7 +192,7 @@ impl Stack {
                     return response(
                         413,
                         json!({"status_code": 413,
-                        "message": "file too large", "created_by": "private-user"}),
+                        "message": "file too large", "created_by": self.created_by.unwrap_or("private-user")}),
                     );
                 }
                 if String::from_utf8_lossy(&request.body).contains(".json\"")
@@ -193,19 +201,14 @@ impl Stack {
                     return response(
                         415,
                         json!({"status_code": 415,
-                        "message": "unsupported extension", "created_by": "private-user"}),
+                        "message": "unsupported extension", "created_by": self.created_by.unwrap_or("private-user")}),
                     );
-                }
-                if list == ABSENT && self.fail == Some("absent_import") {
-                    let mut parent = self.lists[RANGES].clone();
-                    parent["id"] = json!(ABSENT);
-                    self.lists.insert(ABSENT.into(), parent);
                 }
                 if !self.lists.contains_key(&list) {
                     return response(
                         409,
                         json!({"status_code": 409,
-                        "message": "list does not exist", "created_by": "private-user"}),
+                        "message": "list does not exist", "created_by": self.created_by.unwrap_or("private-user")}),
                     );
                 }
                 self.imported_pending = true;

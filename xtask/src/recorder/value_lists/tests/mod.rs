@@ -94,6 +94,12 @@ async fn marker_refusal_names_all_ids_and_sends_zero_writes() {
             json!({"total": exceptions.as_array().unwrap().len(), "data": exceptions}),
         )
         .await;
+        page(
+            &server,
+            "/api/exception_lists/items/_find",
+            json!({"total": 0, "data": []}),
+        )
+        .await;
         page(&server, "/.items-default/_search", json!({"timed_out": false,
             "_shards": {"failed": 0}, "hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}})).await;
         let t = transport(&server);
@@ -129,7 +135,9 @@ async fn settle_waits_for_expected_total_and_times_out_even_on_slow_reads() {
             .await;
         let t = transport(&server);
         let start = tokio::time::Instant::now();
-        let error = steps::settle(&t, LIST, 2, fast()).await.unwrap_err();
+        let error = steps::settle(&mut Session::new(&t, fast()), LIST, 2)
+            .await
+            .unwrap_err();
         assert!(error.message.contains("settle timed out"));
         assert!(start.elapsed() < Duration::from_millis(500));
         assert!(
@@ -158,17 +166,15 @@ async fn settle_does_not_accept_a_stable_but_incomplete_total() {
         })
         .mount(&server)
         .await;
-    steps::settle(
-        &transport(&server),
-        LIST,
-        2,
+    let t = transport(&server);
+    let mut session = Session::new(
+        &t,
         Timing {
             budget: Duration::from_secs(1),
             ..fast()
         },
-    )
-    .await
-    .unwrap();
+    );
+    steps::settle(&mut session, LIST, 2).await.unwrap();
     assert!(*reads.lock().unwrap() >= 5);
 }
 
@@ -663,13 +669,13 @@ async fn preflight_checks_later_cursor_pages_and_both_exception_namespaces() {
             } else if query.get("page").map(String::as_str) == Some("2") && query.get("cursor").map(String::as_str) == Some("cursor1") {
                 response(200, json!({"total": 2, "data": [{"id": "elasticctl-live-vl-later"}]}))
             } else { response(400, json!({})) }
-        } else if query.get("namespace_type").map(String::as_str) == Some("agnostic") {
+        } else if r.url.path() == "/api/exception_lists/_find" && query.get("namespace_type").map(String::as_str) == Some("agnostic") {
             response(200, json!({"total": 1, "data": [{"id": "elasticctl-live-vl-agnostic-id", "list_id": "elasticctl-live-vl-agnostic-list"}]}))
         } else { response(200, json!({"total": 0, "data": []})) }
     }).mount(&server).await;
-    let error = inventory::require_clear(&transport(&server), false)
-        .await
-        .unwrap_err();
+    let t = transport(&server);
+    let mut session = Session::new(&t, fast());
+    let error = inventory::require_clear(&mut session).await.unwrap_err();
     for id in [
         "elasticctl-live-vl-later",
         "elasticctl-live-vl-agnostic-id",
@@ -677,7 +683,7 @@ async fn preflight_checks_later_cursor_pages_and_both_exception_namespaces() {
     ] {
         assert!(error.message.contains(id));
     }
-    assert_eq!(seen.lock().unwrap().len(), 5);
+    assert_eq!(seen.lock().unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -743,3 +749,7 @@ async fn cleanup_clears_a_definitely_refused_create_and_removes_its_parents() {
 }
 
 mod regressions;
+
+mod references;
+
+mod privacy;

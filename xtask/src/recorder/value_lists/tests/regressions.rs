@@ -61,15 +61,20 @@ async fn unexpected_refusal_status_fails_without_resending() {
                 .await
                 .err()
                 .unwrap();
-            assert!(
-                !error.message.contains("cleanup failed"),
+            let unresolved = !patch && status == 503;
+            assert_eq!(
+                error.message.contains("cleanup failed"),
+                unresolved,
                 "{}",
                 error.message
             );
             if status == 400 {
                 assert!(error.message.contains("expected HTTP"), "{}", error.message);
-            } else {
+            } else if !unresolved {
                 assert_eq!(error.http_status, Some(503));
+            } else {
+                assert!(error.message.contains(RANGES));
+                assert!(error.message.contains("after the import settles"));
             }
             let requests = server.received_requests().await.unwrap();
             if patch {
@@ -91,7 +96,7 @@ async fn unexpected_refusal_status_fails_without_resending() {
                             .query_pairs()
                             .any(|(k, v)| k == "list_id" && v == RANGES)
                 });
-                assert_eq!(settled, status == 503);
+                assert!(!settled, "unknown import totals cannot be settled by reads");
             }
             let name = if patch {
                 "container_patch_stale"
@@ -100,8 +105,8 @@ async fn unexpected_refusal_status_fails_without_resending() {
             };
             assert!(session.evidence.fixtures.iter().all(|f| f.name != name));
             let state = state.lock().unwrap();
-            assert!(state.lists.is_empty());
-            assert!(!state.bootstrapped);
+            assert_eq!(state.lists.is_empty(), !unresolved);
+            assert_eq!(state.bootstrapped, unresolved);
         }
     }
 }
@@ -198,12 +203,106 @@ async fn uncertain_cleanup_delete_can_settle_by_reads() {
     assert_eq!(*reads.lock().unwrap(), 4);
 }
 
-async fn refusal_import(failure: &'static str) {
-    let (server, state) = stack(Stack {
-        fail: Some(failure),
-        ..Default::default()
-    })
-    .await;
+#[tokio::test]
+async fn cleanup_rejects_stable_total_below_import_target() {
+    let (server, state) = stack(Stack::default()).await;
+    let importing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent = importing.clone();
+    Mock::given(method("POST"))
+        .and(path("/api/lists/items/_import"))
+        .respond_with(move |_: &Request| {
+            sent.store(true, std::sync::atomic::Ordering::SeqCst);
+            response(200, json!({}))
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/lists/items/_find"))
+        .and(move |_: &Request| importing.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(response(200, json!({"total": 4, "data": []})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let t = transport(&server);
+    let mut session = Session::new(&t, fast());
+    let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        error.message.contains("cleanup failed"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains(LIST), "{}", error.message);
+    assert!(state.lock().unwrap().lists.contains_key(LIST));
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.iter().all(|r| r.method != "DELETE"));
+    assert!(!requests.iter().any(restore_read));
+}
+
+fn restore_read(request: &Request) -> bool {
+    request.url.path() == "/api/lists/_find"
+        && request
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "per_page" && value == "1")
+}
+
+async fn unresolved_refusal_import(failure: &'static str, unowned: bool) {
+    let (server, state) = stack(Stack::default()).await;
+    let target = if failure == "absent_import" {
+        ABSENT
+    } else {
+        RANGES
+    };
+    let changed = state.clone();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let completed = Arc::new(tokio::sync::Notify::new());
+    let release_import = release.clone();
+    let import_completed = completed.clone();
+    Mock::given(method("POST"))
+        .and(path("/api/lists/items/_import"))
+        .and(move |r: &Request| {
+            if failure == "absent_import" {
+                r.url
+                    .query_pairs()
+                    .any(|(k, v)| k == "list_id" && v == ABSENT)
+            } else {
+                String::from_utf8_lossy(&r.body).contains(".json\"")
+            }
+        })
+        .respond_with(move |_: &Request| {
+            // These bodies are minimal shapes driving control flow.
+            if unowned {
+                changed
+                    .lock()
+                    .unwrap()
+                    .lists
+                    .insert(target.into(), json!({"id": target}));
+            }
+            if target == ABSENT {
+                let changed = changed.clone();
+                let release = release_import.clone();
+                let completed = import_completed.clone();
+                tokio::spawn(async move {
+                    release.notified().await;
+                    changed
+                        .lock()
+                        .unwrap()
+                        .values
+                        .entry(target.into())
+                        .or_default()
+                        .push(json!({"id": "late-item", "list_id": target}));
+                    completed.notify_one();
+                });
+            }
+            response(200, json!({}))
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
     let t = transport(&server);
     let mut session = Session::new(
         &t,
@@ -216,49 +315,61 @@ async fn refusal_import(failure: &'static str) {
         .await
         .err()
         .unwrap();
+    // Release the queued items only after cleanup and its final audit have returned.
+    if target == ABSENT {
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), completed.notified())
+            .await
+            .unwrap();
+    }
     assert!(
         error.message.contains("unexpectedly succeeded"),
         "{}",
         error.message
     );
-    {
-        let state = state.lock().unwrap();
-        assert!(
-            !state.imported_pending,
-            "import must settle before deleting its parent"
-        );
-        assert!(
-            state.values.values().all(Vec::is_empty),
-            "orphan items remain"
-        );
-        assert!(state.lists.is_empty());
-    }
-    let id = if failure == "absent_import" {
-        ABSENT
-    } else {
-        RANGES
-    };
-    let requests = server.received_requests().await.unwrap();
-    let import = requests
-        .iter()
-        .rposition(|r| r.url.path().ends_with("/_import"))
-        .unwrap();
     assert!(
-        requests[import + 1..]
-            .iter()
-            .filter(|r| r.method == "GET")
-            .any(|r| r.url.query_pairs().any(|(k, v)| k == "list_id" && v == id))
+        error.message.contains("cleanup failed"),
+        "{}",
+        error.message
     );
+    assert!(error.message.contains(target), "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("remove it by exact id after the import settles"),
+        "{}",
+        error.message
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.iter().all(|r| !(r.method == "DELETE"
+        && (r.url.path() == "/api/lists/index"
+            || r.url.query_pairs().any(|(k, v)| k == "id" && v == target)))));
+    assert!(!requests.iter().any(restore_read));
+    let state = state.lock().unwrap();
+    assert!(state.bootstrapped, "unresolved import must block restore");
+    if unowned {
+        assert_eq!(state.lists[target], json!({"id": target}));
+    } else if target == ABSENT {
+        assert!(!state.lists.contains_key(ABSENT));
+    }
+    if target == ABSENT {
+        assert_eq!(state.values[target][0]["id"], "late-item");
+    }
 }
 
 #[tokio::test]
-async fn wrong_extension_import_settles_before_parent_delete() {
-    refusal_import("wrong_extension").await;
+async fn wrong_extension_import_stays_unresolved() {
+    unresolved_refusal_import("wrong_extension", false).await;
 }
 
 #[tokio::test]
-async fn absent_import_is_registered_and_settles_before_parent_delete() {
-    refusal_import("absent_import").await;
+async fn absent_import_without_parent_stays_unresolved() {
+    unresolved_refusal_import("absent_import", false).await;
+}
+
+#[tokio::test]
+async fn absent_import_with_unowned_parent_stays_unresolved() {
+    unresolved_refusal_import("absent_import", true).await;
 }
 
 #[tokio::test]
@@ -355,6 +466,22 @@ async fn interrupt_case(during_cleanup: bool, twice: bool) {
             "{}",
             error.message
         );
+    } else if !during_cleanup {
+        assert!(
+            error.message.contains("cleanup failed"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains(LIST), "{}", error.message);
+        assert!(state.lock().unwrap().lists.contains_key(LIST));
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method != "DELETE")
+        );
     } else {
         let requests = server.received_requests().await.unwrap();
         let last_delete = requests
@@ -383,7 +510,7 @@ async fn interrupt_case(during_cleanup: bool, twice: bool) {
 }
 
 #[tokio::test]
-async fn interrupt_during_recording_still_finishes_cleanup_and_audit() {
+async fn interrupted_item_write_blocks_delete_and_restore() {
     interrupt_case(false, false).await;
 }
 

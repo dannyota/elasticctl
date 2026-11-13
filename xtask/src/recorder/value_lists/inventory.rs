@@ -1,8 +1,8 @@
 //! Marker inventory reads are private and fail closed on incomplete pages.
 
-use super::PREFIX;
+use super::{PREFIX, Session};
 use crate::diagnostics::recording_error;
-use elasticctl_core::{Result, Transport, urlencode};
+use elasticctl_core::{Result, urlencode};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -18,7 +18,8 @@ pub(super) fn data(body: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| recording_error("inventory data is missing or invalid"))
 }
 
-pub(super) async fn require_clear(t: &Transport, absent: bool) -> Result<()> {
+pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
+    let absent = session.before_absent;
     let mut markers = BTreeSet::new();
     let mut cursor: Option<String> = None;
     let mut seen = 0;
@@ -27,7 +28,7 @@ pub(super) async fn require_clear(t: &Transport, absent: bool) -> Result<()> {
         if let Some(cursor) = &cursor {
             path.push_str(&format!("&cursor={}", urlencode(cursor)));
         }
-        let body = match t.get(&path).await {
+        let body = match session.get(&path).await {
             Ok(body) => body,
             Err(error) if absent && error.http_status == Some(404) && page == 1 => break,
             Err(error) => return Err(error),
@@ -54,19 +55,29 @@ pub(super) async fn require_clear(t: &Transport, absent: bool) -> Result<()> {
     }
     for namespace in ["single", "agnostic"] {
         let mut seen = 0;
+        let mut expected = None;
         for page in 1..=100 {
-            let body = t
+            let body = session
                 .get(&format!(
                     "/api/exception_lists/_find?namespace_type={namespace}&per_page=100&page={page}"
                 ))
                 .await?;
+            let count = total(&body)?;
+            if expected
+                .replace(count)
+                .is_some_and(|previous| previous != count)
+            {
+                return Err(recording_error("exception marker scan totals disagree"));
+            }
             let rows = data(&body)?;
             for row in rows {
                 marker_id(row, "id", &mut markers)?;
                 marker_id(row, "list_id", &mut markers)?;
+                let list = row["list_id"].as_str().unwrap();
+                exception_references(session, list, namespace).await?;
             }
             seen += rows.len() as u64;
-            if seen == total(&body)? {
+            if seen == count {
                 break;
             }
             if rows.is_empty() || seen > total(&body)? || page == 100 {
@@ -74,7 +85,7 @@ pub(super) async fn require_clear(t: &Transport, absent: bool) -> Result<()> {
             }
         }
     }
-    marker_items(t, absent, &mut markers).await?;
+    marker_items(session, absent, &mut markers).await?;
     if !markers.is_empty() {
         return Err(recording_error(format!(
             "refusing to record: marker objects already exist: {}. Manual remediation: inspect and remove these exact ids before recording",
@@ -84,8 +95,82 @@ pub(super) async fn require_clear(t: &Transport, absent: bool) -> Result<()> {
     Ok(())
 }
 
-async fn marker_items(t: &Transport, absent: bool, markers: &mut BTreeSet<String>) -> Result<()> {
-    if !t.has_es_url() {
+async fn exception_references(
+    session: &mut Session<'_>,
+    list: &str,
+    namespace: &str,
+) -> Result<()> {
+    let mut seen = 0;
+    let mut expected = None;
+    for page in 1..=100 {
+        let body = session.get(&format!(
+            "/api/exception_lists/items/_find?list_id={}&namespace_type={namespace}&per_page=100&page={page}",
+            urlencode(list)
+        )).await?;
+        let count = total(&body)?;
+        if expected
+            .replace(count)
+            .is_some_and(|previous| previous != count)
+        {
+            return Err(recording_error(format!(
+                "exception item scan totals disagree for {list}"
+            )));
+        }
+        let rows = data(&body)?;
+        for row in rows {
+            let item = row["item_id"].as_str().ok_or_else(|| {
+                recording_error(format!(
+                    "exception item scan has an invalid item_id for {list}"
+                ))
+            })?;
+            scan_entries(&row["entries"], list, item)?;
+        }
+        seen += rows.len() as u64;
+        if seen == count {
+            return Ok(());
+        }
+        if rows.is_empty() || seen > count || page == 100 {
+            return Err(recording_error(format!(
+                "exception item scan is incomplete for {list}"
+            )));
+        }
+    }
+    unreachable!()
+}
+
+fn scan_entries(entries: &Value, container: &str, item: &str) -> Result<()> {
+    let invalid = || {
+        recording_error(format!(
+            "cannot decode exception entries in container {container}, item {item}"
+        ))
+    };
+    for entry in entries.as_array().ok_or_else(invalid)? {
+        match entry["type"].as_str() {
+            Some("list") => {
+                let id = entry["list"]["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(invalid)?;
+                if id.starts_with(PREFIX) {
+                    return Err(recording_error(format!(
+                        "refusing to record: container {container}, item {item} references list {id}. Manual remediation: remove this reference before recording"
+                    )));
+                }
+            }
+            Some("nested") => scan_entries(&entry["entries"], container, item)?,
+            Some("match" | "match_any" | "exists" | "wildcard") => {}
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(())
+}
+
+async fn marker_items(
+    session: &mut Session<'_>,
+    absent: bool,
+    markers: &mut BTreeSet<String>,
+) -> Result<()> {
+    if !session.t.has_es_url() {
         return Err(recording_error(
             "marker item audit requires an explicit Elasticsearch URL",
         ));
@@ -93,14 +178,15 @@ async fn marker_items(t: &Transport, absent: bool, markers: &mut BTreeSet<String
     // Read the items stream directly. A late import can leave items after its container is gone.
     let path = format!(
         "/.items-{}/_search?size=100&track_total_hits=true&q={}",
-        urlencode(t.space()),
+        urlencode(session.t.space()),
         urlencode(&format!("list_id:{PREFIX}*"))
     );
-    let body = match t.get_absolute_es(&path).await {
+    let body = match session.t.get_absolute_es(&path).await {
         Ok(body) => body,
         Err(error) if absent && error.http_status == Some(404) => return Ok(()),
         Err(error) => return Err(error),
     };
+    session.evidence.observe(&body);
     let hits = body["hits"]["hits"]
         .as_array()
         .ok_or_else(|| recording_error("marker item audit has no hits"))?;

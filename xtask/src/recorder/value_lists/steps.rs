@@ -1,14 +1,14 @@
 //! Requests are sent once for writes and retained only after cleanup succeeds.
 
-use super::{ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, Timing, cleanup, inventory};
+use super::{ABSENT, EXCEPTION, ITEM, LIST, MARKER, RANGES, Session, cleanup, inventory};
 use crate::diagnostics::recording_error;
 use crate::scrub::scrub_status;
-use elasticctl_core::{Result, Transport, urlencode};
+use elasticctl_core::{Result, urlencode};
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep, timeout};
 
 pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) -> Result<()> {
-    let mut status = session.t.get("/api/status").await?;
+    let mut status = session.get("/api/status").await?;
     session.evidence.version = status["version"]["number"]
         .as_str()
         .ok_or_else(|| recording_error("status version is missing"))?
@@ -21,7 +21,7 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
     });
     scrub_status(&mut status);
     session.evidence.response("status", status);
-    match session.t.get("/api/lists/index").await {
+    match session.get("/api/lists/index").await {
         Ok(body) => session.evidence.response("index_before", body),
         Err(error) if error.http_status == Some(404) => {
             session.before_absent = true;
@@ -29,7 +29,7 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
         }
         Err(error) => return Err(error),
     }
-    inventory::require_clear(session.t, session.before_absent).await?;
+    inventory::require_clear(session).await?;
     session.baseline_checked = true;
     initialize(session).await?;
     container(session).await?;
@@ -75,7 +75,7 @@ async fn initialize(session: &mut Session<'_>) -> Result<()> {
         }
         Err(error) => return Err(error),
     }
-    let after = session.t.get("/api/lists/index").await?;
+    let after = session.get("/api/lists/index").await?;
     if after["list_index"] != true || after["list_item_index"] != true {
         return Err(recording_error("list indices are not ready after init"));
     }
@@ -105,7 +105,7 @@ async fn create_list(
     }
     let body = result?;
     session.evidence.exchange(name, request, body);
-    let current = session.t.get(&format!("/api/lists?id={id}")).await?;
+    let current = session.get(&format!("/api/lists?id={id}")).await?;
     if !cleanup::owns(session, &current, id, false, false) {
         return Err(recording_error(
             "created list does not prove session ownership",
@@ -126,7 +126,7 @@ async fn container(session: &mut Session<'_>) -> Result<()> {
     session
         .evidence
         .exchange("container_patch", request.clone(), body);
-    let updated = session.t.get(&format!("/api/lists?id={LIST}")).await?;
+    let updated = session.get(&format!("/api/lists?id={LIST}")).await?;
     if updated["_version"] == current["_version"] {
         return Err(recording_error("PATCH did not change the version"));
     }
@@ -151,7 +151,7 @@ async fn container(session: &mut Session<'_>) -> Result<()> {
     session
         .evidence
         .exchange("container_put_type_ignored", request, body);
-    session.t.get(&format!("/api/lists?id={LIST}")).await?;
+    session.get(&format!("/api/lists?id={LIST}")).await?;
     Ok(())
 }
 
@@ -159,12 +159,15 @@ async fn add_item(session: &mut Session<'_>, list: &str, index: usize, value: &s
     let id = format!("{list}-item-{index}");
     session.items.push(id.clone());
     let request = json!({"id": id, "list_id": list, "value": value});
-    session.pending_imports.insert(list.to_string());
     session
+        .pending_imports
+        .insert(list.to_string(), Some(index as u64 + 1));
+    let body = session
         .t
         .post_once("/api/lists/items", Some(&request))
         .await?;
-    settle(session.t, list, index as u64 + 1, session.timing).await?;
+    session.evidence.observe(&body);
+    settle(session, list, index as u64 + 1).await?;
     session.pending_imports.remove(list);
     Ok(())
 }
@@ -177,7 +180,6 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         add_item(session, LIST, index, value).await?;
     }
     let first = session
-        .t
         .get(&format!(
             "/api/lists/items/_find?list_id={LIST}&per_page=2&page=1"
         ))
@@ -198,7 +200,6 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         first,
     );
     let second = session
-        .t
         .get(&format!(
             "/api/lists/items/_find?list_id={LIST}&per_page=2&page=2&cursor={}",
             urlencode(&cursor)
@@ -224,7 +225,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.evidence.response("items_export", json!(export));
-    session.pending_imports.insert(LIST.to_string());
+    session.pending_imports.insert(LIST.to_string(), Some(6));
     let imported = session
         .t
         .post_multipart_once_named(
@@ -235,7 +236,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         )
         .await?;
     session.evidence.response("items_import", imported);
-    let settled = settle(session.t, LIST, 6, session.timing).await?;
+    let settled = settle(session, LIST, 6).await?;
     session.evidence.response("items_import_settled", settled);
     session.pending_imports.remove(LIST);
     let delete_path = format!(
@@ -243,7 +244,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         urlencode("10.0.0.5-10.0.0.5")
     );
     session.attempted_deletes.insert(delete_path.clone());
-    session.pending_imports.insert(LIST.to_string());
+    session.pending_imports.insert(LIST.to_string(), Some(4));
     let (status, body) = session.t.delete_once_response(&delete_path).await?;
     require_status(Some(status), 200)?;
     if body.as_array().is_none_or(|items| items.len() != 2) {
@@ -252,7 +253,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.evidence.response("items_delete_value", body);
-    settle(session.t, LIST, 4, session.timing).await?;
+    settle(session, LIST, 4).await?;
     session.pending_imports.remove(LIST);
     Ok(())
 }
@@ -278,7 +279,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     }
     let body = result?;
     session.evidence.exchange("exception_create", request, body);
-    let current = session.t.get(&cleanup::exception_path(false)).await?;
+    let current = session.get(&cleanup::exception_path(false)).await?;
     if !cleanup::owns(session, &current, EXCEPTION, true, false) {
         return Err(recording_error(
             "exception container does not prove session ownership",
@@ -308,7 +309,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     session
         .evidence
         .exchange("exception_item_create", request, body);
-    let current = session.t.get(&cleanup::exception_path(true)).await?;
+    let current = session.get(&cleanup::exception_path(true)).await?;
     if !cleanup::owns(session, &current, ITEM, true, true) {
         return Err(recording_error(
             "exception item does not prove session ownership",
@@ -379,7 +380,7 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
         if !session.lists.contains(&list) {
             session.lists.push(list);
         }
-        session.pending_imports.insert(list.to_string());
+        session.pending_imports.insert(list.to_string(), None);
         let (status, body) = session
             .t
             .post_multipart_once_named_response(
@@ -412,17 +413,13 @@ fn require_status(actual: Option<u16>, expected: u16) -> Result<()> {
 }
 
 /// Require the known count on two consecutive reads. An unchanged old total is not settled.
-pub(super) async fn settle(
-    t: &Transport,
-    list: &str,
-    expected: u64,
-    timing: Timing,
-) -> Result<Value> {
+pub(super) async fn settle(session: &mut Session<'_>, list: &str, expected: u64) -> Result<Value> {
+    let timing = session.timing;
     let work = async {
         let deadline = Instant::now() + timing.budget;
         let mut matched = false;
         loop {
-            let body = t
+            let body = session
                 .get(&format!(
                     "/api/lists/items/_find?list_id={}&per_page=1&page=1",
                     urlencode(list)
