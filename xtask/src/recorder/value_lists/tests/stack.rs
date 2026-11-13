@@ -9,6 +9,8 @@ pub(super) struct Stack {
     pub(super) bootstrapped: bool,
     pub(super) fail: Option<&'static str>,
     pub(super) cleanup_refuses: bool,
+    pub(super) deleted_item_reads: usize,
+    pub(super) deleted_items: std::collections::BTreeMap<String, Vec<serde_json::Value>>,
     pub(super) flow_unavailable: bool,
     pub(super) late_list: Option<serde_json::Value>,
     pub(super) imported_pending: bool,
@@ -35,6 +37,7 @@ impl Stack {
                 let rows: Vec<_> = self
                     .values
                     .iter()
+                    .chain(self.deleted_items.iter())
                     .filter(|(list, _)| list.starts_with(PREFIX))
                     .flat_map(|(list, values)| {
                         values.iter().map(move |v| {
@@ -44,6 +47,12 @@ impl Stack {
                         })
                     })
                     .collect();
+                if self.deleted_item_reads > 0 {
+                    self.deleted_item_reads -= 1;
+                    if self.deleted_item_reads == 0 {
+                        self.deleted_items.clear();
+                    }
+                }
                 response(
                     200,
                     json!({"timed_out": false, "_shards": {"failed": 0},
@@ -123,6 +132,9 @@ impl Stack {
             ("PATCH", "/api/lists") => {
                 let value = self.lists.get_mut(body["id"].as_str().unwrap()).unwrap();
                 if body["_version"] != value["_version"] {
+                    if self.fail == Some("bad_status") {
+                        return response(400, json!({"message": "private-body"}));
+                    }
                     return response(
                         409,
                         json!({"status_code": 409,
@@ -163,12 +175,18 @@ impl Stack {
                 if page > 1 && query.get("cursor").map(String::as_str) != Some("real-cursor") {
                     return response(400, json!({}));
                 }
-                let data: Vec<_> = values
+                let mut data: Vec<_> = values
                     .iter()
                     .skip((page - 1) * per)
                     .take(per)
                     .cloned()
                     .collect();
+                if self.fail == Some("wrong_page") && page == 2 && !data.is_empty() {
+                    data[0]["value"] = json!("10.99.0.1/32");
+                }
+                if self.fail == Some("wrong_item_id") && page == 1 && !data.is_empty() {
+                    data[0]["id"] = json!("unexpected-id");
+                }
                 response(
                     200,
                     json!({"total": values.len(), "data": data, "cursor": "real-cursor"}),
@@ -218,15 +236,15 @@ impl Stack {
                 response(200, self.lists[&list].clone())
             }
             ("DELETE", "/api/lists/items") => {
-                let value = &query["value"];
-                let values = self.values.get_mut(&list).unwrap();
-                let removed: Vec<_> = values
-                    .iter()
-                    .filter(|v| v["value"].as_str() == Some(value))
-                    .cloned()
-                    .collect();
-                values.retain(|v| v["value"].as_str() != Some(value));
-                response(200, json!(removed))
+                for values in self.values.values_mut() {
+                    if let Some(index) = values.iter().position(|v| v["id"] == id) {
+                        return response(200, values.remove(index));
+                    }
+                }
+                response(
+                    404,
+                    json!({"message": format!("list item id: \"{id}\" not found"), "status_code": 404}),
+                )
             }
             ("POST", "/api/exception_lists") => {
                 let mut value = body;
@@ -264,7 +282,11 @@ impl Stack {
                 response(409, json!({"references": [self.item.clone().unwrap()]}))
             }
             ("DELETE", "/api/lists") if !self.cleanup_refuses => {
-                self.values.remove(&id);
+                if let Some(values) = self.values.remove(&id)
+                    && self.deleted_item_reads > 0
+                {
+                    self.deleted_items.insert(id.clone(), values);
+                }
                 self.lists
                     .remove(&id)
                     .map_or(response(404, json!({})), |v| response(200, v))

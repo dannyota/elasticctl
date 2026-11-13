@@ -149,7 +149,11 @@ async fn refusal_import_408_keeps_parent_for_late_completion() {
     let error = steps::record(&mut session, Some("ech".into()))
         .await
         .unwrap_err();
-    assert!(error.message.contains("Some(408)"));
+    assert!(
+        error
+            .message
+            .contains("import_wrong_extension: expected HTTP 415, received 408")
+    );
     assert_eq!(session.pending_imports.get(RANGES), Some(&None));
     let recorded = server.received_requests().await.unwrap().len();
     assert!(

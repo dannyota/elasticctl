@@ -17,8 +17,14 @@ pub(super) fn data(body: &Value) -> Result<&Vec<Value>> {
 }
 
 pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
+    scan_clear(session, &mut BTreeSet::new()).await
+}
+
+pub(super) async fn scan_clear(
+    session: &mut Session<'_>,
+    markers: &mut BTreeSet<String>,
+) -> Result<()> {
     let absent = session.before_absent;
-    let mut markers = BTreeSet::new();
     let mut cursor: Option<String> = None;
     let mut seen = 0;
     for page in 1..=1000 {
@@ -33,7 +39,7 @@ pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
         };
         let rows = data(&body)?;
         for row in rows {
-            marker_id(row, "id", &mut markers)?;
+            marker_id(row, "id", markers)?;
         }
         seen += rows.len() as u64;
         if seen == total(&body)? {
@@ -70,8 +76,8 @@ pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
             }
             let rows = data(&body)?;
             for row in rows {
-                marker_id(row, "id", &mut markers)?;
-                marker_id(row, "list_id", &mut markers)?;
+                marker_id(row, "id", markers)?;
+                marker_id(row, "list_id", markers)?;
                 let list = row["list_id"].as_str().unwrap();
                 exception_references(session, list, namespace).await?;
             }
@@ -84,11 +90,11 @@ pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
             }
         }
     }
-    marker_items(session, absent, &mut markers).await?;
+    marker_items(session, absent, markers).await?;
     if !markers.is_empty() {
         return Err(recording_error(format!(
             "refusing to record: marker objects already exist: {}. Manual remediation: inspect and remove these exact ids before recording",
-            markers.into_iter().collect::<Vec<_>>().join(", ")
+            markers.iter().cloned().collect::<Vec<_>>().join(", ")
         )));
     }
     Ok(())

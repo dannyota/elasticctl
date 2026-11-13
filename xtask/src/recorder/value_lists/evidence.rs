@@ -197,7 +197,7 @@ impl Evidence {
                 "items_find_first"
                     | "items_find_next"
                     | "items_import_settled"
-                    | "items_delete_value"
+                    | "items_delete_id"
                     | "item_create"
             );
             let export = root == "/response" && matches!(name, "items_export" | "export_spellings");

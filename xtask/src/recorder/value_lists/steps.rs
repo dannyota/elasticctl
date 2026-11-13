@@ -147,7 +147,7 @@ async fn container(session: &mut Session<'_>) -> Result<()> {
     if (200..300).contains(&status) {
         return Err(recording_error("stale PATCH unexpectedly succeeded"));
     }
-    require_status(Some(status), 409)?;
+    require_status("container_patch_stale", status, 409)?;
     session
         .evidence
         .http_response("container_patch_stale", status, body);
@@ -209,7 +209,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     session.evidence.exchange(
         "items_find_first",
         json!({"list_id": LIST, "per_page": 2, "page": 1}),
-        first,
+        first.clone(),
     );
     let second = session
         .get(&format!(
@@ -225,7 +225,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     session.evidence.exchange(
         "items_find_next",
         json!({"list_id": LIST, "per_page": 2, "page": 2, "cursor": cursor}),
-        second,
+        second.clone(),
     );
     let export = session
         .t
@@ -234,6 +234,39 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     if export.lines().filter(|v| *v == "10.0.0.5-10.0.0.5").count() != 2 {
         return Err(recording_error(
             "export did not retain both duplicate dash values",
+        ));
+    }
+    let items = inventory::data(&first)?
+        .iter()
+        .chain(inventory::data(&second)?);
+    let mut page_values = Vec::new();
+    let mut duplicate_ids = Vec::new();
+    for item in items {
+        let value = item["value"]
+            .as_str()
+            .ok_or_else(|| recording_error("items_export: page item has no value"))?;
+        page_values.push(value);
+        if value == "10.0.0.5-10.0.0.5" {
+            duplicate_ids.push(
+                item["id"]
+                    .as_str()
+                    .ok_or_else(|| recording_error("items_delete_id: duplicate has no id"))?,
+            );
+        }
+    }
+    let mut exported_values: Vec<_> = export.lines().filter(|line| !line.is_empty()).collect();
+    page_values.sort_unstable();
+    exported_values.sort_unstable();
+    if page_values != exported_values {
+        return Err(recording_error(
+            "items_export: item pages do not match export",
+        ));
+    }
+    duplicate_ids.sort_unstable();
+    let expected_ids = [format!("{LIST}-item-0"), format!("{LIST}-item-1")];
+    if duplicate_ids != expected_ids {
+        return Err(recording_error(
+            "items_delete_id: unexpected duplicate item ids",
         ));
     }
     session.evidence.response("items_export", json!(export));
@@ -252,29 +285,38 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     let settled = settle(session, LIST, 6).await?;
     session.evidence.response("items_import_settled", settled);
     session.pending_imports.remove(LIST);
-    let delete_path = format!(
-        "/api/lists/items?list_id={LIST}&value={}",
-        urlencode("10.0.0.5-10.0.0.5")
-    );
-    session.attempted_deletes.insert(delete_path.clone());
-    session.pending_imports.insert(LIST.to_string(), Some(4));
-    let result = session.t.delete_once_response(&delete_path).await;
-    let status = result
-        .as_ref()
-        .map(|(status, _)| *status)
-        .ok()
-        .or_else(|| result.as_ref().err().and_then(|e| e.http_status));
-    session.clear_refused_import(LIST, status);
-    let (status, body) = result?;
-    require_status(Some(status), 200)?;
-    if body.as_array().is_none_or(|items| items.len() != 2) {
-        return Err(recording_error(
-            "delete by value did not return both duplicate items",
-        ));
+    for (index, id) in expected_ids.iter().enumerate() {
+        let delete_path = format!("/api/lists/items?id={}", urlencode(id));
+        session.attempted_deletes.insert(delete_path.clone());
+        let expected = 5 - index as u64;
+        session
+            .pending_imports
+            .insert(LIST.to_string(), Some(expected));
+        let result = session.t.delete_once_response(&delete_path).await;
+        let status = result
+            .as_ref()
+            .map(|(status, _)| *status)
+            .ok()
+            .or_else(|| result.as_ref().err().and_then(|e| e.http_status));
+        session.clear_refused_import(LIST, status);
+        let (status, body) = result.map_err(|error| delete_error("items_delete_id", 200, error))?;
+        require_status("items_delete_id", status, 200)?;
+        if index == 0 {
+            session.evidence.response("items_delete_id", body);
+        }
+        settle(session, LIST, expected).await?;
+        session.pending_imports.remove(LIST);
     }
-    session.evidence.response("items_delete_value", body);
-    settle(session, LIST, 4).await?;
-    session.pending_imports.remove(LIST);
+    let path = format!("/api/lists/items?id={}", urlencode(&expected_ids[0]));
+    let (status, body) = session
+        .t
+        .delete_once_response(&path)
+        .await
+        .map_err(|error| delete_error("items_delete_id_absent", 404, error))?;
+    require_status("items_delete_id_absent", status, 404)?;
+    session
+        .evidence
+        .http_response("items_delete_id_absent", status, body);
     Ok(())
 }
 
@@ -339,7 +381,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     let delete_path = format!("/api/lists?id={LIST}");
     session.attempted_deletes.insert(delete_path.clone());
     let (status, body) = session.t.delete_once_response(&delete_path).await?;
-    require_status(Some(status), 409)?;
+    require_status("container_delete_referenced", status, 409)?;
     session.attempted_deletes.remove(&delete_path);
     if !body["references"].is_array() || body["references"].as_array().is_some_and(Vec::is_empty) {
         return Err(recording_error("referenced delete has no references body"));
@@ -415,18 +457,18 @@ async fn refusals(session: &mut Session<'_>) -> Result<()> {
         if (200..300).contains(&status) {
             return Err(recording_error("import refusal unexpectedly succeeded"));
         }
-        require_status(Some(status), expected)?;
+        require_status(name, status, expected)?;
         session.evidence.http_response(name, status, body);
     }
     Ok(())
 }
 
-fn require_status(actual: Option<u16>, expected: u16) -> Result<()> {
-    if actual == Some(expected) {
+fn require_status(step: &str, actual: u16, expected: u16) -> Result<()> {
+    if actual == expected {
         Ok(())
     } else {
         Err(recording_error(format!(
-            "expected HTTP {expected}, received {actual:?}"
+            "{step}: expected HTTP {expected}, received {actual}"
         )))
     }
 }
@@ -457,4 +499,17 @@ pub(super) async fn settle(session: &mut Session<'_>, list: &str, expected: u64)
     timeout(timing.budget, work)
         .await
         .map_err(|_| recording_error("item settle timed out"))?
+}
+
+fn delete_error(
+    step: &str,
+    expected: u16,
+    mut error: elasticctl_core::Error,
+) -> elasticctl_core::Error {
+    error.kind = elasticctl_core::ErrorKind::Error;
+    error.message = match error.http_status {
+        Some(status) => format!("{step}: expected HTTP {expected}, received {status}"),
+        None => format!("{step}: delete failed"),
+    };
+    error
 }

@@ -148,7 +148,7 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
             Err(error) => failures.push(failure(id, error)),
         }
     }
-    if let Err(error) = inventory::require_clear(session).await {
+    if let Err(error) = wait_clear(session).await {
         failures.push(failure("marker audit", error));
     }
     if failures.is_empty()
@@ -167,6 +167,43 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+async fn wait_clear(session: &mut Session<'_>) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + session.timing.budget;
+    let mut last = recording_error("marker audit timed out");
+    let mut survivors = std::collections::BTreeSet::new();
+    loop {
+        let mut observed = std::collections::BTreeSet::new();
+        let scan =
+            tokio::time::timeout_at(deadline, inventory::scan_clear(session, &mut observed)).await;
+        survivors.extend(observed);
+        match scan {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => last = error,
+            Err(_) => break,
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep_until(
+            (tokio::time::Instant::now() + session.timing.interval).min(deadline),
+        )
+        .await;
+    }
+    if !survivors.is_empty() {
+        let message = if last.kind == elasticctl_core::ErrorKind::Error {
+            last.message.clone()
+        } else {
+            format!("endpoint failed ({})", safe_recording_error_summary(&last))
+        };
+        last = recording_error(format!(
+            "{}; observed marker ids: {}",
+            message,
+            survivors.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Err(last)
 }
 
 async fn settle_import(session: &mut Session<'_>, id: &str) -> Result<()> {
