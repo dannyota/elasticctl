@@ -1,0 +1,17 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "exception_lists_find_agnostic",
+  "request": {
+    "namespace_type": "agnostic",
+    "per_page": 10000,
+    "page": 1,
+    "filter": "exception-list-agnostic.attributes.list_id:elasticctl-live-vl-*"
+  },
+  "response": {
+    "data": [],
+    "page": 1,
+    "per_page": 10000,
+    "total": 0
+  }
+}
