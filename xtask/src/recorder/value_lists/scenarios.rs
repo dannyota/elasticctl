@@ -96,6 +96,7 @@ pub(super) async fn containment(session: &mut Session<'_>) -> Result<()> {
     create_list(session, CONTAIN, "contain_create")
         .await
         .map_err(|e| step_error("contain_create", 200, e))?;
+    super::state_values::export(session, CONTAIN, "export_empty", &[]).await?;
     add_item(session, CONTAIN, 0, "10.0.0.5/32")
         .await
         .map_err(|e| step_error("contain_add_item_0", 200, e))?;
@@ -127,6 +128,13 @@ pub(super) async fn containment(session: &mut Session<'_>) -> Result<()> {
     }
     session.evidence.response("contain_items_find", body);
     contain_export(session, "contain_export", &["10.0.0.0/8", "10.0.0.5/32"]).await?;
+    super::state_values::page(
+        session,
+        CONTAIN,
+        "items_c_1000",
+        &["10.0.0.0/8", "10.0.0.5/32"],
+    )
+    .await?;
     let path = format!(
         "/api/lists/items?id={}",
         urlencode(&format!("{CONTAIN}-item-0"))

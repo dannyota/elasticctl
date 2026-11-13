@@ -70,6 +70,12 @@ async fn marker_refusal_names_all_ids_and_sends_zero_writes() {
         let server = MockServer::start().await;
         page(
             &server,
+            "/api/detection_engine/rules/_find",
+            json!({"total":0,"data":[]}),
+        )
+        .await;
+        page(
+            &server,
             "/api/status",
             json!({"version": {"number": "1", "build_flavor": "traditional"}}),
         )
@@ -182,7 +188,7 @@ async fn restore_requires_absent_before_non_lab_and_empty_final_inventory() {
         (true, "serverless", 0, 1),
         (true, "ech", 0, 1),
         (false, "ech", 0, 0),
-        (true, "traditional", 0, 0),
+        (true, "traditional", 0, 1),
         (true, "ech", 1, 0),
     ] {
         let server = MockServer::start().await;
@@ -353,6 +359,8 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "index_before",
             "initialize",
             "index_after",
+            "container_missing_v",
+            "container_missing_c",
             "container_create",
             "container_read",
             "container_patch",
@@ -361,6 +369,7 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "items_find_first",
             "items_find_next",
             "items_export",
+            "items_v_1000",
             "items_delete_id",
             "items_delete_id_absent",
             "items_export_after_delete",
@@ -375,11 +384,14 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "exception_lists_find_agnostic",
             "exception_items_find",
             "container_delete_referenced",
+            "state_items_repeated_10000",
             "container_delete",
             "contain_create",
+            "export_empty",
             "contain_export_single",
             "contain_items_find",
             "contain_export",
+            "items_c_1000",
             "contain_delete_id",
             "contain_export_after",
             "contain_import",
@@ -388,8 +400,45 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "import_wrong_extension",
             "import_absent_list",
             "export_spellings",
+            "state_container_v",
+            "export_s_two_spellings",
+            "state_container_p",
+            "container_p_ip",
+            "export_p_spellings",
+            "state_outside_get",
+            "state_rule_r",
+            "state_rule_q",
+            "state_rules_full",
+            "state_rules_selected",
+            "state_scan_single",
+            "state_scan_agnostic",
+            "state_items_coreferenced",
+            "state_items_included",
+            "state_items_excluded",
+            "export_c_union",
+            "items_c_union_1000",
+            "state_items_mixed",
+            "state_items_independent",
+            "state_items_empty",
+            "cleanup_rule_absent",
+            "cleanup_exception_item_absent",
+            "cleanup_exception_absent",
+            "state_rules_empty",
+            "dash_create",
+            "export_dash_200",
+            "export_dash_201",
+            "state_container_c",
+            "container_c_keyword",
+            "state_container_s",
+            "container_s_unsupported",
+            "state_container_t",
+            "cli_lists_all",
+            "cleanup_lists_nonempty",
+            "cleanup_items_empty",
+            "cleanup_lists_empty",
+            "cleanup_items_audit",
             "index_delete",
-            "index_restored"
+            "index_restored",
         ]
     );
     assert_eq!(
@@ -441,7 +490,7 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
         .iter()
         .filter(|r| r.url.path().ends_with("/_import"))
         .collect();
-    assert_eq!(imports.len(), 5);
+    assert_eq!(imports.len(), 6);
     for request in imports {
         assert!(
             request
@@ -476,18 +525,21 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             format!("{LIST}-item-0"),
             format!("{LIST}-item-1"),
             format!("{LIST}-item-0"),
-            format!("{CONTAIN}-item-0")
+            format!("{CONTAIN}-item-0"),
+            "server-import-3".into(),
+            format!("{CONTAIN}-item-union"),
+            format!("{CONTAIN}-item-keyword")
         ]
     );
     for request in requests.iter().filter(|r| r.method == "DELETE") {
         assert!(!request.url.as_str().contains("References"));
         assert!(
             request.url.path() == "/api/lists/index"
-                || request
-                    .url
-                    .query_pairs()
-                    .any(|(k, v)| matches!(k.as_ref(), "id" | "list_id" | "item_id")
-                        && v.starts_with(PREFIX))
+                || request.url.query_pairs().any(|(k, v)| matches!(
+                    k.as_ref(),
+                    "id" | "list_id" | "item_id" | "rule_id"
+                ) && (v.starts_with(PREFIX)
+                    || v == "server-import-3"))
         );
     }
     assert_eq!(requests.iter().filter(|r| r.method == "PATCH").count(), 2);
@@ -617,7 +669,7 @@ async fn cleanup_failure_is_reported_and_prevents_restore_and_fixture_output() {
 }
 
 #[tokio::test]
-async fn lab_flow_unavailable_uses_fallback_and_keeps_indices() {
+async fn lab_flow_unavailable_uses_fallback_and_restores_indices() {
     let (server, state) = stack(Stack {
         flow_unavailable: true,
         ..Default::default()
@@ -644,14 +696,14 @@ async fn lab_flow_unavailable_uses_fallback_and_keeps_indices() {
             .iter()
             .any(|f| f.name == "initialize_fallback")
     );
-    assert!(state.lock().unwrap().bootstrapped);
+    assert!(!state.lock().unwrap().bootstrapped);
     assert!(
         server
             .received_requests()
             .await
             .unwrap()
             .iter()
-            .all(|r| !(r.method == "DELETE" && r.url.path() == "/api/lists/index"))
+            .any(|r| r.method == "DELETE" && r.url.path() == "/api/lists/index")
     );
 }
 
@@ -747,7 +799,7 @@ async fn preflight_checks_later_cursor_pages_and_both_exception_namespaces() {
     ] {
         assert!(error.message.contains(id));
     }
-    assert_eq!(seen.lock().unwrap().len(), 6);
+    assert_eq!(seen.lock().unwrap().len(), 7);
 }
 
 #[tokio::test]
@@ -811,6 +863,9 @@ async fn cleanup_clears_a_definitely_refused_create_and_removes_its_parents() {
     assert!(state.exception.is_none());
     assert!(!state.bootstrapped);
 }
+
+mod phases;
+mod state;
 
 mod regressions;
 

@@ -38,8 +38,10 @@ fn register_ids(value: &Value, ids: &mut BTreeMap<String, String>) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
-                if matches!(key.as_str(), "id" | "item_id" | "list_id" | "value_list_id")
-                    && let Some(id) = child.as_str()
+                if matches!(
+                    key.as_str(),
+                    "id" | "item_id" | "list_id" | "value_list_id" | "rule_id"
+                ) && let Some(id) = child.as_str()
                 {
                     let next = ids.len() + 1;
                     ids.entry(id.to_string())
@@ -201,6 +203,10 @@ impl Evidence {
                     | "contain_delete_id"
                     | "contain_items_find"
                     | "item_create"
+                    | "items_v_1000"
+                    | "items_c_1000"
+                    | "items_c_union_1000"
+                    | "cleanup_items_empty"
             );
             let export = root == "/response"
                 && matches!(
@@ -212,6 +218,12 @@ impl Evidence {
                         | "contain_export_single"
                         | "contain_export_after"
                         | "contain_export_imported"
+                        | "export_empty"
+                        | "export_dash_200"
+                        | "export_dash_201"
+                        | "export_p_spellings"
+                        | "export_s_two_spellings"
+                        | "export_c_union"
                 );
             if !export {
                 scrub_identities(

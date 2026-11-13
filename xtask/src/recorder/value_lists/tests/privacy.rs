@@ -196,7 +196,9 @@ async fn written_refusal(user_in_item: bool) {
             body["created_by"] = json!("private-operator");
             if user_in_item {
                 let value = body["value"].as_str().unwrap();
-                if !value.contains('/') && !value.contains('-') {
+                let kind =
+                    state.lock().unwrap().lists[body["list_id"].as_str().unwrap()]["type"].clone();
+                if kind == "ip_range" && !value.contains('/') && !value.contains('-') {
                     body["value"] = json!(format!("{value}-{value}"));
                 }
                 let mut stored = body.clone();

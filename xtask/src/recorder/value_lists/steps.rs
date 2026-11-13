@@ -39,6 +39,20 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
     inventory::require_clear(session).await?;
     session.baseline_checked = true;
     initialize(session).await?;
+    super::state_values::read(
+        session,
+        "container_missing_v",
+        &format!("/api/lists?id={LIST}"),
+        404,
+    )
+    .await?;
+    super::state_values::read(
+        session,
+        "container_missing_c",
+        &format!("/api/lists?id={}", super::CONTAIN),
+        404,
+    )
+    .await?;
     container(session).await?;
     values(session).await?;
     create_list(session, RANGES, "spellings_create").await?;
@@ -62,29 +76,43 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
         .post_text(&format!("/api/lists/items/_export?list_id={RANGES}"), None)
         .await?;
     session.evidence.response("export_spellings", json!(body));
-    Ok(())
+    super::state::record(session).await
 }
 
 async fn initialize(session: &mut Session<'_>) -> Result<()> {
     session.init_attempted = true;
+    session.pending_init = true;
     let request = json!({"flows": ["create-list-indices"]});
     let (status, body) = session
         .t
         .post_once_response("/api/security_solution/initialize", Some(&request))
-        .await?;
+        .await
+        .map_err(|e| step_error("initialize", 200, e))?;
+    if definite_refusal(Some(status)) {
+        session.pending_init = false;
+    }
     match status {
         200..=299 => session.evidence.exchange("initialize", request, body),
         404 | 405 if session.evidence.flavor == "traditional" => {
             session
                 .evidence
                 .http_response("initialize_unavailable", status, body);
-            let body = session.t.post_once("/api/lists/index", None).await?;
+            session.pending_init = true;
+            let result = session.t.post_once("/api/lists/index", None).await;
+            if result
+                .as_ref()
+                .is_err_and(|e| definite_refusal(e.http_status))
+            {
+                session.pending_init = false;
+            }
+            let body = result.map_err(|e| step_error("initialize_fallback", 200, e))?;
             session.evidence.response("initialize_fallback", body);
         }
         _ => {
-            return Err(elasticctl_core::Error::from_response_body(
-                status,
-                &body.to_string(),
+            return Err(step_error(
+                "initialize",
+                200,
+                elasticctl_core::Error::from_response_body(status, &body.to_string()),
             ));
         }
     }
@@ -92,6 +120,7 @@ async fn initialize(session: &mut Session<'_>) -> Result<()> {
     if after["list_index"] != true || after["list_item_index"] != true {
         return Err(recording_error("list indices are not ready after init"));
     }
+    session.pending_init = false;
     session.evidence.response("index_after", after);
     Ok(())
 }
@@ -101,9 +130,21 @@ pub(super) async fn create_list(
     id: &'static str,
     name: &'static str,
 ) -> Result<Value> {
+    create_typed_list(session, id, "ip_range", name).await
+}
+
+pub(super) async fn create_typed_list(
+    session: &mut Session<'_>,
+    id: &'static str,
+    kind: &str,
+    name: &'static str,
+) -> Result<Value> {
+    session
+        .attempted_deletes
+        .remove(&format!("/api/lists?id={id}"));
     session.lists.push(id);
     session.pending_creates.insert(id.to_string());
-    let request = json!({"id": id, "name": id, "description": MARKER, "type": "ip_range",
+    let request = json!({"id": id, "name": id, "description": MARKER, "type": kind,
         "meta": {"marker": MARKER, "recorder_nonce": session.nonce}});
     let result = session.t.post_once("/api/lists", Some(&request)).await;
     if result
@@ -116,7 +157,7 @@ pub(super) async fn create_list(
         session.lists.retain(|owned| *owned != id);
         session.pending_creates.remove(id);
     }
-    let body = result?;
+    let body = result.map_err(|e| step_error(name, 200, e))?;
     session.evidence.exchange(name, request, body);
     let current = session.get(&format!("/api/lists?id={id}")).await?;
     if !cleanup::owns(session, &current, id, false, false) {
@@ -278,6 +319,18 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.evidence.response("items_export", json!(export));
+    super::state_values::page(
+        session,
+        LIST,
+        "items_v_1000",
+        &[
+            "10.0.0.5-10.0.0.5",
+            "10.0.0.5-10.0.0.5",
+            "10.0.0.6/32",
+            "10.0.0.7/32",
+        ],
+    )
+    .await?;
     for (index, id) in expected_ids.iter().enumerate() {
         let delete_path = format!("/api/lists/items?id={}", urlencode(id));
         session.attempted_deletes.insert(delete_path.clone());
@@ -485,6 +538,7 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     session
         .evidence
         .response("container_delete_referenced", body);
+    super::state::repeated(session).await?;
     cleanup::delete_owned(session, &cleanup::exception_path(true), ITEM, true, true).await?;
     session.exception_item = false;
     let body = cleanup::delete_owned(
@@ -498,15 +552,6 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     .ok_or_else(|| recording_error("container disappeared before its recorded delete"))?;
     session.lists.retain(|id| *id != LIST);
     session.evidence.response("container_delete", body);
-    cleanup::delete_owned(
-        session,
-        &cleanup::exception_path(false),
-        EXCEPTION,
-        true,
-        false,
-    )
-    .await?;
-    session.exception = false;
     Ok(())
 }
 

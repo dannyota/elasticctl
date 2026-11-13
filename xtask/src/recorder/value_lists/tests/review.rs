@@ -107,6 +107,7 @@ async fn inventory_recording(
     if identities {
         let containers = state.clone();
         Mock::given(method("GET")).and(path("/api/exception_lists/_find"))
+            .and(wiremock::matchers::query_param("per_page", "100"))
             .respond_with(move |r: &Request| {
                 let mut rows = if r.url.query_pairs().any(|(k, _)| k == "filter") { vec![] } else { vec![json!({"id": "unrelated-container", "list_id": "unrelated-list", "created_by": "10"})] };
                 if !r.url.query_pairs().any(|(k, v)| k == "namespace_type" && v == "agnostic") {
@@ -116,6 +117,7 @@ async fn inventory_recording(
             }).with_priority(1).mount(&server).await;
         let items = state.clone();
         Mock::given(method("GET")).and(path("/api/exception_lists/items/_find"))
+            .and(wiremock::matchers::query_param("per_page", "100"))
             .respond_with(move |r: &Request| {
                 let mut rows = if r.url.query_pairs().any(|(k, v)| k == "per_page" && v == "10") { vec![] } else { vec![json!({"id": "unrelated-item", "item_id": "unrelated-item", "created_by": "10", "entries": []})] };
                 rows.extend(items.lock().unwrap().item.iter().cloned());
@@ -348,7 +350,7 @@ async fn unrelated_short_inventory_ids_cannot_rewrite_fixtures() {
 }
 
 #[tokio::test]
-async fn initialize_501_stops_recording_and_still_audits_cleanup() {
+async fn initialize_501_stays_pending_and_still_audits_cleanup() {
     let (server, state) = stack(Stack::default()).await;
     Mock::given(method("POST"))
         .and(path("/api/security_solution/initialize"))
@@ -366,9 +368,10 @@ async fn initialize_501_stops_recording_and_still_audits_cleanup() {
     .await
     .err()
     .unwrap();
-    assert_eq!(error.http_status, Some(501));
+    assert!(error.message.contains("received 501"));
+    assert!(session.pending_init);
     assert!(
-        !error.message.contains("cleanup failed"),
+        error.message.contains("pending initialize"),
         "{}",
         error.message
     );

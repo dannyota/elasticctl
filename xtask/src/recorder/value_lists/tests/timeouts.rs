@@ -21,6 +21,12 @@ async fn timed_out_create(route: &'static str, id: &'static str, settle: bool) {
     Mock::given(method("GET"))
         .and(path(route))
         .respond_with(move |_: &Request| {
+            if *count.lock().unwrap() == 0
+                && pending.lock().unwrap().is_none()
+                && changed.lock().unwrap().lists.is_empty()
+            {
+                return response(404, json!({}));
+            }
             let mut count = count.lock().unwrap();
             *count += 1;
             if !settle || *count == 1 {
@@ -177,7 +183,11 @@ async fn refusal_import_408_keeps_parent_for_late_completion() {
         requests[recorded..]
             .iter()
             .filter(|r| r.method == "DELETE")
-            .all(|r| r.url.path() == "/api/lists"
+            .all(|r| (r.url.path() == "/api/lists"
                 && r.url.query_pairs().any(|(k, v)| k == "id" && v == CONTAIN))
+                || (r.url.path() == "/api/exception_lists"
+                    && r.url
+                        .query_pairs()
+                        .any(|(k, v)| k == "list_id" && v == EXCEPTION)))
     );
 }
