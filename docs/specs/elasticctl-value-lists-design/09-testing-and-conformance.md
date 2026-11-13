@@ -10,7 +10,7 @@ using marker lists with the `elasticctl-live-vl-` prefix. It records the
 bootstrap state before and after `init`, container create, read, PATCH with
 current and stale `_version`, the ignored type change, `_find` pages by
 cursor, `_export` with duplicates and an `a-a` value, `_import` (the list
-body), delete by value (the array), container delete with and without
+body), item `_find` pages by cursor, item delete by `id` (200 and 404), container delete with and without
 references (the 409 body), and the 413, 415, and 409 refusals. It restores
 "not bootstrapped" where it started so (D5). The recorded set replaces the
 404 `lists_index.json` fixtures as the only value-list evidence.
@@ -46,9 +46,13 @@ assertions:
   8,000,000-byte bound; a 409, a 4xx, and a 5xx at each write;
 - uncertain writes: a 5xx import or delete followed by a matching read-back
   (verified, run continues) and by a non-matching one (`unknown`, run stops);
-  a 5xx create or PATCH settled by the container read either way; a
-  delete-by-value 404 that continues; every export failing after an
-  uncertain write, with `observed: false`;
+  a 5xx create or PATCH settled by the container read either way; an
+  item-delete 404 that continues; every export failing after an uncertain
+  write, with `observed: false`;
+- the remove phase: every stored copy deleted by `id`; an `ip_range` list
+  holding `10.0.0.5-10.0.0.5` and `10.0.0.0/8` where only the first leaves,
+  with no request naming a value; an item `_find` that disagrees with the
+  apply-time export, refused as `conflict` before any delete;
 - the scan of D26: a reference outside the selection, both namespaces, a
   container it cannot read, an undecodable entry, and installed references
   that change between the preview and the apply;

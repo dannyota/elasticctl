@@ -57,11 +57,16 @@ name.
 Values are compared as sets (section 3.6). The change runs in two phases
 (D14), in the order of D22:
 
-- **Remove phase.** For each value in the remote set and not in the local
-  set: `DELETE /api/lists/items?list_id=<id>&value=<stored value>`. The
-  answer is an array of the deleted items, every copy of the value (V9). A 404
-  means the value is already gone: it is the one 4xx that is not a failure,
-  and the phase goes on to its next value and its read-back.
+- **Remove phase.** The phase first reads every item of the list with
+  `GET /api/lists/items/_find?list_id=<id>` by `cursor` (D19). The values it
+  returns must equal the apply-time stored values, duplicates included;
+  otherwise the list stops with `conflict` before its first delete. Then, for
+  each stored copy of each value in the remote set and not in the local set:
+  `DELETE /api/lists/items?id=<item id>`. A delete by value is never sent
+  (D13): Kibana runs it as a query on the list's field, which on `ip_range`
+  matches every range that contains the value (V13). A 404 means the
+  item is already gone: it is the one 4xx that is not a failure, and the
+  phase goes on to its next item and its read-back.
 - **Add phase.** For the values in the local set and not in the remote set:
   `POST /api/lists/items/_import?list_id=<id>`, with the multipart field
   `file`, the file name `<stem>.txt`, and the values joined by LF with a
@@ -117,7 +122,7 @@ read, within the same 120-second budget:
   write is verified and the run continues; anything else ends the list
   `unknown`.
 
-A 4xx other than the delete-by-value 404 is not uncertain: Kibana refused the
+A 4xx other than the item-delete 404 is not uncertain: Kibana refused the
 request, and the list ends `failed` without a read-back.
 
 **Recovery.** A list that ended `unknown` may still change: an import Kibana
@@ -129,7 +134,8 @@ you expect. The wiki says so.
 ### 6.5 Delete
 
 `DELETE /api/lists?id=<id>` with no reference flags. Kibana deletes the
-values with the container.
+values with the container; they can stay visible to item reads for about two
+seconds after the 200 (V13).
 
 - A 409 carries `references`, the exception items that use the list. The
   command reports `conflict` with Kibana's status and names each referencing
