@@ -42,4 +42,8 @@ selectors it exports every list, and `--tag` adds every list carrying that tag.
 of a mirrored list exactly, including deleting items removed from the file. It
 never deletes a list.
 
+An entry of type `list` matches a field against a value list. `state pull`
+mirrors the value lists that entries reference; see
+[Value Lists](Value-Lists.md).
+
 Exception lists need Kibana 9.5.1 or newer; see [Limitations](Limitations.md).

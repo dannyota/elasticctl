@@ -25,6 +25,8 @@ install method puts both names on `PATH`.
 - [Rules](Rules.md): list, inspect, validate, enable, export, import, and
   preview detection rules, and manage the prebuilt pack.
 - [Exceptions](Exceptions.md): exception lists and their items.
+- [Value Lists](Value-Lists.md): the values that exception entries of type
+  `list` match, managed as files.
 - [Search](Search.md): ES|QL and Query DSL from the terminal.
 - [Alerts and Cases](Alerts-and-Cases.md): triage alerts and track
   investigations.

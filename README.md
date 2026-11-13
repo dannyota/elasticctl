@@ -8,12 +8,12 @@
 
 A safety-first command-line tool and Model Context Protocol (MCP) server for
 operating Elastic Security as code on self-managed stacks, Elastic Cloud Hosted
-deployments, and Elastic Cloud Serverless projects. Keep detection rules and
-exception lists in Git, triage alerts and cases, move data views, dashboards,
-and Fleet policies between stacks, and query Elasticsearch. It is a sibling to
-[splunkctl](https://github.com/dannyota/splunkctl) and shares its operating
-contracts: dry-run-by-default changes, named profiles, stable output, and typed
-errors.
+deployments, and Elastic Cloud Serverless projects. Keep detection rules,
+exception lists, and value lists in Git, triage alerts and cases, move data
+views, dashboards, and Fleet policies between stacks, and query Elasticsearch.
+It is a sibling to [splunkctl](https://github.com/dannyota/splunkctl) and
+shares its operating contracts: dry-run-by-default changes, named profiles,
+stable output, and typed errors.
 
 This is a personal, unofficial project, not affiliated with or endorsed by
 Elastic. Expect breaking changes in minor releases until `1.0.0`.
@@ -70,7 +70,7 @@ elkctl doctor   # checks reachability, key scope, and rule access
 Keep rules in a directory and review drift before pushing:
 
 ```bash
-elkctl state pull --dir state   # writes state/rules/ and state/exceptions/
+elkctl state pull --dir state   # writes rules/, exceptions/, and value-lists/
 # edit rules, or add new ones
 elkctl state diff --dir state   # field-level drift, no changes made
 elkctl state push --dir state   # preview only
@@ -78,16 +78,21 @@ elkctl state push --dir state --yes
 ```
 
 Every remote change previews first and applies only with `--yes`. `state push`
-never deletes a remote rule or exception list. See [Getting Started][start]
-and [Rules as Code][state].
+never deletes a remote rule, exception list, or value list. See
+[Getting Started][start] and [Rules as Code][state].
+
+A state directory that holds `value-lists/` needs elasticctl 0.10 or later to
+push. 0.9.4 refuses it; 0.9.0 to 0.9.3 would push its exceptions without its
+value lists.
 
 ## Coverage
 
 | Area | Supports | Guide |
 | --- | --- | --- |
-| Rules as code | Pull, diff, and push rules and their exception lists, with change-evidence reports | [Rules as Code][state] |
+| Rules as code | Pull, diff, and push rules, their exception lists, and the value lists those use, with change-evidence reports | [Rules as Code][state] |
 | Rules | List, get, validate, enable, disable, delete, export, import, preview; prebuilt status and install | [Rules][rules] |
 | Exceptions | List, get, validate, export, import, and delete exception lists with their items | [Exceptions][exceptions] |
+| Value lists | List, get, validate, export, import, and delete value lists with exact value reconciliation; bootstrap a space | [Value Lists][value-lists] |
 | Search | ES\|QL and Query DSL peeks and full exports | [Search][search] |
 | Alerts and cases | Alert status, tags, and assignees; case create, comment, attach, close, reopen, delete | [Alerts and Cases][triage] |
 | Data views and dashboards | Portable files, the default data view, reference-safe delete, Saved Objects bundles | [Data Views and Dashboards][content] |
@@ -201,7 +206,7 @@ See the [CLI reference][cli] for output, errors, and selectors, and
 - [Configuration][config]: profiles, environment variables, spaces, API keys.
 - [CLI reference][cli]: command tree, output formats, errors, exit codes.
 - Guides: [Rules as Code][state], [Rules][rules], [Exceptions][exceptions],
-  [Search][search], [Alerts and Cases][triage],
+  [Value Lists][value-lists], [Search][search], [Alerts and Cases][triage],
   [Data Views and Dashboards][content], [Fleet][fleet], [MCP][mcp],
   [MCP Mutations][mcp-mutations], [MCP Mutation Kinds][mcp-kinds].
 - [Security][security]: the dry-run guard, credentials, and MCP reach.
@@ -225,6 +230,7 @@ Licensed under [Apache 2.0](LICENSE).
 [state]: https://github.com/dannyota/elasticctl/wiki/Rules-as-Code
 [rules]: https://github.com/dannyota/elasticctl/wiki/Rules
 [exceptions]: https://github.com/dannyota/elasticctl/wiki/Exceptions
+[value-lists]: https://github.com/dannyota/elasticctl/wiki/Value-Lists
 [search]: https://github.com/dannyota/elasticctl/wiki/Search
 [triage]: https://github.com/dannyota/elasticctl/wiki/Alerts-and-Cases
 [content]: https://github.com/dannyota/elasticctl/wiki/Data-Views-and-Dashboards

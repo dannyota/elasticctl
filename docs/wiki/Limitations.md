@@ -104,6 +104,39 @@ preview's id, and retries once after one second when the first read finds
 none. If that read fails, the preview still reports its errors and warnings,
 with `hits` null and the failure in `hits_error`.
 
+## Older versions cannot read a value-list mirror
+
+elasticctl 0.9 reads only `rules/` and `exceptions/` in a state directory.
+0.9.4 refuses `state pull`, `state diff`, and `state push` on a directory that
+holds `value-lists/`, and names 0.10 as the version that reads it. 0.9.0 to
+0.9.3 cannot be changed: they push such a directory's exceptions without its
+value lists, leaving stale values on the stack, and a pull into it leaves its
+value lists stale. Use 0.10 or later, and at least 0.9.4 anywhere an older
+binary may still run. See [Rules as Code](Rules-as-Code.md#older-versions).
+
+## Some value lists suppress every event
+
+On Kibana 9.5.1, 9.5.6, and 9.7.0, an exception on a value list suppresses
+every event when:
+
+- the list exists and is empty, under `is in list`;
+- it is an `ip_range` list that stores more than 200 values in dash form
+  (`a-b`), with either operator.
+
+A missing list under `is not in list` also suppresses every event that has the
+field. `elkctl` refuses any write that would cause one of these, and writes a
+single address as CIDR, which does not count toward the 200. See
+[Value Lists](Value-Lists.md#safety-rules).
+
+## Value-list writes are not locked or immediate
+
+Kibana has no lock on a value list, does not change a list's version when its
+values change, and applies a value import some time after it answers. `elkctl`
+checks each change by reading the list back, and a list it cannot confirm
+within 120 seconds ends `unknown`. Coordinate writers outside `elkctl`, and
+read [When the outcome is unknown](Value-Lists.md#when-the-outcome-is-unknown)
+before you retry.
+
 ## Alerts cannot be deleted
 
 The public API has no alert delete. Close alerts with `alerts close` instead.

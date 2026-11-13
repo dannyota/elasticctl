@@ -2,7 +2,8 @@
 
 ## 4. Command surface
 
-Lines marked `0.2` are added in that release; everything else ships in v0.1.
+Lines marked `0.2` or `0.10` are added in that release; everything else ships
+in v0.1.
 
 ```
 elasticctl config init --from-env            Create a profile from ELASTICCTL_* vars
@@ -29,6 +30,14 @@ elasticctl exceptions export [<list_id>...] [--tag TAG] [--namespace NS] [--form
 elasticctl exceptions import --path FILE [--overwrite | --skip-existing]  [guarded]               0.2
 elasticctl exceptions delete <list_id>... [--namespace single|agnostic]   [guarded]               0.2
 
+elasticctl value-lists list [--type T] [--search TEXT]                                            0.10
+elasticctl value-lists get <id> [--values]                                                        0.10
+elasticctl value-lists validate --path FILE  Local check, no server contact                       0.10
+elasticctl value-lists export <id>... [--dir DIR]                                                 0.10
+elasticctl value-lists import --path FILE [--overwrite]   [guarded]                               0.10
+elasticctl value-lists delete <id>...        [guarded]                                            0.10
+elasticctl value-lists init                  Bootstrap the space's list data streams  [guarded]   0.10
+
 elasticctl state pull [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/ [--format-file ndjson|yaml]
 elasticctl state diff [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/  Field-level structured drift
 elasticctl state push [<name|rule_id>...] [--tag TAG] [--search TEXT] [--source S] --dir config/ [--report FILE]  [guarded]
@@ -41,6 +50,11 @@ elasticctl commands                          Machine-readable command tree
 push`, and a flag surface for arbitrary nested `entries` would be worse than a
 file. It has no `attach`/`detach` either, because attaching a list to a rule is
 a rule mutation and `state push` is how rule mutations are made.
+
+`value-lists` has no `create` or `add` verb either: authoring is a container
+file and a values file, written by `import` or `state push`. The
+[value lists design](../elasticctl-value-lists-design/04-command-surface.md#4-command-surface)
+gives each command's reads, preview, and output.
 
 `doctor` is most useful when the configuration is broken, so it never stops
 at `Context::build`: it reports the failure as a `config` check with status
