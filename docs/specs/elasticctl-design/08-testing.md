@@ -120,7 +120,7 @@ cargo xtask conformance --flavor <serverless|ech|traditional> \
   --report-dir <path>
 ```
 
-It runs the same thirteen contracts serially against each target: diagnostics,
+It runs the same fourteen contracts serially against each target: diagnostics,
 pull-then-diff stability, exception CRUD and bundle round-trip, stale-pointer
 repair, source scoping, rule export/import round-trip, search, triage
 (`elasticctl-triage-design.md` section 9), and content transfer
@@ -131,6 +131,15 @@ repair, source scoping, rule export/import round-trip, search, triage
 the task-tool contract defined in `elasticctl-mcp-tasks-design.md` section 12.3,
 and, from 0.9.2, `mcp_mutations_plan_and_confirm`, the MCP mutation contract
 defined in [mutation design section 9.2](../elasticctl-mcp-mutation-design/09-testing-and-evidence.md#92-live-contract).
+From 0.10, `value_list_round_trip` adds value-list lifecycle and state
+conformance ([value-list design section 9.3](../elasticctl-value-lists-design/09-testing-and-conformance.md#93-live-contract)).
+The contract uses CLI state pull/push and preview, comparing exact alert
+identities before and after value edits. Refusals verify unchanged remote
+objects; the unreferenced 201-dash candidate stays local. Initial-baseline
+failures use the harness class; final-baseline failures use cleanup. Unknown
+init ownership or unresolved child writes block stream deletion. CLI init
+and delete exercise their dry-run guards. Only a `bootstrapped` init outcome
+authorizes stream restoration; the 201-dash guard stays local through the API.
 Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker

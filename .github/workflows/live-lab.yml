@@ -99,12 +99,13 @@ jobs:
             (keys == ["contracts", "flavor", "version"]) and
             (.flavor == "traditional") and (.version == "9.5.1") and
             (.contracts | type == "array") and
-            (.contracts | length == 13) and
+            (.contracts | length == 14) and
             ([.contracts[].contract] == [
               "diagnostics", "pull_diff", "exception_round_trip",
               "stale_pointer_repair", "source_scoping", "rule_round_trip",
               "search", "triage", "content", "fleet", "mcp_reads_existing_verticals",
-              "mcp_answers_across_verticals", "mcp_mutations_plan_and_confirm"
+              "mcp_answers_across_verticals", "mcp_mutations_plan_and_confirm",
+              "value_list_round_trip"
             ]) and
             all(.contracts[];
               (type == "object") and

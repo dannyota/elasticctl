@@ -18,6 +18,15 @@ mod mcp_mutations;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
 
+#[path = "live/value_lists.rs"]
+mod value_lists;
+
+#[test]
+#[ignore = "requires a live stack"]
+fn value_list_round_trip() {
+    value_lists::run_contract();
+}
+
 #[test]
 #[ignore = "requires a live stack"]
 fn mcp_mutations_plan_and_confirm() {
