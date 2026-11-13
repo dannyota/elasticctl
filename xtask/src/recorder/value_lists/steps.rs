@@ -278,25 +278,10 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         ));
     }
     session.evidence.response("items_export", json!(export));
-    session.pending_imports.insert(LIST.to_string(), Some(6));
-    let result = session
-        .t
-        .post_multipart_once_named(
-            &format!("/api/lists/items/_import?list_id={LIST}&refresh=wait_for"),
-            "elasticctl-live-vl.txt",
-            "text/plain",
-            "10.0.0.8/32\n10.0.0.9/32\n",
-        )
-        .await;
-    session.clear_refused_import(LIST, result.as_ref().err().and_then(|e| e.http_status));
-    session.evidence.response("items_import", result?);
-    let settled = settle(session, LIST, 6).await?;
-    session.evidence.response("items_import_settled", settled);
-    session.pending_imports.remove(LIST);
     for (index, id) in expected_ids.iter().enumerate() {
         let delete_path = format!("/api/lists/items?id={}", urlencode(id));
         session.attempted_deletes.insert(delete_path.clone());
-        let expected = 5 - index as u64;
+        let expected = 3 - index as u64;
         session
             .pending_imports
             .insert(LIST.to_string(), Some(expected));
@@ -312,7 +297,9 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
         if index == 0 {
             session.evidence.response("items_delete_id", body);
         }
-        settle(session, LIST, expected).await?;
+        settle(session, LIST, expected)
+            .await
+            .map_err(|e| step_error("items_delete_id", 200, e))?;
         session.pending_imports.remove(LIST);
     }
     let path = format!("/api/lists/items?id={}", urlencode(&expected_ids[0]));
@@ -325,6 +312,39 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     session
         .evidence
         .http_response("items_delete_id_absent", status, body);
+    let export = session
+        .t
+        .post_text(&format!("/api/lists/items/_export?list_id={LIST}"), None)
+        .await
+        .map_err(|e| step_error("items_export_after_delete", 200, e))?;
+    let mut lines: Vec<_> = export.lines().filter(|line| !line.is_empty()).collect();
+    lines.sort_unstable();
+    if lines != ["10.0.0.6/32", "10.0.0.7/32"] {
+        return Err(recording_error(
+            "items_export_after_delete: unexpected export values",
+        ));
+    }
+    session
+        .evidence
+        .response("items_export_after_delete", json!(export));
+    session.pending_imports.insert(LIST.to_string(), Some(4));
+    let result = session
+        .t
+        .post_multipart_once_named(
+            &format!("/api/lists/items/_import?list_id={LIST}&refresh=wait_for"),
+            "elasticctl-live-vl.txt",
+            "text/plain",
+            "10.0.0.8/32\n10.0.0.9/32\n",
+        )
+        .await
+        .map_err(|e| step_error("items_import", 200, e));
+    session.clear_refused_import(LIST, result.as_ref().err().and_then(|e| e.http_status));
+    session.evidence.response("items_import", result?);
+    let settled = settle(session, LIST, 4)
+        .await
+        .map_err(|e| step_error("items_import_settled", 200, e))?;
+    session.evidence.response("items_import_settled", settled);
+    session.pending_imports.remove(LIST);
     Ok(())
 }
 

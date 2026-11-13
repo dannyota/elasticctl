@@ -143,6 +143,15 @@ impl Stack {
                     } else {
                         vec![]
                     };
+                if self.fail == Some("agnostic_nonempty")
+                    && query.get("namespace_type").map(String::as_str) == Some("agnostic")
+                    && query.get("per_page").map(String::as_str) == Some("10000")
+                {
+                    return response(
+                        200,
+                        json!({"total": 1, "data": [{"list_id": "unexpected"}]}),
+                    );
+                }
                 response(200, json!({"total": rows.len(), "data": rows}))
             }
             ("GET", "/api/exception_lists/items/_find") => {
@@ -242,8 +251,12 @@ impl Stack {
                     if self.import_reads >= 3 {
                         self.imported_pending = false;
                         let values = self.values.entry(list.clone()).or_default();
-                        values.push(json!({"id": "server-import-1", "value": "10.0.0.8/32"}));
-                        values.push(json!({"id": "server-import-2", "value": "10.0.0.9/32"}));
+                        if list == CONTAIN {
+                            values.push(json!({"id": "server-import-3", "value": "10.0.0.6/32"}));
+                        } else {
+                            values.push(json!({"id": "server-import-1", "value": "10.0.0.8/32"}));
+                            values.push(json!({"id": "server-import-2", "value": "10.0.0.9/32"}));
+                        }
                     }
                 }
                 let values = self.values.get(&list).cloned().unwrap_or_default();
@@ -273,13 +286,34 @@ impl Stack {
                 if list == CONTAIN {
                     let count = self.values.get(&list).map_or(0, Vec::len);
                     if (self.fail == Some("contain_export") && count == 2)
-                        || (self.fail == Some("contain_export_after") && count == 1)
+                        || (self.fail == Some("contain_export_after")
+                            && count == 1
+                            && self.values[&list][0]["value"] == "10.0.0.0/8")
                     {
                         return response(503, json!({"message":"private-body"}));
                     }
-                    if self.fail == Some("contain_missing_range") && count == 1 {
+                    if self.fail == Some("contain_missing_range")
+                        && count == 1
+                        && self.values[&list][0]["value"] == "10.0.0.0/8"
+                    {
                         return ResponseTemplate::new(200).set_body_string("");
                     }
+                }
+                if list == LIST
+                    && self.fail == Some("delete_duplicate")
+                    && self.values.get(&list).is_some_and(|v| v.len() == 2)
+                {
+                    return ResponseTemplate::new(200)
+                        .set_body_string("10.0.0.6/32\n10.0.0.6/32\n");
+                }
+                if list == CONTAIN
+                    && self.fail == Some("import_missing_range")
+                    && self
+                        .values
+                        .get(&list)
+                        .is_some_and(|v| v.iter().any(|x| x["value"] == "10.0.0.6/32"))
+                {
+                    return ResponseTemplate::new(200).set_body_string("10.0.0.6/32\n");
                 }
                 let text: String = self
                     .values
@@ -324,7 +358,7 @@ impl Stack {
                 response(200, self.lists[&list].clone())
             }
             ("DELETE", "/api/lists/items") => {
-                if id == format!("{CONTAIN}-item-1") && self.fail == Some("contain_delete_id") {
+                if id == format!("{CONTAIN}-item-0") && self.fail == Some("contain_delete_id") {
                     return response(400, json!({"message":"private-body"}));
                 }
                 for values in self.values.values_mut() {

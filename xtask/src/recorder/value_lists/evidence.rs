@@ -199,12 +199,19 @@ impl Evidence {
                     | "items_import_settled"
                     | "items_delete_id"
                     | "contain_delete_id"
+                    | "contain_items_find"
                     | "item_create"
             );
             let export = root == "/response"
                 && matches!(
                     name,
-                    "items_export" | "export_spellings" | "contain_export" | "contain_export_after"
+                    "items_export"
+                        | "items_export_after_delete"
+                        | "export_spellings"
+                        | "contain_export"
+                        | "contain_export_single"
+                        | "contain_export_after"
+                        | "contain_export_imported"
                 );
             if !export {
                 scrub_identities(

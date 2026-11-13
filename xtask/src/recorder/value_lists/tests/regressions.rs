@@ -220,7 +220,7 @@ async fn cleanup_rejects_stable_total_below_import_target() {
     Mock::given(method("GET"))
         .and(path("/api/lists/items/_find"))
         .and(move |_: &Request| importing.load(std::sync::atomic::Ordering::SeqCst))
-        .respond_with(response(200, json!({"total": 4, "data": []})))
+        .respond_with(response(200, json!({"total": 2, "data": []})))
         .with_priority(1)
         .mount(&server)
         .await;
@@ -238,7 +238,11 @@ async fn cleanup_rejects_stable_total_below_import_target() {
     assert!(error.message.contains(LIST), "{}", error.message);
     assert!(state.lock().unwrap().lists.contains_key(LIST));
     let requests = server.received_requests().await.unwrap();
-    assert!(requests.iter().all(|r| r.method != "DELETE"));
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path() == "/api/lists")
+    );
     assert!(!requests.iter().any(restore_read));
 }
 
@@ -598,5 +602,33 @@ async fn list_find_transport_and_decode_failures_name_the_step() {
         };
         assert!(error.message.contains(step), "{}", error.message);
         assert!(!error.message.contains("private-body"), "{}", error.message);
+    }
+}
+
+#[tokio::test]
+async fn new_recordings_reject_unexpected_values() {
+    for (fail, step) in [
+        ("agnostic_nonempty", "exception_lists_find_agnostic"),
+        ("delete_duplicate", "items_export_after_delete"),
+        ("import_missing_range", "contain_export_imported"),
+    ] {
+        let (server, _) = stack(Stack {
+            fail: Some(fail),
+            ..Default::default()
+        })
+        .await;
+        let t = transport(&server);
+        let mut session = Session::new(
+            &t,
+            Timing {
+                budget: Duration::from_secs(2),
+                ..fast()
+            },
+        );
+        let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.message.contains(step), "{}", error.message);
     }
 }
