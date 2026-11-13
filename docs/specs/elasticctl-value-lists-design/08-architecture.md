@@ -26,7 +26,9 @@ status and body of a 2xx or 4xx in the same way, so the fixture recorder can
 store Kibana's own 409, 413, and 415 bodies and tests can serve them.
 
 All five use the one-shot client with an attempt limit of 1, like the other
-`_once` calls. `post_text` already reads a non-JSON body and serves
+`_once` calls. The `_response` calls return a 4xx whose body is not JSON with
+its status and the body as a JSON string, so a 4xx stays a refusal (section
+6.4). `post_text` already reads a non-JSON body and serves
 `_export`. No other transport behavior changes.
 
 ### 8.2 `elasticctl-api`

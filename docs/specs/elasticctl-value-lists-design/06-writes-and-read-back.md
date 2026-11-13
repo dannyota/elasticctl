@@ -111,9 +111,13 @@ read-back only reads: it never sends a second import, which could duplicate
 values.
 
 **Uncertain writes.** A write whose answer is a 5xx, a timeout, a connection
-loss after sending, or an undecodable body is uncertain (D17). The command
-sends no further write for that list and settles the uncertain write by a
-read, within the same 120-second budget:
+loss after sending, or a 2xx whose body does not decode is uncertain (D17). A
+4xx is never uncertain, whatever its body: a body that does not decode is
+kept as text. After an uncertain write the command sends no further write for
+that list until a read settles it, within the same 120-second budget. It never
+sends the uncertain request again, and it never sends the rest of that
+request's phase; once the read shows the write applied, the list goes on to
+its next step:
 
 - a value write goes to its phase's read-back. If the read-back observes the
   phase's expected set, the write evidently applied: the phase is verified
@@ -121,8 +125,8 @@ read, within the same 120-second budget:
   later chunks were never sent, the list ends `unknown`;
 - a container create or update reads `GET /api/lists?id=`. If the container
   exists with the planned `type`, `name`, and `description`, and the local
-  `meta` when there is one, the write is verified and the run continues;
-  anything else ends the list `unknown`.
+  `meta` when there is one, the write is verified and the list goes on to its
+  value phases; anything else ends the list `unknown`.
 
 A 4xx other than the item-delete 404 is not uncertain: Kibana refused the
 request, and the list ends `failed` without a read-back.

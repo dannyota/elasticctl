@@ -10,7 +10,10 @@ using marker lists with the `elasticctl-live-vl-` prefix. It records the
 bootstrap state before and after `init`, container create, read, PATCH with
 current and stale `_version`, the ignored type change, `_find` pages by
 cursor, `_export` with duplicates and an `a-a` value, `_import` (the list
-body), item `_find` pages by cursor, item delete by `id` (200 and 404), container delete with and without
+body), item `_find` pages by cursor, item delete by `id` (200 and 404), container
+`_find` pages by `filter` and `cursor`, exception items whose `list` entries
+use `included` and `excluded`, an `ip_range` list holding `10.0.0.0/8` beside
+an address it contains, container delete with and without
 references (the 409 body), and the 413, 415, and 409 refusals. It restores
 "not bootstrapped" where it started so (D5). The recorded set replaces the
 404 `lists_index.json` fixtures as the only value-list evidence.
@@ -24,7 +27,12 @@ not own.
 ### 9.2 Offline tests
 
 Tests drive the real `-api` and CLI code against wiremock, with exact request
-assertions:
+assertions. Every mock response is a recorded one. The one exception is an
+`initialize` flow that is not `ready`, which no stack can be made to answer on
+demand: that test takes the recorded `initialize` response and changes only
+the flow's status value, and its name says so.
+
+The cases:
 
 - parsing and validation: each step of section 3.4 and each row of 5.1, each
   accepted and refused spelling of section 3.5, CRLF and unsorted input, and
