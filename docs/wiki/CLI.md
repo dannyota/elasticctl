@@ -13,6 +13,7 @@ tree as JSON.
 | `state` | `pull`, `diff`, `push` | [Rules as Code](Rules-as-Code.md) |
 | `rules` | `list`, `get`, `validate`, `enable`, `disable`, `delete`, `export`, `import`, `preview`, `prebuilt status`, `prebuilt install` | [Rules](Rules.md) |
 | `exceptions` | `list`, `get`, `validate`, `export`, `import`, `delete` | [Exceptions](Exceptions.md) |
+| `value-lists` | `list`, `get`, `validate`, `export`, `import`, `delete`, `init` | [Value Lists](Value-Lists.md) |
 | `search` | `esql`, `dsl` | [Search](Search.md) |
 | `alerts` | `list`, `get`, `ack`, `open`, `close`, `tag`, `assign` | [Alerts and Cases](Alerts-and-Cases.md) |
 | `cases` | `list`, `get`, `create`, `close`, `open`, `delete`, `attach`, `comment` | [Alerts and Cases](Alerts-and-Cases.md) |
@@ -104,7 +105,7 @@ Rule commands accept a `rule_id` or an exact rule name. The `rule_id` is tried
 first. A name never matches by prefix or substring, and a name that several
 rules share fails with `conflict` and lists the candidates. Data views,
 dashboards, and Fleet policies accept an id or an exact name or title the same
-way.
+way. Value lists accept only their `id`.
 
 ## Shell completion
 

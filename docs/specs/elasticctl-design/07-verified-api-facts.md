@@ -312,10 +312,21 @@ on its own.
 
 Value lists are referenced from an exception entry by a caller-supplied `id`
 that is stable across stacks, so such an entry round-trips without resolution.
-Their *content* is data rather than configuration and is not managed here.
-When the data streams exist, `push` verifies each active referenced value-list
-`id` and reports every missing one; it does not rely on a coarser list-level
-lookup. `doctor` reports whether the data streams are bootstrapped.
+Their content, its measured API behavior, and its place in the mirror are
+specified in the [value lists design](../elasticctl-value-lists-design.md)
+from 0.10.
+
+`push` checks every `list` entry of every local exception item in the selected
+containers, whether it would write the item or not, and of every remote item
+of a retained container. It refuses before any write when an entry names a
+value list that is neither a validated local pair this run writes nor a
+container on the stack (`not_found`), or whose type differs from the entry's
+`list.type` (`conflict`), naming the list and the item
+([value lists design D4 and 7.4](../elasticctl-value-lists-design/07-state-engine.md#74-push)).
+With `is not in list`, a dangling reference suppresses every event that has
+the field. 0.9 printed a preview line for a missing list and applied anyway.
+`doctor` reports whether the data streams are bootstrapped and names
+`elasticctl value-lists init`.
 
 ### 7.8 Prebuilt rules, measured
 

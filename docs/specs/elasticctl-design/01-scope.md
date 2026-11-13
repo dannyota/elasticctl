@@ -11,6 +11,8 @@ prebuilt rule status and installation, and `--source` scoping for `rules list`,
 debt by moving all command orchestration into `-api`.
 
 Out of scope (additive later): alert triage, cases, Fleet and agent policies,
-ad hoc search, value-list content management, and the MCP server. These are
-the original 0.1 boundaries; section 11 lists later capability areas.
+ad hoc search, and the MCP server. These are the original 0.1 boundaries;
+section 11 lists later capability areas. 0.1 also deferred value-list content.
+0.10 manages it as the
+[value lists design](../elasticctl-value-lists-design.md) describes.
 

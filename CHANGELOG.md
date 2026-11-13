@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.10.0 — Unreleased
+
+### Added
+
+- The `value-lists` command group manages Elastic Security value lists of
+  type `keyword`, `ip`, `ip_range`, and `text` in the profile's space: `list`,
+  `get`, `validate`, `export`, `import`, `delete`, and `init`. A list is a
+  container file, `<stem>.yaml`, and a values file, `<stem>.txt`, with one
+  value per line. `import`, `delete`, and `init` are guarded; the preview
+  lists every value to add and to remove, the phase order and its reason, and
+  the warnings, and under `--json` it is one object on stderr. `import
+  --overwrite` reconciles an existing list's values exactly. `delete` never
+  removes references and reports the exception items that use a list. `init`
+  bootstraps the space's list data streams with the `create-list-indices`
+  flow.
+- `state pull` writes every value list that a mirrored exception item
+  references under `value-lists/`, in full. It refuses, writing nothing, when
+  a referenced list is missing, has another type, or has a type other than the
+  entry's.
+- `state diff` adds a `value_lists` block when the mirror holds
+  `value-lists/`, with every value to add and to remove, the conditions push
+  would refuse, and warnings, including `unreferenced` pairs.
+- `state push` writes value lists before exception lists, items, and rules,
+  and reconciles a mirrored list's values exactly, deletes included. It never
+  deletes a value-list container. The change-evidence report gains the
+  actions `create_value_list`, `update_value_list`, `remove_values`,
+  `add_values`, `read_back`, and `not_reached`. The summary gains
+  `value_lists_created`, `value_lists_updated`, `values_added`,
+  `values_removed`, `value_lists_unknown`, and `value_lists_not_reached`, each
+  omitted when zero.
+- Value writes are checked by reading the list back. Values are added by
+  importing only the missing ones and removed by item id, never by value. A
+  5xx, timeout, lost connection, or unreadable answer, or a read-back that
+  does not match within 120 seconds, ends the list `unknown` and stops the
+  command without sending the write again.
+- Safety refusals for `value-lists import` and `state push`: a list that an
+  exception references is never left empty, at the end or between phases; an
+  `ip_range` list never holds more than 200 stored dash values, because Kibana
+  9.5.1, 9.5.6, and 9.7.0 then suppress every event; a type change is refused;
+  and a push that changes a list's values and also the exceptions or rule
+  attachments that use it is refused. A single address in an `ip_range` list
+  is written in CIDR form.
+- The fourteenth live conformance contract, `value_list_round_trip`.
+- Rust source changes, outside the CLI and MCP compatibility promise:
+  the `elasticctl_api::value_lists` module; the `state` diff, report, and
+  summary types gain their value-list fields; `elasticctl_core::Transport`
+  gains `patch_once`, `patch_once_response`, `post_multipart_once_named`,
+  `post_multipart_once_named_response`, `delete_once_response`, and
+  `post_text_once`.
+
+### Changed
+
+- `state diff` reports `clean` only when the `value_lists` block is clean as
+  well. A mirror without `value-lists/` prints the same output as before.
+- `state push` refuses, before any write, an exception entry whose value list
+  is neither in the mirror nor on the stack (`not_found`) or has another type
+  (`conflict`). 0.9 printed a preview line for a missing list and applied.
+- The `doctor` `value_list_index` message names `elasticctl value-lists init`
+  and the `create-list-indices` flow instead of `POST /api/lists/index`.
+- A state directory that holds `value-lists/` needs 0.10 to push. 0.9.4 is the
+  first version that refuses `state pull`, `state diff`, and `state push` on
+  one; 0.9.0 to 0.9.3 would push its exceptions without its value lists, or
+  pull into it and leave them stale.
+- The MCP server is unchanged and has no value-list tools.
 ## 0.9.4 — 2026-11-12
 
 ### Changed
@@ -253,112 +317,9 @@
   calls the four task tools on both protocol paths. The self-managed run read
   a 4,000-rule corpus in eight pages per call.
 
-## 0.7.5 — 2026-11-10
-
-### Fixed
-
-- `rules get`, `enable`, `disable`, `delete`, `preview`, and MCP `rules_get`
-  read a rule once when selected by its `rule_id`, instead of twice.
-- MCP `rules_list` reads one page of `limit` rules, ordered by name, instead of
-  the whole corpus. With default arguments it failed with `unsupported` on
-  stacks with the prebuilt rules installed, because the 19.3 MB response for
-  2,263 rules exceeded the 16 MiB body cap. `rules list` is unchanged.
-
-### Verified
-
-- All eleven conformance contracts pass on Serverless 9.7.0, Hosted 9.5.6,
-  and self-managed 9.5.1. Both Cloud targets held 2,263 prebuilt rules.
-- The Serverless fixture set is re-recorded on 9.7.0 and pins
-  `search esql --out` through the async query API.
-
-## 0.7.4 — 2026-11-10
-
-### Security
-
-- Upgrade rmcp to 3.9.0 for RUSTSEC-2026-0457, 0461, and 0462.
-
-### Changed
-
-- Always-written nullable fields are now required in tool output schemas.
-  Payloads are unchanged; clients that generate types from `outputSchema` may
-  see optional fields become required-nullable.
-- Current `tools/list` results carry `ttlMs: 0` and `cacheScope: "private"`;
-  legacy results omit both fields.
-- CI tests on macOS and runs the self-managed conformance matrix against a
-  throwaway 9.5.1 lab on every pull request.
-
-### Fixed
-
-- `state push --report` accepts a path whose parent is a symlink, such as
-  `/tmp` on macOS. It resolves the existing parent once, as `state pull`
-  does, and still refuses final symlinks, symlinked locks, and missing
-  parents.
-
-## 0.7.3 — 2026-11-09
-
-### Security
-
-- Update rustls to 0.23.46, rustls-webpki to 0.103.16, and webpki-root-certs
-  to 1.0.11 for RUSTSEC-2026-0285, 0346, 0348, 0349, 0382, and 0383, and tokio
-  to 1.54.1 for RUSTSEC-2026-0386. Every TLS connection to Kibana and
-  Elasticsearch goes through rustls.
-- RUSTSEC-2026-0457, 0461, and 0462 affect rmcp's OAuth client and Streamable
-  HTTP transports. elasticctl serves MCP over stdio only and enables neither,
-  so rmcp stays at 3.2.0 until its upgrade ships with an MCP contract update.
-
-### Changed
-
-- CI pins every third-party GitHub Action to a commit SHA.
-- Release builds for Apple Silicon run on `macos-15`; GitHub retired the
-  `macos-14` runner.
-- Routine dependency updates, including reqwest 0.13.5, clap 4.6.7, and
-  serde_json 1.0.154.
-
-## 0.7.2 — 2026-09-07
-
-### Verified
-
-- All eleven conformance contracts pass on Serverless 9.6.0, Hosted 9.5.2,
-  and self-managed 9.5.1, including all twenty-two MCP tools.
-- Claude Code 2.1.263 and Codex CLI 0.153.4 pass scoped MCP client checks
-  against the local lab, with captured protocol negotiation and results.
-- SDK tests cover current and legacy catalogs, query admission, busy calls,
-  deadlines, cancellation, the input-line cap, and every output schema.
-
-### Fixed
-
-- Live conformance validates current protocol result discriminators before
-  checking the shared catalog and tool payloads.
-
-## 0.7.1 — 2026-09-06
-
-### Added
-
-- Thirteen MCP inspection tools for alerts, cases, data views, dashboards,
-  and Fleet policies, bringing the default catalog to twenty tools.
-- Startup opt-in through `mcp serve --allow-query-tools` for synchronous
-  ES|QL and Query DSL tools. Each query uses one HTTP attempt and returns
-  bounded results under the selected credential's index privileges.
-
-## 0.7.0 — 2026-09-06
-
-### Added
-
-- `mcp serve` in both binaries, with seven read tools for stack diagnostics,
-  rules, and exception lists under one operator-selected target.
-- Typed tool schemas, selected result fields, static error messages, input
-  and output byte limits, four-call admission, deadlines, and cancellation.
-- The `elasticctl-mcp` library, all-four-crate package checks, and a crates.io
-  ownership guard for the normal publishing workflow.
-
-### Verified
-
-- All seven MCP tools passed on Serverless 9.6.0, Hosted 9.5.2 and
-  self-managed 9.5.1. MCP Inspector 2.5.0 passed all seven calls on the lab;
-  exact cleanup and lab teardown passed.
-
 ## Older releases
 
+- [0.7.x](docs/changelog/0.7.md)
 - [0.6.x](docs/changelog/0.6.md)
 - [0.5.x](docs/changelog/0.5.md)
 - [0.4.x](docs/changelog/0.4.md)

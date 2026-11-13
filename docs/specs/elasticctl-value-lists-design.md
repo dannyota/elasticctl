@@ -1,6 +1,6 @@
 # elasticctl value lists design
 
-Status: designed for 0.10 and approved after review. Not implemented.
+Status: approved after review and implemented for 0.10.0.
 Plans: 0.9.4 (on `dev-0.9.4`) and [0.10.0](../plans/v0.10.0.md). The
 [research](../plans/v0.10-research.md) records the sources, the live
 measurements V1 to V11 on Serverless 9.7.0, Hosted 9.5.6, and the 9.5.1 lab,

@@ -11,6 +11,7 @@
 - [Rules as Code](Rules-as-Code.md)
 - [Rules](Rules.md)
 - [Exceptions](Exceptions.md)
+- [Value Lists](Value-Lists.md)
 - [Search](Search.md)
 - [Alerts and Cases](Alerts-and-Cases.md)
 - [Data Views and Dashboards](Data-Views-and-Dashboards.md)
