@@ -18,7 +18,7 @@ Three send-once transport calls are added beside the existing `post_once`,
   POST on a retryable answer, which for `_import` would duplicate values (V5).
 - `delete_once_response(path)`: returns the status and the decoded JSON body
   instead of turning a 4xx into an error, so `value-lists delete` can read
-  `references` from a 409 (section 6.5). The shared error kinds and statuses
+  `message.error.references` from a 409 (section 6.5). The shared error kinds and statuses
   are built from it as usual.
 
 `patch_once_response` and `post_multipart_once_named_response` return the

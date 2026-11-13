@@ -137,11 +137,17 @@ you expect. The wiki says so.
 values with the container; they can stay visible to item reads for about two
 seconds after the 200 (V13).
 
-- A 409 carries `references`, the exception items that use the list. The
-  command reports `conflict` with Kibana's status and names each referencing
-  item by `list_id` and `item_id`. It never sends `deleteReferences` or
-  `ignoreReferences`. This needs the 409 body, which the shared error path
-  drops; section 8.1 adds the transport call that keeps it.
+- A 409 means exception items use the list. Its body, the same on 9.5.1,
+  9.5.6, and 9.7.0 (recorded fixture `container_delete_referenced`), is
+  `{"message":{"error":{"message", "references", "value_list_id"}},
+  "status_code":409}`, where each entry of `references` pairs the full
+  `exception_item` with its `exception_list`. The command reports `conflict`
+  with Kibana's status and names each referencing item by its `list_id`,
+  `item_id`, and `namespace_type`. A 409 whose body lacks
+  `message.error.references` is still `conflict`, with Kibana's message and
+  no names. It never sends `deleteReferences` or `ignoreReferences`. The body
+  comes through `delete_once_response` (section 8.1), since the shared error
+  path drops it.
 - A 404 before the preview is `not_found`.
 - A 5xx, a timeout, or an undecodable answer is `unknown` (D17). The command
   then reads `GET /api/lists?id=`: a 404 records the delete as applied, and
