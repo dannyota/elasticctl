@@ -1,6 +1,3 @@
-//! Triage context for one alert: the alert, the rule that fired it, the
-//! rule's exception lists, the cases that contain the alert, and the rule's
-//! alert volume in a window.
 use super::{
     AlertActivity, ExceptionCoverage, MAX_RELATED_CASES, Part, RuleSnapshot, SkipReason,
     alert_activity, degrade, exception_coverage, is_fatal, is_path_segment, snapshot_by_id,
@@ -14,7 +11,6 @@ use crate::{
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::Value;
 
-/// One case that contains the alert. `detail` is the case read by id.
 #[derive(Debug)]
 pub struct RelatedCase {
     pub id: String,
@@ -22,7 +18,6 @@ pub struct RelatedCase {
     pub detail: std::result::Result<Case, Error>,
 }
 
-/// The cases route answer: `total` rows, of which the first five are read.
 #[derive(Debug)]
 pub struct RelatedCases {
     pub total: usize,
@@ -39,7 +34,6 @@ pub struct AlertContext {
     pub activity: Part<AlertActivity>,
 }
 
-/// Static findings, in the order a report lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertFinding {
     AlertNotOpen,
@@ -50,7 +44,6 @@ pub enum AlertFinding {
     HasRelatedCase,
 }
 
-/// A source field read flat first, then as a nested object path.
 fn source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
     let pointer = format!("/{}", key.replace('.', "/"));
     match source.get(key) {
@@ -106,7 +99,6 @@ impl AlertContext {
         out
     }
 
-    /// True when any part or row is unavailable.
     pub fn partial(&self) -> bool {
         let list_rows =
             matches!(&self.exceptions, Part::Ok(c) if c.lists.iter().any(|l| l.facts.is_err()));
@@ -189,9 +181,6 @@ fn validate_rule_context(snapshot: RuleSnapshot) -> Result<RuleSnapshot> {
     Ok(snapshot)
 }
 
-/// Read the alert, then its rule, the rule's exception coverage, the cases
-/// that contain the alert, and the rule's alert activity, one request at a
-/// time. The alert read is primary; every later read is a part.
 pub async fn alert_context(t: &Transport, alert_id: &str, since: &str) -> Result<AlertContext> {
     validate_since(since)?;
     if !is_path_segment(alert_id) {

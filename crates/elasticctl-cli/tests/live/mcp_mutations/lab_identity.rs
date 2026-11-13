@@ -38,8 +38,6 @@ fn random_hex(bytes: usize) -> TestResult<String> {
         }
         let mut data = vec![0u8; bytes];
         let length = bytes.try_into().map_err(|_| "contract")?;
-        // The buffer is writable for length bytes; flag 2 selects the system
-        // RNG and requires a null provider (BCryptGenRandom's documented ABI).
         require(
             unsafe { bcrypt_gen_random(std::ptr::null_mut(), data.as_mut_ptr(), length, 2) } == 0,
         )?;
@@ -103,7 +101,6 @@ pub(super) async fn provision(
         _ => return Err("contract".into()),
     }
     check_cancelled()?;
-    // Reuse the built-in lab role; never create, modify, or delete a role.
     let mut basic_profile = profile.clone();
     basic_profile.username = Some(user.clone());
     basic_profile.password = Some(random_hex(32)?);
@@ -133,7 +130,6 @@ pub(super) async fn provision(
             )
             .await,
     )?;
-    // The generated password and its authenticated transport stay only in memory.
     drop(basic);
     basic_profile.password.take();
     let id = key["id"]
@@ -188,12 +184,9 @@ async fn recover_keys(lease: &Lease) -> TestResult<Vec<Value>> {
     Err("cleanup_failed".into())
 }
 pub(super) async fn clean(lease: &Lease) -> TestResult {
-    // Read retries are bounded; a failed mutation stops all later writes.
     if lease.key_attempted {
         let before = recover_keys(lease).await?;
         if before.iter().any(|k| k["invalidated"] == false) {
-            // name + owner uses the retained native-user transport, including
-            // when creation completed but its response or id was lost.
             let v = safe(
                 lease
                     .basic

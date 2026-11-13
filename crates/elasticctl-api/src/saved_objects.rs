@@ -1,5 +1,3 @@
-//! Opaque Saved Objects bundle transfer and validation.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
@@ -8,7 +6,6 @@ use serde_json::{Map, Value, json};
 
 const BASE: &str = "/api/saved_objects";
 
-/// A Saved Object selected for export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SavedObjectRef {
     #[serde(rename = "type")]
@@ -16,7 +13,6 @@ pub struct SavedObjectRef {
     pub id: String,
 }
 
-/// Read-only facts obtained by scanning an opaque Saved Objects bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleScan {
     pub dashboards: Vec<String>,
@@ -25,7 +21,6 @@ pub struct BundleScan {
     pub has_export_details: bool,
 }
 
-/// The server's Saved Objects import outcome.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SavedObjectsImportReport {
     pub success: bool,
@@ -34,7 +29,6 @@ pub struct SavedObjectsImportReport {
     pub errors: Vec<Value>,
 }
 
-/// Scan an opaque NDJSON bundle without changing any of its bytes.
 pub fn scan_bundle(bundle: &str) -> Result<BundleScan> {
     let mut dashboards = Vec::new();
     let mut counts = BTreeMap::new();
@@ -100,7 +94,6 @@ pub fn scan_bundle(bundle: &str) -> Result<BundleScan> {
     })
 }
 
-/// Export dashboards and their deep Saved Objects references as opaque NDJSON.
 pub async fn export(t: &Transport, ids: &[String]) -> Result<String> {
     let ids: BTreeSet<String> = ids.iter().cloned().collect();
     let objects = ids
@@ -118,7 +111,6 @@ pub async fn export(t: &Transport, ids: &[String]) -> Result<String> {
     t.post_text(&format!("{BASE}/_export"), Some(&body)).await
 }
 
-/// Import an opaque Saved Objects NDJSON bundle.
 pub async fn import(
     t: &Transport,
     bundle: &str,

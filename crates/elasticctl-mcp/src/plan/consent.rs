@@ -1,8 +1,6 @@
 use super::{MAX_CONSENT_TEXT_BYTES, PlanError};
 use crate::TargetContext;
 
-// Replace C0 except LF, DEL, C1, Unicode line and paragraph separators,
-// and bidirectional embedding, override, pop, and isolate controls.
 fn replaced(c: char) -> bool {
     matches!(c, '\0'..='\u{9}' | '\u{b}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }

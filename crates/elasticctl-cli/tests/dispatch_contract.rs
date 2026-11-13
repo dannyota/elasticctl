@@ -1,5 +1,3 @@
-//! Byte contracts captured before extracting dispatch. Existing semantic tests
-//! retain the detailed endpoint assertions; these pin both streams together.
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -344,7 +342,6 @@ async fn dispatch_request_order_and_guard_contract() {
                 .unwrap()
                 .contains("/api/detection_engine/rules?")
         );
-        // A rule_id selector reads the rule once; the preview reuses it.
         assert_eq!(requests.len(), if apply { 2 } else { 1 }, "{result}");
         let stderr = result["stderr"].as_str().unwrap();
         for target in ["profile: default", "HOST", "space: default"] {

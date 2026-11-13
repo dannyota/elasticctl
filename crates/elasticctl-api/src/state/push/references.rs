@@ -1,18 +1,9 @@
-//! Exception list reference resolution for state push.
-
 use crate::exceptions;
 use crate::model::{ExceptionItem, ListKey, Rule};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Inject each referenced list's live `id` into the rule.
-///
-/// Measured fact 3: `id` is required on create and validated by nothing, so a
-/// fabricated or carried pointer would be stored silently. Resolve against this
-/// stack every time. `plan_push` has already refused a list that is neither on
-/// the stack nor in the mirror, so a miss here means the live id could not be
-/// read, not that the list is absent.
 pub(super) fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<()> {
     let Some(Value::Array(refs)) = rule.as_map_mut().get_mut("exceptions_list") else {
         return Ok(());
@@ -49,11 +40,6 @@ pub(super) fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>)
     }
     Ok(())
 }
-/// The value-list ids an exception item's entries reference.
-///
-/// A `list` entry references a value list through `list.id`, a caller-supplied
-/// id that is stable across stacks (spec 7.7). A `BTreeSet` keeps the preview
-/// order deterministic.
 pub(super) fn value_list_refs(
     items: &[ExceptionItem],
     active_list_keys: &BTreeSet<ListKey>,

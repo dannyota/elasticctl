@@ -1,5 +1,3 @@
-//! Bounded JSON-lines MCP transport.
-
 use std::{marker::PhantomData, sync::Arc};
 
 use rmcp::{
@@ -22,10 +20,6 @@ pub const MAX_INPUT_LINE_BYTES: usize = 262_144;
 pub const MAX_STRUCTURED_CONTENT_BYTES: usize = 262_144;
 pub const MAX_OUTPUT_FRAME_BYTES: usize = 1_048_576;
 
-/// A JSON-lines transport that bounds complete inbound and outbound frames.
-///
-/// It retains the SDK codec for message decoding. The frame scanner only
-/// establishes the product byte bound before that codec sees a complete line.
 pub struct BoundedIo<R, W> {
     read: BufReader<R>,
     line: Vec<u8>,
@@ -56,8 +50,6 @@ where
         }
     }
 
-    /// Read exactly one delimited line while never adding more than the
-    /// product payload cap plus its newline to `line`.
     async fn read_frame(&mut self) -> std::io::Result<bool> {
         loop {
             let available = self.read.fill_buf().await?;

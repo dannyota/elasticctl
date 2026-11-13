@@ -1,7 +1,3 @@
-//! Typed wrappers for the detection-engine API.
-//!
-//! Functions use stable `rule_id` values, not volatile server-side `id` values.
-
 mod preview_execution;
 pub use preview_execution::{
     PREVIEW_ALERTS_INDEX_PREFIX, PreviewHits, PreviewResult, decode_preview_hits,
@@ -19,20 +15,8 @@ use serde_json::{Value, json};
 
 const BASE: &str = "/api/detection_engine/rules";
 
-/// Elasticsearch's `_find` result window. `from + size` cannot exceed this;
-/// 10,001 returns a 400 error.
-///
-/// It bounds `per_page` and the largest `_find` result. Smaller pages cannot
-/// evade the `from + size` limit. A window-sized request read 2,066 rules in
-/// 2.4 seconds; 21 pages of 100 took 8.4–11 seconds.
 const RESULT_WINDOW: u32 = 10_000;
 
-/// Which rules an operation acts on, grouped by source.
-///
-/// The server-side split filters on `alert.attributes.params.immutable`. On
-/// Serverless 9.6.0, it agreed exactly with `params.ruleSource.type` (2,066
-/// prebuilt / 0 custom). Its presence on older versions is unmeasured.
-/// `customized` narrows the prebuilt set to rules edited on the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleSource {
@@ -44,8 +28,6 @@ pub enum RuleSource {
 }
 
 impl RuleSource {
-    /// The measured server-side filter clause. `None` means no clause: the
-    /// whole corpus. Spec 5.5.
     pub fn clause(&self) -> Option<&'static str> {
         match self {
             RuleSource::Custom => Some("alert.attributes.params.immutable: false"),
@@ -63,22 +45,14 @@ pub struct RuleFilter {
     pub rule_type: Option<String>,
     pub severity: Option<String>,
     pub tag: Option<String>,
-    /// Exact display name, filtered server-side. This takes one request;
-    /// walking 2,066 rules took 8.8 seconds.
     pub name: Option<String>,
-    /// A raw KQL fragment, combined with the structured filters above.
     pub query: Option<String>,
-    /// Friendly name-substring plus exact-tag search (spec 4.7). Distinct from
-    /// `name` (exact) and `query` (raw KQL).
     pub search: Option<String>,
-    /// MITRE ATT&CK technique (`T1059`) or subtechnique (`T1059.001`) id.
     pub technique: Option<String>,
-    /// MITRE ATT&CK tactic id, such as `TA0002`.
     pub tactic: Option<String>,
 }
 
 impl RuleFilter {
-    /// Kibana filters saved objects with KQL over `alert.attributes.*`.
     pub fn to_kql(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(clause) = self.source.clause() {
@@ -113,7 +87,6 @@ impl RuleFilter {
             ));
         }
         if let Some(v) = &self.technique {
-            // A period marks a subtechnique id, which has its own field.
             let sub = if v.contains('.') { ".subtechnique" } else { "" };
             parts.push(format!(
                 "alert.attributes.params.threat.technique{sub}.id: \"{}\"",
@@ -132,9 +105,6 @@ impl RuleFilter {
         (!parts.is_empty()).then(|| parts.join(" AND "))
     }
 
-    /// Check `technique` (`T` and four ASCII digits, optionally `.` and three
-    /// more) and `tactic` (`TA` and four ASCII digits). Every read calls this
-    /// before the capability probe and before any request.
     pub fn validate_threat(&self) -> Result<()> {
         let technique = |v: &str| has_shape(v, "T0000") || has_shape(v, "T0000.000");
         let tactic = |v: &str| has_shape(v, "TA0000");
@@ -149,35 +119,19 @@ impl RuleFilter {
     }
 }
 
-/// True when `value` equals `shape` byte for byte, where a `0` in `shape`
-/// stands for any ASCII digit.
 fn has_shape(value: &str, shape: &str) -> bool {
     let same = |(v, s): (u8, u8)| v == s || (s == b'0' && v.is_ascii_digit());
     value.len() == shape.len() && value.bytes().zip(shape.bytes()).all(same)
 }
 
-/// Escape a value for use inside a double-quoted KQL literal.
-///
-/// A quote could otherwise close the literal and make the remaining value KQL,
-/// turning a scoped bulk action into an unscoped action. Escape backslashes
-/// first to avoid double-escaping inserted quote escapes. Shared with the
-/// exceptions vertical: the two filter builders must not diverge, because a
-/// divergence silently matches the wrong objects.
 pub(crate) fn kql_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Escape a value for a wildcard-wrapped KQL substring term (`*<value>*`).
-///
-/// Builds on `kql_escape`, then escapes the KQL wildcards `*` and `?` so a
-/// search text cannot inject its own wildcards and widen the match. Shared
-/// with the exceptions vertical: the two filter builders must not diverge,
-/// because a divergence silently matches the wrong objects.
 pub(crate) fn kql_escape_wildcard(value: &str) -> String {
     kql_escape(value).replace('*', "\\*").replace('?', "\\?")
 }
 
-/// KQL selecting exactly the given stable rule ids.
 fn rule_id_query(rule_ids: &[String]) -> String {
     rule_ids
         .iter()
@@ -195,8 +149,6 @@ pub async fn find_page(
     find(t, filter, page, per_page, "").await
 }
 
-/// The first `per_page` matching rules ordered by name, and the match total.
-/// A short page is an error, so callers can trust `total > returned`.
 pub async fn find_first_by_name(
     t: &Transport,
     filter: &RuleFilter,
@@ -229,8 +181,6 @@ async fn find(
     decode_find(&body)
 }
 
-/// Decode a `_find` response into rules and a total. Fixtures use this same
-/// path offline.
 pub fn decode_find(body: &Value) -> Result<(Vec<Rule>, u64)> {
     let map = body
         .as_object()
@@ -284,7 +234,6 @@ fn required_u64(map: &serde_json::Map<String, Value>, field: &str) -> Result<u64
         .ok_or_else(|| find_error(field, "must be an unsigned integer"))
 }
 
-/// The three totals that prove `immutable` divides the complete rule corpus.
 pub(crate) struct SourceTotals {
     pub custom: u64,
     pub prebuilt: u64,
@@ -297,12 +246,6 @@ impl SourceTotals {
     }
 }
 
-/// Verify that the custom and prebuilt `immutable` filters are disjoint and
-/// exhaustive. `customized` is intentionally absent: it overlaps prebuilt.
-///
-/// This runs only after an otherwise unselected custom or prebuilt read found
-/// no rules. A valid empty slice must still account for the entire corpus with
-/// its opposite source slice.
 pub(crate) async fn verify_source_partition(t: &Transport) -> Result<SourceTotals> {
     let (_, custom) = find_page(
         t,
@@ -346,10 +289,6 @@ pub(crate) async fn verify_source_partition(t: &Transport) -> Result<SourceTotal
     Ok(totals)
 }
 
-/// Detection-rule types used to partition a corpus. Each rule has one
-/// `params.type`, so type slices are disjoint and exhaustive. Tags are not:
-/// a rule can have many tags or none. Measured against 2,066 rules, these seven
-/// type slices sum exactly to the corpus.
 const RULE_TYPES: [&str; 7] = [
     "query",
     "eql",
@@ -360,14 +299,6 @@ const RULE_TYPES: [&str; 7] = [
     "new_terms",
 ];
 
-/// Every rule matching the filter.
-///
-/// Read corpora within the result window in one request. For larger corpora,
-/// partition by rule type, then by `enabled` when needed. Verify the partition
-/// by summing slice totals to the corpus total.
-///
-/// Never return a partial corpus. `state diff` would report unread rules as
-/// locally added, and `state pull` would silently omit them.
 pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     let (rules, total) = find_page(t, filter, 1, RESULT_WINDOW).await?;
 
@@ -378,8 +309,6 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         return Ok(rules);
     }
 
-    // A caller that filtered by type has one requested slice. Only `enabled`
-    // can subdivide it further.
     let types: Vec<&str> = match &filter.rule_type {
         Some(t) => vec![t.as_str()],
         None => RULE_TYPES.to_vec(),
@@ -392,8 +321,6 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         let mut type_filter = filter.clone();
         type_filter.rule_type = Some(rule_type.to_string());
 
-        // The opening request already fetched this selected type. Repeating it
-        // would return the same oversized result before the `enabled` split.
         let slice_total = if filter.rule_type.is_some() {
             total
         } else {
@@ -410,8 +337,6 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
             slice_total
         };
 
-        // A caller that filtered by `enabled` leaves no further partition.
-        // Refuse the slice rather than truncating it to 10,000 rules.
         if filter.enabled.is_some() {
             return Err(oversized(slice_total));
         }
@@ -432,8 +357,6 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
         }
     }
 
-    // The sum verifies exhaustiveness. A newer rule type would otherwise read
-    // as zero, disappear from pulls, and appear remote-only in diffs.
     if summed != total {
         return Err(Error::new(
             ErrorKind::Http,
@@ -448,8 +371,6 @@ pub async fn find_all(t: &Transport, filter: &RuleFilter) -> Result<Vec<Rule>> {
     Ok(collected)
 }
 
-/// A server that counts more rules than it serves contradicts itself. A short
-/// list is indistinguishable from rules deleted between count and read.
 fn short_read(counted: u64, returned: usize) -> Error {
     Error::new(
         ErrorKind::Http,
@@ -460,8 +381,6 @@ fn short_read(counted: u64, returned: usize) -> Error {
     )
 }
 
-/// A slice that exceeds the window after both partitions cannot be served.
-/// Returning its first 10,000 rules would make unread rules look remote-only.
 fn oversized(count: u64) -> Error {
     Error::new(
         ErrorKind::Unsupported,
@@ -473,16 +392,8 @@ fn oversized(count: u64) -> Error {
     )
 }
 
-/// How many `rule_id`s go into one filtered `_find`.
-///
-/// A KQL disjunction grows with the selection, and `--tag` can select
-/// thousands of rules. Chunking keeps each URL below practical limits.
 const ID_CHUNK: usize = 50;
 
-/// The rules carrying exactly these `rule_id`s.
-///
-/// IDs absent from the stack do not return. That is expected for locally added
-/// rules that `state push` creates.
 pub async fn find_by_rule_ids(t: &Transport, rule_ids: &[String]) -> Result<Vec<Rule>> {
     let mut found = Vec::with_capacity(rule_ids.len());
     for chunk in rule_ids.chunks(ID_CHUNK) {
@@ -524,7 +435,6 @@ pub async fn update(t: &Transport, rule: &Rule) -> Result<Rule> {
 pub async fn patch(t: &Transport, rule_id: &str, patch: &Value) -> Result<Rule> {
     let mut body = patch.as_object().cloned().unwrap_or_default();
     body.insert("rule_id".into(), json!(rule_id));
-    // PATCH accepts `rule_id` directly, avoiding the volatile server `id`.
     let response = t.patch(BASE, &Value::Object(body)).await?;
     Rule::from_value(response)
 }
@@ -561,10 +471,6 @@ pub struct BulkOutcome {
     pub total: u64,
 }
 
-/// Decode a `_bulk_action` response summary, refusing a malformed success body.
-///
-/// A missing or mistyped counter, or a total that contradicts the per-outcome
-/// counters, must fail rather than read as "nothing happened".
 pub fn decode_bulk_outcome(body: &Value) -> Result<BulkOutcome> {
     let map = body
         .as_object()
@@ -617,7 +523,6 @@ pub async fn bulk_by_rule_ids(
     rule_ids: &[String],
     dry_run: bool,
 ) -> Result<BulkOutcome> {
-    // An empty selection must not become an unscoped query for every rule.
     if rule_ids.is_empty() {
         return Ok(BulkOutcome::default());
     }
@@ -633,14 +538,6 @@ pub async fn bulk_by_rule_ids(
     decode_bulk_outcome(&response)
 }
 
-/// Export every rule, or exactly the named ones.
-///
-/// `None` posts no body for a whole-space export. `Some(ids)` posts `objects`
-/// so a subset export transfers only the selected rules.
-///
-/// The response is a bundle: rules, exception-list containers, exception items,
-/// and a trailer. `_export` appends the exception objects a rule references, so
-/// decoding them to rules only would drop that content.
 pub async fn export(t: &Transport, rule_ids: Option<&[String]>) -> Result<Bundle> {
     let body = rule_ids.map(|ids| {
         json!({
@@ -656,19 +553,12 @@ pub async fn export(t: &Transport, rule_ids: Option<&[String]>) -> Result<Bundle
     codec::decode_bundle(&text)
 }
 
-/// IDs to check in one `_find`. This keeps large requests below proxy URL
-/// limits while a 40-rule corpus still uses one request.
 const EXISTENCE_CHUNK: usize = 50;
 
-/// Which of these rule ids already exist on the stack.
-///
-/// Check file IDs before upload so existing rules can be skipped. This makes
-/// imports idempotent and lets dry runs distinguish skipped rules.
 pub async fn existing_rule_ids(
     t: &Transport,
     rule_ids: &[String],
 ) -> Result<std::collections::BTreeSet<String>> {
-    // An empty list must not become an unscoped find for every rule.
     let mut found = std::collections::BTreeSet::new();
     if rule_ids.is_empty() {
         return Ok(found);
@@ -700,7 +590,6 @@ pub async fn import(t: &Transport, ndjson: &str, overwrite: bool) -> Result<Valu
 mod tests {
     use super::*;
 
-    /// Spec 5.5, measured 2026-08-14.
     #[test]
     fn each_source_maps_to_its_measured_filter() {
         assert_eq!(
@@ -744,8 +633,6 @@ mod tests {
         assert_eq!(kql_escape("a\"b"), expected);
     }
 
-    /// The wildcard pass runs after `kql_escape`, escaping `*` and `?` without
-    /// undoing the backslash and quote escaping.
     #[test]
     fn kql_escape_wildcard_escapes_kql_wildcards_after_kql_escape() {
         assert_eq!(kql_escape_wildcard("*"), "\\*");
@@ -753,8 +640,6 @@ mod tests {
         assert_eq!(kql_escape_wildcard("a\\b\"c"), kql_escape("a\\b\"c"));
     }
 
-    /// A backslash before a quote tests escape order. Escaping quotes first
-    /// would double the backslash inserted for the quote and corrupt the value.
     #[test]
     fn kql_escape_orders_backslash_before_quote() {
         let mut input = String::new();
@@ -763,8 +648,6 @@ mod tests {
 
         let escaped = kql_escape(&input);
 
-        // Double the backslash, then escape the quote: three backslashes and a
-        // quote.
         let mut expected = "\\".repeat(3);
         expected.push('"');
         assert_eq!(escaped, expected);

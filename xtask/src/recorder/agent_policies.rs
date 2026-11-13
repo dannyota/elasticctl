@@ -1,5 +1,3 @@
-//! Agent policies helpers.
-
 use crate::diagnostics::{record_trace, recording_error};
 use crate::fixtures::{
     RecordedFixture, Recording, error_fixture, exchange_fixture, response_fixture,
@@ -12,15 +10,6 @@ use crate::scrub::redact;
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
-/// Remove server-owned agent-policy details while preserving the portable
-/// configuration. `created_by`/`updated_by` become the same `"REDACTED"`
-/// placeholder the generic `scrub` already uses for every other identity
-/// field — repeated here so `scrub_agent_policy` is provably correct on its
-/// own, independent of the generic pass `exchange_fixture`/`response_fixture`
-/// apply after it. `created_at`/`updated_at` become a fixed timestamp so a
-/// re-record of the same object is byte-identical. `version` is an opaque
-/// per-write concurrency token and is removed outright. `space_ids` keeps
-/// only `"default"`, since a fixture must never name another live space.
 fn scrub_agent_policy(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -71,18 +60,6 @@ fn agent_policy_exchange_fixture(
     exchange_fixture(name, flavor, version, request, body)
 }
 
-/// Reduce a `GET /api/fleet/epm/packages/{name}` response to the fields the
-/// recorder is willing to publish. The full item is registry metadata for
-/// every package Fleet knows about — it also carries `readme`, `assets`,
-/// `data_streams`, `owner`, `conditions`, and, once installed, an
-/// `installationInfo` with `installed_kibana`, `installed_es`,
-/// `installed_kibana_space_id`, `created_at`, `updated_at`, and
-/// `verification_key_id` — and the response envelope carries its own
-/// `metadata` (`has_policies`, and on some versions `keepPoliciesUpToDate`)
-/// alongside `item`. Nothing else in the pipeline scrubs any of this, so
-/// this returns only the reduced item, never the envelope, and returns
-/// `None` rather than silently publishing an unreduced body when `item` is
-/// missing or not an object. The caller must refuse to record on `None`.
 pub(super) fn reduce_package_status_item(body: &Value) -> Option<Value> {
     let item = body.get("item")?.as_object()?;
     let installed_version = item
@@ -102,11 +79,6 @@ pub(super) fn reduce_package_status_item(body: &Value) -> Option<Value> {
     Some(Value::Object(reduced))
 }
 
-/// Filter a `GET /api/fleet/agent_policies` list body down to the marker
-/// item and rewrite `total` to match, so an unscoped list of every real
-/// policy on the deployment never enters a public fixture. Returns the kept
-/// count so the caller can refuse to record a response that never held the
-/// marker.
 fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize {
     let Some(items) = body.get_mut("items").and_then(Value::as_array_mut) else {
         return 0;
@@ -119,14 +91,6 @@ fn scope_agent_policy_list_to_marker(body: &mut Value, marker_id: &str) -> usize
     kept
 }
 
-/// Record the marker agent-policy lifecycle (Fleet spec section 14, added
-/// 0.6.0): initialize Fleet, prove the marker policy is absent, read the
-/// `elastic_agent` package's installation state, create the marker policy,
-/// read it back singly and in a scoped list, prove a duplicate name
-/// conflicts, update it twice — once with every field explicit and once
-/// with `unenroll_timeout` omitted, to measure whether the update route
-/// merges or replaces — then delete it. `cleanup` removes both policies by
-/// name if a step above returns early.
 pub(super) async fn record_agent_policies(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -160,8 +124,6 @@ pub(super) async fn record_agent_policies(
         None,
     ));
 
-    // Recorded as a classified 404, proving the stable route before this run
-    // creates its marker policy.
     record_trace("fleet-agent-policy-preflight");
     match t
         .get(&format!(
@@ -341,9 +303,6 @@ pub(super) async fn record_agent_policies(
         updated,
     ));
 
-    // Neither this write nor its follow-up read is asserted on
-    // `unenroll_timeout`: whether it survives an omitted field is the
-    // measurement, not a precondition.
     let update_omitted_body = json!({
         "name": AGENT_POLICY_NAME,
         "namespace": "default",

@@ -1,5 +1,3 @@
-//! Ownership helpers.
-
 use crate::diagnostics::recording_error;
 use crate::recorder::markers::{
     ALERT_MARKER_TAG, ALERT_PROBE_INDEX, ALERT_RULE_ID, CASE_TAG, CASE_TITLE, ITEM_ID, LIST_ID,
@@ -64,8 +62,6 @@ pub(crate) fn owns_alert_index(value: &Value) -> bool {
     value["_source"]["marker"].as_str() == Some(ALERT_MARKER_TAG)
 }
 
-/// True when a case create response proves the fixed marker identity: the
-/// exact title AND the marker tag, mirroring `owns_rule`'s AND semantics.
 pub(crate) fn owns_case(value: &Value) -> bool {
     value.get("title").and_then(Value::as_str) == Some(CASE_TITLE)
         && value

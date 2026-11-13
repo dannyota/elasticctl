@@ -22,7 +22,6 @@ import json
 import sys
 import time
 
-# Verified against the three empire_* datasets.
 RENAMES = {
     "EventID": "event.code",
     "CommandLine": "process.command_line",
@@ -32,7 +31,6 @@ RENAMES = {
     "Hostname": "host.name",
 }
 
-# Process-creation events by channel-specific ID.
 PROCESS_CREATION_CODES = {"1", "4688"}
 
 
@@ -50,7 +48,6 @@ def remap(event, timestamp):
         if key in RENAMES:
             set_dotted(out, RENAMES[key], value)
         elif key in ("@timestamp", "host"):
-            # `host` is scalar here but an object in ECS.
             continue
         else:
             out[key] = value
@@ -94,7 +91,7 @@ def main():
     for position, event in enumerate(events):
         moment = now - args.window_seconds + position * step
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(moment)) + ".000Z"
-        # Use `create`, not `index`: data streams accept no other operation.
+        # Data streams accept only `create`: https://www.elastic.co/docs/manage-data/data-store/data-streams/use-data-stream
         print(json.dumps({"create": {"_index": args.index}}))
         print(json.dumps(remap(event, stamp)))
 

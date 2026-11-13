@@ -59,8 +59,6 @@ pub(super) fn read_journal(transaction_dir: &Path) -> Result<Option<Journal>> {
     let mut phase = Phase::Prepared;
     for record in records {
         if !record.ends_with(b"\n") {
-            // A crash can leave only the final append incomplete. It cannot
-            // hide any later record because the incomplete slice is final.
             break;
         }
         let update: PhaseRecord = serde_json::from_slice(record).map_err(|e| {

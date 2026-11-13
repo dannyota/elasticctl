@@ -1,4 +1,3 @@
-//! Whole-surface protocol contracts with recorded upstream responses.
 #[allow(dead_code)]
 mod support;
 
@@ -301,7 +300,6 @@ async fn stack(config: Stack) -> MockServer {
     server
 }
 
-// Preserve container types when poisoning fields that typed upstream decoders retain.
 fn seed_strings(value: &mut Value) {
     match value {
         Value::String(text) => *text = SENTINEL.into(),
@@ -817,7 +815,6 @@ async fn counts(degraded: bool) {
         let missing = config.missing_list;
         let mock = stack(config).await;
         let mut h = Harness::start(target(&mock), options());
-        // Warm the capability cache outside the measured request plan.
         let warm = request(
             &mut h,
             true,
@@ -961,7 +958,6 @@ async fn oversized_after_resource_child() {
     assert!(
         serde_json::from_str::<Value>(&line).unwrap()["result"]["contents"][0]["text"].is_string()
     );
-    // The server stops reading once the line passes the limit, so a closed pipe here is expected.
     let mut oversized = vec![b'x'; 262_145];
     oversized.push(b'\n');
     allow_closed_pipe(cw.write_all(&oversized).await, "write oversized line");
@@ -1021,7 +1017,6 @@ async fn mixed_admission() {
     let uri = format!("http://{}", listener.local_addr().unwrap());
     let upstream = *mock.address();
     let (release, gate) = tokio::sync::watch::channel(false);
-    // Forward requests for wiremock recording, but hold responses until explicitly released.
     let proxy = tokio::spawn(async move {
         let mut connections = tokio::task::JoinSet::new();
         loop {

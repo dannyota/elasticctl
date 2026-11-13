@@ -1,4 +1,3 @@
-//! Static mutation planner definitions.
 use crate::{
     ServerState,
     catalog::ToolId,

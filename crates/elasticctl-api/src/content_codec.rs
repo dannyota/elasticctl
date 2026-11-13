@@ -1,11 +1,8 @@
-//! Portable JSON and YAML sequence codecs.
-
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::path::Path;
 
-/// The portable content artifact format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentFormat {
     Json,
@@ -13,7 +10,6 @@ pub enum ContentFormat {
 }
 
 impl ContentFormat {
-    /// YAML is selected only by its conventional filename extensions.
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|extension| extension.to_str()) {
             Some("yaml") | Some("yml") => Self::Yaml,
@@ -22,7 +18,6 @@ impl ContentFormat {
     }
 }
 
-/// Encode portable content as a reviewable sequence.
 pub fn encode_sequence<T: Serialize>(values: &[T], format: ContentFormat) -> Result<String> {
     match format {
         ContentFormat::Json => serde_json::to_string_pretty(values)
@@ -32,10 +27,6 @@ pub fn encode_sequence<T: Serialize>(values: &[T], format: ContentFormat) -> Res
     }
 }
 
-/// Decode a portable JSON or YAML sequence.
-///
-/// Callers decide whether an empty artifact is meaningful. Element failures
-/// name both the content kind and the zero-based element index.
 pub fn decode_sequence<T: DeserializeOwned>(
     body: &str,
     format: ContentFormat,

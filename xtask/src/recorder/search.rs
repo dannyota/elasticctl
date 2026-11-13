@@ -1,5 +1,3 @@
-//! Search helpers.
-
 use crate::diagnostics::recording_error;
 use crate::fixtures::{Recording, exchange_fixture, response_fixture};
 use crate::recorder::esql_async::{POLL_INTERVAL, record_esql_async};
@@ -11,9 +9,6 @@ use crate::recorder::session::RecordingSession;
 use crate::scrub::{redact_data_views, strip_pit_token, strip_volatile};
 use serde_json::json;
 
-/// Record the search probe: a marker-scoped scratch index seeded with three
-/// documents, the sync and async ES|QL and Query DSL exchanges over them, then
-/// the Kibana data-view and default-index lookups. The index is deleted by `cleanup`.
 pub(super) async fn record_search(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -41,7 +36,6 @@ pub(super) async fn record_search(
         ));
     }
     session.ownership.search_index = true;
-    // `_refresh` rejects a body, so use the GET form, which sends none.
     t.get_absolute_es(&format!("/{SEARCH_PROBE_INDEX}/_refresh"))
         .await?;
 

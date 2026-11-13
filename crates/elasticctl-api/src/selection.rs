@@ -1,23 +1,11 @@
-//! Resolve user-facing selectors to stable `rule_id` values.
-//!
-//! One resolver serves `rules export`, `delete`, `enable`, and state commands.
-//! This keeps ambiguous-name and empty-match behavior consistent.
-//!
-//! Identity is always `rule_id`. Names only find IDs.
-
 use crate::model::Rule;
 use crate::rules::{self, RuleFilter};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 
-/// Displays an unreadable `rule_id`, such as a non-string value from the
-/// server.
 pub const UNREADABLE_RULE_ID: &str = "<unreadable rule_id>";
 
-/// Same-named candidates to consider in one page. The cap prevents a
-/// pathological name lookup from becoming a corpus read.
 pub const NAME_SEARCH_LIMIT: u32 = 100;
 
-/// Match names exactly. A prefix match could target the wrong rule.
 pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
     let matches: Vec<&Rule> = found.iter().filter(|r| r.name() == name).collect();
 
@@ -25,13 +13,9 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
         1 => Ok(matches[0].rule_id()?.to_string()),
         0 => Err(Error::new(
             ErrorKind::NotFound,
-            // The selector might be an absent `rule_id`; reporting a missed
-            // name would misidentify the problem.
             format!("No rule with rule_id or name '{name}'"),
         )),
         _ => {
-            // List every candidate, including unreadable IDs, so the count and
-            // list agree.
             let ids: Vec<&str> = matches
                 .iter()
                 .map(|r| r.rule_id().unwrap_or(UNREADABLE_RULE_ID))
@@ -48,11 +32,6 @@ pub fn pick_by_name(found: &[Rule], name: &str) -> Result<String> {
     }
 }
 
-/// Run `pick_by_name` on a candidate page with the server's candidate total.
-///
-/// The KQL filter can return near matches on an analyzed field, so compare
-/// exactly here. If the page is truncated with no exact match, report the cap
-/// instead of claiming the name is absent.
 pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<String> {
     match pick_by_name(found, name) {
         Err(e) if e.kind == ErrorKind::NotFound && total > found.len() as u64 => Err(Error::new(
@@ -67,11 +46,6 @@ pub fn pick_by_name_capped(found: &[Rule], name: &str, total: u64) -> Result<Str
     }
 }
 
-/// Resolve a `rule_id` or display name against the stack. Try `rule_id` first
-/// because it is unambiguous.
-///
-/// Name lookup uses one server-filtered `_find`. Walking 2,066 rules took 8.8
-/// seconds only to report no match.
 pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
     match get_if_exists(t, selector).await? {
         Some(rule) => Ok(rule.rule_id()?.to_string()),
@@ -79,11 +53,6 @@ pub async fn to_rule_id(t: &Transport, selector: &str) -> Result<String> {
     }
 }
 
-/// Resolve a selector like [`to_rule_id`] and return the stored rule too.
-///
-/// Reuse the first read only when it echoes the selector. Kibana matches
-/// `rule_id` through KQL, which decodes escapes, so `r\\n` can return the rule
-/// stored as `r\n`; that rule must be read again by its own `rule_id`.
 pub async fn to_rule(t: &Transport, selector: &str) -> Result<(String, Rule)> {
     let rule_id = match get_if_exists(t, selector).await? {
         Some(rule) if rule.rule_id()? == selector => return Ok((selector.to_string(), rule)),
@@ -111,10 +80,6 @@ async fn by_name(t: &Transport, selector: &str) -> Result<String> {
     pick_by_name_capped(&candidates, selector, total)
 }
 
-/// Match a selector against local rules before querying the stack.
-///
-/// `None` means no local match, so the caller queries the stack.
-/// `Some(Err(..))` indicates an ambiguous local name.
 fn local_match(local: &[Rule], selector: &str) -> Option<Result<String>> {
     if local.iter().any(|r| r.rule_id().ok() == Some(selector)) {
         return Some(Ok(selector.to_string()));
@@ -141,27 +106,11 @@ fn local_match(local: &[Rule], selector: &str) -> Option<Result<String>> {
     }
 }
 
-/// Whether `rule` matches a `--search` text: a case-insensitive name substring
-/// or an exact tag.
-///
-/// The server-side KQL (`alert.attributes.name: "*<text>*"`) matches an
-/// analyzed field case-insensitively, so the local matcher must too, or a
-/// `diff`/`push` would select a different rule set than the remote read finds.
 fn search_matches(rule: &Rule, text: &str) -> bool {
     let needle = text.to_lowercase();
     rule.name().to_lowercase().contains(needle.as_str()) || rule.tags().contains(&text)
 }
 
-/// Resolve selectors, an optional tag, and an optional search to `rule_id`
-/// values. Returns `None` when none is given and the caller should act on every
-/// rule.
-///
-/// Check `local` before the stack. Pass an empty slice for `rules export` and
-/// `state pull`. Pass disk rules for local commands so scoped `push` can select
-/// locally added rules that the stack does not have.
-///
-/// `noun` completes command-specific refusal messages, such as "nothing to
-/// export".
 pub async fn resolve(
     t: &Transport,
     selectors: &[String],
@@ -174,9 +123,6 @@ pub async fn resolve(
         return Ok(None);
     }
 
-    // An empty or whitespace-only search matches every rule, both locally
-    // (`contains("")`) and remotely (`name: "**"`). Refuse it rather than
-    // silently widening a scoped operation to the whole corpus.
     if let Some(text) = search
         && text.trim().is_empty()
     {
@@ -194,7 +140,6 @@ pub async fn resolve(
         }
     }
 
-    // Track tag matches separately so a selector cannot hide an unmatched tag.
     let mut tag_matched = false;
     if let Some(tag) = tag {
         for rule in local.iter().filter(|r| r.tags().contains(&tag)) {
@@ -212,9 +157,6 @@ pub async fn resolve(
         }
     }
 
-    // `--search` mirrors `--tag`: match locally, then on the stack, and union
-    // the results. The local matcher reuses the same predicate as the remote
-    // KQL so both sides narrow to the same rule set.
     let mut search_matched = false;
     if let Some(text) = search {
         for rule in local.iter().filter(|r| search_matches(r, text)) {
@@ -235,8 +177,6 @@ pub async fn resolve(
     ids.sort();
     ids.dedup();
 
-    // Report an unmatched `--tag` even when a selector matched. A mistyped tag
-    // must not silently shrink the result.
     if let Some(t) = tag
         && !tag_matched
     {
@@ -246,7 +186,6 @@ pub async fn resolve(
         ));
     }
 
-    // Same for `--search`: a mistyped text must not silently shrink the result.
     if let Some(s) = search
         && !search_matched
     {
@@ -256,8 +195,6 @@ pub async fn resolve(
         ));
     }
 
-    // Defensive fallback: name the selector in the refusal rather than leaving
-    // it blank.
     if ids.is_empty() {
         return Err(Error::new(
             ErrorKind::NotFound,
@@ -306,7 +243,6 @@ mod tests {
 
     #[test]
     fn a_capped_candidate_page_says_so_rather_than_claiming_the_name_is_absent() {
-        // A truncated result must not report the name as absent.
         let found: Vec<Rule> = (0..NAME_SEARCH_LIMIT)
             .map(|i| rule(&format!("id-{i}"), "Other"))
             .collect();
@@ -328,8 +264,6 @@ mod tests {
     #[test]
     fn a_conflict_still_names_every_candidate_when_one_rule_id_is_unreadable() {
         let readable = rule("a", "Same");
-        // `Rule::from_value` rejects non-string IDs, but transparent
-        // `Deserialize` does not, so `pick_by_name` must handle one.
         let unreadable: Rule =
             serde_json::from_value(json!({"rule_id": 123, "name": "Same"})).unwrap();
         let found = vec![readable, unreadable];
@@ -363,9 +297,6 @@ mod tests {
         assert!(local_match(&local, "Ghost").is_none());
     }
 
-    /// The server matches the analyzed `name` field case-insensitively, so the
-    /// local `--search` matcher must too, or `diff`/`push` would narrow the
-    /// local side differently from the remote read (spec 4.7).
     #[test]
     fn search_matches_a_different_case_name_substring() {
         let r = rule("a", "Suspicious Process");

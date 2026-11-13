@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use elasticctl_core::{Error, ErrorKind, Result};
 
-/// An explicitly enabled mutation class.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MutationClass {
     AlertsTriage,
@@ -22,7 +21,6 @@ impl MutationClass {
     }
 }
 
-/// The mutation classes enabled for one server session.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MutationClasses(BTreeSet<MutationClass>);
 

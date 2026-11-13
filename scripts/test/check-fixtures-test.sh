@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Exercise the fixture leak check against disposable fixture directories.
 set -euo pipefail
 
 ROOT=$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)
@@ -10,7 +9,6 @@ cases=0
 
 fail() { printf 'check-fixtures-test: %s\n' "$*" >&2; exit 1; }
 
-# Write one fixture file holding the given line and run the check on it.
 run_case() {
   rm -rf -- "$REPO"
   mkdir -p "$REPO/scripts" "$REPO/tests/fixtures/sample-1.0.0"
@@ -26,7 +24,6 @@ clean() {
   [ "$status" -eq 0 ] || fail "$1: expected a clean result, got: $output"
 }
 
-# A leak fails, names the file and line, and never repeats the matched text.
 leak() {
   local name=$1 line=$2 secret=$3
   run_case "$line"
@@ -56,8 +53,6 @@ leak "dated backing index in embedded NDJSON" \
 leak "dated backing index in a list" \
   "\"indices\": \".ds-a-$date_part-000001,.ds-b-$date_part-000002\"" "$date_part"
 
-# Build the credential and address shapes at run time so no scanner reads
-# them from this file.
 key="essu_$(printf 'A%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)"
 leak "credential" "\"api_key\": \"$key\"" "$key"
 address="operator@$(printf 'corp').test"

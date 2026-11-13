@@ -1,4 +1,3 @@
-//! Stored plan tool definitions and adapters.
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_core::{Error, ErrorKind};

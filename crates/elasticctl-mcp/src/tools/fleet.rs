@@ -1,5 +1,3 @@
-//! Read-only projections for Fleet agent and integration policies.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::fleet::{

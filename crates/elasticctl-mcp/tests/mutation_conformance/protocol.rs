@@ -38,7 +38,6 @@ impl ClientHandler for DefaultHandler {
         client_info()
     }
 }
-// Capture bytes as each reader delivers them, preserving complete JSON-RPC frames.
 struct Tee<R> {
     reader: R,
     bytes: Arc<std::sync::Mutex<Vec<u8>>>,
@@ -145,8 +144,6 @@ async fn sdk<H: ClientHandler>(handler: H, expected: &str, writes: usize, respon
         json!({"confirm":response})
     );
 }
-/// Extends mutation_confirm_legacy::rmcp_both_protocols_scripted_answers:
-/// high-level call_tool drives both current rounds without a manual retry.
 #[tokio::test]
 async fn sdk_call_tool_accepts_both_rounds() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -162,8 +159,6 @@ async fn sdk_call_tool_accepts_both_rounds() {
     .await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
-/// Extends mutation_confirm_legacy::rmcp_both_protocols_scripted_answers
-/// with the SDK's unchanged default decline handler.
 #[tokio::test]
 async fn sdk_default_handler_declines() {
     sdk(
@@ -174,8 +169,6 @@ async fn sdk_default_handler_declines() {
     )
     .await;
 }
-/// Extends mutation_confirm_current::current_question_and_answers with SDK automatic
-/// retries, empty content, and numeric apply; exact write matching proves refusal.
 #[tokio::test]
 async fn sdk_blind_accept_never_writes() {
     for content in [json!({}), json!({"apply":"true"}), json!({"apply":1})] {
@@ -193,7 +186,6 @@ async fn sdk_blind_accept_never_writes() {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
-/// Extends mutation_rules_plan::hashes_capacity_and_twenty_targets across protocol sessions.
 #[tokio::test]
 async fn same_change_hash_matches_across_paths() {
     let s = stack().await;
@@ -225,8 +217,6 @@ async fn same_change_hash_matches_across_paths() {
     finish(current).await;
     finish(legacy).await;
 }
-/// Extends mutation_apply::accepted_write_and_replay with independently issued,
-/// sequential valid handles, rather than replaying a completed call without an answer.
 #[tokio::test]
 async fn sequential_valid_answers_write_once() {
     let s = stack().await;
@@ -252,8 +242,6 @@ async fn sequential_valid_answers_write_once() {
     assert_writes(&s, 1).await;
     finish(h).await;
 }
-/// Extends task_surface_conformance::oversized_line_after_resource_has_static_diagnostic_on_both_paths
-/// with live open mutation plans and a syntactically valid oversized plan_apply frame.
 #[tokio::test]
 async fn oversized_apply_closes_without_applying() {
     for legacy in [false, true] {
@@ -354,8 +342,6 @@ async fn wait_count(count: &AtomicUsize, n: usize) {
     .unwrap();
 }
 fn limits() -> (usize, usize) {
-    // Private constants cannot be imported by integration targets. Pin the source
-    // declarations to the spec before using the specified workload sizes.
     let server = include_str!("../../src/server.rs");
     assert!(
         server.contains("Semaphore::new(4)"),
@@ -368,9 +354,6 @@ fn limits() -> (usize, usize) {
     );
     (4, 8)
 }
-/// Extends task_surface_conformance::mixed_admission_keeps_lists_and_prompts_available
-/// and mutation_rules_plan::hashes_capacity_and_twenty_targets with eight planners
-/// competing with four accepted applies, followed by concurrent store saturation.
 #[tokio::test]
 async fn planners_and_applies_share_admission_and_store_limits() {
     let (permits, limit) = limits();
@@ -428,7 +411,6 @@ async fn planners_and_applies_share_admission_and_store_limits() {
         let r = receive(&mut h).await;
         assert_eq!(data(&r)["plan"]["state"], "applied", "{r}");
     }
-    // Fill concurrently in permit-sized waves, then prove the store refuses one more.
     for wave in 0..(limit / permits) {
         for n in 0..permits {
             send(
@@ -505,8 +487,6 @@ async fn planners_and_applies_share_admission_and_store_limits() {
     finish(h).await;
 }
 
-// Forward complete requests to wiremock while holding selected authentication
-// responses. Explicit release makes overlap independent of scheduler speed.
 struct Gate {
     target: elasticctl_core::Resolved,
     hold: Arc<AtomicUsize>,

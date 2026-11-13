@@ -1,5 +1,3 @@
-//! The prebuilt vertical's contract, independent of the CLI.
-
 use std::collections::BTreeMap;
 
 use elasticctl_api::prebuilt;
@@ -9,7 +7,6 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Measured 2026-08-14, verbatim.
 const STATUS_BODY: &str = r#"{"rules_custom_installed":0,"rules_installed":2066,
 "rules_not_installed":0,"rules_not_updated":0,"timelines_installed":10,
 "timelines_not_installed":0,"timelines_not_updated":0}"#;
@@ -85,9 +82,6 @@ async fn prebuilt_feature_refuses_an_unverified_stack_before_the_route() {
     );
 }
 
-/// The `customized` count is read from a filtered `_find`. This assertion does
-/// not depend on the mock honoring that filter: `MockStack`'s `_find` serves
-/// whatever `customized` it was seeded with, for any query.
 #[tokio::test]
 async fn status_maps_the_measured_body() {
     let stack = mock_prebuilt_status(STATUS_BODY, 0).await;
@@ -215,7 +209,6 @@ async fn malformed_customized_find_returns_a_typed_error_instead_of_prebuilt_sta
     );
 }
 
-/// Spec 4.6: the preview is client-computed because the route has no dry_run.
 #[tokio::test]
 async fn the_install_preview_names_both_counts_and_writes_nothing() {
     let body = r#"{"rules_custom_installed":0,"rules_installed":2000,
@@ -239,8 +232,6 @@ async fn the_install_preview_names_both_counts_and_writes_nothing() {
     );
 }
 
-/// The release's one trap: a status with nothing missing but rules outdated
-/// must not preview as "nothing to do". Both counts are named, always.
 #[tokio::test]
 async fn the_preview_names_updates_even_when_nothing_is_missing() {
     let body = r#"{"rules_custom_installed":0,"rules_installed":2066,
@@ -255,7 +246,6 @@ async fn the_preview_names_updates_even_when_nothing_is_missing() {
     );
 }
 
-/// Spec 4.6: one verb, because the route is one call that does both.
 #[tokio::test]
 async fn install_issues_exactly_one_put() {
     let stack = mock_prebuilt_install().await;

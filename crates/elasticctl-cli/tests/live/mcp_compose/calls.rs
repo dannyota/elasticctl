@@ -1,8 +1,3 @@
-//! The call phase. Two `elasticctl mcp serve` children, as in the eleventh
-//! contract: the default catalog on the current protocol, then a second
-//! child on the legacy protocol. Each task tool is called by name, each
-//! result passes its exact-field validator, and every call is timed.
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -17,7 +12,6 @@ use crate::{LIVE_TAG, TestResult, unique_name};
 
 const CONTRACT: &str = "mcp_answers_across_verticals";
 
-/// The default catalog with the four task tools, in order (design section 7).
 const DEFAULT_CATALOG: [&str; 24] = [
     "alert_context",
     "alerts_get",
@@ -45,12 +39,9 @@ const DEFAULT_CATALOG: [&str; 24] = [
     "stack_info",
 ];
 
-/// Which timings feed the latency gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Measure {
-    /// A call on the maximum-work objects.
     MaxWork,
-    /// One of the two consecutive default `detection_coverage` calls.
     Coverage,
     Other,
 }
@@ -70,13 +61,11 @@ pub(crate) struct Timings {
     pub(crate) rows: Vec<Timing>,
 }
 
-/// Round up, so a public line never shows a call as faster than it was.
 pub(crate) fn whole_seconds(elapsed: Duration) -> u64 {
     elapsed.as_secs() + u64::from(elapsed.subsec_nanos() > 0)
 }
 
 impl Timings {
-    /// Every call with its full wall time, for the owner-only log.
     pub(crate) fn private_lines(&self) -> Vec<String> {
         self.rows
             .iter()
@@ -94,8 +83,6 @@ impl Timings {
             .collect()
     }
 
-    /// One line per tool in whole seconds: the slowest maximum-work call, and
-    /// for `detection_coverage` both default calls with their page count.
     pub(crate) fn public_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for tool in ["alert_context", "rule_health", "rule_readiness"] {
@@ -131,8 +118,6 @@ impl Timings {
     }
 }
 
-/// The owner-only log beside the conformance runner's private logs. The
-/// probe's flavor names the file, so concurrent matrix legs do not collide.
 pub(crate) fn private_timing_path(flavor: Flavor) -> PathBuf {
     let target = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .parent()
@@ -169,12 +154,8 @@ pub(crate) fn write_private_lines(path: &Path, lines: &[String]) -> TestResult {
     Ok(())
 }
 
-/// Write straight to stdout: the test harness captures `println!` output of
-/// a passing test, and these lines belong in every run's output.
 pub(crate) fn emit_public_lines(lines: &[String]) {
     let mut stdout = std::io::stdout().lock();
-    // The harness has already written `test <name> ... ` without a newline;
-    // start a fresh line so the first timing line stands on its own.
     let _ = writeln!(stdout);
     for line in lines {
         let _ = writeln!(stdout, "{line}");
@@ -189,7 +170,6 @@ fn protocol_label(path: McpProtocolPath) -> &'static str {
     }
 }
 
-/// The exact catalog for a child, with the cache hints its protocol requires.
 pub(crate) fn validate_compose_catalog(
     catalog: &Value,
     allow_query_tools: bool,
@@ -243,7 +223,6 @@ pub(crate) fn validate_compose_catalog(
     Ok(())
 }
 
-/// The two-child harness for the shared two-protocol runner.
 pub(crate) struct ComposeChildren<'a> {
     pub(crate) config: &'a Path,
     pub(crate) expected: &'a Expected<'a>,
@@ -270,7 +249,6 @@ impl McpChildHarness for ComposeChildren<'_> {
     }
 }
 
-/// Run both children. Timings are kept even when a call fails.
 pub(crate) fn run_calls(
     config: &Path,
     expected: &Expected<'_>,
@@ -283,7 +261,6 @@ pub(crate) fn run_calls(
     })
 }
 
-/// One child and the timings of its calls.
 struct Session<'a> {
     child: &'a mut McpChild,
     timings: &'a mut Timings,
@@ -301,7 +278,6 @@ impl Session<'_> {
         });
     }
 
-    /// Call a tool by name and record its wall time, whatever the outcome.
     fn call(
         &mut self,
         tool: &'static str,
@@ -321,7 +297,6 @@ impl Session<'_> {
     }
 }
 
-/// The reads of design section 12.3 on the current protocol.
 fn current_calls(child: &mut McpChild, e: &Expected<'_>, timings: &mut Timings) -> TestResult {
     let discovery = child.request("server/discover", json!({}))?;
     if discovery.pointer("/result/supportedVersions") != Some(&json!(["2026-07-28", "2025-11-25"]))
@@ -385,7 +360,6 @@ fn current_calls(child: &mut McpChild, e: &Expected<'_>, timings: &mut Timings) 
     super::resources::current_checks(s.child, e)
 }
 
-/// One call of each task tool on the legacy protocol.
 fn legacy_calls(child: &mut McpChild, e: &Expected<'_>, timings: &mut Timings) -> TestResult {
     let initialize = child.request(
         "initialize",

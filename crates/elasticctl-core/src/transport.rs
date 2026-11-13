@@ -1,6 +1,3 @@
-//! HTTP transport, including URL construction, headers, retries, and error
-//! classification.
-
 use crate::auth::Credential;
 use crate::capabilities::{Capabilities, Feature};
 use crate::config::Profile;
@@ -14,48 +11,30 @@ use tokio::sync::OnceCell;
 
 mod requests;
 
-/// Version of the public API this client targets.
 const API_VERSION: &str = "2023-10-31";
 const MAX_ATTEMPTS: u32 = 3;
 
-/// Optional transport restrictions for callers that handle untrusted upstream
-/// responses.
 #[derive(Clone, Debug, Default)]
 pub struct TransportOptions {
     pub debug: bool,
     pub response_body_limit: Option<usize>,
     pub disable_redirects: bool,
     pub disable_retries: bool,
-    /// Keep no idle connection, so every request opens its own socket.
     pub disable_connection_pool: bool,
 }
 
-/// Response headers retained past the transport boundary.
-///
-/// These headers are allowlisted because recorded fixtures are public.
-/// Capturing all headers could record cookies, rate-limit counters, or future
-/// proxy headers that do not belong in the repository.
-///
-/// The capability probe reads `x-found-handling-cluster`. The other two show
-/// which Cloud headers the recorded response contained.
 const CAPTURED_HEADERS: [&str; 3] = [
     "x-found-handling-cluster",
     "x-found-handling-instance",
     "x-elastic-product",
 ];
 
-/// Parse a JSON response without letting serde_json coerce an out-of-range
-/// integer literal into an imprecise floating-point number.
 fn parse_response_json(text: &str) -> Result<Value> {
     validate_json_integer_ranges(text)?;
     serde_json::from_str(text)
         .map_err(|e| Error::new(ErrorKind::Http, format!("parsing response JSON: {e}")))
 }
 
-/// Reject positive integer lexemes above `u64::MAX` and negative integer
-/// lexemes below `i64::MIN`. Numbers with a decimal point or exponent remain
-/// floating-point JSON values, even when their magnitude is greater than
-/// `u64::MAX`.
 fn validate_json_integer_ranges(text: &str) -> Result<()> {
     let bytes = text.as_bytes();
     let mut index = 0;
@@ -138,10 +117,6 @@ fn validate_json_integer_ranges(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// A response body and its captured headers.
-///
-/// Hosted and self-managed stacks return the same `/api/status` body. An
-/// edge-proxy header distinguishes them.
 #[derive(Debug, Clone)]
 pub struct Responded {
     pub body: Value,
@@ -149,19 +124,11 @@ pub struct Responded {
 }
 
 impl Responded {
-    /// Look up a header case-insensitively.
-    ///
-    /// The Elastic proxy varies the casing of `x-found-handling-cluster` by
-    /// endpoint.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(&name.to_ascii_lowercase()).map(|s| &**s)
     }
 }
 
-/// Percent-encode a query value while leaving URL-safe characters unchanged.
-///
-/// The API client and fixture recorder share this encoder so they produce the
-/// same scoped-filter URL.
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -179,17 +146,8 @@ pub struct Transport {
     client: Client,
     one_shot_client: Client,
     base: String,
-    /// The Kibana URL exactly as configured, before trailing-slash
-    /// normalization. `doctor` reports it as the connectivity target and the
-    /// capability probe uses it for hostname-based flavor detection.
     kibana_url: String,
-    /// Elasticsearch host. Cloud deployments use a different host from
-    /// Kibana; otherwise this uses the Kibana host.
     es_base: String,
-    /// Whether the profile configured an explicit `es_url`. `es_base` falls
-    /// back to the Kibana host either way, so a caller that needs to know
-    /// whether that fallback happened (e.g. to name a likely cause in an
-    /// error message) reads this instead of comparing hosts.
     has_es_url: bool,
     space: String,
     auth_header: String,
@@ -210,9 +168,6 @@ impl Transport {
         Self::with_options(profile, TransportOptions::default())
     }
 
-    /// Build a transport with HTTP request logging enabled or disabled.
-    ///
-    /// Keeping `debug` as a `bool` prevents CLI `clap` types entering `-core`.
     pub fn with_debug(profile: &Profile, debug: bool) -> Result<Transport> {
         Self::with_options(
             profile,
@@ -223,11 +178,8 @@ impl Transport {
         )
     }
 
-    /// Build a transport with opt-in response and request restrictions.
     pub fn with_options(profile: &Profile, options: TransportOptions) -> Result<Transport> {
         crate::config::validate_space(&profile.space)?;
-        // Scrub URL userinfo before deriving any base URL or logging, so a
-        // credential embedded in a URL never reaches a request or debug line.
         let mut profile = profile.clone();
         profile.strip_userinfo();
         let credential = Credential::from_profile(&profile)?;
@@ -246,9 +198,6 @@ impl Transport {
             .map_err(|e| Error::new(ErrorKind::Connection, format!("building HTTP client: {e}")))?;
         let one_shot_client = Self::client_builder(&profile)
             .redirect(reqwest::redirect::Policy::none())
-            // hyper-util retries a canceled checkout only through its connection
-            // pool. Zero idle connections disables that pool, so this client
-            // cannot replay an unstarted mutation after a reused socket fails.
             .pool_max_idle_per_host(0)
             .retry(reqwest::retry::never())
             .build()
@@ -289,11 +238,6 @@ impl Transport {
         })
     }
 
-    /// Log one request or response line to stderr.
-    ///
-    /// Logs include the method, complete URL, and status. They exclude
-    /// authorization headers and bodies. Callers must not put credentials in
-    /// query strings.
     fn debug_log(&self, method: &Method, url: &str, status: u16, attempt: u32) {
         if !self.debug {
             return;
@@ -308,7 +252,6 @@ impl Transport {
         }
     }
 
-    /// Log the request before sending it so timeouts produce debug output.
     fn debug_request(&self, method: &Method, url: &str, attempt: u32) {
         if !self.debug {
             return;
@@ -320,7 +263,6 @@ impl Transport {
         }
     }
 
-    /// Log a timeout or connection failure in the response-line format.
     fn debug_failure(&self, method: &Method, url: &str, what: &str) {
         if !self.debug {
             return;
@@ -332,9 +274,6 @@ impl Transport {
         );
     }
 
-    /// Prefix non-default spaces with `/s/<name>`.
-    ///
-    /// Kibana serves the default space at the bare path.
     pub fn space_path(space: &str, path: &str) -> String {
         if space.is_empty() || space == "default" {
             path.to_string()
@@ -343,33 +282,24 @@ impl Transport {
         }
     }
 
-    /// The Kibana URL this transport targets, exactly as configured.
     pub fn kibana_url(&self) -> &str {
         &self.kibana_url
     }
 
-    /// The Kibana space this transport targets, exactly as the profile
-    /// resolved it. Fleet normalization compares `space_ids` against it.
     pub fn space(&self) -> &str {
         &self.space
     }
 
-    /// Whether the profile configured an explicit `es_url`. When it did not,
-    /// every `*_absolute_es` call silently falls back to the Kibana host —
-    /// callers that need to distinguish "no Elasticsearch host configured"
-    /// from "the real Elasticsearch host answered" read this.
     pub fn has_es_url(&self) -> bool {
         self.has_es_url
     }
 
-    /// Probe deployment capabilities once for this transport.
     pub async fn capabilities(&self) -> Result<&Capabilities> {
         self.capabilities
             .get_or_try_init(|| Capabilities::probe(self, self.kibana_url()))
             .await
     }
 
-    /// Refuse an unverified feature before its public route is called.
     pub async fn require_feature(&self, feature: Feature) -> Result<()> {
         self.capabilities().await?.require_feature(feature)
     }
@@ -388,10 +318,6 @@ impl Transport {
     }
 }
 
-/// Refuse a request path that does not start with `/`. The path is appended
-/// to a configured base URL, so any other first character could extend the
-/// host or start userinfo, as `@other.example/x` does, and send the
-/// credential to another authority.
 fn origin_relative(path: &str) -> Result<&str> {
     if path.starts_with('/') {
         Ok(path)

@@ -1,5 +1,3 @@
-//! Session cleanup.
-
 use crate::diagnostics::{recording_error, safe_recording_error_summary};
 use crate::recorder::alerts::cleanup::sweep_close_marker_alerts;
 use crate::recorder::cases::sweep_delete_marker_cases;
@@ -30,11 +28,6 @@ use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
 impl RecordingSession<'_> {
-    /// Clean the integration marker in dependency order. This is shared by
-    /// the normal lifecycle's final audit and the outer failure cleanup, so a
-    /// create failure cannot leave a parent or integration behind. The
-    /// recorder never installs or uninstalls packages; every observed
-    /// inventory must remain exactly equal to its preflight baseline.
     pub(crate) async fn cleanup_integration_resources(&mut self) -> elasticctl_core::Result<()> {
         let mut errors = Vec::new();
         let expected_system_version = self.ownership.integration_system_package_version.clone();
@@ -147,9 +140,6 @@ impl RecordingSession<'_> {
         let mut errors = Vec::new();
         let mut responses = CleanupResponses::default();
 
-        // The integration must disappear before the parent. The helper then
-        // verifies the original installed-package inventory without changing
-        // packages.
         if let Err(error) = self.cleanup_integration_resources().await {
             errors.push(format!(
                 "cleaning integration marker resources: {}",
@@ -157,18 +147,11 @@ impl RecordingSession<'_> {
             ));
         }
 
-        // Data views can be the active default. Restore that independently
-        // before attempting any delete so a partial recording cannot leave an
-        // absent default id behind. Dashboard cleanup below still precedes all
-        // data-view deletion, preserving their reference ordering.
         let mut data_view_cleanup_safe = true;
         if self.ownership.pending_data_view_default_restore.is_some()
             && let Err(error) = restore_pending_data_view_default(self).await
         {
             data_view_cleanup_safe = false;
-            // The lease and marker ownership remain intact. Default envelopes
-            // may carry a pre-existing nonmarker id, so the helper returns
-            // only safe static diagnostics or classified transport errors.
             errors.push(format!(
                 "restoring original data-view default: {}",
                 error.message
@@ -620,25 +603,12 @@ impl RecordingSession<'_> {
             }
         }
 
-        // Cases have no fixed id to re-check by, so this is a title+tag
-        // sweep-and-verify rather than a get/delete pair like the blocks
-        // above. `record_cases` already clears this flag on its own
-        // successful delete, so this only fires when it failed midway.
         if self.ownership.case
             && let Err(error) = sweep_delete_marker_cases(self.transport).await
         {
             errors.push(format!("verifying case probe baseline: {}", error.message));
         }
 
-        // A raw total-rule-count comparison would be unsound here: this same
-        // pass also deletes the unrelated fixture-probe rule (`self.ownership.rule`,
-        // above), so "before" and "after" would straddle a second, independent
-        // deletion and always disagree by one. `require_absent_alert_rule` and
-        // `require_absent_alert_index` below are what prove the alert probe
-        // itself adds and removes exactly one rule and one index — the only
-        // in-session proof of that, since a lab session is torn down right
-        // after and can't rely on "the next run's baseline check will catch
-        // it".
         if self.ownership.alert_rule_claimed
             && let Err(error) = require_absent_alert_rule(self.transport).await
         {
@@ -656,11 +626,6 @@ impl RecordingSession<'_> {
             ));
         }
 
-        // Last resort: a query-scoped close, retried, before failing on open
-        // residue. This covers the one thing the existence checks above
-        // cannot: no *open* marker alert (closed residue is the accepted
-        // deviation, spec section 9). `sweep_close_marker_alerts` is the same
-        // helper `record_alerts` uses for its own residue step.
         if let Err(error) = sweep_close_marker_alerts(self.transport).await {
             errors.push(format!(
                 "verifying alert probe baseline: {}. Manual remediation: POST {} with \

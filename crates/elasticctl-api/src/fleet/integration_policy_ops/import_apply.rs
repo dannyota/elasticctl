@@ -25,8 +25,6 @@ enum ImportAction {
     Unchanged,
 }
 
-/// Apply a previously validated import plan. Rows are independent except for
-/// their exact package group and shared parent-attachment snapshots.
 pub async fn apply_import(
     transport: &Transport,
     plan: &IntegrationPolicyImportPlan,
@@ -150,9 +148,6 @@ pub async fn apply_import(
             advance_parent_snapshots(&mut expected_parents, target);
         }
 
-        // A missing package is a shared dependency. Fleet's create path can
-        // install it even when the policy write fails, so observation is
-        // mandatory after every create attempt, not only decoded success.
         let mut observed_after_create = None;
         let mut package_observation_error = None;
         if action == ImportAction::Create

@@ -1,5 +1,3 @@
-//! Case mutation plans with observed state.
-
 use super::*;
 use crate::observe::{Observed, Preconditions};
 
@@ -23,7 +21,6 @@ fn sync_alerts(case: &Case) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Plan status changes and return the case state read for each target.
 pub async fn plan_status_observed(
     t: &Transport,
     ids: &[String],
@@ -76,7 +73,6 @@ pub async fn plan_status_observed(
     ))
 }
 
-/// Plan a comment and return the case state read for its target.
 pub async fn plan_comment_observed(
     t: &Transport,
     case_id: &str,

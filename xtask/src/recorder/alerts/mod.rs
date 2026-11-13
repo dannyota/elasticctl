@@ -1,5 +1,3 @@
-//! Recording helpers.
-
 pub(crate) mod cleanup;
 
 use crate::clock::now_rfc3339;
@@ -20,27 +18,13 @@ use crate::scrub::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// What `record_alerts_probe` hands to `record_cases` (to attach against)
-/// and to `close_and_clean_alerts` (to finish the close-by-query exchange).
 pub(crate) struct AlertsProbe {
-    /// The real `_id` of the still-open marker alert `record_cases` attaches.
     pub(crate) first_id: String,
-    /// Real alert doc id (and uuid, when present) -> fixed placeholder.
     pub(crate) id_map: BTreeMap<String, String>,
-    /// The first activated profile uid, used as the case's assignee.
     pub(crate) assignee_uid: String,
-    /// Real profile uid -> fixed placeholder.
     pub(crate) uid_map: BTreeMap<String, String>,
 }
 
-/// Record the alerts probe: a marker rule over a marker index, generating an
-/// alert the recorder transitions, tags, and assigns through every triage
-/// route (triage spec section 9). Runs after `record_search`, and stops with
-/// one open marker alert still live so `record_cases` has a real alert to
-/// attach. Split out of the original single-function `record_alerts` (now
-/// `record_alerts_probe` + `close_and_clean_alerts`) so `record_session` can
-/// run `record_cases` between the two; every pre-write ownership claim and
-/// marker check below is unchanged from the single-function version.
 pub(super) async fn record_alerts_probe(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -56,12 +40,6 @@ pub(super) async fn record_alerts_probe(
 
     let t = session.transport;
 
-    // Claim ownership before issuing the write, not after a successful
-    // response: a transport failure on a create the server actually applied
-    // (e.g. the response is lost but the write landed) must not orphan an
-    // enabled, 1-minute-interval rule or a scratch index. `cleanup` already
-    // re-verifies the marker fields before deleting anything, so claiming
-    // early cannot cause it to delete a foreign object.
     session.ownership.alert_index = true;
     session.ownership.alert_index_claimed = true;
     record_trace("alerts-index-write");
@@ -83,7 +61,6 @@ pub(super) async fn record_alerts_probe(
             "alert index write did not prove the fixed marker identity",
         ));
     }
-    // `_refresh` rejects a body, so use the GET form, which sends none.
     record_trace("alerts-index-refresh");
     t.get_absolute_es(&format!("/{ALERT_PROBE_INDEX}/_refresh"))
         .await?;
@@ -115,20 +92,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Poll on the *open* filter, not the bare rule-id filter: closed residue
-    // from an earlier run (the accepted deviation, spec section 9) would
-    // otherwise satisfy the readiness check before this session's rule ever
-    // fires, and the same query becomes the recorded `signals_search`
-    // exchange, so it must capture only this session's own alerts.
-    //
-    // The rest of the body is the PRODUCTION body, not a hand-rolled probe
-    // shape: `alerts_ops::default_sort()` and `RESOLVE_SOURCE_FIELDS` are the
-    // exact sort and `_source` include `alerts_ops` sends on every read, so
-    // this recording proves — for the first time against a live stack —
-    // that the `kibana.alert.uuid` sort tiebreaker doesn't error and that a
-    // dotted `_source` include actually returns flat dotted keys (triage
-    // spec section 10). Composed from the `-api` crate so recorder and
-    // production cannot drift apart.
     let search_request = json!({
         "query": alert_probe_open_filter(),
         "sort": elasticctl_api::alerts_ops::default_sort(),
@@ -176,13 +139,6 @@ pub(super) async fn record_alerts_probe(
             "signals_search reported a positive total but decoded zero hits",
         ));
     }
-    // Prove the dotted `_source` include actually returns the requested
-    // fields against flat dotted keys — an assumption `resolve_ids` (and so
-    // every mutation preview) rests on, never before exercised against a
-    // live stack (triage spec section 10). A hit whose restricted `_source`
-    // is missing a requested field would otherwise pass silently: `hits` is
-    // still non-empty, decode still succeeds, and the fixture would record
-    // broken behavior as if it were proven.
     for hit in &page.hits {
         for field in elasticctl_api::alerts_ops::RESOLVE_SOURCE_FIELDS {
             if hit.source.get(*field).is_none() {
@@ -222,8 +178,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Acknowledge the first alert by id. The live response settles whether
-    // the `signal_ids` form accepts `reason` (triage spec section 10).
     let with_reason = json!({
         "signal_ids": [first_id.clone()],
         "status": "acknowledged",
@@ -272,7 +226,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Add then remove a tag on the same alert; record the add.
     let add_tags_request = json!({
         "ids": [first_id.clone()],
         "tags": {"tags_to_add": ["triage-check"], "tags_to_remove": []},
@@ -309,9 +262,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Activated user profiles. `uid` is rewritten to a per-profile
-    // placeholder, never blanket-redacted: the assignees exchange below
-    // needs it to stay a decodable, distinguishable value.
     record_trace("alerts-users");
     let users_body = t
         .get_internal(&elasticctl_api::profiles::internal_find_path(""))
@@ -345,7 +295,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Assign then unassign the first activated uid; record the add.
     let add_assignees_request = json!({
         "ids": [first_id.clone()],
         "assignees": {"add": [assignee_uid.clone()], "remove": []},
@@ -390,8 +339,6 @@ pub(super) async fn record_alerts_probe(
         ));
     }
 
-    // Profile suggest, public route. Serverless answers 410; record
-    // whichever shape the live route actually returns.
     record_trace("alerts-profile-suggest");
     match t
         .post_absolute_es(
@@ -432,17 +379,6 @@ pub(super) async fn record_alerts_probe(
         }
     }
 
-    // Disable the rule now, at the end of the probe, not at the start of the
-    // close: every triage exchange this function needs is already recorded,
-    // and `record_cases` runs next, driving several more live HTTP round
-    // trips before `close_and_clean_alerts` gets a turn. Leaving the rule
-    // enabled for that whole interval lets its 1-minute schedule keep firing
-    // and stacking up fresh alerts underneath `record_cases`, which both
-    // inflates the final close-by-query's `total` well past what
-    // `sweep_close_marker_alerts`'s 15-second retry budget was sized for and
-    // invites a genuine version-conflict race between an in-flight execution
-    // and that close. Disabling here bounds the alert volume to what this
-    // probe itself produced, the same as the single-function original.
     record_trace("alerts-rule-disable");
     t.patch(
         "/api/detection_engine/rules",

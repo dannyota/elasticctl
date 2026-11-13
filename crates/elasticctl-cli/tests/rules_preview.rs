@@ -24,7 +24,6 @@ async fn previewing_server(logs: serde_json::Value) -> MockServer {
     server
 }
 
-/// Serves a preview search with `total` hits and `returned` documents.
 async fn mount_preview_search(server: &MockServer, total: u64, returned: usize) {
     let hits: Vec<serde_json::Value> = (0..returned)
         .map(|i| {
@@ -112,7 +111,6 @@ async fn warnings_from_every_log_entry_are_collected() {
 
 #[tokio::test]
 async fn errors_are_reported_without_failing_the_command() {
-    // A rule error is a finding, not a CLI failure.
     let server = previewing_server(json!([{"errors": ["bad query syntax"], "warnings": []}])).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -139,8 +137,6 @@ async fn errors_are_reported_without_failing_the_command() {
     assert_eq!(v["errors"][0], "bad query syntax");
 }
 
-/// A selector that is not a local path must resolve through the stack. The
-/// fetched rule, not a placeholder, must reach the preview endpoint.
 #[tokio::test]
 async fn preview_of_a_rule_id_resolves_it_from_the_stack() {
     let server = MockServer::start().await;
@@ -158,7 +154,6 @@ async fn preview_of_a_rule_id_resolves_it_from_the_stack() {
         .await;
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules/preview"))
-        // Preview must receive the fetched rule's content.
         .and(body_partial_json(
             json!({"name": "Stack Rule", "query": "process.name:cmd.exe"}),
         ))
@@ -172,7 +167,6 @@ async fn preview_of_a_rule_id_resolves_it_from_the_stack() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
 
-    // This nonexistent path must use stack resolution.
     let out = Command::cargo_bin("elasticctl")
         .unwrap()
         .args(["rules", "preview", "abc", "--json", "--config"])
@@ -193,11 +187,9 @@ async fn preview_of_a_rule_id_resolves_it_from_the_stack() {
     );
 }
 
-/// An existing file with no rules must fail with an error naming its path.
 #[tokio::test]
 async fn a_file_with_no_rules_fails_with_a_message_naming_the_path() {
     let dir = tempfile::tempdir().unwrap();
-    // The empty file must fail before any network call.
     let cfg = config_for(dir.path(), "http://127.0.0.1:1");
     let src = dir.path().join("empty.yaml");
     fs::write(&src, "[]\n").unwrap();
@@ -223,7 +215,6 @@ async fn a_file_with_no_rules_fails_with_a_message_naming_the_path() {
 
 #[tokio::test]
 async fn preview_never_prints_a_dry_run_banner() {
-    // Preview writes no alerts, so it must not be guarded.
     let server = previewing_server(json!([{"errors": [], "warnings": []}])).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -245,8 +236,6 @@ async fn preview_never_prints_a_dry_run_banner() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("DRY RUN"));
 }
 
-/// The command must report the alert hit count, including when no documents
-/// are returned.
 #[tokio::test]
 async fn preview_reports_the_hit_count() {
     let server = previewing_server(json!([{"errors": [], "warnings": []}])).await;
@@ -311,8 +300,6 @@ async fn sample_returns_the_matched_documents() {
     assert_eq!(sample[0]["_source"]["process"]["name"], "sample.exe");
 }
 
-/// An unreadable preview index must not fail the run. The preview id, errors,
-/// and warnings still show whether the rule executed.
 #[tokio::test]
 async fn an_unreadable_preview_index_degrades_instead_of_failing() {
     let server = previewing_server(json!([{"errors": [], "warnings": ["w"]}])).await;
@@ -350,7 +337,6 @@ async fn an_unreadable_preview_index_degrades_instead_of_failing() {
 #[tokio::test]
 async fn a_sample_beyond_the_cap_is_refused_before_anything_is_sent() {
     let dir = tempfile::tempdir().unwrap();
-    // The sample limit must fail before contacting this unreachable host.
     let cfg = config_for(dir.path(), "http://127.0.0.1:1");
     let src = dir.path().join("r.yaml");
     fs::write(

@@ -1,7 +1,3 @@
-//! End-to-end tests for `rules list` and `rules get` against mock Kibana.
-//! API calls are covered in `elasticctl-api`; these tests cover CLI parsing,
-//! selector resolution, and conflict or not-found errors.
-
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
@@ -112,7 +108,6 @@ async fn rules_list_forwards_search_as_a_parenthesized_filter() {
 #[test]
 fn rules_list_rejects_an_empty_search() {
     let dir = tempfile::tempdir().unwrap();
-    // A missing config proves clap rejects the empty value before config loading.
     let config = dir.path().join("absent.toml");
     let out = bin()
         .args(["rules", "list", "--search", "", "--config"])
@@ -128,7 +123,6 @@ fn rules_list_rejects_an_empty_search() {
 #[test]
 fn rules_list_rejects_search_and_filter_together() {
     let dir = tempfile::tempdir().unwrap();
-    // A missing config proves clap rejects the conflict before config loading.
     let config = dir.path().join("absent.toml");
     let out = bin()
         .args([
@@ -147,7 +141,6 @@ fn rules_list_rejects_search_and_filter_together() {
 #[tokio::test]
 async fn rules_list_rejects_enabled_and_disabled_together() {
     let dir = tempfile::tempdir().unwrap();
-    // This missing config proves validation runs before config loading or I/O.
     let config = dir.path().join("absent.toml");
     let out = bin()
         .args([
@@ -203,14 +196,12 @@ async fn rules_get_resolves_a_rule_id_directly() {
 #[tokio::test]
 async fn rules_get_falls_back_to_an_exact_name_match() {
     let server = MockServer::start().await;
-    // The direct rule_id lookup misses.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "A rule"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "not found"})))
         .mount(&server)
         .await;
-    // The CLI then searches by name.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -218,7 +209,6 @@ async fn rules_get_falls_back_to_an_exact_name_match() {
         })))
         .mount(&server)
         .await;
-    // Finally, it fetches the resolved rule_id.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "abc"))
@@ -277,8 +267,6 @@ async fn rules_get_of_an_ambiguous_name_is_a_conflict_naming_every_candidate() {
     assert!(msg.contains('a') && msg.contains('b'), "{msg}");
 }
 
-/// Only a 404 from the rule_id lookup should trigger a name search. Other
-/// failures, such as an unauthorized response, must propagate unchanged.
 #[tokio::test]
 async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
     let server = MockServer::start().await;
@@ -288,7 +276,6 @@ async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "unauthorized"})))
         .mount(&server)
         .await;
-    // No _find mock: a mistaken fallback would fail before the auth assertion.
 
     let dir = tempfile::tempdir().unwrap();
     let config = write_config(dir.path(), &server.uri());
@@ -304,8 +291,6 @@ async fn rules_get_propagates_a_non_404_failure_from_the_rule_id_lookup() {
     assert_eq!(v["error"]["kind"], "auth");
 }
 
-/// `to_rule_id` must prefer a direct rule_id match over a matching display
-/// name.
 #[tokio::test]
 async fn rules_get_prefers_a_direct_rule_id_hit_over_a_colliding_display_name() {
     let server = MockServer::start().await;
@@ -315,7 +300,6 @@ async fn rules_get_prefers_a_direct_rule_id_hit_over_a_colliding_display_name() 
         .respond_with(ResponseTemplate::new(200).set_body_json(rule_json("dup", "Rule A")))
         .mount(&server)
         .await;
-    // This decoy must never be queried when the direct rule_id lookup hits.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({

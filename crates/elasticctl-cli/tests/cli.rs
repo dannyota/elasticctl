@@ -27,8 +27,6 @@ timeout_secs = 5
     path
 }
 
-/// A guaranteed-missing config path. `config list` then returns no profiles
-/// without reading `~/.elasticctl/config.toml` or using the network.
 fn absent_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("absent.toml");
@@ -37,8 +35,6 @@ fn absent_config() -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[test]
 fn version_flag_prints_the_workspace_version() {
-    // Read the manifest so releases do not require test edits. A literal would
-    // only compare two copies of the same string.
     bin()
         .arg("--version")
         .assert()
@@ -65,13 +61,8 @@ fn an_unknown_format_exits_two() {
     bin().args(["info", "--format", "toml"]).assert().code(2);
 }
 
-// These generic global-flag checks must stay local: `info` and `doctor` need a
-// resolvable profile and live stack. `config list` exercises the same render
-// paths (JSON/table selection and `--out`) without network access.
-
 #[test]
 fn info_defaults_to_table_output_when_piped() {
-    // Piped output must match terminal output.
     let (_dir, config) = absent_config();
     let out = bin()
         .args(["config", "list", "--config"])
@@ -97,12 +88,6 @@ fn json_flag_produces_parseable_json() {
     assert!(v.is_array(), "config list must produce a JSON array: {v}");
 }
 
-/// Finding 1: an empty id list on a guarded alert/case verb must be refused
-/// by clap (exit 2) before any context or transport is built, not accepted
-/// and turned into an unscoped mutation. `alerts ack/open/close` legitimately
-/// run with `--query` alone, so only the no-ids-and-no-query case for those
-/// three is exercised here; `tag`/`assign` and the cases verbs have no
-/// `--query` alternative, so bare invocation must always be refused.
 #[tokio::test]
 async fn a_guarded_verb_with_no_objects_is_refused_by_clap_before_any_request() {
     let server = MockServer::start().await;

@@ -825,8 +825,6 @@ async fn stack_doctor_organization_key_keeps_the_complete_detail_free_report() {
             {"check":"value_list_index", "status":"warn"}
         ]}, "page":null
     });
-    // The whole result: the error flag, the one text item, and the structured
-    // copy all match the report a scoped key gets, apart from key_scope.
     let result = &reply["result"];
     assert_eq!(result["isError"], false);
     let content = result["content"].as_array().expect("content array");

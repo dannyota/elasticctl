@@ -41,10 +41,6 @@ fn decodes_a_case_and_keeps_unknown_fields() {
     assert_eq!(case.extra["owner"], json!("securitySolution"));
 }
 
-/// `case_row`'s key order is the rendered table-column contract
-/// (`preserve_order`, spec — see `cases_ops::case_row`'s own doc comment):
-/// reordering the struct's `insert` calls would silently reorder every
-/// `cases list` column.
 #[test]
 fn case_row_emits_its_columns_in_the_documented_order() {
     let case = cases::decode_case(&case_body("c1", "open")).expect("decode");
@@ -134,11 +130,6 @@ async fn create_posts_the_documented_body() {
     assert_eq!(case.id, "c9");
 }
 
-/// Finding 8: `Some("")` (an explicit but empty `--description`) defeats the
-/// documented title fallback — `Option::unwrap_or_else` only fires on
-/// `None`, so an empty string is sent as-is and the server 400s on minimum
-/// length. Whitespace-only text must fall back too, not just the empty
-/// string.
 #[tokio::test]
 async fn create_falls_back_to_the_title_when_description_is_empty_or_blank() {
     let server = MockServer::start().await;
@@ -308,8 +299,6 @@ async fn export_follows_pages_to_the_end() {
     assert_eq!(all[2].id, "c3");
 }
 
-/// A `--limit` that is satisfied within the first page must stop paging: no
-/// page-2 mock is mounted, so a second request fails the test.
 #[tokio::test]
 async fn export_stops_paging_once_the_limit_is_in_hand() {
     let server = MockServer::start().await;
@@ -358,7 +347,6 @@ async fn plan_status_fetches_versions_and_marks_noops() {
         "{:?}",
         plan.preview_details
     );
-    // Only the case actually transitioning is PATCHed.
     assert_eq!(plan.updates.len(), 1);
     assert_eq!(plan.updates[0].0, "c1");
 }
@@ -594,13 +582,6 @@ async fn plan_attach_groups_alerts_by_rule() {
     assert_eq!(plan.groups[0].indices, vec!["idx-a".to_string()]);
 }
 
-/// Finding 5: `apply_attach` POSTs one comment per rule group with `?`
-/// propagation, so when the second of two groups fails, the first group's
-/// alerts are already attached but the command exits with only the raw
-/// error — a retry would double-attach the first group. `apply_attach` must
-/// accumulate per-group outcomes instead: the count of already-attached
-/// groups still renders, and the failure is visible through `failed`, not
-/// swallowed by an early `?`.
 #[tokio::test]
 async fn apply_attach_reports_a_partial_failure_instead_of_discarding_it() {
     let server = MockServer::start().await;

@@ -1,19 +1,10 @@
-//! Change evidence for a `push` attached to a change ticket.
-//!
-//! Records the proposed and applied changes, with values on both sides.
-
 use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportEntry {
-    /// The object this entry describes: a `rule_id` for rules, or a `list_id`
-    /// / `item_id` for exception writes.
     pub rule_id: String,
     pub name: String,
-    /// `create`, `update`, or `skipped_remote_only` for rules; `create_list`,
-    /// `update_list`, `create_item`, `update_item`, or `delete_item` for
-    /// exception writes.
     pub action: String,
     pub before: Option<Value>,
     pub after: Option<Value>,
@@ -26,7 +17,6 @@ pub struct ChangeReport {
     pub profile: String,
     pub host: String,
     pub space: String,
-    /// `false` for a dry run.
     pub applied: bool,
     pub entries: Vec<ReportEntry>,
 }
@@ -52,10 +42,6 @@ impl ChangeReport {
         (created, updated, skipped, failed)
     }
 
-    /// Proposed `create` and `update` entries with neither success nor error.
-    /// A dry run leaves all actionable entries pending. After `push` runs,
-    /// pending is zero: each actionable entry succeeds or fails. Pending means
-    /// it awaits `--yes`, not that it failed.
     pub fn pending(&self) -> usize {
         self.entries
             .iter()

@@ -1,5 +1,3 @@
-//! The compose recordings, in the order the step sends them.
-
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::recorder::cases::register_case_extras;
 use crate::recorder::compose::evidence::{
@@ -26,7 +24,6 @@ use std::time::{Duration, Instant};
 
 type Placeholders = BTreeMap<String, String>;
 
-/// The newest session alert, which the marker case attaches.
 pub(super) struct SessionAlert {
     pub(super) id: String,
     index: String,
@@ -38,7 +35,6 @@ fn safe(context: &'static str) -> impl FnOnce(elasticctl_core::Error) -> elastic
     move |error| safe_recording_transport_error(context, error)
 }
 
-/// Send one recorded GET and keep its raw body and wall time privately.
 async fn recorded_get(
     t: &Transport,
     log: &mut PrivateLog,
@@ -77,8 +73,6 @@ fn finished_execution(rule: &Value) -> bool {
             .is_some_and(|status| !matches!(status, "running" | "going to run"))
 }
 
-/// Poll one marker rule until it reports a finished execution, within the
-/// alert probe's attempt budget.
 async fn wait_for_execution(
     t: &Transport,
     log: &mut PrivateLog,
@@ -115,7 +109,6 @@ async fn wait_for_execution(
     )))
 }
 
-/// The number of top-level entries in a resolve body.
 fn resolved_entries(body: &Value) -> usize {
     ["indices", "aliases", "data_streams"]
         .iter()
@@ -124,9 +117,6 @@ fn resolved_entries(body: &Value) -> usize {
         .sum()
 }
 
-/// The three `_resolve/index` recordings, and the exclusion pattern in the
-/// private log only. Only marker names are sent, and a response naming
-/// anything else at any depth is refused.
 pub(super) async fn record_resolve(
     t: &Transport,
     exchanges: &mut Exchanges,
@@ -159,8 +149,6 @@ pub(super) async fn record_resolve(
     }
     exchanges.response("resolve_index_no_match", &planned, body);
 
-    // Whatever the exclusion pattern answers is a measurement, not a
-    // fixture; `recorded_get` keeps the body or the error privately.
     let _ = recorded_get(
         t,
         log,
@@ -202,9 +190,6 @@ fn page_rule_ids(page: &Value, name: &'static str) -> elasticctl_core::Result<Ve
         .ok_or_else(|| recording_error(format!("refusing to record {name}: unexpected page shape")))
 }
 
-/// Read the tactic and subtechnique pages, each ANDed with the marker
-/// filter, and keep only their status and total in the private log. They
-/// are measurements, not fixtures, so a failed read does not stop the step.
 async fn measure_threat_probes(t: &Transport, log: &mut PrivateLog) {
     for (name, planned) in [
         ("rules_find_by_tactic", rules_find_by_tactic()),
@@ -219,8 +204,6 @@ async fn measure_threat_probes(t: &Transport, log: &mut PrivateLog) {
     }
 }
 
-/// Both rule reads after one execution, both `_find` pages, the private
-/// threat probes, and the item count on the marker list.
 pub(super) async fn record_rules(
     t: &Transport,
     exchanges: &mut Exchanges,
@@ -296,9 +279,6 @@ pub(super) async fn record_rules(
     Ok(())
 }
 
-/// Wait until every marker document has produced a session alert, then
-/// record the alert activity search. Every hit must come from this
-/// session's rule, so no older alert reaches the fixture.
 pub(super) async fn record_activity(
     t: &Transport,
     exchanges: &mut Exchanges,
@@ -370,8 +350,6 @@ pub(super) async fn record_activity(
         if let Some(uuid) = hit.source["kibana.alert.uuid"].as_str() {
             placeholders.insert(uuid.to_string(), placeholder);
         }
-        // The backing index is not a marker name; the placeholder replaces
-        // it wherever it appears, not only in `_index`.
         if let Some(index) = &hit.index {
             placeholders.insert(index.clone(), ALERT_INDEX_PLACEHOLDER.to_string());
         }
@@ -394,8 +372,6 @@ pub(super) async fn record_activity(
     Ok(alert)
 }
 
-/// Read whether the attached alert's source holds the case-ids field. The
-/// answer goes only to the private log.
 async fn measure_case_ids(
     t: &Transport,
     log: &mut PrivateLog,
@@ -425,9 +401,6 @@ async fn measure_case_ids(
     Ok(())
 }
 
-/// Create the marker case, attach the session alert, record both case
-/// reads, and measure the case-ids field privately. Cleanup removes the
-/// case.
 pub(super) async fn record_cases(
     compose: &mut ComposeSession<'_>,
     exchanges: &mut Exchanges,
@@ -464,8 +437,6 @@ pub(super) async fn record_cases(
         .map_err(|_| recording_error("case attach response failed decoding"))?;
     register_case_extras(&attached, placeholders, &mut next_comment);
 
-    // The attachment can take a moment to become searchable, so an empty
-    // answer is read again within a small bound.
     let planned = cases_by_alert(&alert.id);
     let mut rows = Value::Null;
     for attempt in 0..CASE_IDS_ATTEMPTS {

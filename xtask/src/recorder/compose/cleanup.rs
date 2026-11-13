@@ -1,17 +1,3 @@
-//! Compose cleanup: remove exactly what this run created.
-//!
-//! An object is touched only while its ownership flag is set. Every delete
-//! re-reads the object first and requires its marker fields, and the server
-//! id when this run learned it. The marker index is deleted only while it
-//! reports the UUID this run recorded; one without a recorded UUID is never
-//! deleted. The flag clears only after a later read finds the object gone;
-//! for a create whose answer was lost, only after it has stayed gone for
-//! the whole settle window. After a marker document write whose answer was
-//! lost, the index name is watched for that window once this run's index is
-//! gone, and an index that appears is never deleted. Alerts are closed by
-//! explicit id until a complete search finds none open. Failure text is
-//! built only from static context and an error's class and status.
-
 use crate::diagnostics::safe_recording_error_summary;
 use crate::recorder::cases::find_marker_cases;
 use crate::recorder::compose::ComposeSession;
@@ -39,12 +25,8 @@ pub(super) const COMPOSE_ITEM: &str = "exception item 2";
 pub(super) const LIST: &str = "the marker exception list";
 pub(super) const INDEX: &str = "index elasticctl-sample-alert-events";
 
-/// Close requests sent for the session alerts before cleanup reports any
-/// that are still open.
 const CLOSE_ROUNDS: u32 = 3;
 
-/// One cleanup failure. Its text holds only static context and an error's
-/// class and status, so it is safe to print.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Failure(String);
 
@@ -93,15 +75,11 @@ impl fmt::Display for Failure {
     }
 }
 
-/// One fixed-id Kibana object and the reads that prove it this run's, then
-/// gone.
 struct Target<'a> {
     object: &'static str,
     path: String,
     owns: fn(&Value) -> bool,
-    /// The server id this run learned, which a re-read must still show.
     id: Option<&'a str>,
-    /// A `_find` whose `total` must be zero before the delete.
     empty: Option<String>,
 }
 
@@ -141,8 +119,6 @@ async fn confirm_absent(t: &Transport, target: &Target<'_>) -> Result<(), Failur
     }
 }
 
-/// Remove one owned object. Returns the read taken before the delete, or
-/// `None` when the object was already gone.
 async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Failure> {
     let current = match t.get(&target.path).await {
         Ok(value) if target.matches(&value) => value,
@@ -168,10 +144,6 @@ async fn remove(t: &Transport, target: &Target<'_>) -> Result<Option<Value>, Fai
     Ok(Some(current))
 }
 
-/// Remove one owned object. A create whose answer was lost is read again
-/// for the settle window: each read that finds it with its marker deletes
-/// it and proves it gone, and the window restarts. Returns the last read
-/// that showed the object.
 async fn reconcile(
     t: &Transport,
     target: &Target<'_>,
@@ -196,10 +168,6 @@ async fn reconcile(
     }
 }
 
-/// Remove the marker case. A case has no caller-chosen id: when the create
-/// answer was lost, the one marker case is found by title and tag, which
-/// the preflight proved absent before, then handled by its exact id.
-/// Returns whether a case was deleted.
 async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<bool, Failure> {
     let id = match known.clone() {
         Some(id) => id,
@@ -237,7 +205,6 @@ async fn remove_case(t: &Transport, known: &mut Option<String>) -> Result<bool, 
     }
 }
 
-/// The case counterpart of `reconcile`.
 async fn reconcile_case(
     t: &Transport,
     known: &mut Option<String>,
@@ -257,8 +224,6 @@ async fn reconcile_case(
     }
 }
 
-/// The UUID one read of the marker index reports: `None` when the index is absent,
-/// `Some(None)` when an answer does not name exactly the marker index.
 async fn read_index_uuid(
     t: &Transport,
     stage: &'static str,
@@ -270,9 +235,6 @@ async fn read_index_uuid(
     }
 }
 
-/// Remove the marker index only while it reports the UUID this run
-/// recorded. An index present without a recorded UUID is never deleted.
-/// Returns whether an index was deleted.
 async fn remove_index(t: &Transport, recorded: Option<&str>) -> Result<bool, Failure> {
     let Some(current) = read_index_uuid(t, "checking").await? else {
         return Ok(false);
@@ -294,9 +256,6 @@ async fn remove_index(t: &Transport, recorded: Option<&str>) -> Result<bool, Fai
     }
 }
 
-/// The index counterpart of `reconcile`. An index whose create answer was
-/// lost has no recorded UUID, so one that appears in the settle window is
-/// left for manual recovery.
 async fn reconcile_index(
     t: &Transport,
     recorded: Option<&str>,
@@ -316,10 +275,6 @@ async fn reconcile_index(
     }
 }
 
-/// Watch the marker index name for the settle window once this run's index
-/// is gone. A marker document write whose answer was lost can still be
-/// applied and create an index under the name. Such an index is not this
-/// run's, so it is never deleted and is left for manual recovery.
 async fn watch_recreation(t: &Transport, timing: &Timing) -> Result<(), Failure> {
     let mut watch = Watch::new(timing.settle_window);
     loop {
@@ -333,11 +288,6 @@ async fn watch_recreation(t: &Transport, timing: &Timing) -> Result<(), Failure>
     }
 }
 
-/// Close the alerts of this run's rule by explicit id until a complete
-/// search has found none open for the whole settle window. The ids come
-/// from a read scoped to the rule's per-creation id, so no alert of an
-/// earlier run is ever closed. The window catches an alert the rule's last
-/// execution writes after the rule is deleted.
 async fn close_session_alerts(
     t: &Transport,
     rule_uuid: &str,
@@ -364,9 +314,6 @@ async fn close_session_alerts(
             return Err(Failure(format!("{ALERTS} are still open")));
         }
         closes += 1;
-        // A 409 means another writer, the rule's last execution or a case
-        // attachment, updated an alert first. The next round searches again
-        // and closes the ids still open.
         match t
             .post(
                 elasticctl_api::alerts::STATUS_PATH,
@@ -382,9 +329,6 @@ async fn close_session_alerts(
     }
 }
 
-/// Remove every object this run still owns, in dependency order: the case
-/// that holds the alert, both rules, the rule's alerts, the items, the list
-/// once it is empty, then the index.
 pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -> Vec<Failure> {
     let t = compose.session.transport;
     let owned = &mut compose.session.ownership;
@@ -425,8 +369,6 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
         match removed {
             Ok(read) => {
                 (owned.alert_rule, unresolved.alert_rule) = (false, false);
-                // A create whose answer was lost still produced alerts under
-                // the id the re-read showed.
                 if ids.rule.is_none() {
                     ids.rule = read
                         .as_ref()
@@ -441,11 +383,9 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
     if *alerts {
         match ids.rule.as_deref() {
             Some(rule_uuid) => match close_session_alerts(t, rule_uuid, timing).await {
-                // While the rule is still owned it can still write alerts.
                 Ok(()) => *alerts = owned.alert_rule,
                 Err(failure) => failures.push(failure),
             },
-            // The rule never existed for this run, so it wrote no alerts.
             None if !owned.alert_rule => *alerts = false,
             None => {}
         }
@@ -505,17 +445,15 @@ pub(super) async fn cleanup(compose: &mut ComposeSession<'_>, timing: &Timing) -
             Err(failure) => failures.push(failure),
         }
     }
-    if unresolved.index_recreation && !owned.alert_index {
-        // A clean watch does not prove the lost write will never land, so
-        // the flag stays set and the operator is told to check the index.
-        if let Err(failure) = watch_recreation(t, timing).await {
-            failures.push(failure);
-        }
+    if unresolved.index_recreation
+        && !owned.alert_index
+        && let Err(failure) = watch_recreation(t, timing).await
+    {
+        failures.push(failure);
     }
     failures
 }
 
-/// The objects this run still owns, for the operator.
 pub(super) fn still_owned(compose: &ComposeSession<'_>) -> Vec<&'static str> {
     let owned = &compose.session.ownership;
     [
@@ -533,8 +471,6 @@ pub(super) fn still_owned(compose: &ComposeSession<'_>) -> Vec<&'static str> {
     .collect()
 }
 
-/// Owned objects whose create answer was lost and that did not settle. Each
-/// may still appear, so the operator must check it by hand.
 pub(super) fn still_unresolved(compose: &ComposeSession<'_>) -> Vec<&'static str> {
     let unresolved = &compose.unresolved;
     [

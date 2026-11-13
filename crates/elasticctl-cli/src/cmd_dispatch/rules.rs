@@ -51,11 +51,7 @@ pub(crate) async fn rules(args: &Cli, action: &RulesAction) -> Result<Value, Err
             Ok(ctx) => cmd::rules::get(&ctx, selector).await,
             Err(e) => Err(e),
         },
-        // Local only: no context, credential check, transport, or
-        // capability probe.
         RulesAction::Validate { path } => cmd::rules::validate(path),
-        // Reject empty selectors before building a context so this cannot
-        // express an unscoped mutation.
         RulesAction::Enable { selectors } if selectors.is_empty() => Err(Error::new(
             ErrorKind::Error,
             "Name at least one rule to enable",

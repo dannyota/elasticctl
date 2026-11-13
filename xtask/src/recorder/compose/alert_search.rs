@@ -1,32 +1,19 @@
-//! The search that finds this run's open alerts, for cleanup and for the
-//! baseline audit.
-//!
-//! An empty page proves nothing unless the search was complete: a timed-out
-//! search, a failed shard, or a total that is a lower bound can each hide
-//! alerts that are still open. Such a search is refused, never read as zero.
-
 use crate::recorder::compose::requests::open_session_alerts_body;
 use elasticctl_core::{Error, Transport};
 use serde_json::Value;
 
-/// Open alerts of this run's rule from one complete search.
 #[derive(Debug, PartialEq)]
 pub(super) struct OpenAlerts {
-    /// The exact number of open alerts.
     pub(super) total: u64,
-    /// Their ids on this page, at most the page size.
     pub(super) ids: Vec<String>,
 }
 
-/// Why a search did not produce a trustworthy answer.
 #[derive(Debug)]
 pub(super) enum SearchError {
     Request(Error),
     Incomplete(&'static str),
 }
 
-/// Read one search response, refusing it unless it is complete: not timed
-/// out, every shard answered, an exact total, and the open ids on the page.
 pub(super) fn complete_open_alerts(page: &Value) -> Result<OpenAlerts, &'static str> {
     match page.get("timed_out").and_then(Value::as_bool) {
         Some(false) => {}
@@ -73,7 +60,6 @@ pub(super) fn complete_open_alerts(page: &Value) -> Result<OpenAlerts, &'static 
     Ok(OpenAlerts { total, ids })
 }
 
-/// Search the open alerts of this run's rule, by its per-creation id.
 pub(super) async fn open_session_alerts(
     t: &Transport,
     rule_uuid: &str,

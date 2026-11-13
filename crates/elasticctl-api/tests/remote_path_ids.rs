@@ -1,6 +1,3 @@
-//! An id read from a response or a local file becomes one URL path segment
-//! only when URL parsing cannot remove it. `.` and `..` would move the
-//! request to a parent route, so they are refused before any request.
 use elasticctl_api::compose::require_path_segment;
 use elasticctl_api::dashboards::{self, DashboardSpec};
 use elasticctl_api::fleet::{
@@ -54,7 +51,6 @@ fn transport(server: &MockServer) -> Transport {
     .unwrap()
 }
 
-/// Every request after the capability probe, as `METHOD path`.
 async fn requests(server: &MockServer) -> Vec<String> {
     server
         .received_requests()
@@ -323,9 +319,6 @@ async fn a_case_comment_or_attachment_to_a_dot_id_sends_no_post() {
     assert!(requests(&server).await.is_empty());
 }
 
-/// An ordinary case selector whose read answers a dot id. The comment and
-/// attachment plans keep the id the server returned, so applying them must
-/// refuse it before any post.
 #[tokio::test]
 async fn case_plans_from_a_dot_id_response_send_no_post() {
     use elasticctl_api::cases_ops;

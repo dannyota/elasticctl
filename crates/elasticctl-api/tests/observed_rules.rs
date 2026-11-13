@@ -1,5 +1,3 @@
-//! Rule observations and disabled creation.
-
 use elasticctl_api::{
     Rule, VOLATILE_FIELDS, normalize,
     observe::{self, Observed, Preconditions},

@@ -1,15 +1,9 @@
-//! Exact-field validators for the four task tools and `rules_list`, from
-//! design sections 4 to 6. Every object is checked against its listed
-//! fields, so a field the design does not name fails the call phase before
-//! any value is compared. Messages are static: no remote value appears.
-
 use serde_json::{Map, Value};
 
 use crate::TestResult;
 
 type Object = Map<String, Value>;
 
-/// The static messages of the core error mapping, by kind.
 const ERROR_MESSAGES: [(&str, &str); 9] = [
     (
         "auth",
@@ -69,7 +63,6 @@ pub(crate) const READINESS_FINDINGS: [&str; 9] = [
     "integrations_truncated",
 ];
 pub(crate) const GROUPINGS: [&str; 4] = ["technique", "tactic", "index_pattern", "integration"];
-/// Optional `rules_get` fields; `rule_id` is the only required one.
 const RULE_FIELDS: [&str; 13] = [
     "name",
     "type",
@@ -129,7 +122,6 @@ fn object<'a>(value: &'a Value, context: &'static str) -> TestResult<&'a Object>
         .map_or_else(|| fail(context, "was not an object"), Ok)
 }
 
-/// Required fields must be present; nothing outside both lists may appear.
 fn keys(map: &Object, required: &[&str], optional: &[&str], context: &'static str) -> TestResult {
     if required.iter().any(|key| !map.contains_key(*key)) {
         return fail(context, "omitted a required field");
@@ -167,7 +159,6 @@ fn array<'a>(map: &'a Object, key: &str, context: &'static str) -> TestResult<&'
         .map_or_else(|| fail(context, "had a missing or non-array field"), Ok)
 }
 
-/// Check the type of each optional field that is present.
 fn optional(map: &Object, key: &str, kind: Kind, context: &'static str) -> TestResult {
     let Some(value) = map.get(key) else {
         return Ok(());
@@ -197,7 +188,6 @@ enum Kind {
     Strings,
 }
 
-/// The page of the three single-object tools.
 fn null_page<'a>(content: &'a Value, tool: &'static str) -> TestResult<&'a Object> {
     if content.get("page") != Some(&Value::Null) {
         return fail(tool, "included page metadata");
@@ -205,7 +195,6 @@ fn null_page<'a>(content: &'a Value, tool: &'static str) -> TestResult<&'a Objec
     object(&content["data"], tool)
 }
 
-/// The tool error object, with the static message of its kind.
 pub(crate) fn tool_error(value: &Value, context: &'static str) -> TestResult<String> {
     let error = object(value, context)?;
     keys(
@@ -267,8 +256,6 @@ fn part<'a>(map: &'a Object, key: &str, context: &'static str) -> TestResult<Par
     }
 }
 
-/// A row read one request at a time: `ok`, or `unavailable` with an error.
-/// Returns whether the row is `ok`.
 fn row_status(row: &Object, ok_only: &[&str], context: &'static str) -> TestResult<bool> {
     match string(row, "status", context)? {
         "ok" if !row.contains_key("error") => Ok(true),
@@ -284,7 +271,6 @@ fn row_status(row: &Object, ok_only: &[&str], context: &'static str) -> TestResu
     }
 }
 
-/// Codes from a closed list, in the listed order, each at most once.
 fn findings(map: &Object, allowed: &[&str], context: &'static str) -> TestResult {
     let mut last = None;
     for code in array(map, "findings", context)? {
@@ -306,7 +292,6 @@ fn partial(map: &Object, expected: bool, context: &'static str) -> TestResult {
     Ok(())
 }
 
-/// The `alerts_get` projection: `id`, optional `index`, and `source`.
 fn alert(value: &Value, context: &'static str) -> TestResult {
     let alert = object(value, context)?;
     keys(alert, &["id", "source"], &["index"], context)?;
@@ -328,8 +313,6 @@ fn alert(value: &Value, context: &'static str) -> TestResult {
     optional(source, "kibana.alert.workflow_tags", Kind::Strings, context)
 }
 
-/// The rule context: every `rules_get` field plus a required, nullable
-/// `execution`.
 fn rule_context(value: &Value, context: &'static str) -> TestResult {
     let rule = object(value, context)?;
     keys(rule, &["rule_id", "execution"], &RULE_FIELDS, context)?;
@@ -401,7 +384,6 @@ fn execution(value: &Value, context: &'static str) -> TestResult {
     Ok(())
 }
 
-/// Exception coverage. Returns whether any list row is `unavailable`.
 fn exception_coverage(value: &Value, context: &'static str) -> TestResult<bool> {
     let coverage = object(value, context)?;
     keys(
@@ -440,7 +422,6 @@ fn exception_coverage(value: &Value, context: &'static str) -> TestResult<bool> 
     Ok(unavailable)
 }
 
-/// Related cases. Returns whether any case row is `unavailable`.
 fn related_cases(value: &Value, context: &'static str) -> TestResult<bool> {
     let cases = object(value, context)?;
     keys(cases, &["total", "truncated", "cases"], &[], context)?;
@@ -665,7 +646,6 @@ fn data_views(value: &Value, rule_view: bool) -> TestResult {
     count(views, "count", CONTEXT).map(|_| ())
 }
 
-/// Pattern rows. Returns whether any row is `unresolved`.
 fn patterns(value: &Value, views_ok: bool) -> TestResult<bool> {
     const CONTEXT: &str = "rule_readiness patterns";
     let patterns = object(value, CONTEXT)?;
@@ -725,7 +705,6 @@ fn patterns(value: &Value, views_ok: bool) -> TestResult<bool> {
     Ok(unresolved)
 }
 
-/// Package rows. Returns whether any row is `unavailable`.
 fn integrations(value: &Value) -> TestResult<bool> {
     const CONTEXT: &str = "rule_readiness integrations";
     let integrations = object(value, CONTEXT)?;
@@ -835,7 +814,6 @@ pub(crate) fn detection_coverage(content: &Value) -> TestResult {
     Ok(())
 }
 
-/// `{limit, returned, total, has_more, truncated}` describing `returned` rows.
 fn list_page(page: &Object, returned: usize, context: &'static str) -> TestResult {
     keys(
         page,

@@ -6,8 +6,6 @@ use serde_json::Value;
 
 pub(crate) async fn config(args: &Cli, action: &ConfigAction) -> Result<Value, Error> {
     match action {
-        // These commands use local configuration only; they do not build a
-        // context or use the network.
         ConfigAction::List => cmd::config_cmd::list(&args.global),
         ConfigAction::Show => cmd::config_cmd::show(&args.global),
         ConfigAction::Init { name, from_env } => {

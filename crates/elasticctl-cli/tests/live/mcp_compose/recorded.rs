@@ -1,4 +1,3 @@
-//! Recorded responses exercise the real MCP server with the live validators.
 use super::shape;
 use elasticctl_core::{Profile, Resolved, Source};
 use elasticctl_mcp::{ServerOptions, serve_io};

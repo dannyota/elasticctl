@@ -1,27 +1,12 @@
-//! Creates whose answer was lost, and the window cleanup watches them for.
-//!
-//! A create answered with a timeout, a connection error, a 5xx, or any
-//! other failure that is not a definite "already exists", or one cut off by
-//! an interrupt or a panic, may still be applied by the server after cleanup
-//! has read the identity once. The request future is dropped with the step,
-//! so it cannot be drained; cleanup instead re-reads the identity for a
-//! fixed window and clears the claim only once the object has stayed absent
-//! for all of it.
-
 use crate::recorder::markers::ALERT_POLL_INTERVAL;
 use std::time::{Duration, Instant};
 
-/// How long an object must stay absent before cleanup accepts that a lost
-/// create will not land.
 pub(super) const SETTLE_WINDOW: Duration = Duration::from_secs(30);
 
-/// The pause between reads while an object settles.
 pub(super) const SETTLE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The waits of one run. Tests pass short or zero values.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Timing {
-    /// Between the step's polls, and after each alert close request.
     pub(super) poll: Duration,
     pub(super) settle_window: Duration,
     pub(super) settle_interval: Duration,
@@ -42,10 +27,6 @@ impl Timing {
     };
 }
 
-/// Claims whose create answer was neither a definite success nor a
-/// definite "already exists". Each is set before its create, with the
-/// matching ownership flag, and cleared only by such an answer or by the
-/// settle window.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Unresolved {
     pub(super) case: bool,
@@ -55,14 +36,9 @@ pub(super) struct Unresolved {
     pub(super) item: bool,
     pub(super) list: bool,
     pub(super) alert_index: bool,
-    /// A marker document write whose answer was lost. The server can still
-    /// apply it after cleanup deletes this run's index, and automatic index
-    /// creation then makes an index under the marker name that is not this
-    /// run's. Cleared only once the name has stayed absent for the window.
     pub(super) index_recreation: bool,
 }
 
-/// How long a watched object has been seen absent.
 pub(super) struct Watch {
     window: Duration,
     absent_since: Option<Instant>,
@@ -76,9 +52,6 @@ impl Watch {
         }
     }
 
-    /// Record a read taken at `now` that found the object absent, or found
-    /// it and proved it removed. True once it has stayed absent for the
-    /// whole window since the last removal.
     pub(super) fn observe(&mut self, now: Instant, removed: bool) -> bool {
         if removed {
             self.absent_since = Some(now);
@@ -87,8 +60,6 @@ impl Watch {
         now.duration_since(since) >= self.window
     }
 
-    /// The object was seen again, so the window starts over at the next
-    /// absent read.
     pub(super) fn reset(&mut self) {
         self.absent_since = None;
     }

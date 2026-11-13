@@ -1,6 +1,3 @@
-//! `detection_coverage`: the rules of the selected space grouped by MITRE
-//! ATT&CK technique, tactic, index pattern, or integration package.
-
 use super::*;
 use crate::{
     PageInfo, ToolFailure, ToolSuccess,
@@ -18,7 +15,6 @@ const DESCRIPTION: &str = "Detection coverage across Elastic Security rules, gro
 const DEFAULT_LIMIT: usize = 50;
 const MAX_TEXT_BYTES: usize = 1_024;
 
-// The input vocabulary, also echoed as `data.group_by`.
 /// Row grouping.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +48,6 @@ impl From<CoverageGroup> for GroupBy {
     }
 }
 
-// `Serialize` lets the schema carry the default.
 /// Rule source, in the rules_list vocabulary.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -153,7 +148,7 @@ struct CoverageData {
     rows: Vec<CoverageRowData>,
 }
 
-#[allow(dead_code)] // Schema-only alternatives are never instantiated.
+#[allow(dead_code)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum CoverageOutput {
@@ -209,8 +204,6 @@ pub(super) async fn call(
     })
 }
 
-/// Keep the first `limit` rows. `page.total` is the group count, and
-/// `summary` describes the whole corpus read.
 fn project(report: CoverageReport, limit: usize) -> (CoverageData, PageInfo) {
     let groups = report.rows.len();
     let returned = groups.min(limit);

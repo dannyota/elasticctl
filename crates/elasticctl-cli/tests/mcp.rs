@@ -1,9 +1,3 @@
-//! Process-level startup and stdio contracts for `mcp serve`.
-//!
-//! The child helpers remove every inherited Elastic setting. Each test provides
-//! only the target and timeout values it needs, so environment precedence is
-//! exercised without changing the test runner's process environment.
-
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -3936,8 +3930,6 @@ async fn accepted_globals_resolve_identically_before_between_and_after_mcp_words
 #[tokio::test]
 async fn profile_environment_and_flag_timeouts_set_the_whole_call_deadline() {
     let server = MockServer::start().await;
-    // Each request is below the one-second transport timeout. Their combined
-    // 1.5 seconds prove the deadline wraps capabilities, spaces, and license.
     mount_info_routes(&server, Duration::from_millis(500)).await;
     let dir = tempfile::tempdir().expect("temporary directory");
     let config = config_for(dir.path(), "analyst", &server.uri(), None, 1, true);

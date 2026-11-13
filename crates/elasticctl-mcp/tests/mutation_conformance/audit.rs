@@ -1,4 +1,3 @@
-//! Exact audit delivery through the server, including expiry with a test-only plan life.
 use super::*;
 
 fn unix_seconds() -> u64 {
@@ -121,9 +120,6 @@ fn base(p: &Value, s: &MockServer, kind: &str, class: &str) -> Value {
     json!({"plan_id":p["plan_id"],"hash":p["hash"],"kind":kind,"class":class,"profile":"test",
         "host":s.address().to_string(),"space":"default","credential":p["credential"],"protocol":"2026-07-28"})
 }
-/// Requires exactly the expected events, in order, each with only the
-/// common fields of design 8.4 plus its own, and a `ts` in Unix seconds
-/// inside the flow's window.
 fn assert_lines(
     label: &str,
     lines: &[String],
@@ -151,32 +147,24 @@ fn assert_lines(
         assert_eq!(a, &exact, "{label}: {line}");
     }
 }
-/// Extends mutation_apply::accepted_write_and_replay and write_status_classification_and_malformed_success:
-/// the complete accept, failed and unknown audit sequences contain exactly the allowed fields.
 #[tokio::test]
 async fn accept_failed_unknown_audit_is_exact() {
     for scenario in ["accept", "failed", "unknown"] {
         flow(scenario).await;
     }
 }
-/// Extends mutation_confirm_current::decline_closes_and_protocol_errors_stay_static
-/// and current_question_and_answers with complete decline and dismiss audit sequences.
 #[tokio::test]
 async fn decline_dismiss_audit_is_exact() {
     for scenario in ["decline", "dismiss"] {
         flow(scenario).await;
     }
 }
-/// Extends mutation_apply::drift_and_identity_alias_at_both_checks with exact stale and discarded audit sequences through the router.
 #[tokio::test]
 async fn stale_discarded_audit_is_exact() {
     for scenario in ["stale", "discarded"] {
         flow(scenario).await;
     }
 }
-/// Extends mutation_rules_create::post_conflict_bad_request_and_enabled_response_classification
-/// with the exact audit sequence of a 409 at write time: the plan goes from
-/// `applying` to `stale`, so `apply_finished` is followed by one `plan_closed`.
 #[tokio::test]
 async fn write_conflict_stale_audit_is_exact() {
     let before = unix_seconds();

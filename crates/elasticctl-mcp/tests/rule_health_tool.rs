@@ -1,6 +1,3 @@
-//! The `rule_health` tool through `serve_io`: definition, validation, output
-//! schema, projection, findings, cancellation, and deadline. Every mock body
-//! is a recorded fixture or a variant derived from one in code.
 #[allow(dead_code)]
 mod support;
 
@@ -80,8 +77,6 @@ fn quiet_activity() -> Value {
     body
 }
 
-/// A recorded error, with its message replaced by a credential-shaped
-/// sentinel that must not reach the output.
 fn sentinel_error() -> Value {
     let mut body = recorded_file("case_conflict.json")["error"].clone();
     body["message"] = json!(SENTINEL);
@@ -105,7 +100,6 @@ fn target_for(server: &MockServer) -> Resolved {
     }
 }
 
-/// A stack that answers the whole plan for `rule` from recorded bodies.
 async fn stack(rule: Value, activity: Value) -> MockServer {
     let s = MockServer::start().await;
     for (verb, route, body) in [
@@ -145,7 +139,6 @@ async fn override_route(
     mock.respond_with(response).with_priority(1).mount(s).await;
 }
 
-/// One label per logical request, without the capability probe.
 async fn log(s: &MockServer) -> Vec<String> {
     s.received_requests()
         .await
@@ -341,7 +334,6 @@ async fn success_matches_the_schema_and_projects_every_part() {
 
 #[tokio::test]
 async fn partial_and_failure_results_match_the_schema() {
-    // A denied activity read is a partial success that still reads lists.
     let s = stack(rule_with_lists(1), activity()).await;
     override_route(
         &s,
@@ -366,7 +358,6 @@ async fn partial_and_failure_results_match_the_schema() {
     h.close_input();
     h.join().await.unwrap();
 
-    // An authentication failure in a part fails the whole call.
     let s = stack(rule_with_lists(1), activity()).await;
     override_route(
         &s,
@@ -385,8 +376,6 @@ async fn partial_and_failure_results_match_the_schema() {
     assert!(!reply.to_string().contains(SENTINEL));
     assert_eq!(log(&s).await, [format!("rule {PROBE}"), "signals".into()]);
 
-    // A selector that matches nothing fails after the id read and the name
-    // search.
     let reply = call(&mut h, 3, json!({"selector": "elasticctl-absent-rule"})).await;
     assert_eq!(reply["result"]["isError"], true);
     assert_schema(&schema, structured(&reply));
@@ -554,7 +543,6 @@ impl Stage {
         }
     }
 
-    /// The plan up to and including this read.
     fn plan(self) -> Vec<String> {
         let mut out = vec![format!("rule {PROBE}"), "signals".into()];
         if let Stage::SecondList = self {
@@ -607,10 +595,6 @@ async fn wait_for_stage(s: &MockServer, stage: Stage, count: usize) {
     panic!("did not observe {count} {stage:?} requests");
 }
 
-/// Interrupt a call while `stage` is in flight, by cancellation or by the
-/// whole-call deadline. Then prove that no later read was sent and that the
-/// interrupted call's permit is free: four new calls are all admitted while
-/// they are held at the same read.
 async fn interrupt(stage: Stage, deadline: bool) {
     let s = stack(rule_with_lists(2), activity()).await;
     let delay = Duration::from_secs(if deadline { 2 } else { 1 });

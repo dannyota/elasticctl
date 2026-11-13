@@ -1,8 +1,3 @@
-//! The exact requests behind the compose fixtures.
-//!
-//! Every builder names only marker ids, indices, lists, and cases, so a
-//! recorded exchange can never hold an unscoped `_find` or search.
-
 use crate::recorder::compose::{
     ACTIVITY_SINCE, ACTIVITY_SIZE, MISSING_RULE_ID, SORTED_PAGE_SIZE, SUBTECHNIQUE, TACTIC,
     TECHNIQUE, TECHNIQUE_PAGE_SIZE,
@@ -21,11 +16,8 @@ pub(super) const CASES_BY_ALERT_PATH: &str = "/api/cases/alerts";
 pub(super) const RESOLVE_INDEX_PATH: &str = "/_resolve/index";
 pub(super) const PACKAGES_PATH: &str = "/api/fleet/epm/packages";
 pub(super) const PREBUILT_STATUS_PATH: &str = "/api/detection_engine/rules/prepackaged/_status";
-/// Alerts read per cleanup round. The step makes far fewer.
 const SESSION_ALERT_PAGE: u64 = 1_000;
 
-/// One request as the recorder sends it. `target` is what the transport
-/// receives; `descriptor` is what a fixture keeps as its `request`.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Planned {
     pub(super) method: &'static str,
@@ -63,11 +55,8 @@ impl Planned {
     }
 }
 
-/// The two compose rules, in creation order.
 pub(super) const MARKER_RULE_IDS: [&str; 2] = [ALERT_RULE_ID, MISSING_RULE_ID];
 
-/// KQL selecting exactly the two compose rules. Parenthesized so it stays
-/// one clause when another clause is ANDed to it.
 pub(super) fn marker_rule_filter() -> String {
     let clauses: Vec<String> = MARKER_RULE_IDS
         .iter()
@@ -76,7 +65,6 @@ pub(super) fn marker_rule_filter() -> String {
     format!("({})", clauses.join(" OR "))
 }
 
-/// The technique clause `rules_list` builds, ANDed with the marker filter.
 pub(super) fn technique_filter() -> String {
     format!(
         "alert.attributes.params.threat.technique.id: \"{TECHNIQUE}\" AND {}",
@@ -84,8 +72,6 @@ pub(super) fn technique_filter() -> String {
     )
 }
 
-/// `rule_get_executed` and `rule_get_failed_execution`, and every poll that
-/// waits for them.
 pub(super) fn rule_get(rule_id: &str) -> Planned {
     Planned::get(
         RULES_PATH.to_string(),
@@ -93,8 +79,6 @@ pub(super) fn rule_get(rule_id: &str) -> Planned {
     )
 }
 
-/// `rules_find_sorted_page`: the `rules::find_window` page shape over the
-/// marker rules only.
 pub(super) fn rules_find_sorted_page() -> Planned {
     Planned::get(
         RULES_FIND_PATH.to_string(),
@@ -105,7 +89,6 @@ pub(super) fn rules_find_sorted_page() -> Planned {
     )
 }
 
-/// The tactic clause `rules_list` builds, ANDed with the marker filter.
 pub(super) fn tactic_filter() -> String {
     format!(
         "alert.attributes.params.threat.tactic.id: \"{TACTIC}\" AND {}",
@@ -113,8 +96,6 @@ pub(super) fn tactic_filter() -> String {
     )
 }
 
-/// The subtechnique clause `rules_list` builds for a dotted technique id,
-/// ANDed with the marker filter.
 pub(super) fn subtechnique_filter() -> String {
     format!(
         "alert.attributes.params.threat.technique.subtechnique.id: \"{SUBTECHNIQUE}\" AND {}",
@@ -122,7 +103,6 @@ pub(super) fn subtechnique_filter() -> String {
     )
 }
 
-/// The `rules_list` page shape at its default limit, with one threat clause.
 fn threat_page(filter: &str) -> Planned {
     Planned::get(
         RULES_FIND_PATH.to_string(),
@@ -133,23 +113,18 @@ fn threat_page(filter: &str) -> Planned {
     )
 }
 
-/// `rules_find_by_technique`: the technique page.
 pub(super) fn rules_find_by_technique() -> Planned {
     threat_page(&technique_filter())
 }
 
-/// The tactic page, measured in the private log only.
 pub(super) fn rules_find_by_tactic() -> Planned {
     threat_page(&tactic_filter())
 }
 
-/// The subtechnique page, measured in the private log only.
 pub(super) fn rules_find_by_subtechnique() -> Planned {
     threat_page(&subtechnique_filter())
 }
 
-/// Count of every rule whose `rule_id` starts with the sample marker or
-/// that carries the sample tag. One row comes back; only `total` is read.
 pub(super) fn marker_rule_inventory() -> String {
     let filter = format!(
         "(alert.attributes.params.ruleId: {ALERT_MARKER_TAG}* OR alert.attributes.tags: \"{ALERT_MARKER_TAG}\")"
@@ -160,8 +135,6 @@ pub(super) fn marker_rule_inventory() -> String {
     )
 }
 
-/// Count of every exception list whose `list_id` starts with the sample
-/// marker or that carries the sample tag. Only `total` is read.
 pub(super) fn marker_list_inventory() -> String {
     let filter = format!(
         "(exception-list.attributes.list_id: {ALERT_MARKER_TAG}* OR exception-list.attributes.tags: \"{ALERT_MARKER_TAG}\")"
@@ -172,8 +145,6 @@ pub(super) fn marker_list_inventory() -> String {
     )
 }
 
-/// Every index, alias, and data stream whose name holds the sample marker.
-/// The answer holds names only; only their number is kept.
 pub(super) fn marker_index_inventory() -> String {
     format!(
         "{RESOLVE_INDEX_PATH}/{}",
@@ -181,7 +152,6 @@ pub(super) fn marker_index_inventory() -> String {
     )
 }
 
-/// The alert activity body of the composition contract for one rule.
 pub(super) fn activity_body(rule_id: &str, since: &str, size: u64) -> Value {
     json!({
         "query": {"bool": {"filter": [
@@ -195,7 +165,6 @@ pub(super) fn activity_body(rule_id: &str, since: &str, size: u64) -> Value {
     })
 }
 
-/// `signals_search_rule_activity`: the `rule_health` form, `size: 5`.
 pub(super) fn signals_activity() -> Planned {
     Planned {
         method: "POST",
@@ -205,7 +174,6 @@ pub(super) fn signals_activity() -> Planned {
     }
 }
 
-/// `cases_by_alert` and `cases_by_alert_none`.
 pub(super) fn cases_by_alert(alert_id: &str) -> Planned {
     Planned::get(
         format!("{CASES_BY_ALERT_PATH}/{}", urlencode(alert_id)),
@@ -213,7 +181,6 @@ pub(super) fn cases_by_alert(alert_id: &str) -> Planned {
     )
 }
 
-/// `exception_items_count`: the coverage count read on the marker list.
 pub(super) fn exception_items_count() -> Planned {
     Planned::get(
         ITEMS_FIND_PATH.to_string(),
@@ -224,18 +191,14 @@ pub(super) fn exception_items_count() -> Planned {
     )
 }
 
-/// The three `resolve_index_*` fixtures, one marker pattern each.
 pub(super) fn resolve_index(pattern: &str) -> Planned {
     Planned::get(format!("{RESOLVE_INDEX_PATH}/{}", urlencode(pattern)), None)
 }
 
-/// `package_not_installed`, and each probe before it.
 pub(super) fn package_status(name: &str) -> Planned {
     Planned::get(format!("{PACKAGES_PATH}/{}", urlencode(name)), None)
 }
 
-/// Poll body that counts only this session's alerts: the marker rule id and
-/// the rule's per-creation saved-object id together. Never recorded.
 pub(super) fn session_alert_count_body(rule_uuid: &str) -> Value {
     json!({
         "query": {"bool": {"filter": [
@@ -247,8 +210,6 @@ pub(super) fn session_alert_count_body(rule_uuid: &str) -> Value {
     })
 }
 
-/// Read body for the private `kibana.alert.case_ids` measurement on one
-/// marker alert. Never recorded.
 pub(super) fn case_ids_probe_body(alert_id: &str) -> Value {
     json!({
         "query": {"ids": {"values": [alert_id]}},
@@ -257,9 +218,6 @@ pub(super) fn case_ids_probe_body(alert_id: &str) -> Value {
     })
 }
 
-/// Cleanup read of the alert ids this run's rule produced that are not yet
-/// closed. The rule's per-creation saved-object id keeps alerts of every
-/// earlier run out. Never recorded.
 pub(super) fn open_session_alerts_body(rule_uuid: &str) -> Value {
     json!({
         "query": {"bool": {
@@ -275,12 +233,10 @@ pub(super) fn open_session_alerts_body(rule_uuid: &str) -> Value {
     })
 }
 
-/// Close exactly the named alerts. Never a query.
 pub(super) fn close_alerts_body(alert_ids: &[String]) -> Value {
     json!({"signal_ids": alert_ids, "status": "closed"})
 }
 
-/// The marker exception list read.
 pub(super) fn list_path() -> String {
     format!(
         "/api/exception_lists?list_id={}&namespace_type={NAMESPACE_TYPE}",
@@ -288,7 +244,6 @@ pub(super) fn list_path() -> String {
     )
 }
 
-/// One marker exception item read or delete.
 pub(super) fn item_path(item_id: &str) -> String {
     format!(
         "/api/exception_lists/items?item_id={}&namespace_type={NAMESPACE_TYPE}",
@@ -296,21 +251,14 @@ pub(super) fn item_path(item_id: &str) -> String {
     )
 }
 
-/// Create-only marker document write: Elasticsearch answers 409 when the
-/// id already exists instead of overwriting it.
 pub(super) fn marker_document_path(index: &str, seq: usize) -> String {
     format!("/{index}/_create/{seq}")
 }
 
-/// The marker index create and delete. A `PUT` creates the index only when
-/// the name is free.
 pub(super) fn marker_index_path() -> String {
     format!("/{ALERT_PROBE_INDEX}")
 }
 
-/// The one setting read that reports the marker index UUID.
-/// Serverless answers the settings and get-index APIs for this index with no
-/// `index.uuid`; the cat indices API reports the UUID on every flavor.
 pub(super) fn index_uuid_path() -> String {
     format!("/_cat/indices/{ALERT_PROBE_INDEX}?h=index,uuid&format=json")
 }
@@ -562,8 +510,6 @@ mod tests {
                     .map(Value::to_string)
                     .unwrap_or_default()
             );
-            // Every quoted identifier and every rule, list, or index value is
-            // a marker name.
             for value in quoted_values(&text) {
                 if value.starts_with("elasticctl-")
                     || value.starts_with("kibana.alert.")

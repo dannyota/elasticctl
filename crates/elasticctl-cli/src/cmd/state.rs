@@ -1,7 +1,3 @@
-//! Argument handling for the state commands. Orchestration lives in
-//! `elasticctl_api::state`; this module resolves context, applies the guard,
-//! and hands the result to render.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use crate::report_file;
@@ -62,9 +58,6 @@ pub async fn push(
     };
     let plan = state::plan_push(t, dir, selectors, tag, search, source, &identity).await?;
 
-    // A report destination is local mutation preflight. Validate, recover, and
-    // stage the dry-run report before the guard so a bad path can never turn a
-    // confirmed push into a remote write without durable change evidence.
     let prepared_report = report_path
         .map(|path| report_file::prepare_report(path, &plan.report))
         .transpose()?;
@@ -73,16 +66,12 @@ pub async fn push(
         action: plan.preview_action.clone(),
         details: plan.preview_details.clone(),
     };
-    // `apply_push` takes no directory: it applies the rules the preview
-    // described, not whatever is on disk once the operator answers.
     let plan = if guard::check(ctx, "state push", &preview) {
         state::apply_push(t, plan).await?
     } else {
         plan
     };
 
-    // The final typed report is committed on both paths. A dry run remains
-    // reviewable before approval; an apply records its remote outcomes.
     if let Some(prepared) = prepared_report {
         let path = prepared.requested_path().to_path_buf();
         prepared.publish(&plan.report).map_err(|error| {

@@ -1,15 +1,9 @@
-//! Profiles, their on-disk form, and resolution order.
-//!
-//! Flags override environment variables, which override profiles and defaults.
-
 use crate::error::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A Kibana space id is one URL path segment. An empty space means the
-/// default space, as it always has.
 pub(crate) fn validate_space(space: &str) -> Result<()> {
     if space.is_empty() {
         return Ok(());
@@ -25,18 +19,10 @@ pub(crate) fn validate_space(space: &str) -> Result<()> {
 
 const REDACTED: &str = "***";
 
-/// Whether overrides change the target deployment or credential.
-///
-/// Only these overrides change the guard banner's reported source. Timeout and
-/// space overrides do not.
 fn is_identity_override(ov: &Overrides) -> bool {
     ov.kibana_url.is_some() || ov.es_url.is_some() || ov.api_key.is_some()
 }
 
-/// Read an environment variable, distinguishing absence from invalid Unicode.
-///
-/// The error names the variable but never includes its raw bytes, so a binary
-/// value cannot leak into a message or log.
 fn checked_env(name: &str) -> Result<Option<String>> {
     match std::env::var_os(name) {
         None => Ok(None),
@@ -94,10 +80,6 @@ impl std::fmt::Debug for Profile {
 }
 
 impl Profile {
-    /// Return a copy safe to print.
-    ///
-    /// Secrets become `***`; absent values remain absent. URL userinfo is
-    /// stripped too, so a credential embedded in a URL never leaks.
     pub fn redacted(&self) -> Profile {
         let mut scrubbed = self.clone();
         scrubbed.strip_userinfo();
@@ -108,76 +90,40 @@ impl Profile {
         }
     }
 
-    /// Return the Kibana URL host for banners.
-    ///
-    /// Userinfo is stripped first, then the host is parsed. Return the scrubbed
-    /// URL when no host can be parsed.
     pub fn host(&self) -> String {
-        // Strip userinfo so a credential in the URL never reaches a banner.
         let url = strip_userinfo(&self.kibana_url);
-        // Parse the authority host. `scheme_anchor` handles a doubled scheme;
-        // the split drops the path, query, and fragment.
         if let Some(pos) = scheme_anchor(&url) {
             let after_scheme = &url[pos..];
             let host_part = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-            // Use the parsed host when present.
             if !host_part.is_empty() {
                 return host_part.to_string();
             }
         }
-        // Preserve the scrubbed URL when parsing finds no host.
         url
     }
 
-    /// Remove userinfo from `kibana_url` and `es_url`.
-    ///
-    /// Credentials use `api_key` or `username` and `password`; the transport
-    /// never reads URL userinfo. Removing it prevents credentials appearing in
-    /// the guard banner, `config show`, or `--debug` output.
     pub fn strip_userinfo(&mut self) {
         self.kibana_url = strip_userinfo(&self.kibana_url);
         self.es_url = self.es_url.as_deref().map(strip_userinfo);
     }
 }
 
-/// Return the byte index just past the scheme's `://`.
-///
-/// Shared with flavor detection's `host_of`.
-///
-/// The scheme is normally the first `://`. A doubled scheme
-/// (`https://https://host`) puts a second `://` inside the authority, so the
-/// first `/` after the first `://` is itself part of that `://`; anchor on that
-/// second `://` then so the authority after it parses correctly. A `://` in the
-/// path, query, or fragment never becomes the anchor.
 pub(crate) fn scheme_anchor(url: &str) -> Option<usize> {
     let first = url.find("://")?;
     let after = &url[first + 3..];
     let Some(delim) = after.find(['/', '?', '#']) else {
         return Some(first + 3);
     };
-    // A doubled scheme is the only case where the first delimiter is itself the
-    // `/` of a second `://`. An empty port (`https://host:/path`) also ends the
-    // authority in `:`, but the bytes after it are not `//`, so it is not
-    // doubled and must anchor on the first scheme.
     if delim >= 1
         && after.as_bytes()[delim - 1] == b':'
         && after.get(delim..delim + 2) == Some("//")
     {
-        // Anchor just past the second `://`, never on a later `://` in the
-        // path, query, or fragment.
         Some(first + 3 + delim + 2)
     } else {
         Some(first + 3)
     }
 }
 
-/// Remove userinfo from a URL authority without changing other bytes.
-///
-/// Userinfo is the `user:password@` in the authority, delimited by the scheme's
-/// `://` and the first `/`, `?`, or `#` after it. Paths and queries may
-/// legitimately contain `@`; only an `@` inside the authority is userinfo. A
-/// `://` in the path, query, or fragment is not the scheme and must not defeat
-/// the strip, while a doubled scheme still strips its userinfo.
 fn strip_userinfo(url: &str) -> String {
     let Some(scheme_end) = scheme_anchor(url) else {
         return url.to_string();
@@ -234,11 +180,6 @@ pub struct Overrides {
 }
 
 impl Overrides {
-    /// Read `ELASTICCTL_*` environment variables as overrides.
-    ///
-    /// `es_url` and `kibana_url` are identity overrides. Cloud deployments use
-    /// distinct endpoints; inheriting one from a saved profile could target two
-    /// deployments and send the overridden credential to the wrong host.
     pub fn from_env() -> Overrides {
         Overrides {
             kibana_url: std::env::var("ELASTICCTL_KIBANA_URL").ok(),
@@ -251,23 +192,10 @@ impl Overrides {
         }
     }
 
-    /// Read `ELASTICCTL_*` environment variables as overrides, failing on
-    /// invalid input.
-    ///
-    /// Unlike `from_env`, this distinguishes an absent variable from invalid
-    /// Unicode and rejects a non-integer timeout instead of silently dropping
-    /// it.
     pub fn try_from_env() -> Result<Overrides> {
         Self::try_from_env_with_flags(&Overrides::default())
     }
 
-    /// Read `ELASTICCTL_*` as overrides, failing on invalid input for every
-    /// field the given flags do not already override.
-    ///
-    /// A flag overrides its environment variable, so a stale invalid value in
-    /// an overridden field must not fail the command. `Context::build` passes
-    /// the CLI flags here; `config init --from-env` uses the strict
-    /// `try_from_env` because the environment is its source of truth.
     pub fn try_from_env_with_flags(flags: &Overrides) -> Result<Overrides> {
         let timeout = if flags.timeout_secs.is_some() {
             std::env::var("ELASTICCTL_TIMEOUT")
@@ -298,7 +226,6 @@ impl Overrides {
         })
     }
 
-    /// Merge overrides, preferring `self` over `lower`.
     pub fn merge_over(self, lower: Overrides) -> Overrides {
         Overrides {
             kibana_url: self.kibana_url.or(lower.kibana_url),
@@ -319,8 +246,6 @@ impl Config {
             .join("config.toml")
     }
 
-    /// Treat a missing file as an empty config so `config init` works on a new
-    /// machine.
     pub fn load(path: &Path) -> Result<Config> {
         if !path.exists() {
             return Ok(Config::default());
@@ -332,17 +257,11 @@ impl Config {
             .map_err(|e| Error::new(ErrorKind::Error, format!("parsing {}: {e}", path.display())))
     }
 
-    /// Describe insecure file permissions, or return `None` for absent or
-    /// owner-only files.
-    ///
-    /// The caller decides whether and how to display this warning, including
-    /// for CLI `--json` output.
     #[cfg(unix)]
     pub fn permission_warning(path: &Path) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(path).ok()?;
         let mode = metadata.permissions().mode();
-        // Group or other permission bits are set.
         if mode & 0o077 != 0 {
             Some(format!(
                 "config file {} is readable by group or other (mode {:o}); should be 0600",
@@ -370,8 +289,6 @@ impl Config {
                 format!("creating {}: {e}", parent.display()),
             )
         })?;
-        // Strip userinfo from every profile before serializing, so a credential
-        // embedded in a URL is never written to disk by a direct library caller.
         let mut scrubbed = self.clone();
         for profile in scrubbed.profiles.values_mut() {
             profile.strip_userinfo();
@@ -379,10 +296,6 @@ impl Config {
         let body = toml::to_string_pretty(&scrubbed)
             .map_err(|e| Error::new(ErrorKind::Error, format!("serializing config: {e}")))?;
 
-        // Write to a same-directory temporary file, then rename it over the
-        // destination. This replaces the file atomically instead of truncating
-        // it in place, so an existing loose-permission file or a symlink is
-        // never written through.
         let mut pending = tempfile::Builder::new()
             .prefix(".elasticctl-config-")
             .tempfile_in(parent)
@@ -409,8 +322,6 @@ impl Config {
         pending.persist(path).map_err(|e| {
             Error::new(ErrorKind::Error, format!("writing {}: {e}", path.display()))
         })?;
-        // Sync the directory so the rename is durable. Only Linux supports
-        // directory fsync; macOS and BSD return EINVAL on a directory fd.
         #[cfg(target_os = "linux")]
         fs::File::open(parent)
             .and_then(|f| f.sync_all())
@@ -420,7 +331,6 @@ impl Config {
         Ok(())
     }
 
-    /// Resolve the effective profile and its source.
     pub fn resolve(&self, name: Option<&str>, ov: &Overrides) -> Result<Resolved> {
         let wanted = name.unwrap_or(if self.current.is_empty() {
             "default"
@@ -434,10 +344,6 @@ impl Config {
         if let Some(v) = &ov.kibana_url {
             profile.kibana_url = v.clone();
         }
-        // Do not combine an overridden Kibana URL with a profile Elasticsearch
-        // URL: they can target separate deployments. Without an `es_url`
-        // override, fall back to the Kibana host instead of sending credentials
-        // to the profile's Elasticsearch host.
         if let Some(v) = &ov.es_url {
             profile.es_url = Some(v.clone());
         } else if ov.kibana_url.is_some() {
@@ -461,7 +367,6 @@ impl Config {
             Source::Profile
         };
 
-        // Strip userinfo after applying file, environment, and flag values.
         profile.strip_userinfo();
 
         Ok(Resolved {
@@ -621,8 +526,6 @@ mod tests {
         assert!(err.message.contains("nope"));
     }
 
-    /// Verify that `ELASTICCTL_ES_URL` overrides the profile. This prevents a
-    /// Kibana override and inherited `es_url` from targeting two deployments.
     #[test]
     fn an_es_url_override_is_applied() {
         let r = sample()
@@ -640,8 +543,6 @@ mod tests {
         );
     }
 
-    /// A Kibana-only override must clear the profile's Elasticsearch host.
-    /// Otherwise credentials could be sent to an unselected deployment.
     #[test]
     fn overriding_only_the_kibana_url_clears_the_profiles_es_url() {
         let r = sample()
@@ -765,8 +666,6 @@ mod tests {
             .clone();
         let out = format!("{profile:?}");
         assert!(!out.contains("essu_SECRET"), "api key leaked: {out}");
-        // `user:pass` and `pass@` name the userinfo; the field name `password`
-        // itself legitimately contains `pass`, so a bare `pass` would false-fail.
         assert!(!out.contains("user:pass"), "userinfo leaked: {out}");
         assert!(!out.contains("pass@"), "userinfo leaked: {out}");
         assert!(out.contains("kb.example.com"), "host missing: {out}");
@@ -800,7 +699,6 @@ mod tests {
 
     #[test]
     fn a_saved_config_never_contains_a_plaintext_key_in_a_world_readable_file() {
-        // Check key storage and file permissions together.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -821,7 +719,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new_config.toml");
-        // Verify the file is newly created.
         assert!(!path.exists());
         sample().save(&path).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -882,8 +779,6 @@ mod tests {
                 timeout_secs: 30,
             }
         };
-        // A doubled scheme anchors on the second `://`, so the host is the
-        // authority after it.
         assert_eq!(p.host(), "kb.example.com");
     }
 
@@ -933,7 +828,6 @@ mod tests {
         let path = dir.path().join("config.toml");
         sample().save(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        // `load` does not print; callers use `permission_warning` instead.
         let cfg = Config::load(&path).unwrap();
         assert!(
             !cfg.profiles.is_empty(),
@@ -956,7 +850,7 @@ mod tests {
     fn permission_warning_is_none_for_an_owner_only_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        sample().save(&path).unwrap(); // `Config::save` already enforces 0600.
+        sample().save(&path).unwrap();
         assert!(Config::permission_warning(&path).is_none());
     }
 
@@ -1004,7 +898,6 @@ mod tests {
 
     #[test]
     fn resolve_strips_userinfo_supplied_by_an_override() {
-        // Strip userinfo after flags and environment overrides are applied.
         let ov = Overrides {
             kibana_url: Some("https://user:pass@override.example.com".into()),
             ..Default::default()
@@ -1017,13 +910,11 @@ mod tests {
 
     #[test]
     fn the_banner_never_shows_userinfo() {
-        // The approval banner must not expose a password.
         let r = with_urls("https://user:hunter2@prod.example.com", None)
             .resolve(None, &Overrides::default())
             .unwrap();
         let b = r.banner();
         assert!(!b.contains("hunter2"), "{b}");
-        // The banner uses one `@` between profile name and host.
         assert_eq!(b.matches('@').count(), 1, "{b}");
         assert!(b.contains("prod.example.com"), "{b}");
     }
@@ -1048,7 +939,6 @@ mod tests {
 
     #[test]
     fn an_at_sign_outside_the_authority_is_not_treated_as_userinfo() {
-        // Only the authority carries userinfo; paths and queries may contain `@`.
         let mut p =
             with_urls("https://kb.example.com/a@b?user=x@y", None).profiles["default"].clone();
         p.strip_userinfo();
@@ -1057,8 +947,6 @@ mod tests {
 
     #[test]
     fn a_query_string_scheme_without_userinfo_is_left_exactly_as_written() {
-        // A later `://` in the query is not the scheme, so it must not disturb
-        // a URL that carries no userinfo at all.
         let mut p =
             with_urls("https://kb.example.com/?next=https://idp", None).profiles["default"].clone();
         p.strip_userinfo();
@@ -1067,8 +955,6 @@ mod tests {
 
     #[test]
     fn userinfo_is_stripped_when_a_query_contains_a_scheme() {
-        // The first `://` delimits the scheme; the `://` inside the query must
-        // not defeat the strip of the authority's userinfo.
         let mut p = with_urls("https://user:pass@kb.example.com/?next=https://idp", None).profiles
             ["default"]
             .clone();
@@ -1086,8 +972,6 @@ mod tests {
 
     #[test]
     fn a_doubled_scheme_with_userinfo_is_stripped() {
-        // A doubled scheme anchors on the second `://`, so the `user:pass@` in
-        // the authority after it is still stripped.
         let mut p =
             with_urls("https://https://user:pass@kb.example.com", None).profiles["default"].clone();
         p.strip_userinfo();
@@ -1097,8 +981,6 @@ mod tests {
 
     #[test]
     fn a_doubled_scheme_with_userinfo_and_a_query_scheme_strips_the_userinfo() {
-        // A doubled scheme plus a later `://` in the query must anchor on the
-        // second scheme, not the query's `://`, or `user:pass@` leaks.
         let mut p = with_urls(
             "https://https://user:pass@kb.example.com/?next=https://idp",
             None,
@@ -1114,8 +996,6 @@ mod tests {
 
     #[test]
     fn an_empty_port_does_not_defeat_userinfo_stripping() {
-        // `host:` is an empty port, not a doubled scheme; the userinfo before it
-        // must still be stripped even when the query carries a later `://`.
         let mut p =
             with_urls("https://user:pass@host:/path?next=https://idp", None).profiles["default"]
                 .clone();
@@ -1125,8 +1005,6 @@ mod tests {
 
     #[test]
     fn percent_encoded_userinfo_scrubs_to_the_host() {
-        // The raw `@` is the delimiter; `%40` (a percent-encoded `@`) is not
-        // userinfo and must not be mistaken for one.
         assert_eq!(
             strip_userinfo("https://user%40x:pass@kb.example.com"),
             "https://kb.example.com"
@@ -1135,15 +1013,7 @@ mod tests {
 
     #[test]
     fn percent_encoded_path_and_query_without_userinfo_are_left_byte_identical() {
-        // `%2F` and `%3F` are percent-encoded `/` and `?`, not delimiters, so a
-        // URL with no userinfo must be returned exactly as written.
         let url = "https://kb.example.com/%2Fpath?next=%3F";
         assert_eq!(strip_userinfo(url), url);
     }
-
-    // `try_from_env_with_flags` and `try_from_env` read the process
-    // environment, which cannot be mutated here because this crate forbids
-    // `unsafe` blocks. Their flag-override behavior is exercised end-to-end by
-    // the `config_cmd` integration test
-    // `a_timeout_flag_supersedes_an_invalid_environment_timeout`.
 }

@@ -1,17 +1,5 @@
 name: Publish crates
 
-# Publishes the four crates to crates.io for one already-released tag. This is
-# never automatic: the owner dispatches it with the tag, and the `crates-io`
-# environment requires the owner's approval before the publish job runs. It
-# publishes only after the GitHub Release for that tag carries the complete
-# asset list, because a crates.io version cannot be deleted while a tag and a
-# Release can. Credentials come from crates.io Trusted Publishing (OIDC), so no
-# long-lived token is stored in the repository. Both jobs check that every
-# crate exists and is owned by dannyota before token exchange or upload. Registry
-# uploads are not atomic, so this readiness check cannot replace the required
-# Trusted Publishing settings review. Actions are pinned by commit because this
-# is the one workflow that holds a live publish token.
-
 on:
   workflow_dispatch:
     inputs:
@@ -46,8 +34,6 @@ jobs:
             exit 1
           fi
 
-      # `refs/tags/` is load-bearing: a bare name would resolve a branch of
-      # the same name before the tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/tags/${{ inputs.tag }}
@@ -175,8 +161,6 @@ jobs:
         shell: bash
         run: ./scripts/check-crates-io-publish-ready.sh
 
-      # No build cache here: this job holds the publish token, and a restored
-      # cache is writable from any branch. The rebuild costs minutes, not risk.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6

@@ -1,10 +1,3 @@
-//! Prebuilt-rule status and installation (spec 4.6).
-//!
-//! `status` reads the public prepackaged status route and adds the customized
-//! count from one filtered `_find`. `install` is one verb because
-//! `PUT .../rules/prepackaged` installs missing rules and updates outdated ones
-//! in one request. The route takes no selection.
-
 use crate::ops::MutationPlan;
 use crate::rules::{self, RuleFilter, RuleSource};
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport};
@@ -33,21 +26,18 @@ struct InstallOutcomeWire {
     timelines_updated: u64,
 }
 
-/// The report `rules prebuilt status` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PrebuiltStatus {
     pub installed: u64,
     pub not_installed: u64,
     pub not_updated: u64,
     pub custom_installed: u64,
-    /// Prebuilt rules edited on the stack. Costs one extra `_find`. Spec 4.6.
     pub customized: u64,
     pub timelines_installed: u64,
     pub timelines_not_installed: u64,
     pub timelines_not_updated: u64,
 }
 
-/// The report an `install` apply renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PrebuiltInstallOutcome {
     pub applied: bool,
@@ -93,10 +83,6 @@ fn decode_status(body: Value, customized: u64) -> Result<PrebuiltStatus> {
     })
 }
 
-/// The number of prebuilt rules edited on the stack. Read `total` only: a
-/// prebuilt rule edited in the Kibana UI is invisible to a custom-scoped
-/// mirror, and an unrecorded edit is exactly what a detection engineer needs
-/// to see (spec 4.6).
 async fn customized_count(t: &Transport) -> Result<u64> {
     let filter = RuleFilter {
         source: RuleSource::Customized,
@@ -109,11 +95,6 @@ async fn customized_count(t: &Transport) -> Result<u64> {
 pub async fn plan_install(t: &Transport) -> Result<(MutationPlan, PrebuiltStatus)> {
     let s = status(t).await?;
 
-    // The preview is client-computed from `_status`, not from a server dry
-    // run: `PUT .../prepackaged` has no `dry_run` parameter. Every other
-    // guarded path in this codebase previews server-side; this is the one
-    // that cannot, so a "nothing to do" status would hide real updates. Name
-    // both counts always, even when one is zero.
     let plan = MutationPlan {
         preview_action: format!(
             "Install {} missing and update {} outdated prebuilt rule(s)",
@@ -123,7 +104,6 @@ pub async fn plan_install(t: &Transport) -> Result<(MutationPlan, PrebuiltStatus
             format!("{} missing rule(s) to install", s.not_installed),
             format!("{} outdated rule(s) to update", s.not_updated),
         ],
-        // The route takes no selection, so there are no object identities.
         targets: Vec::new(),
     };
 
@@ -132,8 +112,6 @@ pub async fn plan_install(t: &Transport) -> Result<(MutationPlan, PrebuiltStatus
 
 pub async fn apply_install(t: &Transport) -> Result<PrebuiltInstallOutcome> {
     t.require_feature(Feature::PrebuiltRules).await?;
-    // The route takes no selection, so the body is empty. `Transport::put`
-    // always sends one, and `null` is the empty JSON body.
     let body = t.put(PREPACKAGED, &Value::Null).await?;
     decode_install_outcome(body)
 }

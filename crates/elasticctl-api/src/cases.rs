@@ -1,10 +1,3 @@
-//! Cases: typed wrappers over the `/api/cases` family.
-//!
-//! Case identity on mutation is `id` plus the fetched `version` — the API is
-//! optimistic-concurrency and a stale version answers 409 (triage spec
-//! sections 3 and 10). Cases are collaboration records: there is no mirror,
-//! no reconciliation, and deletion is a real verb (unlike alerts).
-
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::{Map, Value, json};
 
@@ -20,16 +13,12 @@ pub fn comments_path(id: &str) -> String {
     format!("/api/cases/{}/comments", urlencode(id))
 }
 
-/// `DELETE /api/cases?ids=["a","b"]` — the ids parameter is a JSON array in
-/// the query string.
 pub fn delete_path(ids: &[String]) -> Result<String> {
     let encoded = serde_json::to_string(ids)
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding case ids: {e}")))?;
     Ok(format!("{CASES_PATH}?ids={}", urlencode(&encoded)))
 }
 
-/// The case status vocabulary. Cases legitimately use `in-progress` (it is a
-/// filter value); the transition verbs target only `open` and `closed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseStatus {
     Open,
@@ -46,8 +35,6 @@ impl CaseStatus {
         }
     }
 
-    /// The verb a preview banner uses. `InProgress` is a filter value, not a
-    /// transition target, so it has no verb.
     pub fn verb(self) -> &'static str {
         match self {
             CaseStatus::Open => "Open",
@@ -69,9 +56,6 @@ impl CaseStatus {
     }
 }
 
-/// A case as the API returns it. The four identity/workflow fields are
-/// required (fail-closed); everything else is optional or flattened into
-/// `extra` so the full server object survives a round trip to render.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Case {
     pub id: String,
@@ -105,7 +89,6 @@ pub fn decode_case(value: &Value) -> Result<Case> {
         .map_err(|e| Error::new(ErrorKind::Http, format!("decoding case: {e}")))
 }
 
-/// Decode `GET /api/cases/_find`: `{cases, page, per_page, total, ...}`.
 pub fn decode_find(value: &Value) -> Result<(Vec<Case>, u64)> {
     let cases = value
         .get("cases")
@@ -121,7 +104,6 @@ pub fn decode_find(value: &Value) -> Result<(Vec<Case>, u64)> {
     Ok((cases, total))
 }
 
-/// One find page; the caller builds the query string (`cases_ops::find_query`).
 pub async fn find_page(t: &Transport, query_string: &str) -> Result<(Vec<Case>, u64)> {
     decode_find(&t.get(&format!("{FIND_PATH}?{query_string}")).await?)
 }
@@ -136,17 +118,9 @@ pub struct NewCase {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub severity: Option<String>,
-    /// Resolved profile uids (the caller resolves usernames first).
     pub assignee_uids: Vec<String>,
 }
 
-/// Create a case. The API requires a non-empty description; when the
-/// operator gave none, or gave an empty or whitespace-only one, the title
-/// stands in — `Some("")` must fall back exactly like `None`, or it defeats
-/// the fallback and earns a server 400 on minimum length. `connector` and
-/// `settings` are required by the route; elasticctl pins the no-op connector
-/// and leaves alert-status syncing off — alert transitions stay explicit CLI
-/// actions.
 pub async fn create(t: &Transport, new: &NewCase) -> Result<Case> {
     let description = new
         .description
@@ -173,8 +147,6 @@ pub async fn create(t: &Transport, new: &NewCase) -> Result<Case> {
     decode_case(&t.post(CASES_PATH, Some(&body)).await?)
 }
 
-/// Bulk status update: `PATCH /api/cases` with `{cases: [{id, version,
-/// status}]}`. The response is the array of updated cases.
 pub async fn patch_status(
     t: &Transport,
     updates: &[(String, String, CaseStatus)],
@@ -193,22 +165,17 @@ pub async fn patch_status(
         .collect()
 }
 
-/// Delete cases permanently. 204 with an empty body on success.
 pub async fn delete(t: &Transport, ids: &[String]) -> Result<()> {
     t.delete(&delete_path(ids)?).await?;
     Ok(())
 }
 
-/// Add a user comment; the response is the updated case.
 pub async fn add_comment(t: &Transport, case_id: &str, comment: &str) -> Result<Case> {
     crate::compose::require_path_segment(case_id)?;
     let body = json!({"type": "user", "comment": comment, "owner": OWNER});
     decode_case(&t.post(&comments_path(case_id), Some(&body)).await?)
 }
 
-/// Attach alerts as one comment of type `alert`. All alerts in one call share
-/// a rule (the API takes one `rule` object per comment); the caller groups by
-/// rule. `alert_ids` and `indices` are parallel arrays.
 pub async fn attach_alerts(
     t: &Transport,
     case_id: &str,

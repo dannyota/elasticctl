@@ -453,8 +453,6 @@ async fn post_conflict_bad_request_and_enabled_response_classification() {
                 json!(status)
             }
         );
-        // Design 8.4: a plan that becomes stale writes one plan_closed, after
-        // apply_finished. Failed and unknown plans write none.
         let finished = audit
             .iter()
             .position(|a| a["event"] == "apply_finished")

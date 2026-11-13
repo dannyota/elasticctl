@@ -1,5 +1,3 @@
-//! Rules helpers.
-
 use crate::diagnostics::recording_error;
 use crate::recorder::markers::{ITEM_ID, LIST_ID, MARKER_TAGS, NAMESPACE_TYPE, RULE_ID};
 use crate::recorder::ownership::{

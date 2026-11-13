@@ -1,5 +1,3 @@
-//! Exception list and item endpoints, pagination, and export.
-
 use crate::model::{ExceptionItem, ExceptionList, ListKey};
 use crate::normalize;
 use crate::ops::ExportOutcome;
@@ -11,9 +9,6 @@ use std::collections::BTreeMap;
 
 const BASE: &str = "/api/exception_lists";
 const ITEMS: &str = "/api/exception_lists/items";
-/// Elasticsearch's `_find` result window, shared with rules: `from + size` must
-/// not exceed 10,000. A server that caps `per_page` lower simply returns fewer
-/// objects with a larger `total`, which the paging loop handles.
 const RESULT_WINDOW: u32 = 10_000;
 
 #[derive(Debug, Clone, Default)]
@@ -21,16 +16,10 @@ pub struct ListFilter {
     pub list_type: Option<String>,
     pub tag: Option<String>,
     pub namespace: Option<String>,
-    /// Friendly name-substring search (spec 4.7).
     pub search: Option<String>,
 }
 
 impl ListFilter {
-    /// The KQL `filter` for this selection, or `None` when nothing filters.
-    ///
-    /// The list `_find` route filters over the namespace's saved-object type,
-    /// not the rules vertical's `alert.attributes.*` (measured, spec 7.7).
-    /// Values are quoted and escaped like `rules::to_kql`.
     pub fn to_kql(&self) -> Option<String> {
         let object_type = match self.namespace.as_deref() {
             Some("agnostic") => "exception-list-agnostic",
@@ -59,7 +48,6 @@ impl ListFilter {
     }
 }
 
-/// Decode the shared `{data, page, per_page, total}` envelope.
 fn decode_find(body: &Value) -> Result<(Vec<Value>, u64)> {
     let object = body.as_object().ok_or_else(|| {
         Error::new(
@@ -122,11 +110,6 @@ fn find_field_error(field: &str, expected: &str) -> Error {
     )
 }
 
-/// Read every object a `_find` route serves, paging until `total` is reached.
-///
-/// Refuses a page that returns nothing while `total` is still ahead: a short
-/// read is indistinguishable from objects deleted between pages, and a mirror
-/// built on it would silently drop them.
 async fn find_paged(t: &Transport, path_for: impl Fn(u32) -> String) -> Result<Vec<Value>> {
     t.require_feature(Feature::ExceptionLists).await?;
     let mut out: Vec<Value> = Vec::new();
@@ -163,8 +146,6 @@ pub async fn find_lists(t: &Transport, f: &ListFilter) -> Result<Vec<ExceptionLi
         if let Some(ns) = &f.namespace {
             path.push_str(&format!("&namespace_type={}", urlencode(ns)));
         }
-        // An empty filter is a 400 (measured, spec 7.7), so it is omitted,
-        // never sent as `filter=`.
         if let Some(k) = &kql {
             path.push_str(&format!("&filter={}", urlencode(k)));
         }
@@ -199,9 +180,6 @@ pub async fn find_items(t: &Transport, key: &ListKey) -> Result<Vec<ExceptionIte
 
     values.into_iter().map(ExceptionItem::from_value).collect()
 }
-/// Map each key to the live container `id` on this stack. A key with no live
-/// container is absent from the map rather than mapped to a placeholder, so
-/// callers distinguish "exists here with this id" from "does not exist here".
 pub async fn resolve_ids(t: &Transport, keys: &[ListKey]) -> Result<BTreeMap<ListKey, String>> {
     let mut map = BTreeMap::new();
     for key in keys {
@@ -270,11 +248,6 @@ pub async fn delete_item(t: &Transport, item_id: &str, namespace: &str) -> Resul
     ExceptionItem::from_value(body)
 }
 
-/// The required final line of one exception-list export response.
-///
-/// This deliberately does not reuse `ExportSummary`: that type defaults absent
-/// fields for importing historical bundles, while this live endpoint boundary
-/// must reject a response that does not state its measured outcome.
 #[derive(Deserialize)]
 struct ExceptionExportTrailer {
     exported_exception_list_count: u64,
@@ -313,9 +286,6 @@ fn decode_exception_export(body: &str, key: &ListKey) -> Result<DecodedException
         add_missing_identity(value, key);
     }
 
-    // The item count is required even though one container export may carry
-    // any number of items. Destructure it so the wire contract remains
-    // explicit at this boundary.
     let _ = trailer.exported_exception_list_item_count;
     Ok(DecodedExceptionExport {
         exported_lists: trailer.exported_exception_list_count,
@@ -344,20 +314,10 @@ fn add_missing_identity(value: &mut Value, key: &ListKey) {
     });
 }
 
-/// Export the given containers and their items as NDJSON.
-///
-/// The export route is the one path that refuses `list_id` alone (measured,
-/// fact E), so each key is resolved to its live container `id` first. Identity
-/// stays `list_id` plus `namespace_type` everywhere; the `id` is fetched only
-/// here, at the boundary that demands it. A key with no live container is
-/// refused rather than skipped: a silently dropped key is a short export
-/// reported as a success.
 pub async fn export_lists(t: &Transport, keys: &[ListKey]) -> Result<ExportOutcome> {
     t.require_feature(Feature::ExceptionLists).await?;
     let ids = resolve_ids(t, keys).await?;
 
-    // Name every missing key at once, the way the mirror names every colliding
-    // filename pair: one refusal per run beats a re-run per missing key.
     let missing: Vec<String> = keys
         .iter()
         .filter(|k| !ids.contains_key(*k))

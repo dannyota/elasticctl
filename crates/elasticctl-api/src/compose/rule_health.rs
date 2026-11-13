@@ -1,5 +1,3 @@
-//! Health of one rule: its last execution, alert volume in a window, and the
-//! exception lists that narrow it.
 use super::{
     AlertActivity, ExceptionCoverage, Part, RECENT_ALERTS, RuleSnapshot, alert_activity, degrade,
     exception_coverage, snapshot_by_selector, validate_since,
@@ -14,7 +12,6 @@ pub struct RuleHealth {
     pub exceptions: Part<ExceptionCoverage>,
 }
 
-/// Static finding codes, in the order a report lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HealthFinding {
     RuleDisabled,
@@ -26,9 +23,6 @@ pub enum HealthFinding {
     ExceptionListMissing,
 }
 
-/// Read the rule by selector, then its alert activity with the five newest
-/// alerts, then its exception coverage. The two parts do not depend on each
-/// other; a fatal error kind in either fails the call.
 pub async fn rule_health(t: &Transport, selector: &str, since: &str) -> Result<RuleHealth> {
     validate_since(since)?;
     let rule = snapshot_by_selector(t, selector).await?;
@@ -43,8 +37,6 @@ pub async fn rule_health(t: &Transport, selector: &str, since: &str) -> Result<R
 }
 
 impl RuleHealth {
-    /// Findings from typed comparisons. Status strings are compared exactly,
-    /// so an unknown status yields no execution finding.
     pub fn findings(&self) -> Vec<HealthFinding> {
         let mut out = Vec::new();
         let enabled = self
@@ -89,7 +81,6 @@ impl RuleHealth {
         out
     }
 
-    /// True when a part or an exception list row is unavailable.
     pub fn partial(&self) -> bool {
         matches!(self.alerts, Part::Unavailable(_))
             || match &self.exceptions {

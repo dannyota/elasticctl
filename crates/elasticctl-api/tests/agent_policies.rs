@@ -429,7 +429,6 @@ async fn resolve_prefers_the_id_route_then_exact_names() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("ap-1")})))
         .mount(&server)
         .await;
-    // Names without spaces: wiremock's `path` matcher compares the encoded path.
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/policy-two"))
         .respond_with(
@@ -533,8 +532,6 @@ async fn get_by_id_uses_the_item_already_fetched_by_resolution() {
 
 #[tokio::test]
 async fn get_classifies_missing_agent_and_attachment_facts() {
-    // Kibana populates `agents` only for a caller with Fleet agents read, so
-    // its absence is a privilege gap; a missing `package_policies` is malformed.
     for (missing, kind) in [
         ("agents", ErrorKind::Permission),
         ("package_policies", ErrorKind::Http),
@@ -802,8 +799,6 @@ fn replace_body_strips_id_nulls_clearable_fields_and_refuses_other_removals() {
             .unwrap()
             .clone(),
     );
-    // Kibana maps these objects `flattened` and replaces them whole, so a
-    // shrunken nested object is sent as-is rather than refused.
     let body =
         agent_policy_ops::build_replace_body(&nested_current, &nested_desired).expect("body");
     assert_eq!(
@@ -995,7 +990,6 @@ impl Respond for SequenceResponder {
 #[tokio::test]
 async fn apply_import_creates_replaces_and_reports_unchanged_rows() {
     let server = verified_server().await;
-    // fresh: 404 at plan and recheck, then the created object after POST
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/fresh"))
         .respond_with(SequenceResponder::new(vec![
@@ -1013,13 +1007,11 @@ async fn apply_import_creates_replaces_and_reports_unchanged_rows() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("fresh")})))
         .mount(&server)
         .await;
-    // same: identical at plan and recheck -> unchanged, no write
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/same"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("same")})))
         .mount(&server)
         .await;
-    // changed: description differs; PUT then the stored object equals desired
     let mut changed_live = item("changed");
     changed_live["agents"] = json!(7);
     let mut changed_after = changed_live.clone();
@@ -1087,7 +1079,6 @@ async fn apply_import_creates_replaces_and_reports_unchanged_rows() {
 #[tokio::test]
 async fn apply_import_refuses_races_and_reports_stored_mismatches_as_applied() {
     let server = verified_server().await;
-    // appeared: planned create, exists at recheck -> no POST
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/appeared"))
         .respond_with(SequenceResponder::new(vec![
@@ -1097,7 +1088,6 @@ async fn apply_import_refuses_races_and_reports_stored_mismatches_as_applied() {
         ]))
         .mount(&server)
         .await;
-    // drift: create succeeds but the stored object differs
     let mut drift_stored = item("drift");
     drift_stored["description"] = json!("server changed it");
     Mock::given(method("GET"))
@@ -1116,7 +1106,6 @@ async fn apply_import_refuses_races_and_reports_stored_mismatches_as_applied() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("drift")})))
         .mount(&server)
         .await;
-    // Both specs enable monitoring, so planning reads the package status.
     Mock::given(method("GET"))
         .and(path("/api/fleet/epm/packages/elastic_agent"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": {
@@ -1171,8 +1160,6 @@ async fn apply_import_rechecks_agent_counts_from_the_full_snapshot() {
         .await;
     mount_pages(&server, vec![(1, vec![first], 1)]).await;
     let dir = tempfile::tempdir().unwrap();
-    // A description change makes this a planned replace row, not unchanged,
-    // so the recheck below must stop it before issuing the PUT.
     let mut changed = spec("agents-race");
     changed.description = Some("changed".into());
     let path = write_artifact(dir.path(), "p.json", &[changed]);
@@ -1217,8 +1204,6 @@ async fn apply_import_rechecks_attachment_ids_from_the_full_snapshot() {
         .await;
     mount_pages(&server, vec![(1, vec![first], 1)]).await;
     let dir = tempfile::tempdir().unwrap();
-    // A description change makes this a planned replace row, not unchanged,
-    // so the recheck below must stop it before issuing the PUT.
     let mut changed = spec("attachment-race");
     changed.description = Some("changed".into());
     let path = write_artifact(dir.path(), "p.json", &[changed]);
@@ -1522,7 +1507,6 @@ async fn apply_import_refuses_a_planned_create_whose_name_appeared_since_preview
         .await;
     let mut taken = item("other");
     taken["name"] = json!("Policy new");
-    // Empty at plan time; another client claims the name by apply time.
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies"))
         .and(query_param("page", "1"))
@@ -1594,7 +1578,6 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"item": item("idle")})))
         .mount(&server)
         .await;
-    // gone: planning sees it; the apply recheck does not.
     Mock::given(method("GET"))
         .and(path("/api/fleet/agent_policies/gone"))
         .respond_with(SequenceResponder::new(vec![
@@ -1643,7 +1626,6 @@ async fn delete_previews_then_posts_without_force_and_fails_a_vanished_target() 
 #[tokio::test]
 async fn apply_delete_fails_a_target_that_changed_since_preview() {
     let server = verified_server().await;
-    // idle: planning sees it clean, the apply recheck sees agents acquired.
     let mut acquired = item("idle");
     acquired["agents"] = json!(2);
     Mock::given(method("GET"))
@@ -1654,7 +1636,6 @@ async fn apply_delete_fails_a_target_that_changed_since_preview() {
         ]))
         .mount(&server)
         .await;
-    // Mounted so a wrongly issued delete would show up as a request, not a 404.
     Mock::given(method("POST"))
         .and(path("/api/fleet/agent_policies/delete"))
         .and(body_json(json!({"agentPolicyId": "idle"})))

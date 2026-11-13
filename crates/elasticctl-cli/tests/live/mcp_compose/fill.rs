@@ -1,7 +1,3 @@
-//! The self-managed corpus fill. Disabled marker rules bring the space to
-//! exactly 4,000 rules for the coverage timing, then leave by explicit
-//! `rule_id`. The fill never runs on Serverless or Hosted.
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -11,14 +7,11 @@ use serde_json::{Value, json};
 
 use crate::{LIVE_PREFIX, LIVE_TAG, LiveCleanup, TestResult, checked, cli, json_output};
 
-/// The space size the coverage timing needs: eight 500-rule pages.
 pub(crate) const FILL_TARGET: u64 = 4_000;
-/// Rules per guarded import and per bulk delete.
 pub(crate) const FILL_CHUNK: usize = 500;
 pub(crate) const SAMPLE_TAG: &str = "elasticctl-sample";
 pub(crate) const FILL_PREFIX: &str = "elasticctl-sample-fill-";
 
-/// A fill the contract created: `count` rules named `<prefix><n>`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuleFill {
     pub(crate) prefix: String,
@@ -26,19 +19,11 @@ pub(crate) struct RuleFill {
     pub(crate) pre_total: u64,
 }
 
-/// The remote operations the fill uses. The live implementation calls the
-/// existing guarded helpers; offline tests record calls and inject failures.
 pub(crate) trait FillRemote {
-    /// Deployment flavor from the cached capability probe.
     fn flavor(&mut self) -> TestResult<Flavor>;
-    /// Rules in the space, from one `_find?page=1&per_page=1`.
     fn rule_total(&mut self) -> TestResult<u64>;
-    /// Import one chunk. `cleanup` is passed so a test can prove the fill is
-    /// registered before any rule is written.
     fn import_chunk(&mut self, cleanup: &LiveCleanup, ndjson: &str, rules: usize) -> TestResult;
-    /// Which of these rule ids exist.
     fn existing(&mut self, ids: &[String]) -> TestResult<BTreeSet<String>>;
-    /// Delete exactly these rule ids.
     fn delete(&mut self, ids: &[String]) -> TestResult<BulkOutcome>;
 }
 
@@ -50,7 +35,6 @@ pub(crate) fn fill_ids(prefix: &str, count: usize) -> Vec<String> {
     (1..=count).map(|n| format!("{prefix}{n}")).collect()
 }
 
-/// One generated rule: disabled, marker-tagged, and over the marker index.
 pub(crate) fn fill_rule(rule_id: &str, index: &str) -> Value {
     json!({
         "rule_id": rule_id,
@@ -75,10 +59,6 @@ pub(crate) fn fill_ndjson(ids: &[String], index: &str) -> String {
         .collect()
 }
 
-/// Fill the space to exactly 4,000 rules when the probe reports a
-/// self-managed stack. Returns `None` for every other flavor. The fill is
-/// registered with cleanup before the first chunk, so every failure path,
-/// including a partly imported chunk, leaves its rules to cleanup.
 pub(crate) fn fill_corpus(
     remote: &mut impl FillRemote,
     cleanup: &mut LiveCleanup,
@@ -112,9 +92,6 @@ pub(crate) fn fill_corpus(
     }))
 }
 
-/// Delete a fill by explicit `rule_id`, chunk by chunk. Only ids that exist
-/// are sent, so a partly imported chunk is removed without an empty or
-/// unmatched delete. Each chunk is read again to prove nothing remains.
 pub(crate) fn delete_fill(remote: &mut impl FillRemote, prefix: &str, count: usize) -> TestResult {
     if !prefix.starts_with(FILL_PREFIX) || prefix.len() <= FILL_PREFIX.len() {
         return Err("Corpus fill prefix is not marker-scoped.".to_string());
@@ -140,8 +117,6 @@ pub(crate) fn delete_fill(remote: &mut impl FillRemote, prefix: &str, count: usi
     Ok(())
 }
 
-/// The contract's own delete after the coverage timing. The space must return
-/// to its pre-fill total; only then is the cleanup registration dropped.
 pub(crate) fn unfill_corpus(
     remote: &mut impl FillRemote,
     cleanup: &mut LiveCleanup,
@@ -155,8 +130,6 @@ pub(crate) fn unfill_corpus(
     Ok(())
 }
 
-/// The live remote. `import` holds the CLI config and the scratch directory;
-/// cleanup builds the remote without them because it only deletes.
 pub(crate) struct LiveFillRemote<'a> {
     pub(crate) runtime: &'a tokio::runtime::Runtime,
     pub(crate) transport: &'a Transport,
@@ -230,7 +203,6 @@ impl FillRemote for LiveFillRemote<'_> {
     }
 }
 
-/// The cleanup entry point for a registered fill.
 pub(crate) fn delete_rule_fill(profile: &Profile, prefix: &str, count: usize) -> TestResult {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|_| "Corpus fill cleanup runtime could not be started.".to_string())?;
@@ -254,13 +226,11 @@ pub(crate) mod tests {
 
     const INDEX: &str = "elasticctl-live-compose-index-1";
 
-    /// A recording remote. `created` is the fake space's fill rules.
     pub(crate) struct FakeFill {
         pub(crate) flavor: Flavor,
         pub(crate) base_total: u64,
         pub(crate) created: BTreeSet<String>,
         pub(crate) events: Vec<String>,
-        /// Fail this 1-based chunk after creating this many of its rules.
         pub(crate) fail_chunk: Option<(usize, usize)>,
         pub(crate) delete_failures: usize,
         pub(crate) delete_attempts: usize,

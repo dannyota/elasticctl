@@ -1,12 +1,5 @@
-//! Authority matching and URL scrubbing.
-
 use serde_json::Value;
 
-/// Extract a recording authority without URL userinfo.
-///
-/// The transport removes userinfo before issuing a request. This helper uses
-/// the same final-`@` rule while preparing the fixture host scrubber, so a
-/// credential cannot survive in a recorded URL value.
 fn recording_host(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -14,10 +7,6 @@ fn recording_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-/// Return the recording stack's bare hostnames.
-///
-/// Read them from the environment because every write path needs them and each
-/// run talks to one stack.
 pub(crate) fn recording_hosts() -> Vec<String> {
     [
         "ELASTICCTL_KIBANA_URL",
@@ -106,11 +95,6 @@ fn default_port_host(authority: &str, default_port: u16) -> Option<&str> {
     })
 }
 
-/// Remove userinfo from a URL authority without changing its path or query.
-///
-/// Fixture values can contain the configured host with credentials that were
-/// never part of the transport URL. Removing only the host would leave those
-/// credentials in the public fixture.
 fn strip_url_userinfo(value: &str) -> String {
     let mut scrubbed = String::with_capacity(value.len());
     let mut remaining = value;
@@ -133,13 +117,6 @@ fn strip_url_userinfo(value: &str) -> String {
     scrubbed
 }
 
-/// Replace the configured authority in every absolute URL.
-///
-/// URL hostnames compare case-insensitively. A configured
-/// `https://host:443` can also appear in a response as `https://host/...`, and
-/// `http://host:80` likewise loses `:80`. Do not derive a bare-host match for
-/// non-default ports: `host:9243` and `host` can identify different
-/// deployments.
 fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> String {
     let mut scrubbed = String::new();
     let mut remaining = value;
@@ -182,11 +159,6 @@ fn scrub_recording_authority_urls(value: &str, configured_authority: &str) -> St
     scrubbed
 }
 
-/// Replace the recording stack's hostname wherever it appears in a value.
-///
-/// `is_sensitive` checks keys, but an alert document stores the project URL in
-/// `kibana.alert.url`, where identity is in the *value*. Sweep every recorded
-/// string and keep the path so the document shape remains intact.
 pub(crate) fn scrub_hosts(v: &mut Value, hosts: &[String]) {
     match v {
         Value::String(s) => {
@@ -321,9 +293,6 @@ mod tests {
     #[cfg(test)]
     #[test]
     fn scrub_hosts_handles_authority_boundaries() {
-        // This fails if a configured authority is matched case-sensitively,
-        // extends into an adjacent authority character, or does not recognize
-        // punctuation-delimited default-port URL authorities.
         let cases = [
             (
                 "comma-delimited HTTPS canonical default port",

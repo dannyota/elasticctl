@@ -1,11 +1,5 @@
-//! Classify errors returned to the user.
-
 use serde_json::{Value, json};
 
-/// A stable error classification.
-///
-/// Its string values are part of the CLI's public API. Changing one requires a
-/// minor version bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     Auth,
@@ -70,12 +64,6 @@ impl Error {
         }
     }
 
-    /// Classify an HTTP error response.
-    ///
-    /// Kibana returns `{"statusCode":..,"error":..,"message":..}`. The Elastic
-    /// Cloud edge proxy returns `{"ok":false,"message":".."}`. The latter also
-    /// appears when a project rename leaves a hostname unresolved. Elasticsearch
-    /// returns `{"error":{"reason":"..","type":".."},"status":<int>}`.
     pub fn from_response_body(status: u16, body: &str) -> Self {
         let kind = ErrorKind::from_status(status);
         let message = serde_json::from_str::<Value>(body)
@@ -101,7 +89,6 @@ impl Error {
         }
     }
 
-    /// Return the JSON object written to stderr when a command fails.
     pub fn to_envelope(&self) -> Value {
         let mut inner = json!({ "kind": self.kind.as_str(), "message": self.message });
         if let Some(status) = self.http_status {
@@ -140,7 +127,6 @@ mod tests {
         assert_eq!(ErrorKind::Error.as_str(), "error");
     }
 
-    // Kibana error envelope.
     #[test]
     fn parses_the_kibana_error_envelope() {
         let body = r#"{"statusCode":400,"error":"Bad Request","message":"rule_id already exists"}"#;
@@ -150,7 +136,6 @@ mod tests {
         assert_eq!(err.message, "rule_id already exists");
     }
 
-    // Elastic Cloud edge-proxy error envelope.
     #[test]
     fn parses_the_cloud_edge_proxy_envelope() {
         let body = r#"{"ok":false,"message":"Unknown resource."}"#;
@@ -159,7 +144,6 @@ mod tests {
         assert_eq!(err.message, "Unknown resource.");
     }
 
-    // Elasticsearch error envelope: {"error":{"reason":"..."},"status":<int>}.
     #[test]
     fn parses_the_elasticsearch_error_envelope() {
         let body = r#"{"error":{"root_cause":[{"type":"x_content_parse_exception","reason":"[1:68] [esql/query] unknown field [search_after]"}],"type":"x_content_parse_exception","reason":"[1:68] [esql/query] unknown field [search_after]"},"status":400}"#;

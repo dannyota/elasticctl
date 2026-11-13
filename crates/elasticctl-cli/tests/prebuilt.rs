@@ -1,5 +1,3 @@
-//! The prebuilt commands end to end: argument handling, the guard, and render.
-
 use assert_cmd::Command;
 use elasticctl_api_test_support::MockStack;
 use serde_json::json;
@@ -11,8 +9,6 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// `status` reports every measured field, including the customized count read
-/// from a filtered `_find`.
 #[tokio::test]
 async fn status_reports_every_measured_count() {
     let stack = MockStack::with_prebuilt_status(
@@ -52,7 +48,6 @@ async fn status_reports_every_measured_count() {
     assert_eq!(v["timelines_not_updated"], 2);
 }
 
-/// Without `--yes`, `install` previews on stderr and issues no write.
 #[tokio::test]
 async fn install_dry_run_previews_both_counts_and_writes_nothing() {
     let stack = MockStack::with_prebuilt_status(
@@ -94,7 +89,6 @@ async fn install_dry_run_previews_both_counts_and_writes_nothing() {
     );
 }
 
-/// With `--yes`, `install` issues exactly one PUT and reports its counts.
 #[tokio::test]
 async fn install_apply_issues_one_put_and_reports_the_outcome() {
     let stack = MockStack::with_prebuilt_install(

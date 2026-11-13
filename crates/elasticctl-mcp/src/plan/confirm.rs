@@ -1,4 +1,3 @@
-//! Forms and answers on the client confirmation channel.
 use super::audit::Answer;
 use rmcp::model::{ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema};
 use serde_json::Value;
@@ -51,7 +50,6 @@ pub(crate) fn answer(value: Option<&Value>) -> Answer {
 }
 #[cfg(test)]
 pub(crate) mod tests {
-    // Legacy confirmation has one process-wide slot.
     pub(crate) static LEGACY_SESSION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]

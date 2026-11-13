@@ -29,8 +29,6 @@ pub(crate) async fn exceptions(args: &Cli, action: &ExceptionsAction) -> Result<
             Ok(ctx) => cmd::exceptions::get(&ctx, list_id, namespace.as_deref()).await,
             Err(e) => Err(e),
         },
-        // Local only: no context, credential check, transport, or
-        // capability probe.
         ExceptionsAction::Validate { path } => cmd::exceptions::validate(path),
         ExceptionsAction::Export {
             list_ids,
@@ -62,8 +60,6 @@ pub(crate) async fn exceptions(args: &Cli, action: &ExceptionsAction) -> Result<
             Ok(ctx) => cmd::exceptions::import(&ctx, path, *overwrite, *skip_existing).await,
             Err(e) => Err(e),
         },
-        // Reject empty selectors before building a context so this cannot
-        // express an unscoped mutation.
         ExceptionsAction::Delete {
             list_ids,
             namespace,

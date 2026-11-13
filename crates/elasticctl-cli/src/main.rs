@@ -75,8 +75,6 @@ async fn main() {
         Command::Mcp { .. } => cmd_dispatch::mcp(&args).await,
     };
 
-    // Meta commands do not read profiles or config, so permission warnings are
-    // noise. `doctor` includes its warning in its own report.
     if result.is_ok()
         && !matches!(
             &args.command,
@@ -88,17 +86,11 @@ async fn main() {
 
     match result {
         Ok(value) => {
-            // Completion already wrote its script. Do not render the null
-            // placeholder. Flush before exit because `process::exit` skips
-            // stdout's destructor.
             if matches!(&args.command, Command::Completion { .. }) {
                 use std::io::Write;
                 std::io::stdout().flush().ok();
                 std::process::exit(0);
             }
-            // Export content is raw file text, not a report. Write it unchanged
-            // so `--format` and `--json` cannot re-encode it. `failed` sets
-            // the exit code but is not printed with the file.
             let export_to_stdout = matches!(
                 &args.command,
                 Command::Rules {
@@ -129,8 +121,6 @@ async fn main() {
                 std::io::stdout().flush().ok();
                 std::process::exit(render::exit_code_for_value(&value));
             }
-            // Export already wrote the file. Render its confirmation to stdout
-            // so the normal `--out` path cannot overwrite it.
             let out_already_written = matches!(
                 &args.command,
                 Command::Rules {
@@ -160,9 +150,6 @@ async fn main() {
                 if out_already_written {
                     g.out = None;
                 }
-                // `search --out`, `alerts list --out`, and `cases list --out`
-                // write NDJSON (JSONL) by default; `--format` or `--json`
-                // still override it.
                 if matches!(
                     &args.command,
                     Command::Search { .. }
@@ -181,10 +168,6 @@ async fn main() {
                 g
             };
 
-            // `alerts get` and `cases get` render raw server documents, not
-            // elasticctl report shapes. A top-level `failed` key there belongs
-            // to the document, not to the convention `exit_code_for_value`
-            // reads, so it must never derive an exit code from these payloads.
             let payload_drives_exit_code = !matches!(
                 &args.command,
                 Command::Alerts {
@@ -194,8 +177,6 @@ async fn main() {
                 }
             );
             match render::emit(&value, &render_global) {
-                // Render partial-failure details before returning their exit
-                // code.
                 Ok(()) => {
                     let code = if payload_drives_exit_code {
                         render::exit_code_for_value(&value)
@@ -219,7 +200,6 @@ async fn main() {
     }
 }
 
-/// Render permission warnings as JSON on stderr, matching error envelopes.
 fn emit_permission_warning(global: &GlobalArgs) {
     let path = context::config_path(global);
     if let Some(message) = Config::permission_warning(&path) {

@@ -1,18 +1,8 @@
-//! Report and plan types for the state engine.
-//!
-//! Field order is the serialized JSON key order and is contractual: the root
-//! `Cargo.toml` enables `serde_json`'s `preserve_order`, so reordering these
-//! fields would silently change rendered output.
-
 use crate::diff::{Change, FieldChange};
 use crate::model::{ExceptionItem, ExceptionList, Rule};
 use serde::Serialize;
 use serde_json::Value;
 
-/// The resolved deployment the change report records as its target.
-///
-/// Plain values, not `Context` or clap types, so `-api` may take them directly.
-/// The caller builds this from its resolved profile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackIdentity {
     pub profile: String,
@@ -20,7 +10,6 @@ pub struct StackIdentity {
     pub space: String,
 }
 
-/// The report `pull` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PullReport {
     pub pulled: usize,
@@ -31,11 +20,6 @@ pub struct PullReport {
     pub selected: Option<usize>,
 }
 
-/// The report `diff` renders.
-///
-/// Field order is the serialized JSON key order and is contractual: the root
-/// `Cargo.toml` enables `serde_json`'s `preserve_order`, so reordering these
-/// fields would silently change rendered output.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DiffReport {
     pub clean: bool,
@@ -43,10 +27,6 @@ pub struct DiffReport {
     pub remote: usize,
     pub changes: Vec<Change>,
     pub exceptions: ExceptionDrift,
-    /// Local rule files outside the active `--source` scope. Reported instead
-    /// of `local_only` so a 0.1 mirror of prebuilt rules does not read as
-    /// drift (spec 5.5). Omitted when zero, so a clean scope keeps its 0.1
-    /// output shape.
     #[serde(skip_serializing_if = "is_zero")]
     pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,14 +35,6 @@ pub struct DiffReport {
     pub local_total: Option<usize>,
 }
 
-/// The summary `push` renders.
-///
-/// `created`, `updated`, `skipped_remote_only`, and `pending` count rules.
-/// `failed` counts every failed write, rules and exceptions alike, so a failed
-/// list or item write still exits nonzero. The `*_lists`/`items_*` fields name
-/// the exception writes separately, so a run that creates, updates, or removes
-/// only containers and items never reads as "nothing happened". `items_removed`
-/// is the one deletion the state engine performs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PushReport {
     pub applied: bool,
@@ -76,8 +48,6 @@ pub struct PushReport {
     pub items_created: usize,
     pub items_updated: usize,
     pub items_removed: usize,
-    /// Local rule files outside the active `--source` scope, never planned as
-    /// creates (spec 5.5). Omitted when zero.
     #[serde(skip_serializing_if = "is_zero")]
     pub out_of_scope: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,11 +60,6 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// The mirror `read_mirror` reads: every rule and exception-list file under
-/// `dir`, with each list's `items` array split out.
-///
-/// It does not apply the reference closure itself; the state command consuming
-/// the mirror narrows `lists`/`items` to what the in-scope rules reference.
 #[derive(Debug)]
 pub struct Mirror {
     pub rules: Vec<Rule>,
@@ -102,7 +67,6 @@ pub struct Mirror {
     pub items: Vec<ExceptionItem>,
 }
 
-/// Exception-list drift, mirroring the rules block of `DiffReport`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExceptionDrift {
     pub local: usize,
@@ -112,7 +76,6 @@ pub struct ExceptionDrift {
 }
 
 impl ExceptionDrift {
-    /// No container drift and no dangling pointer.
     pub fn is_clean(&self) -> bool {
         self.changes
             .iter()
@@ -155,10 +118,6 @@ pub enum ListChange {
     },
 }
 
-/// A rule whose stored exception pointer does not match the live container.
-///
-/// `live_id` is `None` when no container with that `list_id` exists on this
-/// stack.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DanglingPointer {
     pub rule_id: String,

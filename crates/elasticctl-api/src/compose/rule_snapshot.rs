@@ -31,7 +31,6 @@ fn optional<T: serde::de::DeserializeOwned>(v: &Value, k: &str) -> Result<Option
         .transpose()
 }
 fn snapshot(rule: Rule) -> Result<RuleSnapshot> {
-    // An explicit null summary means the same as an absent one: never run.
     let execution = if let Some(summary) = rule
         .as_map()
         .get("execution_summary")

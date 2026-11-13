@@ -318,8 +318,6 @@ async fn mount_catalog_success_routes(server: &MockServer) {
     ] {
         mount_fixture(server, verb, route, body).await;
     }
-    // The alert activity search is the one signals search with a
-    // workflow status aggregation.
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/signals/search"))
         .and(body_partial_json(
@@ -812,7 +810,6 @@ async fn oversized_input_child() {
         successful["result"]["isError"], false,
         "first response is a successful tools/call result"
     );
-    // The server stops reading once the line passes the limit, so a closed pipe here is expected.
     let mut oversized = vec![b'x'; 262_145];
     oversized.push(b'\n');
     allow_closed_pipe(write.write_all(&oversized).await, "write oversized line");

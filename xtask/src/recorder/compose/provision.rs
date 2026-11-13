@@ -1,19 +1,3 @@
-//! Marker objects for the compose recording.
-//!
-//! Every object is claimed in `CleanupOwnership` and marked unresolved
-//! before the request that creates it. A definite success resolves the
-//! claim; a definite conflict means another run holds the fixed identity,
-//! so the claim is released and cleanup never touches the object. Any other
-//! end, a timeout, a connection error, a 5xx or other failure, an
-//! interrupt, or a panic, leaves the claim unresolved for cleanup's settle
-//! window.
-//!
-//! Every create is create-only and sent once, so a retry can never turn this
-//! run's applied write into a conflict. The marker index is created
-//! explicitly and its UUID kept: the index is this run's only while it still
-//! reports that UUID, which is read again before every marker document
-//! write, before the refresh, and before cleanup deletes it.
-
 use crate::clock::now_rfc3339;
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::recorder::agent_policies::reduce_package_status_item;
@@ -39,11 +23,8 @@ use crate::recorder::ownership::{
 use elasticctl_core::{ErrorKind, Transport};
 use serde_json::{Value, json};
 
-/// The package the marker rule names in `related_integrations`.
 const SYSTEM_PACKAGE: &str = "system";
 
-/// Tags on the marker list and items: the shared fixture tags the existing
-/// ownership checks require, plus the sample marker.
 fn list_tags() -> Vec<&'static str> {
     let mut tags = MARKER_TAGS.to_vec();
     tags.push(ALERT_MARKER_TAG);
@@ -75,9 +56,6 @@ pub(super) fn owns_compose_item(value: &Value) -> bool {
         && has_sample_tag(value)
 }
 
-/// Read each candidate package and keep the first whose status is
-/// `not_installed`. A candidate the registry does not know is skipped; no
-/// package is ever installed or removed.
 pub(super) async fn probe_not_installed_package(
     t: &Transport,
 ) -> elasticctl_core::Result<(&'static str, Value)> {
@@ -102,9 +80,6 @@ pub(super) async fn probe_not_installed_package(
     ))
 }
 
-/// Require the `system` package, which the marker rule names, to be
-/// installed. Its reduced status is the installed half of the package
-/// evidence and goes to the private log only.
 pub(super) async fn require_installed_system(
     t: &Transport,
     log: &mut PrivateLog,
@@ -136,33 +111,27 @@ fn conflict(object: &'static str) -> elasticctl_core::Error {
     ))
 }
 
-/// One object's ownership flag and its unresolved flag.
 struct Claim<'a> {
     owned: &'a mut bool,
     unresolved: &'a mut bool,
 }
 
 impl Claim<'_> {
-    /// Set both flags before the request that may create the object.
     fn take(&mut self) {
         *self.owned = true;
         *self.unresolved = true;
     }
 
-    /// A definite success: the object is this run's.
     fn resolve(&mut self) {
         *self.unresolved = false;
     }
 
-    /// A definite conflict: the object is another run's.
     fn release(&mut self) {
         *self.owned = false;
         *self.unresolved = false;
     }
 }
 
-/// Send one create exactly once. Only a success or a conflict resolves the
-/// claim; every other end leaves it unresolved.
 async fn create_once(
     t: &Transport,
     path: &str,
@@ -185,12 +154,6 @@ async fn create_once(
     }
 }
 
-/// Whether an index create failed because the marker index name is taken.
-///
-/// Elasticsearch answers 400 `resource_already_exists_exception` with the
-/// reason `index [<name>/<uuid>] already exists`. The transport keeps the
-/// status and that reason, not the type, so the reason must name exactly
-/// the marker index. Any other answer is not a definite "already exists".
 fn index_already_exists(error: &elasticctl_core::Error) -> bool {
     error.kind == ErrorKind::Http
         && error.http_status == Some(400)
@@ -206,8 +169,6 @@ fn index_already_exists(error: &elasticctl_core::Error) -> bool {
             })
 }
 
-/// The UUID a cat indices read reports, when the answer holds exactly one
-/// row and that row names the marker index.
 pub(super) fn index_uuid(rows: &Value) -> Option<&str> {
     let [row] = rows.as_array()?.as_slice() else {
         return None;
@@ -218,8 +179,6 @@ pub(super) fn index_uuid(rows: &Value) -> Option<&str> {
     row.get("uuid")?.as_str().filter(|uuid| !uuid.is_empty())
 }
 
-/// Read the marker index UUID again and require the one this run created.
-/// A missing index or another UUID means the index is not this run's.
 async fn require_own_index(t: &Transport, uuid: &str) -> elasticctl_core::Result<()> {
     let not_ours = || {
         recording_error(format!(
@@ -237,13 +196,6 @@ async fn require_own_index(t: &Transport, uuid: &str) -> elasticctl_core::Result
     }
 }
 
-/// Create the marker index, keep its UUID, then index the marker documents
-/// with the create-only route and refresh. The index is claimed before the
-/// create, which is sent once. A definite "already exists" releases the
-/// claim; the claim resolves only once the UUID is read, and any other end
-/// leaves it unresolved. Every document write and the refresh is sent once,
-/// right after a read that still shows that UUID; a read that does not
-/// stops the writes and keeps the claim.
 pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl_core::Result<()> {
     let t = compose.session.transport;
     let mut claim = Claim {
@@ -302,7 +254,6 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
         ));
     }
     require_own_index(t, &uuid).await?;
-    // `_refresh` rejects a body, so none is sent.
     t.post_absolute_es_once(&format!("/{ALERT_PROBE_INDEX}/_refresh"), None)
         .await
         .map_err(|error| {
@@ -311,14 +262,6 @@ pub(super) async fn create_index(compose: &mut ComposeSession<'_>) -> elasticctl
     Ok(())
 }
 
-/// Write marker document `seq` with the create-only route, exactly once.
-///
-/// `recreatable` is set before the request and cleared only by a definite
-/// answer: the document created, or a conflict. Any other end may leave the
-/// write to be applied later, after cleanup has deleted the index, and
-/// automatic index creation then makes an index under the marker name again.
-/// Cleanup watches the name for that. A conflict fails the step but leaves
-/// the index owned: its UUID proves it this run's.
 async fn write_document(
     t: &Transport,
     recreatable: &mut bool,
@@ -382,8 +325,6 @@ pub(super) fn item_body(item_id: &str, value: &str) -> Value {
     })
 }
 
-/// The marker rule over the marker index: a MITRE ATT&CK mapping, one
-/// related integration, and a reference to the marker list.
 pub(super) fn rule_body(list_server_id: &str) -> Value {
     json!({
         "rule_id": ALERT_RULE_ID,
@@ -427,8 +368,6 @@ pub(super) fn rule_body(list_server_id: &str) -> Value {
     })
 }
 
-/// The second marker rule, enabled over a marker index name that never
-/// exists.
 pub(super) fn missing_rule_body() -> Value {
     json!({
         "rule_id": MISSING_RULE_ID,
@@ -447,7 +386,6 @@ pub(super) fn missing_rule_body() -> Value {
     })
 }
 
-/// The server id of a create response that proved its marker identity.
 fn proven_id(
     created: &Value,
     owns: fn(&Value) -> bool,
@@ -465,10 +403,6 @@ fn proven_id(
     elasticctl_api::compose::require_path_segment(id).map(str::to_owned)
 }
 
-/// Create the list, its two items, and both rules, in that order, keeping
-/// each server id for cleanup's re-reads and the fixture placeholders. The
-/// alerting rule's alerts are owned from its claim on, since the rule can
-/// exist even when its create answer is lost.
 pub(super) async fn create_objects(
     compose: &mut ComposeSession<'_>,
 ) -> elasticctl_core::Result<()> {
@@ -545,7 +479,6 @@ pub(super) async fn create_objects(
     )
     .await;
     if !owned.alert_rule {
-        // A conflict: the rule, and so its alerts, are another run's.
         compose.alerts = false;
     }
     ids.rule = Some(proven_id(&rule?, owns_alert_rule, RULE)?);
@@ -566,7 +499,6 @@ pub(super) async fn create_objects(
     Ok(())
 }
 
-/// The marker case body. No assignee, so no user profile is involved.
 pub(super) fn case_body() -> Value {
     json!({
         "title": CASE_TITLE,
@@ -580,8 +512,6 @@ pub(super) fn case_body() -> Value {
     })
 }
 
-/// Create the marker case and keep its id. `case` is claimed before the
-/// create; cleanup finds a case whose answer was lost by title and tag.
 pub(super) async fn create_case(
     compose: &mut ComposeSession<'_>,
 ) -> elasticctl_core::Result<Value> {
@@ -836,7 +766,6 @@ mod tests {
             .await;
     }
 
-    /// Mount settings answers for the marker index, one per read, in order.
     async fn mount_uuid_reads(server: &MockServer, answers: Vec<ResponseTemplate>) {
         for answer in answers {
             Mock::given(method("GET"))
@@ -932,7 +861,6 @@ mod tests {
                 json!({"error": {"type": "index_not_found_exception"}, "status": 404}),
             )
         };
-        // The reads after the create, and the UUID this run keeps.
         for (reads, kept) in [
             (vec![refused()], None),
             (vec![settings("other-index", "uuid-1")], None),

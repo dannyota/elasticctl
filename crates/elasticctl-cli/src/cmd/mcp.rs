@@ -1,9 +1,3 @@
-//! MCP stdio startup boundary.
-//!
-//! This module owns the diagnostics emitted before the MCP runtime receives
-//! stdout. They stay static because configuration and parser failures can
-//! contain credentials, paths, URLs, or command-line values.
-
 use crate::cli::GlobalArgs;
 use crate::context::{Context, config_path};
 use elasticctl_core::Config;
@@ -22,13 +16,10 @@ const INSECURE_PERMISSIONS: &str =
     "Config file permissions allow access by other users; set mode 0600.";
 const INSECURE_TLS: &str = "TLS certificate verification is disabled for the MCP target.";
 
-/// Emit the privacy-preserving parser error for an invocation classified as
-/// the MCP command group.
 pub fn exit_usage() -> ! {
     finish_error(2, "error", INVALID_ARGUMENTS)
 }
 
-/// Resolve the target and delegate MCP stdio without entering the CLI renderer.
 pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[String]) -> ! {
     if global.yes
         || global.out.is_some()
@@ -82,8 +73,6 @@ pub async fn serve(global: &GlobalArgs, allow_query_tools: bool, values: &[Strin
         emit_warning("insecure_tls_verification", INSECURE_TLS, None);
     }
 
-    // Validate before announcing mutations, so a failed start never claims
-    // they are enabled. The output of a failed start is the same as before.
     if let Err(error) = validation {
         finish_error(1, error.kind.as_str(), SERVER_FAILED);
     }

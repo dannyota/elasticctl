@@ -1,8 +1,3 @@
-//! NDJSON and YAML representations of the same `Rule` model.
-//!
-//! Kibana exports and imports NDJSON, so it preserves rule fidelity. YAML is
-//! easier to review.
-
 use crate::model::{ExceptionItem, ExceptionList, ExportSummary, Rule};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::Value;
@@ -15,7 +10,6 @@ pub enum Format {
 }
 
 impl Format {
-    /// NDJSON is the default, canonical import format.
     pub fn from_path(p: &Path) -> Format {
         match p.extension().and_then(|e| e.to_str()) {
             Some("yaml") | Some("yml") => Format::Yaml,
@@ -24,8 +18,6 @@ impl Format {
     }
 }
 
-/// One line of an export bundle: a rule, an exception-list container, an
-/// exception item, or the export trailer.
 enum Line {
     Rule,
     List,
@@ -33,16 +25,6 @@ enum Line {
     Trailer,
 }
 
-/// Classify one NDJSON line from an export bundle.
-///
-/// Order matters. `rule_id` is tested first: a rule misfiled as an item would
-/// vanish from `decode_ndjson` silently, whereas an item misfiled as a rule is
-/// rejected loudly by `Rule::from_value` with a line number. An exception item
-/// carries both `item_id` and `list_id`, so the item test must precede the list
-/// test or every item is misfiled as a container. A trailer carries neither an
-/// id nor a `list_id`, and the two export routes emit different counters: rules
-/// export writes `exported_count`, exception export writes
-/// `exported_exception_list_count` and no `exported_count` (measured fact 7).
 fn classify(v: &Value) -> Option<Line> {
     if v.get("rule_id").is_some() {
         return Some(Line::Rule);
@@ -59,7 +41,6 @@ fn classify(v: &Value) -> Option<Line> {
     None
 }
 
-/// An export bundle split into its four line kinds.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Bundle {
     pub rules: Vec<Rule>,
@@ -68,9 +49,6 @@ pub struct Bundle {
     pub summary: Option<ExportSummary>,
 }
 
-/// Decode a `_export` body into rules, exception lists, exception items, and
-/// the trailer. Every non-empty line must classify as one of the four; an
-/// unclassifiable line is an error naming its line number.
 pub fn decode_bundle(body: &str) -> Result<Bundle> {
     let mut out = Bundle::default();
     for (i, line) in body.lines().enumerate() {
@@ -84,8 +62,6 @@ pub fn decode_bundle(body: &str) -> Result<Bundle> {
                 format!("invalid JSON on line {}: {e}", i + 1),
             )
         })?;
-        // Prefix every construction error with its line number, so large
-        // exports identify the rejected object.
         let at = |e: Error| Error::new(ErrorKind::Error, format!("line {}: {}", i + 1, e.message));
         match classify(&value) {
             Some(Line::Rule) => out.rules.push(Rule::from_value(value).map_err(at)?),
@@ -115,8 +91,6 @@ pub fn decode_bundle(body: &str) -> Result<Bundle> {
     Ok(out)
 }
 
-/// Encode a bundle as NDJSON in import order: rules, then lists, then items,
-/// with no trailer.
 pub fn encode_bundle(bundle: &Bundle) -> Result<String> {
     let mut out = String::new();
     for r in &bundle.rules {
@@ -170,8 +144,6 @@ pub fn decode_yaml(body: &str) -> Result<Vec<Rule>> {
     let values: Vec<Value> = serde_yaml_ng::from_str(body)
         .map_err(|e| Error::new(ErrorKind::Error, format!("parsing YAML: {e}")))?;
 
-    // Apply the same `rule_id` validation as NDJSON. YAML is hand-edited, so
-    // it is more likely to omit `rule_id`.
     values
         .into_iter()
         .enumerate()
@@ -200,7 +172,6 @@ mod tests {
         .unwrap()
     }
 
-    // A one-rule export contains the rule and a 15-field summary.
     const REAL_EXPORT: &str = concat!(
         r#"{"rule_id":"a","name":"rule a","type":"query"}"#,
         "\n",
@@ -216,7 +187,6 @@ mod tests {
         assert_eq!(summary.unwrap().exported_count, 1);
     }
 
-    // A zero-rule export contains only the trailer.
     #[test]
     fn decode_ndjson_handles_a_body_that_is_only_a_trailer() {
         let body = r#"{"exported_count":0,"exported_rules_count":0,"missing_rules_count":0}"#;
@@ -327,9 +297,6 @@ mod tests {
         );
     }
 
-    /// The measured four-line export of one rule carrying one exception list,
-    /// recorded 2026-08-14 from Serverless 9.6.0. Trimmed to the fields that
-    /// matter; every line's *kind* is exactly as recorded.
     const BUNDLE: &str = concat!(
         r#"{"rule_id":"r","name":"R","type":"query","exceptions_list":[{"id":"L","list_id":"l","type":"detection","namespace_type":"single"}]}"#,
         "\n",
@@ -350,7 +317,6 @@ mod tests {
         assert_eq!(b.summary.as_ref().unwrap().exported_exception_list_count, 1);
     }
 
-    /// A rule with an exception list must decode as a rule.
     #[test]
     fn a_bundle_no_longer_fails_as_a_rule_list() {
         assert!(
@@ -359,8 +325,6 @@ mod tests {
         );
     }
 
-    /// An item carries both `item_id` and `list_id`, so the item test must run
-    /// before the list test or every item is misfiled as a container.
     #[test]
     fn an_item_is_not_classified_as_a_list() {
         let line = r#"{"item_id":"i","list_id":"l","name":"I"}"#;
@@ -369,7 +333,6 @@ mod tests {
         assert!(b.lists.is_empty());
     }
 
-    /// Measured fact 7: the exception export trailer has no `exported_count`.
     #[test]
     fn the_exception_export_trailer_is_recognised() {
         let line = r#"{"exported_exception_list_count":1,"exported_exception_list_item_count":2,"missing_exception_lists":[],"missing_exception_list_items":[],"missing_exception_lists_count":0,"missing_exception_list_item_count":0}"#;
@@ -401,12 +364,9 @@ mod tests {
         assert_eq!(summary.unwrap().exported_count, 2);
     }
 
-    /// `encode_bundle` writes rules, then lists, then items, and never the
-    /// export-summary trailer. The round-trip also proves the two new newtypes
-    /// keep their unknown fields, matching spec 3.2.
     #[test]
     fn encode_bundle_writes_rules_then_lists_then_items_and_no_trailer() {
-        let b = decode_bundle(BUNDLE).unwrap(); // 1 rule, 1 list, 1 item, trailer
+        let b = decode_bundle(BUNDLE).unwrap();
         let out = encode_bundle(&b).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "the trailer is never written back");

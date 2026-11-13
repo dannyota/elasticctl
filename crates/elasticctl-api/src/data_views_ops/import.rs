@@ -1,18 +1,14 @@
-//! Data view import planning and apply.
-
 use super::{
     BTreeMap, BTreeSet, DataViewSpec, DataViewUpdate, Error, ErrorKind, Map, MutationPlan, Path,
     Result, Serialize, Transport, Value, data_views, invalid_plan, json, normalize, validate,
 };
 
-/// The two documented routes needed to replace a portable data view.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DataViewPatch {
     pub base: Option<DataViewUpdate>,
     pub field_metadata: Map<String, Value>,
 }
 
-/// The immutable, guard-ready import work computed from one portable artifact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataViewImportPlan {
     pub preview: MutationPlan,
@@ -24,7 +20,6 @@ pub struct DataViewImportPlan {
     pub overwrite: bool,
 }
 
-/// The per-object result of applying a guarded data-view import.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DataViewImportReport {
     pub applied: bool,
@@ -33,7 +28,6 @@ pub struct DataViewImportReport {
     pub failed: Vec<Value>,
     pub total: usize,
 }
-/// Build the exact documented replacement delta between canonical data views.
 pub fn build_patch(current: &DataViewSpec, desired: &DataViewSpec) -> Result<DataViewPatch> {
     current.validate()?;
     desired.validate()?;
@@ -114,7 +108,6 @@ pub fn build_patch(current: &DataViewSpec, desired: &DataViewSpec) -> Result<Dat
     })
 }
 
-/// Fully validate a portable artifact and prepare the exact guarded import.
 pub async fn plan_import(
     transport: Option<&Transport>,
     path: &Path,
@@ -215,11 +208,6 @@ pub async fn plan_import(
     })
 }
 
-/// Apply a previously planned data-view import without rereading or replanning.
-///
-/// Each object gets one final pre-write read. The server exposes no conditional
-/// write token, so the final verification read remains the smallest unavoidable
-/// race window. Earlier successful writes are deliberately never rolled back.
 pub async fn apply_import(
     transport: &Transport,
     plan: &DataViewImportPlan,

@@ -1,5 +1,3 @@
-//! Dashboard selection and portable transfer orchestration.
-
 use crate::content_codec::{self, ContentFormat};
 use crate::dashboards::{self, Dashboard, DashboardSpec, DashboardSummary};
 use crate::data_views;
@@ -20,7 +18,6 @@ pub use bundle::{
 pub use delete::{DashboardDeletePlan, apply_delete, plan_delete};
 pub use import::{DashboardImportPlan, DashboardImportReport, apply_import, plan_import};
 
-/// Dashboard list filters accepted by the portable command surface.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DashboardFilter {
     pub search: Option<String>,
@@ -28,7 +25,6 @@ pub struct DashboardFilter {
     pub limit: Option<usize>,
 }
 
-/// Dashboard list output after collection, stable-id sorting, and limiting.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DashboardList {
     pub total: u64,
@@ -36,10 +32,6 @@ pub struct DashboardList {
     pub truncated: bool,
 }
 
-/// Resolve a selector from dashboard summaries.
-///
-/// Stable ids win over titles. A title is only a convenience selector and must
-/// identify exactly one dashboard.
 pub fn resolve_from_summaries(
     dashboards: &[DashboardSummary],
     selector: &str,
@@ -74,7 +66,6 @@ pub fn resolve_from_summaries(
     }
 }
 
-/// Resolve a dashboard by exact id, then by exact title only after an id miss.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<DashboardSummary> {
     match dashboards::get_selector(transport, selector).await {
         Ok(dashboard) if dashboard.id == selector => summary_from_dashboard(dashboard),
@@ -93,7 +84,6 @@ pub async fn resolve(transport: &Transport, selector: &str) -> Result<DashboardS
     }
 }
 
-/// Page through dashboard summaries, apply filters, and sort by stable id.
 pub async fn list_op(transport: &Transport, filter: &DashboardFilter) -> Result<DashboardList> {
     let tags = filter.tag.iter().cloned().collect::<Vec<_>>();
     let mut page_number = 1;
@@ -164,13 +154,11 @@ pub async fn list_op(transport: &Transport, filter: &DashboardFilter) -> Result<
     })
 }
 
-/// Resolve one selector, then read its complete dashboard.
 pub async fn get_op(transport: &Transport, selector: &str) -> Result<Dashboard> {
     let dashboard = resolve(transport, selector).await?;
     dashboards::get(transport, &dashboard.id).await
 }
 
-/// Fully read and validate a portable dashboard artifact.
 pub fn validate(path: &Path) -> Result<Vec<DashboardSpec>> {
     let body = std::fs::read_to_string(path).map_err(|error| {
         Error::new(
@@ -208,7 +196,6 @@ fn invalid_plan(message: impl Into<String>) -> Result<()> {
     Err(Error::new(ErrorKind::Error, message))
 }
 
-/// Export selected dashboards as a portable JSON or YAML artifact.
 pub async fn export(
     transport: &Transport,
     selectors: &[String],

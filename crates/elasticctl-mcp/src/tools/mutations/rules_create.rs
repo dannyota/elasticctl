@@ -1,4 +1,3 @@
-//! Disabled rule creation planner.
 use crate::{
     ServerState,
     catalog::ToolId,

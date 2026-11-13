@@ -1,5 +1,3 @@
-//! The resource URI parser.
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResourceRef {
     CoverageTactic,

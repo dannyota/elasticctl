@@ -1,7 +1,3 @@
-//! Detection coverage: the rules matching a filter, grouped by MITRE ATT&CK
-//! technique, tactic, index pattern, or integration package, with enabled and
-//! disabled counts per group.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Rule;
@@ -9,10 +5,8 @@ use crate::rules::{self, RuleFilter};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::{Map, Value};
 
-/// The only threat framework whose entries are read.
 const MITRE: &str = "MITRE ATT&CK";
 
-/// What a coverage row counts rules by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageGroup {
     Technique,
@@ -21,8 +15,6 @@ pub enum CoverageGroup {
     Integration,
 }
 
-/// One group. `name` is set only for techniques and tactics, and `tactics`
-/// is filled only for techniques.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageRow {
     pub key: String,
@@ -32,8 +24,6 @@ pub struct CoverageRow {
     pub disabled_rules: u64,
 }
 
-/// Every group of the corpus read, sorted by `enabled_rules` descending, then
-/// `disabled_rules` descending, then `key` ascending in byte order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageReport {
     pub group_by: CoverageGroup,
@@ -44,20 +34,12 @@ pub struct CoverageReport {
     pub rows: Vec<CoverageRow>,
 }
 
-/// What one rule contributes to one key: the smallest name and the tactics
-/// it was seen with.
 #[derive(Default)]
 struct Seen {
     name: Option<String>,
     tactics: BTreeSet<String>,
 }
 
-/// Group the rules by `group_by`.
-///
-/// A rule counts as enabled only when `enabled` is `true`. Each rule adds at
-/// most one to a group, and a rule with no key adds one to `unmapped_rules`.
-/// A missing or null field yields no key; a present field of the wrong type is
-/// kind `http`. Only the fields the grouping reads are checked.
 pub fn coverage_from_rules(rules: &[Rule], group_by: CoverageGroup) -> Result<CoverageReport> {
     let mut groups: BTreeMap<String, (Seen, u64, u64)> = BTreeMap::new();
     let mut report = CoverageReport {
@@ -109,8 +91,6 @@ pub fn coverage_from_rules(rules: &[Rule], group_by: CoverageGroup) -> Result<Co
     Ok(report)
 }
 
-/// Read every rule matching `filter` with `rules::find_window` and group it.
-/// The corpus limit and the read conflict reach the caller unchanged.
 pub async fn detection_coverage(
     t: &Transport,
     filter: &RuleFilter,
@@ -120,7 +100,6 @@ pub async fn detection_coverage(
     coverage_from_rules(&rules, group_by)
 }
 
-/// The distinct keys of one rule for the grouping.
 fn rule_keys(rule: &Map<String, Value>, group_by: CoverageGroup) -> Result<BTreeMap<String, Seen>> {
     let mut keys: BTreeMap<String, Seen> = BTreeMap::new();
     match group_by {
@@ -144,7 +123,6 @@ fn rule_keys(rule: &Map<String, Value>, group_by: CoverageGroup) -> Result<BTree
                     }
                     continue;
                 }
-                // Subtechniques sit under their parent and are not read.
                 for technique in array(entry, "technique")? {
                     let technique = object(technique, "threat.technique")?;
                     if let Some(id) = string(technique, "id")? {
@@ -179,7 +157,6 @@ fn rule_keys(rule: &Map<String, Value>, group_by: CoverageGroup) -> Result<BTree
     Ok(keys)
 }
 
-/// Keep the smaller of the current name and `name` in byte order.
 fn keep_smallest(current: &mut Option<String>, name: Option<&str>) {
     if let Some(name) = name
         && current.as_deref().is_none_or(|current| name < current)
@@ -188,7 +165,6 @@ fn keep_smallest(current: &mut Option<String>, name: Option<&str>) {
     }
 }
 
-/// A present, non-null field.
 fn field<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
     map.get(key).filter(|value| !value.is_null())
 }

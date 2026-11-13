@@ -1,5 +1,3 @@
-//! Read-only projections for Elastic Security alerts and cases.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::{

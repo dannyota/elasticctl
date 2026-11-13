@@ -164,8 +164,6 @@ async fn run_stream_pages_with_search_after() {
         .mount(&server)
         .await;
 
-    // Page 2: the first page ends on sort [2, 1], so the next search_after
-    // returns the third and final hit.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .and(body_partial_json(json!({"search_after": [2, 1]})))
@@ -177,8 +175,6 @@ async fn run_stream_pages_with_search_after() {
         .mount(&server)
         .await;
 
-    // Page 3: search_after [3, 2] is past the last document, so the page is
-    // empty and the loop ends.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .and(body_partial_json(json!({"search_after": [3, 2]})))
@@ -188,9 +184,6 @@ async fn run_stream_pages_with_search_after() {
         .mount(&server)
         .await;
 
-    // Page 1: the first request carries size 1000 and no search_after. This
-    // matcher is mounted last so the more specific search_after mocks above
-    // win for later pages.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .and(body_partial_json(json!({"size": 1000})))
@@ -203,7 +196,6 @@ async fn run_stream_pages_with_search_after() {
         .mount(&server)
         .await;
 
-    // The PIT close is a DELETE carrying the id in the JSON body.
     Mock::given(method("DELETE"))
         .and(path("/_pit"))
         .and(body_partial_json(json!({"id": "pit-1"})))
@@ -237,8 +229,6 @@ async fn run_stream_appends_a_shard_doc_tiebreaker() {
         .mount(&server)
         .await;
 
-    // The operator's sort is a single object with no `_shard_doc`; the client
-    // must page over a total order, so the _search body carries the tiebreaker.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .and(body_partial_json(
@@ -356,11 +346,6 @@ async fn run_async_polls_until_complete() {
         )
         .mount(&server)
         .await;
-    // First poll: still running, served exactly once. Mounted before the
-    // terminal mock, so at equal priority wiremock matches it first (FIFO);
-    // `up_to_n_times(1)` exhausts it and the second poll falls through to the
-    // terminal mock. A runner with no loop would decode this body (no
-    // `columns`/`values`) and fail.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
         .and(|req: &Request| req.url.query().is_none())
@@ -370,7 +355,6 @@ async fn run_async_polls_until_complete() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
-    // Terminal poll: `is_running: false` with the result.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
         .and(|req: &Request| req.url.query().is_none())
@@ -472,7 +456,6 @@ async fn run_async_deletes_on_a_poll_error() {
 async fn poll_until_complete_times_out_after_its_budget() {
     let server = MockServer::start().await;
     let t = test_transport(&server.uri());
-    // Every poll reports still-running, so the runner exhausts its poll budget.
     Mock::given(method("GET"))
         .and(path("/_query/async/a1"))
         .respond_with(

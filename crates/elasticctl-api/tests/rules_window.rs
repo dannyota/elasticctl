@@ -1,9 +1,3 @@
-//! Threat filters and the verified corpus read (`rules::find_window`).
-//!
-//! Every mock body copies the shape of the recorded `rules_find.json`
-//! response: `page`, `perPage`, `total`, and `data` rows cloned from the
-//! recorded rule with only `rule_id` and `name` changed.
-
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -35,7 +29,6 @@ fn transport(server: &MockServer) -> Transport {
     .unwrap()
 }
 
-/// The recorded rule row with a new identity.
 fn rule(id: usize) -> Value {
     let fixture: Value = serde_json::from_str(FIXTURE).expect("rules_find fixture is JSON");
     let mut row = fixture["response"]["data"][0].clone();
@@ -44,13 +37,11 @@ fn rule(id: usize) -> Value {
     row
 }
 
-/// A recorded-shape `_find` page holding the rules with these ids.
 fn page(number: u64, total: u64, ids: impl IntoIterator<Item = usize>) -> Value {
     let data: Vec<Value> = ids.into_iter().map(rule).collect();
     json!({"page": number, "perPage": WINDOW_PAGE, "total": total, "data": data})
 }
 
-/// The correct pages of a corpus of `total` rules, in order.
 fn pages(total: usize) -> Vec<Value> {
     let page_size = WINDOW_PAGE as usize;
     (0..total.div_ceil(page_size))
@@ -61,8 +52,6 @@ fn pages(total: usize) -> Vec<Value> {
         .collect()
 }
 
-/// Answers each `_find` request with the next scripted body, in order. A
-/// request past the script gets a 500, which fails the read.
 struct Script {
     bodies: Vec<Value>,
     next: AtomicUsize,
@@ -90,7 +79,6 @@ async fn scripted(bodies: Vec<Value>) -> MockServer {
     server
 }
 
-/// The query of every request, in order. Every request must be a `_find` GET.
 async fn find_queries(server: &MockServer) -> Vec<BTreeMap<String, String>> {
     server
         .received_requests()
@@ -105,7 +93,6 @@ async fn find_queries(server: &MockServer) -> Vec<BTreeMap<String, String>> {
         .collect()
 }
 
-/// Each request read the expected page, 500 rules at a time, in creation order.
 fn assert_window_pages(queries: &[BTreeMap<String, String>], expected: &[u32]) {
     let read: Vec<u32> = queries
         .iter()
@@ -192,8 +179,6 @@ fn threat_clauses_combine_with_the_existing_filters_by_and() {
     );
 }
 
-/// `to_kql` is public and does not validate, so the threat values pass
-/// through `kql_escape` like every other quoted literal.
 #[test]
 fn threat_values_are_kql_escaped() {
     let filter = RuleFilter {
@@ -262,8 +247,6 @@ fn bad_filters() -> Vec<RuleFilter> {
                 ..Default::default()
             }),
     );
-    // A valid value does not excuse an invalid one in the other field, and
-    // the source feature probe must not run first.
     filters.push(RuleFilter {
         source: RuleSource::Custom,
         technique: Some("T1059".into()),
@@ -298,8 +281,6 @@ fn validate_threat_accepts_exactly_the_three_grammars() {
     }
 }
 
-/// A value outside the grammar fails before the capability probe or any
-/// `_find` request, on every read that takes a filter.
 #[tokio::test]
 async fn a_threat_value_outside_its_grammar_fails_before_any_request() {
     let server = MockServer::start().await;
@@ -347,7 +328,6 @@ async fn find_window_reads_one_page() {
     assert!(!queries[0].contains_key("filter"));
 }
 
-/// Every page carries the same filter, including the threat clause.
 #[tokio::test]
 async fn find_window_reads_three_pages_in_order_with_the_filter() {
     let server = scripted(pages(1_200)).await;
@@ -389,8 +369,6 @@ async fn find_window_reads_exactly_the_limit_in_eight_pages() {
     assert_window_pages(&find_queries(&server).await, &[1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
-/// A row repeated across pages is the default-order paging failure measured
-/// on Hosted. The first pass is discarded and the second is returned.
 #[tokio::test]
 async fn a_duplicate_rule_id_triggers_one_second_pass_at_the_request_cap() {
     let mut first = pages(4_000);
@@ -417,8 +395,6 @@ async fn two_failed_passes_are_a_conflict() {
     assert_window_pages(&find_queries(&server).await, &[1, 2, 1, 2]);
 }
 
-/// Distinct rows whose count equals the first total still fail when a later
-/// page reports another total.
 #[tokio::test]
 async fn totals_that_differ_between_pages_fail_verification() {
     let changed = vec![page(1, 600, 0..500), page(2, 601, 500..600)];
@@ -441,7 +417,6 @@ async fn a_short_page_fails_verification() {
     assert_window_pages(&find_queries(&server).await, &[1, 2, 1, 2]);
 }
 
-/// A short first pass is discarded; a complete second pass is returned.
 #[tokio::test]
 async fn a_short_first_pass_recovers_on_the_second() {
     let mut bodies = vec![page(1, 600, 0..500), page(2, 600, 500..599)];
@@ -463,8 +438,6 @@ async fn find_count(stack: &MockStack) -> usize {
         .count()
 }
 
-/// A threat filter narrows the selection, so an empty result does not run
-/// the source proof.
 #[tokio::test]
 async fn an_empty_source_and_technique_page_sends_one_request() {
     let stack = MockStack::with_source_totals(0, 2, 2).await;
@@ -490,8 +463,6 @@ async fn an_empty_source_and_technique_page_sends_one_request() {
     }
 }
 
-/// A source-only empty page still proves the partition: the page plus the
-/// three reads of `verify_source_partition`.
 #[tokio::test]
 async fn an_empty_source_only_page_still_sends_four_requests() {
     let stack = MockStack::with_source_totals(0, 2, 2).await;

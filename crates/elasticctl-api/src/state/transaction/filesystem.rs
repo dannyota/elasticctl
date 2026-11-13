@@ -1,5 +1,3 @@
-//! Filesystem operations and path checks for pull transactions.
-
 use super::{PullLock, StagedFile};
 use elasticctl_core::{Error, ErrorKind, Result};
 use std::collections::BTreeSet;
@@ -9,8 +7,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-/// The mutation points are isolated so failure tests can verify that recovery
-/// works across every rename boundary without a special filesystem.
 pub(super) trait FileOps {
     fn write(&self, path: &Path, bytes: &[u8], append: bool) -> io::Result<()>;
     fn sync_file(&self, path: &Path) -> io::Result<()>;
@@ -45,8 +41,6 @@ impl FileOps for FsFileOps {
         }
         #[cfg(windows)]
         {
-            // Windows does not provide a directory fsync through `File`.
-            // Every file payload and journal append is still synced above.
             let _ = path;
             Ok(())
         }

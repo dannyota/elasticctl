@@ -1,5 +1,3 @@
-//! Agent policy deletion planning and apply.
-
 use super::{
     BTreeMap, Error, ErrorKind, LiveAgentPolicy, MutationPlan, Result, Serialize, Transport, Value,
     agent_policies, json, live_from_item, read_live, resolve_item,
@@ -126,9 +124,6 @@ pub async fn apply_delete(
         match agent_policies::delete(transport, &target.id).await {
             Ok(()) => deleted.push(json!({"id": target.id})),
             Err(error) => {
-                // A 2xx echoing the wrong id means the server acknowledged
-                // deleting something; only a non-2xx status (or none, for a
-                // transport/decode failure) leaves the target untouched.
                 let applied =
                     matches!(error.http_status, Some(status) if (200..300).contains(&status));
                 failed.push(failed_delete_row(&target.id, applied, error.message));

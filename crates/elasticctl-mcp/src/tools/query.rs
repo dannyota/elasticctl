@@ -1,5 +1,3 @@
-//! Explicitly enabled synchronous Elasticsearch query adapters.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::search::{dsl, esql};

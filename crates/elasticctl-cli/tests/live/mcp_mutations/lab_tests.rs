@@ -138,7 +138,6 @@ impl wiremock::Respond for Stack {
                 }
                 rule["id"] = json!(id);
                 s.rules.insert(id.clone(), rule.clone());
-                // Kibana makes a rule's API key, and so its owner, only on enable.
                 if body["enabled"] == json!(true) {
                     s.owners.insert(id, owner);
                 }
@@ -194,7 +193,6 @@ fn setup(rt: &tokio::runtime::Runtime) -> (MockServer, Stack, Profile, Transport
     (server, stack, profile, t)
 }
 fn writes(rt: &tokio::runtime::Runtime, server: &MockServer) -> Vec<(String, String)> {
-    // Never include request bodies or headers: they contain generated credentials.
     rt.block_on(server.received_requests())
         .unwrap()
         .into_iter()
@@ -330,7 +328,6 @@ fn mcp_mutations_lab_unverified_rule_owners_prevent_measurement_toggles() {
         true,
     ))
     .unwrap();
-    // Only the two creator enables run; no measured toggle follows a bad owner.
     assert_eq!(
         writes(&rt, &server)
             .iter()

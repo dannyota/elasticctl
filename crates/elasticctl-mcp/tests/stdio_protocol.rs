@@ -560,7 +560,6 @@ async fn malformed_frames_are_rejected_and_the_next_valid_request_is_served() {
         server_output,
     ));
     let mut output = BufReader::new(output);
-    // Invalid JSON-RPC version exercises the SDK's strict frame decoder.
     let invalid = json!({"jsonrpc": "1.0", "id": 90, "method": "tools/list", "params": {"_meta": current_metadata()}});
     input
         .write_all(format!("{invalid}\n").as_bytes())

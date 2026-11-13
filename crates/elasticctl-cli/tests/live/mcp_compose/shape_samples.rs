@@ -1,6 +1,3 @@
-//! Valid outputs built from the design's field tables. Expectation tests
-//! fill them with the identities of one contract run.
-
 use serde_json::{Value, json};
 
 pub(crate) fn error(kind: &str, status: Option<u16>, message: &str) -> Value {

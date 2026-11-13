@@ -1,16 +1,3 @@
-//! Compose recording: the request shapes behind the cross-vertical task
-//! tools, recorded from marker objects only.
-//!
-//! The step creates a marker index, list, two items, two rules, and a case
-//! under fixed marker identities, each with a create-only request. Its own
-//! cleanup removes exactly what this run created and closes this run's
-//! alerts by id; the shared cleanup of `cargo xtask record` is not used.
-//! A create whose answer was lost is watched for a settle window before its
-//! claim clears. Cleanup runs after success, failure, a panic, or Ctrl-C,
-//! under a time bound, and the baseline audit then requires the state
-//! captured before the first write. Fixtures are written only when all of
-//! them succeed.
-
 mod alert_search;
 mod baseline;
 mod cleanup;
@@ -40,49 +27,27 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// The second compose rule: enabled over a marker index that never exists.
 const MISSING_RULE_ID: &str = "elasticctl-sample-compose-missing-index";
 const MISSING_RULE_NAME: &str = "elasticctl sample compose missing index";
-/// Name of the alerting compose rule, created under the alert probe rule id.
 const COMPOSE_RULE_NAME: &str = "elasticctl sample compose rule";
-/// The second item on the marker list.
 const COMPOSE_ITEM_ID: &str = "elasticctl-sample-exception-item-2";
-/// A concrete marker index name that is never created.
 const MISSING_INDEX: &str = "elasticctl-sample-compose-missing";
-/// The alert probe index as a pattern.
 const MATCH_PATTERN: &str = "elasticctl-sample-alert-events*";
-/// A marker wildcard that matches nothing.
 const NO_MATCH_PATTERN: &str = "elasticctl-sample-compose-none-*";
-/// An exclusion as a rule's index list holds it. Measured privately.
 const EXCLUSION_PATTERN: &str = "-elasticctl-sample-alert-events*";
-/// A marker alert id that never exists.
 const ABSENT_ALERT_ID: &str = "elasticctl-sample-absent-alert";
-/// Marker documents, and so session alerts. At least the activity page size,
-/// so every recorded hit is a session alert.
 const ALERT_DOCS: usize = 5;
-/// The `since` default of the task tools.
 const ACTIVITY_SINCE: &str = "24h";
-/// The `rule_health` activity page size.
 const ACTIVITY_SIZE: u64 = 5;
 const TECHNIQUE: &str = "T1059";
-/// The tactic and subtechnique of the marker rule, probed privately.
 const TACTIC: &str = "TA0002";
 const SUBTECHNIQUE: &str = "T1059.001";
-/// The verified corpus page size.
 const SORTED_PAGE_SIZE: u32 = 500;
-/// The `rules_list` default limit.
 const TECHNIQUE_PAGE_SIZE: u32 = 50;
-/// Packages tried, in order, for one that is not installed.
 const PACKAGE_CANDIDATES: [&str; 3] = ["apache", "nginx", "mysql"];
-/// Reads of the case attachment, and of the attached alert before the
-/// case-ids answer is logged.
 const CASE_IDS_ATTEMPTS: u32 = 3;
-/// The bound on cleanup and the baseline audit together.
 const TEARDOWN_LIMIT: Duration = Duration::from_secs(600);
 
-/// Server ids this run learned for the objects it created. They stay in
-/// memory: cleanup's re-reads must still show them, and fixtures hold only
-/// placeholders.
 #[derive(Default)]
 struct ServerIds {
     list: Option<String>,
@@ -91,23 +56,14 @@ struct ServerIds {
     rule: Option<String>,
     missing_rule: Option<String>,
     case: Option<String>,
-    /// The UUID of the marker index this run created. The index is written
-    /// to and deleted only while it still reports this UUID.
     index_uuid: Option<String>,
 }
 
-/// The session's ownership flags plus what this run learned. The step and
-/// cleanup both borrow it, so a panic or an interrupt leaves it as it stood.
 struct ComposeSession<'a> {
     session: RecordingSession<'a>,
     ids: ServerIds,
-    /// Captured before the first write; the audit requires it again.
     baseline: Option<Baseline>,
-    /// Owned objects whose create answer was lost.
     unresolved: Unresolved,
-    /// The alerts of this run's alerting rule. Set with the rule's claim,
-    /// cleared once the rule is gone and a complete search has found none
-    /// of them open for the whole settle window.
     alerts: bool,
 }
 
@@ -214,24 +170,18 @@ async fn record_steps(
     })
 }
 
-/// What cleanup and the baseline audit returned.
 struct Teardown {
     failures: Vec<Failure>,
-    /// `None` when the step stopped before it captured a baseline, and so
-    /// before any write.
     audit: Option<elasticctl_core::Result<()>>,
 }
 
-/// Everything `finish` needs to decide whether fixtures may be written.
 struct RunOutcome {
     step: Ended<elasticctl_core::Result<Recording>>,
     teardown: Ended<Teardown>,
     still_owned: Vec<&'static str>,
-    /// Owned objects whose create answer was lost and that did not settle.
     unresolved: Vec<&'static str>,
 }
 
-/// Cleanup, with its settle windows, and then the baseline audit.
 async fn teardown(compose: &mut ComposeSession<'_>, timing: Timing) -> Teardown {
     let failures = cleanup::cleanup(compose, &timing).await;
     let audit = match &compose.baseline {
@@ -248,9 +198,6 @@ async fn teardown(compose: &mut ComposeSession<'_>, timing: Timing) -> Teardown 
     Teardown { failures, audit }
 }
 
-/// Cleanup and the audit, outside whatever ended the step. A second
-/// interrupt or the time bound stops them, and the objects still owned are
-/// reported.
 async fn conclude(
     compose: &mut ComposeSession<'_>,
     step: Ended<elasticctl_core::Result<Recording>>,
@@ -266,8 +213,6 @@ async fn conclude(
     }
 }
 
-/// Run the step so that a panic or an interrupt still reaches cleanup.
-/// `interrupt` is called once for the step and once for cleanup.
 async fn run<I, F>(
     compose: &mut ComposeSession<'_>,
     log: &mut PrivateLog,
@@ -288,10 +233,6 @@ where
     conclude(compose, step, timing, interrupt()).await
 }
 
-/// Decide the result and the lines to print. Fixtures are written only when
-/// the step, cleanup, and the baseline audit all succeeded and nothing is
-/// still owned or unresolved. Each line holds static text, constants, or an
-/// error's class and status.
 fn finish(
     outcome: RunOutcome,
     write: impl FnOnce(Recording) -> elasticctl_core::Result<()>,
@@ -384,15 +325,11 @@ fn finish(
     }
 }
 
-/// `cargo xtask record-compose`: record the compose fixtures from the target
-/// that `cargo xtask record` reads, then clean every marker object.
 pub(crate) async fn record_compose() {
     if let Err(error) = activate_traditional_recorder_profile().await {
         eprintln!("record-compose setup failed: {}", error.message);
         std::process::exit(1);
     }
-    // A panic message can quote a value it was handling. Print a fixed line;
-    // the step's own result reports which phase stopped.
     std::panic::set_hook(Box::new(|_| {
         eprintln!("record-compose: a panic stopped the current operation");
     }));
@@ -433,9 +370,6 @@ pub(crate) async fn record_compose() {
 
 #[cfg(test)]
 mod fake_stack {
-    //! A stateful fake of every route the compose step and its cleanup send.
-    //! Creates apply before an injected failure answers, which models a
-    //! create whose answer was lost.
 
     use crate::recorder::compose::requests::{LISTS_FIND_PATH, PREBUILT_STATUS_PATH};
     use crate::recorder::compose::{ALERT_DOCS, COMPOSE_RULE_NAME};
@@ -451,12 +385,8 @@ mod fake_stack {
     pub(super) const ALERT_INDEX: &str = ".internal.alerts-security.alerts-default-000001";
     pub(super) const PREBUILT_RULES: u64 = 2263;
     pub(super) const SESSION_RULE_UUID: &str = "so-elasticctl-sample-alert-probe";
-    /// The UUID of a marker index another run created.
     pub(super) const FOREIGN_INDEX_UUID: &str = "uuid-foreign";
-    /// What a server can write in its own words: an authorization failure
-    /// that quotes a user, an email, an API key id, a host, and an index.
     pub(super) const IDENTITY_PROSE: &str = "action [indices:data/read/search] is unauthorized for API key id [kq3Rb-identity-key] of user [jdoe-operator] (jdoe@example.com) on kb.private.example.internal for index [prod-secrets-000001]";
-    /// Each identity the prose above quotes.
     pub(super) const IDENTITY_TOKENS: [&str; 5] = [
         "kq3Rb-identity-key",
         "jdoe-operator",
@@ -467,19 +397,11 @@ mod fake_stack {
 
     #[derive(Default)]
     pub(super) struct State {
-        /// The marker index documents, by id.
         pub(super) index: BTreeMap<String, Value>,
-        /// The marker index UUID while the index exists.
         pub(super) index_uuid: Option<String>,
         index_creates: u32,
-        /// Another run's marker index, without document 1, appears right
-        /// after the preflight.
         pub(super) index_after_preflight: bool,
-        /// Another run's marker index, with a marker document 1, replaces
-        /// this run's index just before cleanup reaches it.
         pub(super) index_replaced_before_cleanup: bool,
-        /// The request line after whose answer another run's marker index
-        /// replaces this run's.
         pub(super) index_replaced_after: Option<String>,
         pub(super) list: Option<Value>,
         pub(super) items: BTreeMap<String, Value>,
@@ -490,58 +412,30 @@ mod fake_stack {
         attached: Vec<String>,
         prebuilt_reads: u32,
         pub(super) log: Vec<String>,
-        /// The label of every create request received.
         pub(super) creates: Vec<String>,
         pub(super) unexpected: Vec<String>,
         pub(super) status_requests: Vec<Value>,
         pub(super) installed: Vec<&'static str>,
-        /// A create label answered 400 after the create applied.
         pub(super) fail_on: Option<String>,
-        /// A create label answered 503 after the create applied.
         pub(super) unavailable_after_create: Option<String>,
-        /// A create label answered 503 before it applies. The object lands
-        /// right after the next read of its identity; a marker document
-        /// lands once the index is gone, and creates it again.
         pub(super) late_create: Option<String>,
-        /// A create label answered 503 that never lands.
         pub(super) lost_create: Option<String>,
         pending: Option<(String, Request)>,
-        /// A fault on every cleanup search for open session alerts:
-        /// `timed_out`, `shard`, or `inexact`. The fault answers no hits.
         pub(super) alert_search_fault: Option<&'static str>,
-        /// After a close, the first open-alert search that finds none is
-        /// followed by one more open session alert, as the rule's last
-        /// execution writes it late.
         pub(super) late_alert: bool,
         late_alert_written: bool,
-        /// Close requests answered 409 before one is applied, as Serverless
-        /// does while the rule or a case attachment is still updating an
-        /// alert.
         pub(super) close_conflicts: u32,
-        /// An inventory, `rules`, `lists`, or `indices`, whose reads after
-        /// the first report one more marker object.
         pub(super) inventory_change: Option<&'static str>,
         inventory_reads: BTreeMap<&'static str, u32>,
-        /// A create label whose identity another run takes just before this
-        /// run's create arrives: a foreign object is stored and the create
-        /// answers 409.
         pub(super) conflict_on: Option<String>,
-        /// A delete label answered 200 while the object stays.
         pub(super) sticky_delete: Option<String>,
-        /// A delete label answered 500 with server text naming a host.
         pub(super) failing_delete: Option<String>,
-        /// A create label whose object loses its marker tag right after.
         pub(super) retag_after_create: Option<String>,
-        /// A create label answered only after two seconds.
         pub(super) slow_create: Option<String>,
-        /// A delete label answered only after two seconds.
         pub(super) slow_delete: Option<String>,
-        /// A create label that fires the interrupt while its answer waits.
         pub(super) interrupt_on: Option<(String, Arc<Notify>)>,
         pub(super) resolve_match_body: Option<Value>,
-        /// The prebuilt count every read after the first reports.
         pub(super) prebuilt_after: Option<u64>,
-        /// An open alert of the same rule id from an earlier run.
         pub(super) historical_alert: bool,
         pub(super) foreign_hits: bool,
         pub(super) foreign_rule: bool,
@@ -656,7 +550,6 @@ mod fake_stack {
 
     fn signals(state: &mut State, body: &Value) -> Value {
         if body.get("aggs").is_some() {
-            // Newest first, as the activity sort asks.
             let mut hits: Vec<Value> = state.alerts.iter().rev().take(5).cloned().collect();
             if state.foreign_hits && !hits.is_empty() {
                 hits[0]["_source"]["kibana.alert.rule.uuid"] = json!("so-older");
@@ -803,7 +696,6 @@ mod fake_stack {
         }
     }
 
-    /// The identity a cleanup or preflight read names.
     fn read_label(path: &str, request: &Request) -> Option<String> {
         match path {
             "/api/detection_engine/rules" => {
@@ -819,7 +711,6 @@ mod fake_stack {
         }
     }
 
-    /// The Elasticsearch answer to an index create whose name is taken.
     fn index_exists(uuid: &str) -> ResponseTemplate {
         let reason = format!("index [{ALERT_PROBE_INDEX}/{uuid}] already exists");
         let cause = json!({"type": "resource_already_exists_exception", "reason": reason,
@@ -848,15 +739,12 @@ mod fake_stack {
         )
     }
 
-    /// One more marker object in an inventory's reads after the first.
     fn inventory_extra(state: &mut State, kind: &'static str) -> usize {
         let reads = state.inventory_reads.entry(kind).or_default();
         *reads += 1;
         usize::from(state.inventory_change == Some(kind) && *reads > 1)
     }
 
-    /// Store the object another run created under this run's fixed identity.
-    /// It carries the marker, so only the create answer shows it is not ours.
     fn plant_foreign(state: &mut State, label: &str) {
         let tags = json!(["elasticctl", "fixture", ALERT_MARKER_TAG]);
         match label.split_once(':') {
@@ -972,8 +860,6 @@ mod fake_stack {
         let read = read_label(&path, request);
         let landing = method == "GET"
             && match state.pending.as_ref() {
-                // A delayed document write lands once the index is gone, and
-                // creates it again as automatic index creation does.
                 Some((label, _)) if label.starts_with("doc:") => {
                     read.as_deref() == Some("index") && state.index_uuid.is_none()
                 }
@@ -1087,7 +973,6 @@ mod fake_stack {
                 }
             }
             ("POST", p) if p.starts_with(&marker_create) => {
-                // Elasticsearch creates a missing index on a document write.
                 if state.index_uuid.is_none() {
                     state.index_uuid = Some("uuid-auto".into());
                 }
@@ -1421,7 +1306,6 @@ mod tests {
         "package_not_installed",
     ];
 
-    /// Text that must never reach a printed line.
     const PRIVATE_TEXT: [&str; 7] = [
         "private.example",
         "https://",
@@ -1459,8 +1343,6 @@ mod tests {
         ])
     }
 
-    /// A settle window short enough for the suite and long enough for
-    /// several reads.
     fn short_settle(window_ms: u64) -> Timing {
         Timing {
             poll: Duration::ZERO,
@@ -1521,7 +1403,6 @@ mod tests {
         }
     }
 
-    /// The two halves of `run`, with the ownership flags read in between.
     async fn record_against(transport: &Transport) -> Outcome {
         record_with(transport, Timing::INSTANT).await
     }
@@ -2176,7 +2057,6 @@ mod tests {
         assert!(!outcome.succeeded);
         assert_clean_lines(&outcome.lines);
 
-        // A timed-out request's transport message names the URL.
         let (server, _state) = fake_stack(|s| {
             s.slow_create = Some("item:elasticctl-sample-exception-item".into());
             s.slow_delete = Some("list".into());
@@ -2353,8 +2233,6 @@ mod tests {
         assert!(!state.lock().expect("state").is_empty());
     }
 
-    /// Every create sent once through `post_once`, with its label and
-    /// ownership flag.
     const KIBANA_CREATES: [(&str, &str); 6] = [
         ("list", "list"),
         ("item:elasticctl-sample-exception-item", "item"),
@@ -2624,8 +2502,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_open_session_alert_after_cleanup_fails_the_audit() {
-        // A zero window lets cleanup accept its first empty search, so the
-        // late alert is left for the audit to find.
         let (server, state) = fake_stack(|s| s.late_alert = true).await;
         let t = mock_transport(&server);
 

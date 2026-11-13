@@ -1,9 +1,6 @@
-//! Rule mutation plans with observed state.
-
 use super::*;
 use crate::observe::{Observed, Preconditions};
 
-/// Plan enabled changes and return the rule state read for each target.
 pub async fn plan_set_enabled_observed(
     t: &Transport,
     selectors: &[String],

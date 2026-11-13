@@ -1,5 +1,3 @@
-//! Preview probes and exchanges.
-
 use crate::diagnostics::recording_error;
 use crate::recorder::markers::{MARKER_TAGS, SCRATCH_DOC_ID, SCRATCH_MARKER};
 use crate::recorder::ownership::{owns_scratch_index, require_absent_scratch_index};
@@ -7,31 +5,18 @@ use crate::recorder::session::RecordingSession;
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
-/// Scratch index queried by the preview probe. It carries the
-/// `elasticctl-sample` marker and avoids the `logs-` prefix: `logs-*-*` matches
-/// Elastic's template and would reject a plain document write.
 pub(crate) const PREVIEW_PROBE_INDEX: &str = "elasticctl-sample-fixture";
 
-/// Base name for the preview probe. Append a per-run suffix because preview
-/// alerts are never deleted; the fallback must not match a stale alert.
 const PREVIEW_PROBE_NAME: &str = "elasticctl fixture preview probe";
 
-/// Fixed instead of "now": the probe document falls inside this window, so the
-/// recording is reproducible and needs no date arithmetic.
 pub(super) const PREVIEW_TIMEFRAME_END: &str = "2026-08-12T18:00:00.000Z";
 
 const PREVIEW_DOC_TIMESTAMP: &str = "2026-08-12T17:57:00.000Z";
 
-/// Scratch index queried by the search probe. Like `PREVIEW_PROBE_INDEX`, it
-/// avoids the `logs-` prefix; each document carries the `elasticctl-sample`
-/// marker in its `marker` field.
 pub(crate) const SEARCH_PROBE_INDEX: &str = "elasticctl-sample-search";
 
-/// Value of the `marker` field every search probe document carries.
 pub(crate) const SEARCH_MARKER: &str = "elasticctl-sample";
 
-/// ES|QL response fields that vary per run. They are dropped before writing a
-/// fixture so a re-record of the same data is byte-identical (spec §8).
 pub(crate) const ESQL_VOLATILE_FIELDS: &[&str] = &[
     "took",
     "start_time_in_millis",
@@ -49,9 +34,6 @@ pub(crate) const ESQL_VOLATILE_FIELDS: &[&str] = &[
     "is_running",
 ];
 
-/// Async ES|QL response fields that vary per run. `is_running` and
-/// `is_partial` stay because they decide whether a client polls; the async id
-/// is replaced separately.
 pub(crate) const ESQL_ASYNC_VOLATILE_FIELDS: &[&str] = &[
     "took",
     "start_time_in_millis",
@@ -67,20 +49,11 @@ pub(crate) const ESQL_ASYNC_VOLATILE_FIELDS: &[&str] = &[
     "rows_emitted",
 ];
 
-/// Query DSL response fields that vary per run (spec §8).
 pub(crate) const DSL_VOLATILE_FIELDS: &[&str] = &["took", "_shards", "_score", "sort", "pit_id"];
 
-/// Server-owned fields on rules, lists, and items that change on every create:
-/// the saved-object `id` and the `created_at`/`updated_at` timestamps. They must
-/// not survive a fixture (spec §8). A space or data-view `id` is stable and
-/// meaningful, so this strip applies only to rule, list, and item fixtures.
 pub(crate) const RULE_VOLATILE_FIELDS: &[&str] =
     &["id", "created_at", "updated_at", "execution_summary"];
 
-/// Per-run fields in a preview and its alert hits: the preview id, execution
-/// timestamps and uuids, the generated rule id, and the per-run name/reason
-/// suffix. A preview writes fresh alerts each run, so these must not survive a
-/// fixture (spec §8); the fixture keeps the alert structure and hit count.
 pub(crate) const PREVIEW_VOLATILE_FIELDS: &[&str] = &[
     "previewId",
     "duration",
@@ -99,14 +72,9 @@ pub(crate) const PREVIEW_VOLATILE_FIELDS: &[&str] = &[
     "kibana.alert.last_detected",
 ];
 
-/// Response-only Elasticsearch search fields from preview-hit readback. The
-/// request keeps its sort because it proves the production query; this list
-/// applies only to the response so re-recording does not preserve runtime or
-/// rollover state as fixture evidence.
 pub(crate) const PREVIEW_HITS_RESPONSE_VOLATILE_FIELDS: &[&str] =
     &["took", "timed_out", "_shards", "_index", "_score", "sort"];
 
-/// Return a per-run suffix so a re-record cannot match leftover preview alerts.
 fn run_token() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -114,8 +82,6 @@ fn run_token() -> String {
         .unwrap_or_else(|_| std::process::id().to_string())
 }
 
-/// Request and response that found preview hits. Keep them separate from the
-/// fixture write so the caller can clean up first.
 pub(super) struct PreviewHitsExchange {
     pub(super) request: Value,
     pub(super) response: Value,

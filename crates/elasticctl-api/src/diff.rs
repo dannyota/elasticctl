@@ -1,8 +1,3 @@
-//! Field-level drift between desired local and live remote states.
-//!
-//! This report makes NDJSON changes readable. `git diff` remains the fidelity
-//! record.
-
 use crate::model::Rule;
 use crate::normalize::comparable;
 use elasticctl_core::{Error, ErrorKind, Result};
@@ -32,8 +27,6 @@ pub enum Change {
     Unchanged {
         rule_id: String,
     },
-    /// Present remotely but absent locally. Reported but not acted on because
-    /// `push` does not delete rules.
     RemoteOnly {
         rule_id: String,
         name: String,
@@ -56,8 +49,6 @@ pub struct Drift {
     pub changes: Vec<Change>,
 }
 
-/// Compare normalized rules field by field. An absent field is `null`, so
-/// additions and removals are visible.
 fn field_changes(before: &Rule, after: &Rule) -> Vec<FieldChange> {
     let (b, a) = (before.as_map(), after.as_map());
     let mut keys: Vec<&String> = b.keys().chain(a.keys()).collect();
@@ -79,7 +70,6 @@ fn field_changes(before: &Rule, after: &Rule) -> Vec<FieldChange> {
 
 impl Drift {
     pub fn compute(local: &[Rule], remote: &[Rule]) -> Result<Drift> {
-        // `BTreeMap` orders by `rule_id`, making repeated reports byte-identical.
         let index = |rules: &[Rule], side: &str| -> Result<BTreeMap<String, Rule>> {
             let mut map = BTreeMap::new();
             for (idx, r) in rules.iter().enumerate() {
@@ -142,8 +132,6 @@ impl Drift {
         Ok(Drift { changes })
     }
 
-    /// Changes `push` will act on. `RemoteOnly` is excluded because local
-    /// absence does not instruct a delete.
     pub fn actionable(&self) -> Vec<&Change> {
         self.changes
             .iter()
@@ -151,8 +139,6 @@ impl Drift {
             .collect()
     }
 
-    /// No differences, including remote-only rules. They are drift even though
-    /// `push` does not act on them.
     pub fn is_clean(&self) -> bool {
         self.changes
             .iter()
@@ -279,8 +265,6 @@ mod tests {
     #[test]
     fn a_local_rule_with_non_string_rule_id_produces_an_error() {
         let err = Drift::compute(
-            // `from_value` rejects this, but transparent `Deserialize` does
-            // not. This reproduces the case `Drift::compute` must handle.
             &[serde_json::from_value::<Rule>(json!({
                 "rule_id": 123, "name": "X", "type": "query", "risk_score": 21,
                 "severity": "low"
@@ -300,8 +284,6 @@ mod tests {
     fn a_remote_rule_with_non_string_rule_id_produces_an_error() {
         let err = Drift::compute(
             &[],
-            // `from_value` rejects this, but transparent `Deserialize` does
-            // not. This reproduces the case `Drift::compute` must handle.
             &[serde_json::from_value::<Rule>(json!({
                 "rule_id": 123, "name": "X", "type": "query", "risk_score": 21,
                 "severity": "low"

@@ -1,22 +1,9 @@
-//! Health orchestration: `doctor` and `info`.
-//!
-//! `doctor` reads the stack and reports every check it can, so a broken
-//! configuration surfaces as a failed check rather than an error envelope.
-//! The checks that read the operator's local configuration live in `-cli`,
-//! which has the `Context`; these functions take a `&Transport` and report
-//! only what the stack says.
-
 use crate::rules::{self, RuleFilter};
 use elasticctl_core::capabilities::{probe_license_tier, probe_spaces};
 use elasticctl_core::{Capabilities, Error, ErrorKind, Result, Transport};
 use serde::Serialize;
 use serde_json::Value;
 
-/// The outcome of one `doctor` check.
-///
-/// Serialized lowercase (`ok`, `warn`, `fail`). `warn` passes the report but
-/// carries a caution, so it is distinct from `ok` even though both leave
-/// [`DoctorReport::ok`] true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -25,11 +12,6 @@ pub enum Status {
     Fail,
 }
 
-/// One `doctor` check.
-///
-/// Field order is the serialized JSON key order and is contractual: the root
-/// `Cargo.toml` enables `serde_json`'s `preserve_order`, so reordering these
-/// fields would silently change rendered output.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DoctorCheck {
     #[serde(rename = "check")]
@@ -40,7 +22,6 @@ pub struct DoctorCheck {
     pub detail: String,
 }
 
-/// The report `doctor` renders.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
@@ -48,19 +29,12 @@ pub struct DoctorReport {
 }
 
 impl DoctorReport {
-    /// Build a report from its checks, deriving `ok` from them.
-    ///
-    /// This is the single place `ok` is derived, so a check with a misspelled
-    /// status cannot silently report a broken stack as healthy.
     pub fn from_checks(checks: Vec<DoctorCheck>) -> DoctorReport {
         let ok = checks.iter().all(|c| c.status != Status::Fail);
         DoctorReport { checks, ok }
     }
 }
 
-/// The stack-derived half of `info`'s report. The caller prepends the
-/// profile fields (`elasticctl_version`, `profile`, `kibana_url`, `space`)
-/// it alone can supply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InfoReport {
     pub version: String,
@@ -69,8 +43,6 @@ pub struct InfoReport {
     pub spaces: Option<Vec<String>>,
 }
 
-/// Construct a check. Public so `-cli` builds its configuration checks with
-/// the same shape as the stack checks.
 pub fn check(name: &str, status: Status, message: impl Into<String>) -> DoctorCheck {
     DoctorCheck {
         name: name.into(),
@@ -79,8 +51,6 @@ pub fn check(name: &str, status: Status, message: impl Into<String>) -> DoctorCh
     }
 }
 
-/// `_es_api_key` is scoped; `_cloud_api_key` is an unsupported organization
-/// key. Other realms are named without claiming they are API keys.
 fn key_scope_check(realm: &str) -> DoctorCheck {
     match realm {
         "_es_api_key" => check(
@@ -103,40 +73,28 @@ fn key_scope_check(realm: &str) -> DoctorCheck {
     }
 }
 
-/// Identities longer than this are truncated in output.
-///
-/// API keys authenticate as their key IDs. Truncate those IDs because
-/// `config show` redacts them, while short usernames remain readable.
 const MAX_IDENTITY_CHARS: usize = 12;
 
 fn short_identity(value: &str) -> String {
     if value.chars().count() <= MAX_IDENTITY_CHARS {
         return value.to_string();
     }
-    // By characters, not bytes: a byte slice can split a multibyte character
-    // and panic.
     let head: String = value.chars().take(6).collect();
     format!("{head}...")
 }
 
-/// Reads the username and authentication realm from Elasticsearch.
 async fn identity(t: &Transport) -> Result<(String, String)> {
     let body = t.get_absolute_es("/_security/_authenticate").await?;
     decode_identity(&body)
 }
 
-/// The authenticated username, realm, and optional API key identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialIdentity {
-    /// The authenticated username.
     pub username: String,
-    /// The authentication realm type.
     pub realm_type: String,
-    /// The API key ID, when supplied.
     pub api_key_id: Option<String>,
 }
 
-/// Read the credential identity from Elasticsearch.
 pub async fn credential_identity(t: &Transport) -> Result<CredentialIdentity> {
     let body = t.get_absolute_es("/_security/_authenticate").await?;
     let (username, realm_type) = decode_identity(&body)?;
@@ -160,10 +118,6 @@ pub async fn credential_identity(t: &Transport) -> Result<CredentialIdentity> {
     })
 }
 
-/// Decode an `_authenticate` response, refusing a malformed success body.
-///
-/// A missing or mistyped `username` or `authentication_realm.type` must fail
-/// the auth check rather than read as an "unknown" realm.
 fn decode_identity(body: &Value) -> Result<(String, String)> {
     let username = body
         .get("username")
@@ -188,12 +142,6 @@ fn identity_error(field: &str, detail: impl std::fmt::Display) -> Error {
     )
 }
 
-/// The value-list data streams (`/api/lists/index`) bootstrapping check.
-///
-/// A 404 is the absent case, not an error (spec 7.7): the route answering 404
-/// is how it says the data streams do not exist, and an exception entry of
-/// type `list` cannot work until they are created. Absence is a warning, not a
-/// failure — a stack with no value-list-backed exceptions never needs them.
 async fn value_list_index_check(t: &Transport) -> DoctorCheck {
     match crate::exceptions::value_lists_bootstrapped(t).await {
         Ok(true) => check(
@@ -211,11 +159,6 @@ async fn value_list_index_check(t: &Transport) -> DoctorCheck {
     }
 }
 
-/// Run the stack-reading checks.
-///
-/// The connectivity check gates the rest: without a capability probe there is
-/// no flavor, no realm, and no rule access to report. The realm identifies
-/// unsupported organization keys, which may fail for rule changes (spec 7.2).
 pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
     let mut checks = Vec::new();
 
@@ -259,11 +202,6 @@ pub async fn doctor(t: &Transport) -> Result<DoctorReport> {
     Ok(DoctorReport::from_checks(checks))
 }
 
-/// Probe the stack values only `info` reports.
-///
-/// Spaces and license tier each cost a request, so they are not part of the
-/// capability probe every command pays for. `None` means the value could not
-/// be determined; Serverless has no license tier.
 pub async fn info(t: &Transport) -> Result<InfoReport> {
     let caps = Capabilities::probe(t, t.kibana_url()).await?;
     let spaces = probe_spaces(t).await;
@@ -332,8 +270,6 @@ mod tests {
 
     #[test]
     fn key_scope_check_names_an_unclassifiable_realm() {
-        // A realm string that is neither API-key type is reported by name, not
-        // claimed as an API key.
         let c = key_scope_check("unknown");
         assert_eq!(c.status, Status::Ok);
         assert!(c.detail.contains("unknown"));
@@ -341,8 +277,6 @@ mod tests {
 
     #[test]
     fn a_key_id_is_truncated_in_the_auth_check() {
-        // An API key authenticates as its key ID. `config show` redacts that
-        // identifier, so do not write it in full to stdout.
         let full = "2XTe9p8BLjNicQlhfc9W";
         let short = short_identity(full);
         assert_eq!(short, "2XTe9p...");
@@ -354,7 +288,6 @@ mod tests {
 
     #[test]
     fn a_human_username_is_left_readable() {
-        // Keep common usernames readable.
         assert_eq!(short_identity("elastic"), "elastic");
         assert_eq!(short_identity("admin"), "admin");
         assert_eq!(short_identity("unknown"), "unknown");

@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# Publishes docs/wiki/ to the repository's GitHub wiki. docs/wiki/ is the
-# source; the wiki is a mirror, so edits made in the wiki web UI are overwritten
-# on the next sync.
-#
-# Pages link to each other as `Page-Name.md` so links work when browsing the
-# repository. The wiki serves pages without the extension, so this script
-# rewrites those links. Links to other repository files must be absolute URLs.
-#
-# Usage:
-#   scripts/wiki-sync.sh --dry-run   check and render into a temp dir, print its path
-#   scripts/wiki-sync.sh             check, render, then push to the wiki
-#
-# Pushing needs GH_TOKEN with contents:write on the repository. GITHUB_REPOSITORY
-# (owner/name) defaults to the origin remote. Works with GNU and BSD tools.
 set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -29,13 +15,11 @@ die() {
 [[ -f "$SRC/Home.md" ]] || die "$SRC/Home.md is missing"
 pages=("$SRC"/*.md)
 
-# Relative links must point at another wiki page, not into the repository.
 if bad=$(grep -EnH '\]\((\.\./|[^):#]+/)[^)]*\)' "${pages[@]}"); then
   echo "$bad" >&2
   die "relative links above leave $SRC; use absolute GitHub URLs"
 fi
 
-# Every `Page-Name.md` link must name a page that exists.
 missing=0
 while IFS=: read -r file target; do
   if [[ ! -f "$SRC/$target" ]]; then
@@ -60,10 +44,8 @@ fi
 
 [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is not set"
 repo=${GITHUB_REPOSITORY:-$(git remote get-url origin | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')}
-# `base64 -w0` is GNU-only; stripping newlines works with BSD base64 too.
 auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
 if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::add-mask::$auth"; fi
-# Pass the header through the environment so it is not a process argument.
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=http.extraheader
 export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
