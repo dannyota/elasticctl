@@ -1,5 +1,3 @@
-//! Wire-level source routing for commands whose defaults differ by command.
-
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::fs;
@@ -47,7 +45,6 @@ fn run(args: &[&std::ffi::OsStr]) -> std::process::Output {
         .unwrap()
 }
 
-/// The state default must be visible on the wire, not inferred from output.
 #[tokio::test]
 async fn state_pull_defaults_to_the_custom_immutable_filter() {
     let server = MockServer::start().await;
@@ -85,8 +82,6 @@ async fn state_pull_defaults_to_the_custom_immutable_filter() {
     );
 }
 
-/// `--source all` removes the default source filter instead of translating it
-/// into a wider KQL expression.
 #[tokio::test]
 async fn state_pull_source_all_sends_no_source_filter() {
     let server = MockServer::start().await;
@@ -122,8 +117,6 @@ async fn state_pull_source_all_sends_no_source_filter() {
     );
 }
 
-/// Rules list keeps its all-source default but forwards an explicit prebuilt
-/// source clause exactly.
 #[tokio::test]
 async fn rules_list_source_prebuilt_sends_the_measured_kql() {
     let server = MockServer::start().await;
@@ -160,8 +153,6 @@ async fn rules_list_source_prebuilt_sends_the_measured_kql() {
     );
 }
 
-/// An explicit customized export resolves IDs using its measured KQL before
-/// posting its intentionally scoped export body.
 #[tokio::test]
 async fn rules_export_source_customized_sends_the_measured_kql() {
     let server = MockServer::start().await;
@@ -209,8 +200,6 @@ async fn rules_export_source_customized_sends_the_measured_kql() {
     );
 }
 
-/// An explicit selector replaces the state default source scope, so a
-/// prebuilt rule remains selectable by `state pull` without `--source all`.
 #[tokio::test]
 async fn a_state_pull_selector_overrides_the_custom_source_default() {
     let server = MockServer::start().await;

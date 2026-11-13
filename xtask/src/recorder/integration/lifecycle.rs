@@ -1,5 +1,3 @@
-//! Integration policy recording lifecycle.
-
 use super::exercise::{exercise_policy, record_primary};
 use super::preparation::{bootstrap, create_parent, preflight};
 use super::teardown::delete_markers;
@@ -8,11 +6,6 @@ use crate::fixtures::Recording;
 use crate::recorder::markers::integration_recording_nonce;
 use crate::recorder::session::RecordingSession;
 
-/// Record the 0.6.1 package-policy lifecycle against a dedicated marker
-/// parent. A short-lived empty bootstrap map lets Fleet materialize package
-/// defaults, and production export classifies that exact map before it enters
-/// public fixtures. The parent disappears only after the integration has gone,
-/// so the recorder never sends an attached-parent delete.
 pub(crate) async fn record_integration_policies(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -116,9 +109,6 @@ async fn record_integration_policies_with_nonce(
     )
     .await?;
 
-    // This verifies exact inventory restoration after both marker policies are
-    // gone and checks all three marker ids are absent. It records no inventory
-    // body and never installs or uninstalls a package.
     record_trace("fleet-integration-policy-cleanup");
     session.cleanup_integration_resources().await
 }
@@ -193,7 +183,6 @@ mod tests {
     use wiremock::matchers::path;
     use wiremock::matchers::query_param;
 
-    // Hash each request line followed immediately by its raw body, without separators.
     fn request_sequence_and_body_digest(requests: &[wiremock::Request]) -> (Vec<String>, u64) {
         let mut digest = 0xcbf29ce484222325_u64;
         let lines = requests
@@ -214,7 +203,6 @@ mod tests {
         (lines, digest)
     }
 
-    // Hash file names and the writer's pretty JSON bytes in buffered order.
     fn buffered_fixture_digest(recording: &Recording) -> u64 {
         let mut digest = 0xcbf29ce484222325_u64;
         for fixture in &recording.fixtures {

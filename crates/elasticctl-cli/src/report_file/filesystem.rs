@@ -32,8 +32,6 @@ impl FileOps for FsFileOps {
         }
         #[cfg(windows)]
         {
-            // Windows exposes no directory fsync through `File`; every report
-            // payload and journal record is individually synced above.
             let _ = path;
             Ok(())
         }
@@ -51,7 +49,6 @@ impl FileOps for FsFileOps {
         fs::remove_dir_all(path)
     }
 }
-/// Resolve once, then carry this identity while the sibling lock is held.
 pub(super) struct ReportPaths {
     pub(super) requested: PathBuf,
     pub(super) target: PathBuf,
@@ -353,8 +350,6 @@ pub(super) fn remove_transaction(
         "syncing report directory after transaction removal",
     ) {
         Ok(()) => Ok(()),
-        // The journal has already been removed. Do not report a rollbackable
-        // failure after the irreversible cleanup boundary.
         Err(_) if !path_exists(transaction_dir, "checking removed report transaction")? => Ok(()),
         Err(error) => Err(error),
     }

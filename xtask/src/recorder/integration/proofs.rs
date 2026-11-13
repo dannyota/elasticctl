@@ -1,5 +1,3 @@
-//! Proofs helpers.
-
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 #[cfg(test)]
 use crate::recorder::markers::TEST_INTEGRATION_RECORDING_NONCE;
@@ -100,10 +98,6 @@ fn marker_integration_package_matches(
             })
 }
 
-/// The bootstrap marker exists only long enough to obtain the simplified map
-/// that Fleet materializes. Its map cannot be known before the write. Every
-/// recorded or cleanup-owned policy after that point must instead retain the
-/// exact captured map.
 #[derive(Clone, Copy)]
 pub(crate) enum MarkerIntegrationInputs<'a> {
     Empty,
@@ -138,9 +132,6 @@ fn marker_integration_inputs_match(
     }
 }
 
-/// Prove that one package-policy item is still the recorder's exact portable
-/// marker. List rows use this directly; single responses must pass the strict
-/// envelope validator below as well.
 pub(crate) fn validate_marker_integration_item_with_nonce_and_inputs(
     item: &Map<String, Value>,
     id: &str,
@@ -211,9 +202,6 @@ pub(crate) fn validate_marker_integration_item_with_nonce_and_inputs(
     }
 }
 
-/// Prove that one live package-policy response is still the recorder's exact
-/// portable marker. Every mutation and cleanup path calls this same validator
-/// with the package version observed in the strict preflight inventory.
 pub(crate) fn validate_marker_integration_with_nonce_and_inputs<'a>(
     value: &'a Value,
     id: &str,
@@ -236,8 +224,6 @@ pub(crate) fn validate_marker_integration_with_nonce_and_inputs<'a>(
     Ok(item)
 }
 
-/// Create responses may omit `agents`, but every parent state that can lead to
-/// a delete must additionally prove an empty attached-agent count below.
 pub(crate) fn validate_marker_integration_parent_identity_with_nonce<'a>(
     value: &'a Value,
     active_space: &str,

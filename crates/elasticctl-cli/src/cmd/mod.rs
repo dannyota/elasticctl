@@ -1,5 +1,3 @@
-//! Command implementations organized by subcommand family.
-
 pub mod alerts;
 pub mod cases;
 pub mod config_cmd;

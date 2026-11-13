@@ -1,5 +1,3 @@
-//! Fixtures helpers.
-
 use crate::diagnostics::recording_error;
 use crate::fixtures::{RecordedFixture, exchange_fixture, response_fixture};
 use crate::recorder::markers::{
@@ -49,9 +47,6 @@ pub(crate) fn owns_data_view_index(value: &Value) -> bool {
         && value["_source"]["probe"].as_str() == Some("data-view")
 }
 
-/// Remove server-owned data-view details while preserving the portable
-/// configuration and any legacy scripted entry. Mapped fields are generated
-/// cache data and must not turn a fixture into a snapshot of a deployment.
 fn scrub_data_view(value: &mut Value) {
     let Some(view) = value.get_mut("data_view").and_then(Value::as_object_mut) else {
         return;

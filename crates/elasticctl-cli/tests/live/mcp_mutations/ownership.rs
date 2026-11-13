@@ -36,7 +36,6 @@ pub(super) async fn create_rule(
     exact_targets(&p.preview.targets, &[id.into()])?;
     safe(elasticctl_api::rules_ops::apply_create(t, &p).await)?;
     owned_rule(t, id).await?;
-    // The locally generated id is also the unique ownership token in tags.
     registry.rules.insert(id.into());
     Ok(())
 }
@@ -169,7 +168,6 @@ pub(super) async fn clean(t: &Transport, registry: &Registry) -> TestResult {
     Ok(())
 }
 async fn clean_registered(t: &Transport, registry: &Registry) -> TestResult {
-    // Every ? stops the trace. No retry or Drop path sends another mutation.
     for rule in &registry.rules {
         match elasticctl_api::rules::get(t, rule).await {
             Ok(_) => {
@@ -254,8 +252,6 @@ pub(super) fn orchestrate(
     mut shared_baseline: impl FnMut() -> TestResult,
     body: impl FnOnce(&mut Registry) -> TestResult,
 ) -> TestResult {
-    // SIGKILL cannot be cleaned. The next guarded baseline refuses marker
-    // leftovers before creating anything. Pending creates require marker reads.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rt.block_on(baseline(t))
             .map_err(|_| "baseline_failed".to_string())?;

@@ -1,4 +1,3 @@
-//! `alert_context`: triage context for one alert.
 use super::*;
 use crate::{
     result::{ToolFailure, ToolSuccess},
@@ -84,7 +83,6 @@ struct AlertContextData {
     findings: Vec<FindingCode>,
 }
 
-// Schema-only alternatives are never instantiated, so their sizes do not matter.
 #[allow(dead_code, clippy::large_enum_variant)]
 #[derive(JsonSchema)]
 #[serde(untagged)]

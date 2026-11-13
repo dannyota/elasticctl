@@ -39,12 +39,19 @@ $ elkctl --profile prod rules disable 'Suspicious PowerShell'
 Pass --yes to apply.
 ```
 
+The preview goes to stderr, so JSON on stdout stays valid in a pipe.
+
 ## Output
 
 Tables are the default in a terminal and in a script; output does not change
 when stdout is not a terminal. `--json` forces JSON, and `--format` selects
 `table`, `json`, `yaml`, `csv`, or `jsonl`. `--fields` keeps only the named
-fields. `--out` writes the output to a file.
+fields, in the order given, and leaves out a field a row lacks. `--out` writes
+the output to a file.
+
+Without `--fields`, a table takes its columns from the first row. A later row's
+missing field shows as a blank cell, and a field that only later rows carry
+gets no column. Use `--fields` or `--json` to see every field.
 
 `--json` and `--format` shape a command's report. They never reshape exported
 file content. `rules export` without `--out` writes the rule file itself to
@@ -57,7 +64,8 @@ elkctl rules export --tag prod > rules.ndjson
 
 `alerts list`, `cases list`, and `search` show at most 100 rows as a peek and
 say so on stderr when they cut the result. With `--out` they export every row,
-unless `--limit` sets a cap.
+unless `--limit` sets a cap, as JSON Lines unless `--format` or `--json` says
+otherwise.
 
 ## Errors
 
@@ -84,8 +92,11 @@ A failure prints one JSON object on stderr:
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Error |
+| `1` | Error, or a report that records a failed or lossy object |
 | `2` | Usage error |
+
+A partial failure still prints the full report before exiting `1`. A skipped
+object is not a failure.
 
 ## Selectors
 

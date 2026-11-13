@@ -27,8 +27,6 @@ pub(super) fn recover_report_locked(paths: &ReportPaths, ops: &dyn FileOps) -> R
         "reading report transaction directory",
     )?;
     let Some(journal) = read_journal(transaction_dir)? else {
-        // No synced Prepared record authorizes no target rename. This is only
-        // transaction-owned staging data, so removing it cannot touch a report.
         return remove_transaction(requested, transaction_dir, parent, ops);
     };
 
@@ -111,10 +109,6 @@ fn recover_existing_target(paths: &ReportPaths, ops: &dyn FileOps, phase: Phase)
     }
 }
 
-/// Finish a rollback after the backup rename. This is deliberately separate
-/// from the rename: if either directory sync or the final journal append
-/// fails, `Restoring` plus a regular target proves the retry must complete
-/// these steps rather than looking for a backup that has already moved.
 fn finish_restoration(paths: &ReportPaths, ops: &dyn FileOps) -> Result<()> {
     let transaction_dir = &paths.transaction_dir;
     let parent = &paths.parent;
@@ -153,8 +147,6 @@ fn recover_absent_target(paths: &ReportPaths, ops: &dyn FileOps, phase: Phase) -
     {
         match target_metadata(path, requested)? {
             Some(metadata) if metadata.file_type().is_file() => {
-                // The missing staged side plus the durable Installing record
-                // proves this target came from this transaction.
                 remove_file(
                     ops,
                     path,
@@ -169,9 +161,6 @@ fn recover_absent_target(paths: &ReportPaths, ops: &dyn FileOps, phase: Phase) -
     }
     Ok(())
 }
-/// Copy the target immediately before its backup rename. The artifact is only
-/// used by recovery after that backup has disappeared, when its bytes are the
-/// sole unambiguous proof that the regular target is the original report.
 pub(super) fn snapshot_original(paths: &ReportPaths, ops: &dyn FileOps) -> Result<()> {
     let path = &paths.target;
     let transaction_dir = &paths.transaction_dir;

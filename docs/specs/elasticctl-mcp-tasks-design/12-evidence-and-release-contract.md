@@ -60,6 +60,30 @@ the private log.
 Existing fixtures are reused unchanged and never hand-edited. Synthetic
 bodies belong in adversarial tests only.
 
+`cargo xtask record-compose` creates a marker index, list, two items, two
+rules, and a case under fixed identities, and cleans them up itself rather
+than through the shared `cargo xtask record` cleanup:
+
+- Each object is claimed before its create, which is create-only and sent
+  once. A success resolves the claim; a conflict means another run holds the
+  identity, so the claim is released and cleanup never touches it. Any other
+  end, including a timeout, a 5xx, an interrupt, or a panic, leaves the claim
+  unresolved.
+- Cleanup deletes only owned objects. It re-reads each one first and requires
+  its marker fields and the server id this run learned. The marker index is
+  written to and deleted only while it reports the UUID this run recorded.
+- A create whose answer was lost is re-read for a settle window, and its claim
+  clears only once it has stayed absent for the whole window. After a lost
+  marker document write, an index that reappears under the marker name is not
+  this run's, so it is reported and never deleted.
+- The run's alerts are closed by explicit id until a complete search (not
+  timed out, every shard answered, an exact total) finds none open for the
+  window. A search that is not complete is refused, never read as zero.
+- Cleanup runs after success, failure, a panic, or Ctrl-C, under a time bound.
+  The baseline audit then requires the state captured before the first write,
+  and fixtures are written only when the step, cleanup, and audit all
+  succeeded and nothing is still owned.
+
 ### 12.3 Twelfth conformance contract
 
 0.8.0 adds `mcp_answers_across_verticals` as the twelfth contract. The root

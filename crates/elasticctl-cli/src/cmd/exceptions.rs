@@ -1,7 +1,3 @@
-//! Argument handling for the exceptions commands. Orchestration lives in
-//! `elasticctl_api::exceptions`; this module resolves context, applies the
-//! guard, and hands the result to render.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::codec::Format as FileFormat;
@@ -16,9 +12,6 @@ fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))
 }
 
-/// Summary shown by `exceptions list`. Use `exceptions get` or
-/// `exceptions export` for full container bodies. `namespace_type` is part of
-/// identity, so it is always shown (spec 4.5).
 fn summarize(l: &ExceptionList) -> Value {
     json!({
         "list_id": l.list_id().unwrap_or(""),
@@ -43,7 +36,6 @@ pub async fn get(ctx: &Context, list_id: &str, namespace: Option<&str>) -> Resul
     to_value(&detail)
 }
 
-/// Check an exception file without contacting a server.
 pub fn validate(path: &Path) -> Result<Value> {
     let bundle = exceptions::validate_op(path)?;
     Ok(json!({
@@ -76,9 +68,6 @@ pub async fn export(
                 "failed": outcome.missing,
             }))
         }
-        // Spec 6.2: without `--out`, stdout is the file, verbatim under every
-        // `--format`. The body is not a report, so return it for `main` to
-        // write directly rather than routing it through `render::emit`.
         None => Ok(json!({"text": outcome.body, "failed": outcome.missing})),
     }
 }
@@ -104,9 +93,6 @@ pub async fn import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
-    // A dry run that only reads the file must not require a credential. Build
-    // the transport only for the --skip-existing read; the file itself is read
-    // in `plan_import_op` before any server call.
     let t = if skip_existing {
         ctx.require_credential()?;
         Some(ctx.transport().await?)
@@ -129,8 +115,6 @@ pub async fn import(
         }));
     }
 
-    // The upload always reaches the server. The --skip-existing read already
-    // built the transport; otherwise build it now.
     let t = match t {
         Some(t) => t,
         None => {

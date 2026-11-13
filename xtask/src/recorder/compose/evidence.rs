@@ -1,11 +1,3 @@
-//! Fixture normalization and the private log.
-//!
-//! Recorded exchanges are held until the step ends, then scrubbed with the
-//! final placeholder map, so an id learned late is still replaced in every
-//! fixture. Text the server wrote in its own words is replaced there too.
-//! Raw bodies, timings, and measurements that must stay out of the public
-//! fixtures go to an owner-only file under the ignored `target/`.
-
 use crate::fixtures::{RecordedFixture, error_fixture, exchange_fixture};
 use crate::recorder::compose::requests::Planned;
 use crate::recorder::markers::{
@@ -21,26 +13,14 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The alert field whose presence is a private measurement. It never
-/// reaches a fixture.
 pub(super) const CASE_IDS_FIELD: &str = "kibana.alert.case_ids";
 
-/// Stands in for text the server wrote in its own words: an execution
-/// message, an alert reason, or an error reason. Such text can quote a
-/// username, an email, an API key id, a host, or an index name, which a
-/// scrub by key cannot see.
 pub(super) const SERVER_TEXT_PLACEHOLDER: &str = "elasticctl-fixture-server-text";
 
-/// Keys, matched on their last dot-separated segment, whose strings are
-/// server prose wherever they appear.
 const PROSE_KEYS: [&str; 2] = ["message", "reason"];
 
-/// `execution_summary` keys whose strings are structured and kept: the
-/// decoders read `status`, and `date` holds the fixed placeholder.
 const EXECUTION_KEPT_KEYS: [&str; 2] = ["status", "date"];
 
-/// Replace every string at any depth with the placeholder, except under the
-/// keys in `kept`. Keys, types, numbers, and order stay.
 fn replace_strings(value: &mut Value, kept: &[&str]) {
     match value {
         Value::String(text) => *text = SERVER_TEXT_PLACEHOLDER.to_string(),
@@ -58,10 +38,6 @@ fn replace_strings(value: &mut Value, kept: &[&str]) {
     }
 }
 
-/// Replace server prose in a response: every string in `execution_summary`
-/// except its status and date, and every string under a `message` or
-/// `reason` key, such as `kibana.alert.reason`. The originals stay in the
-/// private log.
 fn replace_server_text(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -81,19 +57,12 @@ fn replace_server_text(value: &mut Value) {
     }
 }
 
-/// Stands in for the alerts backing index, which is not a marker name.
 pub(super) const ALERT_INDEX_PLACEHOLDER: &str = "elasticctl-fixture-alert-index";
 
-/// Prefixes of a marker index, alias, data stream, or backing index name.
 const MARKER_NAME_PREFIXES: [&str; 2] = ["elasticctl-sample-", ".ds-elasticctl-sample-"];
 
-/// Resolve keys whose values are not index names.
 const RESOLVE_NON_NAME_KEYS: [&str; 3] = ["attributes", "timestamp_field", "mode"];
 
-/// True when every name a `_resolve/index` body holds, at any depth, is a
-/// marker name: top-level entries and the aliases, indices, data streams,
-/// and backing indices nested in them. Attribute words, the timestamp
-/// field, and the index mode are not names.
 pub(super) fn resolve_names_are_markers(body: &Value) -> bool {
     fn walk(value: &Value) -> bool {
         match value {
@@ -113,8 +82,6 @@ pub(super) fn resolve_names_are_markers(body: &Value) -> bool {
         && walk(body)
 }
 
-/// Rule fields that change on every create. Only the top level is cleared:
-/// a recursive strip of `id` would also remove the `threat` ids.
 const RULE_TOP_LEVEL_VOLATILE: [&str; 3] = ["id", "created_at", "updated_at"];
 
 fn zero_numbers(value: &mut Value) {
@@ -132,11 +99,6 @@ fn zero_numbers(value: &mut Value) {
     }
 }
 
-/// Normalize one rule body. `execution_summary` stays: its keys, status,
-/// and metric types are the evidence. Its date becomes the fixed
-/// placeholder and every metric becomes zero of the same number kind; the
-/// real values go to the private log. Its message is server prose, which
-/// `Exchanges::into_fixtures` replaces.
 pub(super) fn normalize_rule(rule: &mut Value) {
     let Some(map) = rule.as_object_mut() else {
         return;
@@ -163,21 +125,16 @@ pub(super) fn normalize_rule(rule: &mut Value) {
     }
 }
 
-/// Normalize every rule in a `_find` page.
 pub(super) fn normalize_rule_page(page: &mut Value) {
     if let Some(Value::Array(rules)) = page.get_mut("data") {
         rules.iter_mut().for_each(normalize_rule);
     }
 }
 
-/// Normalize an exception item page the way item fixtures already are.
 pub(super) fn normalize_items(page: &mut Value) {
     strip_volatile(page, RULE_VOLATILE_FIELDS);
 }
 
-/// Normalize a signals search the way the alert probe's fixture is, drop
-/// the private case-ids field, and replace each hit's backing index with
-/// the placeholder.
 pub(super) fn normalize_alert_search(response: &mut Value) {
     strip_volatile(response, ALERT_SEARCH_VOLATILE_FIELDS);
     strip_volatile(response, &[CASE_IDS_FIELD]);
@@ -192,8 +149,6 @@ pub(super) fn normalize_alert_search(response: &mut Value) {
     }
 }
 
-/// Normalize the cases-by-alert rows the way case fixtures are. The route
-/// uses camel-case timestamps, which the suffix rule does not match.
 pub(super) fn normalize_cases_by_alert(response: &mut Value) {
     scrub_alert_timestamps(response);
     strip_volatile(response, CASE_DURATION_VOLATILE_FIELDS);
@@ -219,7 +174,6 @@ struct Pending {
     outcome: Outcome,
 }
 
-/// Exchanges held until the step ends.
 #[derive(Default)]
 pub(super) struct Exchanges {
     pending: Vec<Pending>,
@@ -247,9 +201,6 @@ impl Exchanges {
         });
     }
 
-    /// Scrub every held exchange with the final placeholder map and replace
-    /// its server prose. An error keeps its kind and status; its message is
-    /// server prose too.
     pub(super) fn into_fixtures(
         self,
         flavor: &str,
@@ -282,7 +233,6 @@ impl Exchanges {
     }
 }
 
-/// Owner-only record of raw bodies, timings, and private measurements.
 #[derive(Default)]
 pub(super) struct PrivateLog {
     target: Option<String>,
@@ -302,12 +252,10 @@ impl PrivateLog {
         self.target = safe_label(&label).then_some(label);
     }
 
-    /// Set one top-level entry.
     pub(super) fn set(&mut self, key: &str, value: Value) {
         self.entries.insert(key.to_string(), value);
     }
 
-    /// Add one value under a named section.
     pub(super) fn add(&mut self, section: &str, key: &str, value: Value) {
         let entry = self
             .entries
@@ -331,7 +279,6 @@ impl PrivateLog {
             .join("compose.json")
     }
 
-    /// Write the log with mode 0600. Errors carry only a static message.
     pub(super) fn write(&self, workspace: &Path) -> Result<PathBuf, &'static str> {
         const FAILED: &str = "record-compose private log write failed";
         let path = self.path(workspace);
@@ -536,8 +483,6 @@ mod tests {
         );
     }
 
-    /// Identity that server prose can quote: a user, an email, an API key
-    /// id, a host, and an index name.
     const IDENTITY: [&str; 5] = [
         "jdoe-operator",
         "jdoe@example.com",

@@ -1,5 +1,3 @@
-//! Recording helpers.
-
 pub(crate) mod fixtures;
 
 use crate::diagnostics::{
@@ -21,10 +19,6 @@ use crate::scrub::hosts::recording_hosts;
 use elasticctl_core::urlencode;
 use serde_json::{Value, json};
 
-/// Record the marker dashboard lifecycle without reusing the data-view probe's
-/// source id. That source is deliberately swapped away by the 0.5.0 contract;
-/// this fixed companion view makes the dashboard bundle independently
-/// portable, while still leaving a zero-residue data-view result.
 pub(super) async fn record_dashboards(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -37,9 +31,6 @@ pub(super) async fn record_dashboards(
     require_absent_dashboard(t, DASHBOARD_LOSS_ID).await?;
     require_absent_dashboard_data_view(t).await?;
 
-    // Claim the dashboard first, then its data view, before the first
-    // mutation. Cleanup deletes in this same dependency order even if a
-    // request below fails midway.
     session.ownership.dashboard = true;
     session.ownership.dashboard_data_view = true;
     let dashboard_data_view_request = json!({
@@ -71,9 +62,6 @@ pub(super) async fn record_dashboards(
         ));
     }
 
-    // This direct route probe intentionally bypasses `DashboardSpec`
-    // validation. The public import path rejects time_range.mode before a
-    // mutation; the recorder proves the server's accepted-but-dropped shape.
     let mut loss_data = dashboard_data();
     loss_data["title"] = json!("elasticctl sample dashboard loss");
     loss_data["time_range"] = json!({"from": "now-15m", "to": "now", "mode": "relative"});

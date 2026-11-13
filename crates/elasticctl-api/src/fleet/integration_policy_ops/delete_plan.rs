@@ -6,9 +6,6 @@ use super::read::{ResolvedIntegrationPolicy, collect};
 const DELETE_RACE_WARNING: &str =
     "warning  Fleet can change after the final recheck and before the write";
 
-/// A safe, fully preflighted integration-policy deletion. Only the guard
-/// presentation and count are public: Fleet snapshots and package metadata can
-/// include configuration values, so they remain private to the API layer.
 #[derive(Clone, PartialEq)]
 pub struct IntegrationPolicyDeletePlan {
     pub preview: MutationPlan,
@@ -32,9 +29,6 @@ impl fmt::Debug for IntegrationPolicyDeletePlan {
     }
 }
 
-/// Private execution facts for one stable-id delete. The raw item detects a
-/// Fleet change before deletion; the normalized policy and metadata prove that
-/// no secret or environment-bound configuration has crossed the guard.
 #[derive(Clone, PartialEq)]
 pub(super) struct IntegrationPolicyDeleteTarget {
     pub(super) id: String,
@@ -51,9 +45,6 @@ pub(super) struct IntegrationPolicyDeleteTarget {
     metadata_snapshot: Map<String, Value>,
 }
 
-/// Plan safe, stable-id integration-policy deletion without issuing a
-/// mutation. Each selected object is retained exactly so `apply_delete` can
-/// reject a Fleet change before it reaches the single-id delete route.
 pub async fn plan_delete(
     transport: &Transport,
     selectors: &[String],
@@ -120,10 +111,6 @@ pub async fn plan_delete(
     Ok(plan)
 }
 
-/// Delete planning must bind an id selector to the id Fleet returned for that
-/// id route. The general resolver keeps its historical public behavior for
-/// list, get, and export; a mutation cannot accept a mismatched one-object
-/// response as a different target.
 async fn resolve_delete_item(
     transport: &Transport,
     selector: &str,

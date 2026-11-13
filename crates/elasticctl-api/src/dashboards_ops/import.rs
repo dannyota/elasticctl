@@ -1,12 +1,8 @@
-//! Dashboard artifact import planning and apply.
-
 use super::{
     BTreeMap, BTreeSet, DashboardSpec, Error, ErrorKind, Path, Result, Serialize, Transport, Value,
     dashboards, data_views, invalid_plan, validate,
 };
 
-/// The immutable, guard-ready import work computed from one portable
-/// dashboard artifact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DashboardImportPlan {
     pub preview: crate::ops::MutationPlan,
@@ -17,9 +13,6 @@ pub struct DashboardImportPlan {
     pub overwrite: bool,
 }
 
-/// The per-object result of applying a guarded dashboard import.
-///
-/// Field order is rendered JSON order and is contractual.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DashboardImportReport {
     pub applied: bool,
@@ -29,9 +22,6 @@ pub struct DashboardImportReport {
     pub lossy: Vec<Value>,
     pub total: usize,
 }
-/// Fully validate an artifact and collect the precise import work to show in
-/// the mutation guard. The supplied transport is optional only for a local
-/// no-conflict plan with no data-view references.
 pub async fn plan_import(
     transport: Option<&Transport>,
     path: &Path,
@@ -153,12 +143,6 @@ pub async fn plan_import(
     })
 }
 
-/// Apply a guard-approved dashboard import without rereading its source file.
-///
-/// The final dashboard GET immediately precedes each possible PUT. Kibana has
-/// no conditional-write token, so the interval after that read is the smallest
-/// unavoidable race window. Independent objects continue after failures, and
-/// successful earlier writes are never rolled back.
 pub async fn apply_import(
     transport: &Transport,
     plan: &DashboardImportPlan,
@@ -395,8 +379,6 @@ fn validate_import_plan(plan: &DashboardImportPlan) -> Result<()> {
 fn failed_row(id: &str, applied: bool, error: impl Into<String>) -> Value {
     serde_json::json!({"id": id, "applied": applied, "error": error.into()})
 }
-/// Read one live dashboard and rebuild the portable spec used for snapshot
-/// comparisons. The response id is checked separately from its request path.
 async fn read_spec(transport: &Transport, id: &str) -> Result<DashboardSpec> {
     let dashboard = dashboards::get(transport, id).await?;
     if dashboard.id != id {

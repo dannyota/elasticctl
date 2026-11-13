@@ -1,5 +1,3 @@
-//! Prebuilt convergence and seed command.
-
 use crate::diagnostics::recording_error;
 use crate::environment::transport_from_env;
 use serde_json::{Value, json};
@@ -120,9 +118,6 @@ pub(crate) fn prebuilt_install_is_noop(response: &Value) -> elasticctl_core::Res
 }
 
 pub(super) async fn seed() {
-    // A prepackaged install can exceed the normal 60-second timeout on a fresh
-    // stack. Use a higher default while keeping `ELASTICCTL_TIMEOUT` as an
-    // override.
     let t = transport_from_env(600);
     match converge_prebuilt_rules(&t).await {
         Ok(attempts) => println!("prebuilt convergence succeeded: attempts={attempts}"),

@@ -1,9 +1,3 @@
-//! A `wiremock` stack that records requests.
-//!
-//! The log comes from the server's `received_requests`, not from a wrapper
-//! around `Transport`. A wrapper would sit in the one place `--debug` must
-//! never log, and would have to be maintained alongside it.
-
 pub mod fleet;
 
 use std::collections::BTreeMap;
@@ -16,7 +10,6 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const RULES: &str = "/api/detection_engine/rules";
 const RULES_FIND: &str = "/api/detection_engine/rules/_find";
 
-/// One request the stack received, in order.
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
     pub method: String,
@@ -26,7 +19,6 @@ pub struct RecordedRequest {
     pub body_text: String,
 }
 
-/// A mock Elastic stack with a recording server and a transport pointed at it.
 pub struct MockStack {
     server: MockServer,
     transport: Transport,
@@ -53,8 +45,6 @@ impl MockStack {
         }
     }
 
-    /// Serve the endpoints every command needs for a capability probe:
-    /// status, spaces, license, and identity.
     async fn mount_baseline(server: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/api/status"))
@@ -85,8 +75,6 @@ impl MockStack {
             .await;
     }
 
-    /// The server's base URL, e.g. `http://127.0.0.1:PORT`. The `-cli` helper
-    /// writes it into the profile it selects.
     pub fn uri(&self) -> String {
         self.server.uri()
     }
@@ -95,7 +83,6 @@ impl MockStack {
         &self.transport
     }
 
-    /// Every request the stack received, in order.
     pub async fn requests(&self) -> Vec<RecordedRequest> {
         self.server
             .received_requests()
@@ -106,7 +93,6 @@ impl MockStack {
             .collect()
     }
 
-    /// Every non-GET request the stack received, in order.
     pub async fn write_requests(&self) -> Vec<RecordedRequest> {
         self.requests()
             .await
@@ -115,7 +101,6 @@ impl MockStack {
             .collect()
     }
 
-    /// Just the paths, prefixed by method: "POST /api/…".
     pub async fn write_paths(&self) -> Vec<String> {
         self.server
             .received_requests()
@@ -127,7 +112,6 @@ impl MockStack {
             .collect()
     }
 
-    /// The JSON body of the most recent write to the rules endpoint.
     pub async fn last_rule_write_body(&self) -> Value {
         self.write_requests()
             .await
@@ -138,12 +122,10 @@ impl MockStack {
             .unwrap_or(Value::Null)
     }
 
-    /// The `item_id` of every DELETE to the exception-list items endpoint.
     pub async fn deleted_item_ids(&self) -> Vec<String> {
         Self::deleted_ids(&self.server, "/api/exception_lists/items", "item_id").await
     }
 
-    /// The `list_id` of every DELETE to the exception-list containers endpoint.
     pub async fn deleted_list_ids(&self) -> Vec<String> {
         Self::deleted_ids(&self.server, "/api/exception_lists", "list_id").await
     }
@@ -164,8 +146,6 @@ impl MockStack {
             .collect()
     }
 
-    /// A stack pre-seeded with `rules`: the `_find` corpus (honoring the
-    /// `filter` query parameter) and a `rule_id` lookup for each rule.
     pub async fn with_rules(rules: Vec<Value>) -> MockStack {
         let stack = Self::new().await;
         let data = rules.clone();
@@ -190,9 +170,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose `_find` totals describe custom, prebuilt, and unfiltered
-    /// source slices independently. This permits an old-stack partition that
-    /// cannot be represented by one consistent rule corpus.
     pub async fn with_source_totals(custom: u64, prebuilt: u64, all: u64) -> MockStack {
         let stack = Self::new().await;
         Mock::given(method("GET"))
@@ -207,8 +184,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack pre-seeded with `n` exception-list containers named `l0..l{n-1}`,
-    /// plus a `?list_id=` lookup for each so `resolve_ids` and `get_list` work.
     pub async fn with_exception_lists(n: usize) -> MockStack {
         let stack = Self::new().await;
         let data: Vec<Value> = (0..n).map(list_json).collect();
@@ -233,10 +208,6 @@ impl MockStack {
                 .respond_with(ResponseTemplate::new(200).set_body_json(list.clone()))
                 .mount(&stack.server)
                 .await;
-            // The export route resolves `id` first, then posts by both the
-            // volatile `id` and the stable identity (fact E). A measured
-            // trailer follows the list line, so the mock has the same
-            // completed-export shape as the live endpoint.
             Mock::given(method("POST"))
                 .and(path("/api/exception_lists/_export"))
                 .and(query_param("id", format!("id-l{i}")))
@@ -252,9 +223,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack pre-seeded with `n` items in container `l` (single namespace).
-    /// The `_find` route pages: its `page_size` caps below `n`, so a caller
-    /// that reads only the first page silently loses items.
     pub async fn with_exception_items(n: usize) -> MockStack {
         let stack = Self::new().await;
         let items: Vec<Value> = (0..n).map(item_json).collect();
@@ -269,10 +237,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose prepackaged `_status` route returns `status` and whose
-    /// `_find` route reports `customized` customized rules. The `_find` mock
-    /// ignores query filters and serves whatever it is seeded with, so a test
-    /// must not depend on it honoring the customized filter.
     pub async fn with_prebuilt_status(status: Value, customized: u64) -> MockStack {
         let stack = Self::new().await;
 
@@ -292,8 +256,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose prepackaged `_status` response is `status` and whose
-    /// dependent customized-rule `_find` request fails.
     pub async fn with_prebuilt_status_and_failing_find(status: Value) -> MockStack {
         let stack = Self::new().await;
 
@@ -313,8 +275,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose prepackaged `_status`, `_find`, and install routes return
-    /// `status`, `customized`, and `response` respectively.
     pub async fn with_prebuilt_install(
         status: Value,
         customized: u64,
@@ -331,8 +291,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose identity endpoint returns `body` instead of the baseline
-    /// identity. The higher priority beats the baseline's default-priority mock.
     pub async fn with_identity(body: Value) -> MockStack {
         let stack = Self::with_rules(vec![]).await;
         Mock::given(method("GET"))
@@ -344,10 +302,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose value-list data streams are absent: `GET /api/lists/index`
-    /// answers 404, the route's way of saying "not bootstrapped" (fact 21).
-    /// Built on an empty rule corpus so both `doctor` and `state push` have a
-    /// working `_find`.
     pub async fn with_value_lists_absent() -> MockStack {
         let stack = Self::with_rules(vec![]).await;
         Mock::given(method("GET"))
@@ -364,14 +318,10 @@ impl MockStack {
         stack
     }
 
-    /// A stack whose value-list data streams are bootstrapped, so
-    /// `GET /api/lists/index` reports both indexes present.
     pub async fn with_value_lists_bootstrapped() -> MockStack {
         Self::with_value_lists(&[]).await
     }
 
-    /// A stack whose value-list index returns `body`. This keeps malformed
-    /// index responses testable without making them look like absent streams.
     pub async fn with_value_list_index(body: Value) -> MockStack {
         let stack = Self::with_rules(vec![]).await;
         Mock::given(method("GET"))
@@ -382,7 +332,6 @@ impl MockStack {
         stack
     }
 
-    /// A stack with bootstrapped value-list streams and exactly these ids.
     pub async fn with_value_lists(ids: &[&str]) -> MockStack {
         let stack = Self::with_value_list_index(json!({
             "list_index": true,
@@ -403,7 +352,6 @@ impl MockStack {
         stack
     }
 
-    /// Count exact public value-list lookups for `id`.
     pub async fn value_list_lookups(&self, id: &str) -> usize {
         self.requests()
             .await
@@ -432,20 +380,10 @@ fn recorded_request(request: Request) -> RecordedRequest {
     }
 }
 
-/// Serve the seeded rule corpus, honoring the `filter` query parameter.
-///
-/// The production client emits a small KQL subset: top-level clauses joined by
-/// ` AND `, a raw `ruleId` disjunction joined by ` OR `, and a handful of field
-/// clauses. This matcher implements exactly that subset so a `--source` test
-/// asserts the real split rather than passing against a mock that ignores the
-/// filter.
 struct FilteredRules {
     rules: Vec<Value>,
 }
 
-/// Serve only the three totals used to verify that `immutable` partitions the
-/// corpus. Its zero-result data is intentional: callers use this fixture only
-/// after their source-scoped read returned no rules.
 struct SourceTotalsRules {
     custom: u64,
     prebuilt: u64,
@@ -491,7 +429,6 @@ impl Respond for FilteredRules {
                 .query_pairs()
                 .find_map(|(k, v)| (k.as_ref() == key).then(|| v.into_owned()))
         };
-        // Honor the name sort and paging the API requests, like Kibana.
         if param("sort_field").as_deref() == Some("name") {
             data.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         }
@@ -529,8 +466,6 @@ fn matches_simple(rule: &Value, sub: &str) -> bool {
     let value = value.trim();
 
     match field {
-        // A rule without `immutable` reads as its server default, `false`: it
-        // is a custom rule, so it matches `immutable: false` and not `true`.
         "alert.attributes.params.immutable" => {
             let is_prebuilt = rule.get("immutable").and_then(Value::as_bool) == Some(true);
             if value == "true" {
@@ -576,8 +511,6 @@ fn matches_simple(rule: &Value, sub: &str) -> bool {
     }
 }
 
-/// Strip the surrounding quotes (and the two escapes `kql_escape` adds) from a
-/// KQL literal. Test values are simple, so a full unparser is not needed.
 fn kql_unquote(s: &str) -> String {
     let inner = s
         .strip_prefix('"')
@@ -612,8 +545,6 @@ fn item_json(i: usize) -> Value {
     })
 }
 
-/// A container body for `list_id`, carrying the volatile fields a real
-/// `get_list` returns so `canonical_list` stripping is exercised.
 fn container_json(list_id: &str, namespace: &str, list_type: &str, id: &str) -> Value {
     json!({
         "id": id,
@@ -631,8 +562,6 @@ fn container_json(list_id: &str, namespace: &str, list_type: &str, id: &str) -> 
     })
 }
 
-/// An item body for `item_id` inside `list_id`, with the volatile fields a real
-/// `find_items` returns.
 fn item_for(list_id: &str, item_id: &str, namespace: &str) -> Value {
     json!({
         "id": format!("id-{item_id}"),
@@ -685,11 +614,7 @@ async fn mount_items(server: &MockServer, list_id: &str, namespace: &str, items:
         .await;
 }
 
-/// One rule references `list_id`; the list corpus also holds an orphan the rule
-/// does not reference, so `pull` must mirror only the referenced list.
 pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
-    // A real create returns the live pointer in the rule, so the mock carries it
-    // too; otherwise the dangling-pointer check would flag a clean pull.
     let rule = json!({
         "rule_id": "r",
         "name": "R",
@@ -721,7 +646,6 @@ pub async fn mock_stack_with_rule_referencing(list_id: &str) -> MockStack {
     stack
 }
 
-/// One rule references a `rule_default` list holding one item.
 pub async fn mock_stack_with_rule_default_list() -> MockStack {
     let rule = json!({
         "rule_id": "r",
@@ -746,8 +670,6 @@ pub async fn mock_stack_with_rule_default_list() -> MockStack {
     stack
 }
 
-/// One rule references the same `list_id` in both namespaces, which collide on
-/// a single filename.
 pub async fn mock_stack_with_colliding_namespaces(list_id: &str) -> MockStack {
     let rule = json!({
         "rule_id": "r",
@@ -773,30 +695,21 @@ pub async fn mock_stack_with_colliding_namespaces(list_id: &str) -> MockStack {
     stack
 }
 
-/// An empty rule corpus whose `get_list` for `list_id` returns the given live
-/// `id`, so a push can resolve the pointer against this stack.
 pub async fn mock_stack_with_list_id(list_id: &str, id: &str) -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
     mount_get_list(&stack.server, list_id, "single", "detection", id).await;
     stack
 }
 
-/// An empty rule corpus with two live containers, `one` and `two`, each with a
-/// distinct id, so a push that injects pointers must resolve every reference.
 pub async fn mock_stack_with_two_list_ids() -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
     mount_get_list(&stack.server, "one", "single", "detection", "id-one").await;
     mount_get_list(&stack.server, "two", "single", "detection", "id-two").await;
-    // Both containers exist remotely and are mirrored, so item reconciliation
-    // reads their (empty) item sets.
     mount_items(&stack.server, "one", "single", vec![]).await;
     mount_items(&stack.server, "two", "single", vec![]).await;
     stack
 }
 
-/// A rule referencing `list_id`, whose live container holds exactly `item_ids`
-/// and answers item deletes, so a push can reconcile the items. The rule's
-/// stored pointer matches the live container, so the run has no dangling drift.
 pub async fn mock_stack_with_list_and_items(list_id: &str, item_ids: &[&str]) -> MockStack {
     let live_id = format!("id-{list_id}");
     let rule = json!({
@@ -855,10 +768,6 @@ pub async fn mock_stack_with_list_and_items(list_id: &str, item_ids: &[&str]) ->
     stack
 }
 
-/// Two live containers: `mirrored`, referenced by a remote rule and mirrored
-/// locally, holding one item; and `unmirrored`, referenced by a second remote
-/// rule but absent locally. The run deletes `mirrored`'s item and must leave
-/// the `unmirrored` container alone.
 pub async fn mock_stack_with_two_lists_one_mirrored() -> MockStack {
     let rules = vec![
         json!({
@@ -908,9 +817,6 @@ pub async fn mock_stack_with_two_lists_one_mirrored() -> MockStack {
         vec![item_for("mirrored", "drop", "single")],
     )
     .await;
-    // `unmirrored` carries an item too, so the test's exact-equality assertion
-    // on `deleted_item_ids` guards the containment bound: a reconciliation that
-    // widened to remote-only containers would delete "survivor" and fail.
     mount_items(
         &stack.server,
         "unmirrored",
@@ -931,8 +837,6 @@ pub async fn mock_stack_with_two_lists_one_mirrored() -> MockStack {
     stack
 }
 
-/// A rule whose stored pointer is `stored` beside a live container `list_id`
-/// with id `id-shared`. Used to exercise the raw-remote dangling check.
 pub async fn mock_stack_with_dangling_pointer(
     rule_id: &str,
     list_id: &str,
@@ -955,13 +859,10 @@ pub async fn mock_stack_with_dangling_pointer(
     stack
 }
 
-/// A rule whose stored pointer matches the live container id, the clean case.
 pub async fn mock_stack_with_matching_pointer(rule_id: &str, list_id: &str) -> MockStack {
     mock_stack_with_dangling_pointer(rule_id, list_id, "id-shared").await
 }
 
-/// A rule referencing two live containers, each carrying the same wrong stored
-/// id, so the repair path must dedupe one rule rather than emit two writes.
 pub async fn mock_stack_with_rule_with_two_wrong_pointers() -> MockStack {
     let rule = json!({
         "rule_id": "r",
@@ -999,8 +900,6 @@ pub async fn mock_stack_with_rule_with_two_wrong_pointers() -> MockStack {
     stack
 }
 
-/// An empty rule corpus with container and item create responses mounted, so a
-/// push that creates a new list can resolve its live id and order its writes.
 pub async fn mock_empty_stack() -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
     Mock::given(method("POST"))
@@ -1030,9 +929,6 @@ pub async fn mock_empty_stack() -> MockStack {
     stack
 }
 
-/// An empty rule corpus whose container create succeeds but whose item create
-/// fails, so a push that reaches the item step records the failure and returns
-/// the plan rather than discarding the change ticket.
 pub async fn mock_stack_with_failing_item_create() -> MockStack {
     let stack = MockStack::with_rules(vec![]).await;
     Mock::given(method("POST"))
@@ -1056,8 +952,6 @@ pub async fn mock_stack_with_failing_item_create() -> MockStack {
     stack
 }
 
-/// Serves `total` items across pages of `page_size`, honoring the `page` query
-/// parameter so callers that stop after one page come up short.
 struct PagedItems {
     items: Vec<Value>,
     page_size: usize,

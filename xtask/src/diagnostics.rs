@@ -1,5 +1,3 @@
-//! Safe errors and allowlisted tracing.
-
 pub(crate) fn recording_error(message: impl Into<String>) -> elasticctl_core::Error {
     elasticctl_core::Error::new(elasticctl_core::ErrorKind::Error, message)
 }
@@ -181,8 +179,6 @@ fn record_trace_label_is_safe(label: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
 }
 
-/// Emit only an allowlisted, static recorder progress label when explicitly
-/// requested. Labels must never carry remote values or error details.
 pub(crate) fn record_trace(label: &'static str) {
     debug_assert!(RECORD_TRACE_LABELS.contains(&label));
     debug_assert!(record_trace_label_is_safe(label));
@@ -191,8 +187,6 @@ pub(crate) fn record_trace(label: &'static str) {
     }
 }
 
-/// Recorder errors can carry live object ids in a server message or body.
-/// Preserve only their classification and status at public error boundaries.
 pub(crate) fn safe_recording_transport_error(
     context: &'static str,
     error: elasticctl_core::Error,

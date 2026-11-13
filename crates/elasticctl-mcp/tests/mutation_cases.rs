@@ -540,8 +540,6 @@ async fn conflict_and_server_error_classification() {
                 assert!(started < ended);
                 assert_eq!(audits[ended]["audit"]["state"], state);
                 assert_eq!(audits[ended]["audit"]["http_status"], status);
-                // Design 8.4: a plan that becomes stale writes one
-                // plan_closed, after apply_finished. Unknown writes none.
                 let closed: Vec<usize> = (0..audits.len())
                     .filter(|&i| audits[i]["audit"]["event"] == "plan_closed")
                     .collect();

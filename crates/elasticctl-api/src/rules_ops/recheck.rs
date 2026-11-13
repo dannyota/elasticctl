@@ -1,9 +1,6 @@
-//! Rule state re-checks.
-
 use super::*;
 use crate::observe::{Observed, Preconditions};
 
-/// Read each rule by ID, returning absent state for missing rules.
 pub async fn observe_rules(t: &Transport, rule_ids: &[String]) -> Result<Preconditions> {
     let mut entries = Vec::with_capacity(rule_ids.len());
     for id in rule_ids {

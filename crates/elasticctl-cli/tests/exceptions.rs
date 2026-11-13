@@ -1,7 +1,3 @@
-//! End-to-end tests for the `exceptions` command group against a mock stack.
-//! The endpoint wrappers are covered in `elasticctl-api`; these tests cover the
-//! CLI's guard, refusal, namespace, and raw-stdout contracts.
-
 use assert_cmd::Command;
 use elasticctl_api_test_support::MockStack;
 use serde_json::{Value, json};
@@ -27,7 +23,6 @@ async fn verified_server() -> MockServer {
     server
 }
 
-/// Run the binary against a mock server with a profile pointing at its URI.
 async fn run(uri: &str, args: &[&str]) -> Output {
     let dir = tempfile::tempdir().unwrap();
     let cfg = common::config_for(dir.path(), uri);
@@ -191,7 +186,6 @@ fn validate_is_offline_and_counts_lists_and_items() {
     assert_eq!(report, json!({"valid": true, "lists": 1, "items": 1}));
 }
 
-/// Spec 4.3, applied to lists: an empty selection is never widened.
 #[tokio::test]
 async fn delete_with_a_selector_that_matches_nothing_is_refused() {
     let stack = mock_exception_lists(0).await;
@@ -205,7 +199,6 @@ async fn delete_with_a_selector_that_matches_nothing_is_refused() {
     );
 }
 
-/// Every exception mutation previews first. Spec 6.1.
 #[tokio::test]
 async fn delete_without_yes_previews_and_changes_nothing() {
     let stack = mock_exception_lists(1).await;
@@ -216,8 +209,6 @@ async fn delete_without_yes_previews_and_changes_nothing() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// Repeated selectors describe one list identity, so an apply must issue one
-/// deletion and report one target rather than failing a duplicate second call.
 #[tokio::test]
 async fn delete_deduplicates_repeated_qualified_selectors() {
     let stack = mock_exception_lists(1).await;
@@ -241,7 +232,6 @@ async fn delete_deduplicates_repeated_qualified_selectors() {
     assert_eq!(stack.deleted_list_ids().await, vec!["l0"]);
 }
 
-/// Spec 6.2: a file-producing command's stdout is the file.
 #[tokio::test]
 async fn export_without_out_writes_importable_ndjson_to_stdout() {
     let stack = mock_exception_lists(1).await;
@@ -259,8 +249,6 @@ async fn export_without_out_writes_importable_ndjson_to_stdout() {
     );
 }
 
-/// A list can disappear after its live ID is resolved. The partial response is
-/// still a file, but its trailer must make both export modes fail visibly.
 #[tokio::test]
 async fn a_deleted_exception_list_writes_the_partial_file_and_exits_one() {
     let server = verified_server().await;
@@ -318,9 +306,6 @@ async fn a_deleted_exception_list_writes_the_partial_file_and_exits_one() {
     assert_eq!(String::from_utf8(to_stdout.stdout).unwrap(), trailer);
 }
 
-/// Spec 4.5: the same `list_id` in both namespaces is a supported configuration.
-/// A bare `list_id` must be refused with a conflict naming `--namespace`, and
-/// resolved when the flag qualifies it.
 #[tokio::test]
 async fn a_list_id_in_both_namespaces_needs_the_namespace_flag() {
     let server = verified_server().await;
@@ -347,7 +332,6 @@ async fn a_list_id_in_both_namespaces_needs_the_namespace_flag() {
         .mount(&server)
         .await;
 
-    // Without --namespace: refused, naming the remedy.
     let out = run(&server.uri(), &["exceptions", "get", "l0"]).await;
     assert_eq!(out.status.code(), Some(1));
     let err: Value = serde_json::from_slice(&out.stderr).unwrap();
@@ -361,7 +345,6 @@ async fn a_list_id_in_both_namespaces_needs_the_namespace_flag() {
         err["error"]["message"]
     );
 
-    // With --namespace: resolved to the named namespace.
     let out = run(
         &server.uri(),
         &[

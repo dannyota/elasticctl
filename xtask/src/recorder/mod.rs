@@ -1,5 +1,3 @@
-//! Recording orchestration and command entry.
-
 mod agent_policies;
 pub(crate) mod alerts;
 pub(crate) mod cases;
@@ -48,9 +46,6 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
     record_trace("bootstrap");
     let responded = session.transport.get_with_headers("/api/status").await?;
     let mut status = responded.body.clone();
-    // Instance name/UUID identify the deployment and `metrics` is a runtime
-    // snapshot. Drop all three; flavor and version come from the stable
-    // product-build object.
     scrub_status(&mut status);
     let version = status["version"]["number"]
         .as_str()
@@ -439,8 +434,6 @@ async fn record_session(session: &mut RecordingSession<'_>) -> elasticctl_core::
 
 pub(super) async fn record() {
     if let Err(error) = activate_traditional_recorder_profile().await {
-        // The activation preflight returns only named local-input errors or a
-        // fixed transport-safe context, never server text or credential data.
         eprintln!("record setup failed: {}", error.message);
         std::process::exit(1);
     }
@@ -1611,10 +1604,6 @@ pub(crate) mod test_support {
         FinalParentDelete,
     }
 
-    /// This mock schedule contains the revalidation reads the normal lifecycle
-    /// must make before each destructive mutation. With the old lifecycle, the
-    /// swapped response arrives only after the unsafe write; with the fixed
-    /// lifecycle, it arrives immediately before the write and stops it.
     pub(crate) async fn mount_integration_lifecycle_with_revalidation_changes(
         server: &MockServer,
         swap: IntegrationLifecycleSwap,

@@ -1,8 +1,3 @@
-//! Fixture recorder: drive a live stack and write scrubbed exchanges.
-//!
-//! Fixtures capture what Elastic sent. Hand-written mocks capture assumptions,
-//! which is where API bugs hide.
-
 mod activation;
 mod conformance;
 mod conformance_matrix;

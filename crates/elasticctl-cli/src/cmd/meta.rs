@@ -1,5 +1,3 @@
-//! CLI metadata: shell completion and a machine-readable command tree.
-
 use crate::cli::Cli;
 use crate::guard::MUTATING;
 use clap::CommandFactory;
@@ -7,8 +5,6 @@ use clap_complete::Shell;
 use elasticctl_core::Result;
 use serde_json::{Value, json};
 
-/// The name this process was invoked under; completions and usage follow it
-/// so `elkctl completion zsh` completes `elkctl`. `file_stem` drops `.exe`.
 fn invoked_name() -> String {
     std::env::args_os()
         .next()
@@ -32,8 +28,6 @@ fn arg(a: &clap::Arg) -> Value {
     })
 }
 
-/// `path` is the full, space-separated command path (`rules`, `rules delete`,
-/// ...). It keys `mutates` by command location rather than leaf name.
 fn describe(cmd: &clap::Command, path: &str) -> Value {
     let args: Vec<Value> = cmd
         .get_arguments()
@@ -59,8 +53,6 @@ fn describe(cmd: &clap::Command, path: &str) -> Value {
 
 pub fn command_tree() -> Result<Value> {
     let cmd = Cli::command();
-    // Global flags propagate from the root to every subcommand. Read them from
-    // clap metadata so a new flag cannot drift from this record.
     let global_args: Vec<Value> = cmd
         .get_arguments()
         .filter(|a| !a.is_hide_set())
@@ -102,7 +94,6 @@ mod tests {
         }
     }
 
-    /// Collect full paths of tree nodes marked `mutates: true`.
     fn mutating_paths(value: &Value, path: &str) -> Vec<String> {
         let mut found = Vec::new();
         if value["mutates"] == true {
@@ -124,9 +115,6 @@ mod tests {
         found
     }
 
-    /// Keep `MUTATING` exact and reviewable. This test pins `mutates: true` to
-    /// the declared paths and fails on an unreviewed addition, rename, or
-    /// removal. It declares the expected paths independently of `MUTATING`.
     #[test]
     fn the_mutating_set_is_exactly_the_declared_paths() {
         let tree = command_tree().unwrap();

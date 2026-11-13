@@ -1,6 +1,3 @@
-# gitleaks configuration for the CI `gitleaks` job (full history, redacted).
-# Extends the default rules; each allowlist entry names one known, non-secret
-# value and why it is safe.
 
 [extend]
 useDefault = true

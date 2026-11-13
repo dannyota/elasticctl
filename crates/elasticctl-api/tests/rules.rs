@@ -30,8 +30,6 @@ fn rule_json(id: &str) -> serde_json::Value {
     json!({"rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21})
 }
 
-/// A `_find` response with `total` and exactly these rules. Partition tests
-/// need one returned rule per counted rule to avoid a short-read failure.
 fn find_body(total: u64, data: Vec<serde_json::Value>) -> serde_json::Value {
     json!({"page": 1, "perPage": 10000, "total": total, "data": data})
 }
@@ -105,8 +103,6 @@ async fn source_feature_does_not_gate_an_all_rules_query() {
 
 #[test]
 fn find_envelope_rejects_malformed_required_fields_and_count_relationships() {
-    // Each case catches a decoder regression back to the old missing-field or
-    // wrong-type fallback behavior.
     struct Case {
         name: &'static str,
         body: serde_json::Value,
@@ -259,8 +255,6 @@ fn find_envelope_accepts_unknown_fields() {
     assert_eq!(total, 0);
 }
 
-/// `count` rules named `{prefix}-0` through `{prefix}-{count - 1}`. The slice
-/// data matches its total exactly.
 fn rules_of(prefix: &str, count: u64) -> Vec<serde_json::Value> {
     (0..count)
         .map(|i| rule_json(&format!("{prefix}-{i}")))
@@ -326,8 +320,6 @@ fn a_name_filter_combines_with_the_others() {
     assert!(kql.contains(" AND "), "{kql}");
 }
 
-/// Spec 4.7: `--search` is one parenthesized name-substring plus exact-tag
-/// clause, so its `OR` cannot leak across the `AND` join.
 #[test]
 fn a_search_filter_produces_the_parenthesized_name_and_tag_clause() {
     let f = RuleFilter {
@@ -356,8 +348,6 @@ fn a_search_filter_combines_with_the_structured_filters() {
     );
 }
 
-/// Name is a wildcard substring, so `*` and `?` in the search text must be
-/// neutralized; tags stay exact and quoted, so they are not.
 #[test]
 fn a_search_filter_escapes_wildcards_in_the_name_but_not_the_exact_tag() {
     let f = RuleFilter {
@@ -389,8 +379,6 @@ async fn find_page_returns_rules_and_the_total() {
     assert_eq!(total, 2);
 }
 
-/// The corpus is read once at the result window, not paged. `.expect(1)` fails
-/// if page walking returns.
 #[tokio::test]
 async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     let server = MockServer::start().await;
@@ -412,8 +400,6 @@ async fn find_all_reads_the_corpus_in_one_request_at_the_result_window() {
     assert_eq!(all.len(), 3);
 }
 
-/// A corpus above the window is read once per rule type. Six types hold one
-/// rule and `new_terms` holds 9,995, so seven slices return all 10,001 rules.
 #[tokio::test]
 async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     let server = MockServer::start().await;
@@ -462,10 +448,6 @@ async fn find_all_partitions_a_corpus_above_the_window_by_rule_type() {
     );
 }
 
-/// Spec 5.2 + 5.5: when `--source` is active, a partitioned read compares its
-/// slice totals against the *filtered* total, not the corpus total. The source
-/// clause is carried into every type slice, and the seven slices sum to the
-/// scoped total (10,001) rather than any larger unfiltered corpus.
 #[tokio::test]
 async fn a_scoped_partition_checks_slices_against_the_filtered_total() {
     let server = MockServer::start().await;
@@ -522,8 +504,6 @@ async fn a_scoped_partition_checks_slices_against_the_filtered_total() {
     assert_eq!(all.len(), 10001);
 }
 
-/// A type still over the window is partitioned by `enabled`. A caller's
-/// `rule_type` selects one type slice before that partition.
 #[tokio::test]
 async fn find_all_splits_an_oversized_type_by_enabled() {
     let server = MockServer::start().await;
@@ -532,7 +512,6 @@ async fn find_all_splits_an_oversized_type_by_enabled() {
         ..Default::default()
     };
 
-    // The initial read and type slice use the same oversized filter.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
@@ -569,8 +548,6 @@ async fn find_all_splits_an_oversized_type_by_enabled() {
     assert_eq!(all.len(), 10001);
 }
 
-/// Slice totals must equal the corpus total. Here seven slices return 7 rules
-/// for a corpus of 10,001, so the short read is refused.
 #[tokio::test]
 async fn find_all_refuses_slice_totals_that_do_not_sum_to_the_corpus() {
     let server = MockServer::start().await;
@@ -615,8 +592,6 @@ async fn find_all_refuses_slice_totals_that_do_not_sum_to_the_corpus() {
     );
 }
 
-/// A slice above the window after both partitions cannot be served. The error
-/// names the count and limit, without suggesting `rules export` as an escape.
 #[tokio::test]
 async fn find_all_refuses_a_slice_still_over_the_window() {
     let server = MockServer::start().await;
@@ -664,8 +639,6 @@ async fn find_all_refuses_a_slice_still_over_the_window() {
     );
 }
 
-/// A server that counts more rules than it serves contradicts itself. A short
-/// list is indistinguishable from deleted rules.
 #[tokio::test]
 async fn find_all_refuses_a_short_read() {
     let server = MockServer::start().await;
@@ -688,7 +661,6 @@ async fn find_all_refuses_a_short_read() {
     );
 }
 
-/// An empty space is not a short read.
 #[tokio::test]
 async fn find_all_accepts_an_honestly_empty_corpus() {
     let server = MockServer::start().await;
@@ -708,8 +680,6 @@ async fn find_all_accepts_an_honestly_empty_corpus() {
     );
 }
 
-/// An empty prebuilt slice is valid when the custom and prebuilt totals still
-/// account for the whole corpus.
 #[tokio::test]
 async fn a_custom_only_stack_has_a_valid_empty_prebuilt_scope() {
     let stack = MockStack::with_rules(vec![
@@ -731,8 +701,6 @@ async fn a_custom_only_stack_has_a_valid_empty_prebuilt_scope() {
     assert_eq!(report.total, 0);
 }
 
-/// An accepted empty source export is an empty typed outcome, not an unscoped
-/// export request.
 #[tokio::test]
 async fn an_exhaustively_empty_source_export_sends_no_unscoped_request() {
     let stack = MockStack::with_rules(vec![
@@ -763,8 +731,6 @@ async fn an_exhaustively_empty_source_export_sends_no_unscoped_request() {
     );
 }
 
-/// An old stack is unsupported only when custom and prebuilt do not partition
-/// its unfiltered corpus.
 #[tokio::test]
 async fn a_non_exhaustive_immutable_partition_is_refused() {
     let stack = MockStack::with_source_totals(0, 2, 3).await;
@@ -785,10 +751,6 @@ async fn a_non_exhaustive_immutable_partition_is_refused() {
     assert!(err.message.contains("--source all"), "{}", err.message);
 }
 
-/// The empty-scope guard must not blame `immutable` for an emptiness a narrower
-/// clause caused. Here `--source custom --tag nomatch` returns nothing because
-/// the tag misses, while the source-only scope is non-empty, so `list` returns
-/// an empty result rather than an error naming `immutable`.
 #[tokio::test]
 async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
     let server = MockServer::start().await;
@@ -813,7 +775,6 @@ async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
         .mount(&server)
         .await;
 
-    // The source-only read is non-empty, so the guard stays silent.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .and(query_param(
@@ -836,8 +797,6 @@ async fn a_narrowing_clause_does_not_trigger_the_empty_scope_guard() {
     assert_eq!(report.total, 0, "the tag missed, so nothing is listed");
 }
 
-/// Like the tag guard: a `--search` that matches nothing is an honest empty
-/// result, not an `immutable` partition failure.
 #[tokio::test]
 async fn a_search_clause_does_not_trigger_the_empty_scope_guard() {
     let server = MockServer::start().await;
@@ -887,7 +846,6 @@ async fn get_queries_by_rule_id_not_by_server_id() {
     assert_eq!(r.rule_id().unwrap(), "abc");
 }
 
-/// An API rule with volatile fields that create and update must not forward.
 fn rule_with_volatile_fields(id: &str) -> Rule {
     Rule::from_value(json!({
         "rule_id": id, "name": format!("rule {id}"), "type": "query", "risk_score": 21,
@@ -1049,7 +1007,6 @@ async fn bulk_dry_run_sets_the_query_parameter() {
 
 #[tokio::test]
 async fn bulk_with_no_targets_makes_no_request() {
-    // An empty selection must not query every rule.
     let server = MockServer::start().await;
     let out = rules::bulk_by_rule_ids(&transport(&server), BulkAction::Delete, &[], false)
         .await
@@ -1068,7 +1025,6 @@ fn bulk_outcome_rejects_malformed_success_bodies() {
         json!({"attributes":{"summary":{"succeeded":1}}}),
         json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":"1"}}}),
         json!({"attributes":{"summary":{"succeeded":1,"failed":0,"skipped":0,"total":2}}}),
-        // Negative, floating, null, and non-object counters must all refuse.
         json!({"attributes":{"summary":{"succeeded":-1,"failed":0,"skipped":0,"total":0}}}),
         json!({"attributes":{"summary":{"succeeded":1.5,"failed":0,"skipped":0,"total":1}}}),
         json!({"attributes":{"summary":{"succeeded":null,"failed":0,"skipped":0,"total":0}}}),
@@ -1079,8 +1035,6 @@ fn bulk_outcome_rejects_malformed_success_bodies() {
     }
 }
 
-/// The `total = succeeded + failed + skipped` invariant must hold when some
-/// rules were skipped (already in the requested state), not only at zero.
 #[test]
 fn bulk_outcome_accepts_a_summary_with_a_nonzero_skip() {
     let outcome = rules::decode_bulk_outcome(&json!({
@@ -1157,7 +1111,6 @@ async fn a_scoped_export_sends_the_objects_body() {
     assert_eq!(summary.missing_rules[0]["rule_id"], "b");
 }
 
-/// An unscoped export posts no body, preserving the established request shape.
 #[tokio::test]
 async fn an_unscoped_export_sends_no_body() {
     let server = MockServer::start().await;
@@ -1179,9 +1132,6 @@ async fn an_unscoped_export_sends_no_body() {
     );
 }
 
-/// A rule that references an exception list exports a four-line bundle. The
-/// orchestration must re-encode the whole bundle; encoding rules only would
-/// silently drop the list and item (spec 5.2: silent truncation).
 #[tokio::test]
 async fn export_rules_carries_the_exception_bundle() {
     let server = MockServer::start().await;
@@ -1223,8 +1173,6 @@ async fn export_rules_carries_the_exception_bundle() {
     );
 }
 
-/// A YAML export of an exception-free selection still encodes the rules; the
-/// refusal path must not fire when there is nothing to represent.
 #[tokio::test]
 async fn export_rules_yaml_without_exceptions_still_encodes_rules() {
     let server = MockServer::start().await;
@@ -1254,8 +1202,6 @@ async fn export_rules_yaml_without_exceptions_still_encodes_rules() {
     assert_eq!(rules[0].rule_id().unwrap(), "a");
 }
 
-/// A YAML export cannot represent exception lists or items, so a bundle is
-/// refused with the fix named, rather than silently truncated (spec 5.2).
 #[tokio::test]
 async fn export_rules_yaml_refuses_a_bundle_with_exceptions() {
     let server = MockServer::start().await;
@@ -1345,7 +1291,6 @@ async fn import_reflects_overwrite_true_in_the_query_string() {
 
 #[tokio::test]
 async fn import_reflects_overwrite_false_in_the_query_string() {
-    // Overwrite replaces existing rules, so the settings must stay distinct.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules/_import"))
@@ -1365,7 +1310,6 @@ async fn import_reflects_overwrite_false_in_the_query_string() {
 
 #[tokio::test]
 async fn import_sends_the_ndjson_as_a_multipart_upload() {
-    // Kibana import requires a multipart file upload, not a JSON body.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules/_import"))
@@ -1428,8 +1372,6 @@ async fn a_404_from_get_is_a_not_found_error() {
     assert_eq!(err.kind, elasticctl_core::ErrorKind::NotFound);
 }
 
-/// Replay the recorded exchange. A hand-written mock would test assumptions,
-/// not the preview alerts index response.
 #[tokio::test]
 async fn preview_hits_parses_the_recorded_response() {
     let fixture: serde_json::Value = serde_json::from_str(
@@ -1537,7 +1479,6 @@ fn decode_preview_hits_checked_rejects_malformed_bodies() {
         json!({"hits": {"total": {}, "hits": []}}),
         json!({"hits": {"total": {"value": 1}}}),
         json!({"hits": {"total": {"value": 1}, "hits": "not-an-array"}}),
-        // Negative, floating, null, and non-object counters must all refuse.
         json!({"hits": {"total": {"value": -1}, "hits": []}}),
         json!({"hits": {"total": {"value": 1.5}, "hits": []}}),
         json!({"hits": {"total": {"value": null}, "hits": []}}),

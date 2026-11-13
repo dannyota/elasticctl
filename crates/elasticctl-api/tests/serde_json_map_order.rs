@@ -1,9 +1,3 @@
-//! `elasticctl-api` depends on `serde_json` directly, and CLI table and CSV
-//! column order requires `serde_json::Map` insertion order.
-//!
-//! The workspace root declares `preserve_order`, so every package has the same
-//! map semantics. This test fails if the feature stops being unified.
-
 #[test]
 fn map_iterates_in_insertion_order_not_alphabetical() {
     let mut map = serde_json::Map::new();

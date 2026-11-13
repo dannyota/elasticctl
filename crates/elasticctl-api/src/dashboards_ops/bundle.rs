@@ -1,12 +1,8 @@
-//! Dashboard bundle export and import.
-
 use super::{
     BTreeSet, DashboardFilter, Error, ErrorKind, ExportOutcome, Feature, Map, MutationPlan, Path,
     Result, Serialize, Transport, Value, invalid_plan, json, list_op, resolve, saved_objects,
 };
 
-/// The immutable, guard-ready work computed from one opaque Saved Objects
-/// dashboard bundle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BundleImportPlan {
     pub preview: MutationPlan,
@@ -15,7 +11,6 @@ pub struct BundleImportPlan {
     pub overwrite: bool,
 }
 
-/// The per-object report from applying an opaque Saved Objects bundle import.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BundleImportOutcome {
     pub applied: bool,
@@ -23,8 +18,6 @@ pub struct BundleImportOutcome {
     pub failed: Vec<Value>,
     pub total: usize,
 }
-/// Export selected dashboards and their deep Saved Objects references as
-/// opaque NDJSON.
 pub async fn export_bundle(transport: &Transport, selectors: &[String]) -> Result<ExportOutcome> {
     let selected = if selectors.is_empty() {
         list_op(transport, &DashboardFilter::default())
@@ -74,7 +67,6 @@ pub async fn export_bundle(transport: &Transport, selectors: &[String]) -> Resul
     })
 }
 
-/// Fully read and scan an opaque bundle before presenting its mutation guard.
 pub fn plan_bundle_import(path: &Path, overwrite: bool) -> Result<BundleImportPlan> {
     let bytes = std::fs::read(path).map_err(|error| {
         Error::new(
@@ -101,7 +93,6 @@ pub fn plan_bundle_import(path: &Path, overwrite: bool) -> Result<BundleImportPl
     })
 }
 
-/// Apply a guard-approved opaque bundle without rereading its source file.
 pub async fn apply_bundle_import(
     transport: &Transport,
     plan: &BundleImportPlan,

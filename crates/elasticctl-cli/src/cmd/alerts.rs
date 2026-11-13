@@ -1,7 +1,3 @@
-//! Adapters for the `alerts` command group: flags to filters, and
-//! serialization for render. Covers reads (`list`, `get`) and the guarded
-//! mutations (status transitions, tags, assignees).
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::alerts::{AlertHit, AlertStatus, Conflicts};
@@ -14,8 +10,6 @@ fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))
 }
 
-/// The rendered alert row is the hit's `_source`; `--with-meta` merges the
-/// document `_id` — the identity every mutation takes — into the object.
 fn alert_row(hit: &AlertHit, with_meta: bool) -> Value {
     if !with_meta {
         return hit.source.clone();
@@ -58,8 +52,6 @@ pub async fn list(
     let cap = limit.unwrap_or(100);
     let out = alerts_ops::list(t, &filter, cap).await?;
     if out.truncated {
-        // Match cmd/search.rs's peek truncation notice verbatim so the two
-        // read paths report the same way.
         eprintln!("capped at {cap} rows");
     }
     Ok(Value::Array(
@@ -71,11 +63,9 @@ pub async fn get(ctx: &Context, alert_id: &str) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;
     let hit = alerts_ops::get_one(t, alert_id).await?;
-    // The id identifies the document the operator asked for; merge it always.
     Ok(alert_row(&hit, true))
 }
 
-/// `--query` takes inline JSON or `@path`, the `search dsl` convention.
 fn parse_query(raw: &str) -> Result<Value> {
     let text = if let Some(path) = raw.strip_prefix('@') {
         std::fs::read_to_string(path)
@@ -95,7 +85,6 @@ fn guard_path(status: AlertStatus) -> &'static str {
     }
 }
 
-/// Shared adapter for `ack`, `open`, and `close`.
 pub async fn transition(
     ctx: &Context,
     alert_ids: &[String],
@@ -108,12 +97,6 @@ pub async fn transition(
     let t = ctx.transport().await?;
     match (alert_ids.is_empty(), query) {
         (false, None) => {
-            // `--conflicts` names a version-conflict policy for the server-side
-            // update-by-query the `--query` form runs; explicit ids resolve and
-            // transition individually, so the flag has nothing to apply to.
-            // Reject rather than silently ignore it: `status_by_ids` sends no
-            // `conflicts` key (that shape is unmeasured), so silently accepting
-            // the flag would apply the opposite of `proceed` with no diagnostic.
             if conflicts.is_some() {
                 return Err(Error::new(
                     ErrorKind::Error,
@@ -162,7 +145,6 @@ pub async fn transition(
             ErrorKind::Error,
             "pass one or more alert ids, or --query",
         )),
-        // clap's conflicts_with already blocks this; keep the guard honest.
         (false, Some(_)) => Err(Error::new(
             ErrorKind::Error,
             "--query and alert ids are mutually exclusive",

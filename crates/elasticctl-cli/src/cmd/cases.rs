@@ -1,5 +1,3 @@
-//! Adapters for the `cases` command group.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::cases::CaseStatus;
@@ -94,7 +92,6 @@ pub async fn create(
     }
 }
 
-/// Shared adapter for `cases close` and `cases open`.
 pub async fn status(ctx: &Context, case_ids: &[String], target: CaseStatus) -> Result<Value> {
     ctx.require_credential()?;
     let t = ctx.transport().await?;

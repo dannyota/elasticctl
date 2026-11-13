@@ -1,5 +1,3 @@
-//! ES|QL responses and the sync/async `/_query` runners.
-
 use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::{Map, Value};
@@ -11,8 +9,6 @@ pub struct EsqlColumn {
     pub r#type: String,
 }
 
-/// Row-major `values`: one array of cells per row. `columnar` responses are
-/// transposed into this shape by `decode_columnar` so callers always see rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EsqlResponse {
     pub columns: Vec<EsqlColumn>,
@@ -53,9 +49,6 @@ fn is_partial(obj: &Map<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
-/// Strict decode of a row-major `POST /_query` response. Unknown fields are
-/// accepted; a missing or mistyped `columns`/`values` is an error, never an
-/// empty result.
 pub fn decode(value: &Value) -> Result<EsqlResponse> {
     let obj = value.as_object().ok_or_else(|| {
         Error::new(
@@ -94,9 +87,6 @@ pub fn decode(value: &Value) -> Result<EsqlResponse> {
     })
 }
 
-/// Strict decode of a column-major (`columnar: true`) response. `values` holds
-/// one array per column, each the length of the row count; the result is
-/// transposed into the row-major `EsqlResponse` shape.
 pub fn decode_columnar(value: &Value) -> Result<EsqlResponse> {
     let obj = value.as_object().ok_or_else(|| {
         Error::new(
@@ -110,9 +100,6 @@ pub fn decode_columnar(value: &Value) -> Result<EsqlResponse> {
         .get("values")
         .and_then(Value::as_array)
         .ok_or_else(|| Error::new(ErrorKind::Http, "decoding esql response field `values`"))?;
-    // A zero-row columnar result is `values: []`, not one empty array per
-    // column (measured against Serverless 9.6.0). Treat it as an empty result
-    // rather than a column-count mismatch.
     if cols.is_empty() {
         return Ok(EsqlResponse {
             columns,
@@ -162,16 +149,12 @@ pub fn decode_columnar(value: &Value) -> Result<EsqlResponse> {
     })
 }
 
-/// Run a synchronous ES|QL query. `query` carries its own `FROM` and `LIMIT`.
 pub async fn run_sync(t: &Transport, query: &str) -> Result<EsqlResponse> {
     let body = serde_json::json!({ "query": query });
     let response = t.post_absolute_es("/_query", &body).await?;
     decode(&response)
 }
 
-/// Run a query through the async API and poll until complete. ES|QL has no
-/// page-by-page cursor; the full result returns in one response. `columnar:
-/// true` keeps the payload and memory footprint low.
 pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
     let start = t
         .post_absolute_es(
@@ -179,26 +162,18 @@ pub async fn run_async(t: &Transport, query: &str) -> Result<EsqlResponse> {
             &serde_json::json!({ "query": query, "wait_for_completion_timeout": "1ms", "columnar": true }),
         )
         .await?;
-    // A query finishing within wait_for_completion_timeout returns the inline
-    // result with is_running: false and no `id`; decode it directly.
     let id = match start.get("id").and_then(Value::as_str) {
         Some(id) => id.to_string(),
         None => return decode_columnar(&start),
     };
-    // The start response can also carry both an `id` and an inline result.
-    // Clean the id up before decoding either way.
     if start.get("is_running").and_then(Value::as_bool) == Some(false) {
         let _ = t.delete_absolute_es(&async_path(&id)?).await;
         return decode_columnar(&start);
     }
 
-    // Poll once a second for up to five minutes: a bulk export may legitimately
-    // run that long, but a query that never finishes must still fail closed.
     poll_until_complete(t, &id, 300, Duration::from_secs(1)).await
 }
 
-/// The async query route for an id the server returned. Encoding keeps the
-/// id one path segment, and `.` or `..` is refused.
 fn async_path(id: &str) -> Result<String> {
     Ok(format!(
         "/_query/async/{}",
@@ -206,9 +181,6 @@ fn async_path(id: &str) -> Result<String> {
     ))
 }
 
-/// Poll `GET /_query/async/{id}` until it reports completion, cleaning up on
-/// every exit path. `max_polls * interval` bounds the wait; `run_async` passes
-/// a bulk-export-sized budget, while tests pass a tiny one.
 pub async fn poll_until_complete(
     t: &Transport,
     id: &str,

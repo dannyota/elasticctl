@@ -1,27 +1,12 @@
-//! Renders typed values as text. This module defines human-readable output.
-
 use crate::cli::{Format, GlobalArgs};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Map, Value};
 use std::io::Write;
 
-/// Command failures exit 1. `clap` handles usage errors with exit 2.
 pub fn exit_code_for(_err: &Error) -> i32 {
     1
 }
 
-/// A successful command can report partial failure in its payload. Return a
-/// nonzero exit code so scripts do not miss it. Three shapes carry the signal:
-///
-/// - Per-item report: `failed` is a non-empty array.
-/// - Bulk-action summary: `failed` is a positive count.
-/// - Loss-audit report: `lossy` is a non-empty array.
-///
-/// An absent `failed` or `lossy`, an empty array, or a zero count means exit
-/// 0. `skipped` is not a failure because the server left a rule in its target
-/// state.
-///
-/// Keep this rule in one helper for all mutating commands.
 pub fn exit_code_for_value(value: &Value) -> i32 {
     let is_failure = match value.get("failed") {
         Some(Value::Array(items)) => !items.is_empty(),
@@ -31,7 +16,6 @@ pub fn exit_code_for_value(value: &Value) -> i32 {
     if is_failure { 1 } else { 0 }
 }
 
-/// Keep named keys in order. Skip missing keys instead of rendering null.
 pub fn select_fields(value: &Value, fields: &str) -> Value {
     let names: Vec<&str> = fields
         .split(',')
@@ -69,7 +53,6 @@ fn cell(v: &Value) -> String {
     }
 }
 
-/// Use the first row's key order for stable columns.
 fn columns(rows: &[Value], fields: Option<&str>) -> Vec<String> {
     if let Some(f) = fields {
         return f
@@ -183,7 +166,6 @@ pub fn to_string(value: &Value, format: Format, fields: Option<&str>) -> Result<
     })
 }
 
-/// Write to `--out` when given, otherwise stdout.
 pub fn emit(value: &Value, global: &GlobalArgs) -> Result<()> {
     let text = to_string(value, global.effective_format(), global.fields.as_deref())?;
     match &global.out {
@@ -362,9 +344,6 @@ mod tests {
 
     #[test]
     fn exit_code_for_value_is_one_when_failed_is_a_positive_count() {
-        // A bulk action's summary reports `failed` as a count, not a
-        // per-item list — that shape must trip this convention just as
-        // much as a non-empty per-item list does.
         let v = json!({"applied": true, "succeeded": 0, "failed": 2, "total": 2});
         assert_eq!(exit_code_for_value(&v), 1);
     }

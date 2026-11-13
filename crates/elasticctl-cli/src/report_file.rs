@@ -1,5 +1,3 @@
-//! Crash-recoverable change-report publication for `state push`.
-
 use elasticctl_api::ChangeReport;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
@@ -22,9 +20,6 @@ const ORIGINAL: &str = "original.json";
 const TRANSACTION_SUFFIX: &str = ".elasticctl-report-txn";
 const LOCK_SUFFIX: &str = ".elasticctl-report.lock";
 
-/// A prepared local report destination. The target-specific sibling lock stays
-/// held from preflight through publication so another push cannot mistake its
-/// transaction for a crashed predecessor.
 pub(crate) struct PreparedReport {
     paths: ReportPaths,
     staged_path: PathBuf,
@@ -39,11 +34,7 @@ enum Phase {
     BackedUp,
     Installing,
     Installed,
-    /// Recovery has committed to restoring a saved report, before it mutates
-    /// either side of the backup-to-target rename.
     Restoring,
-    /// The original bytes are durably back at the target. Cleanup may now
-    /// discard the transaction without making a later recovery guess.
     Restored,
 }
 
@@ -63,9 +54,6 @@ struct Journal {
     phase: Phase,
 }
 
-/// The mutation points are isolated so the journal can be pressure-tested at
-/// every write, sync, rename, and rollback boundary without a special
-/// filesystem.
 trait FileOps {
     fn write(&self, path: &Path, bytes: &[u8], append: bool) -> io::Result<()>;
     fn sync_file(&self, path: &Path) -> io::Result<()>;
@@ -75,16 +63,11 @@ trait FileOps {
     fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
 }
 
-/// Prepare a report before the mutation guard. This can fail safely after the
-/// remote read/plan but before any remote write, and it never changes an
-/// existing target.
 pub(crate) fn prepare_report(path: &Path, report: &ChangeReport) -> Result<PreparedReport> {
     prepare_report_with(path, report, &FsFileOps)
 }
 
 impl PreparedReport {
-    /// Replace the report after the dry run or remote apply has produced its
-    /// final typed value.
     pub(crate) fn publish(self, report: &ChangeReport) -> Result<()> {
         publish_report_with(self, report, &FsFileOps)
     }
@@ -282,8 +265,6 @@ fn publish_report_with(
         )?;
         append_phase(transaction_dir, Phase::Installed, requested, ops)?;
 
-        // Removing this directory discards the only rollback evidence. From
-        // this explicit boundary forward the installed report is committed.
         remove_transaction(requested, transaction_dir, parent, ops)
     })();
 
@@ -332,8 +313,6 @@ fn serialize_report(report: &ChangeReport) -> Result<Vec<u8>> {
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))
 }
 
-/// Explain a local report failure after `apply_push` without changing its
-/// stable error kind or the command's stdout report shape.
 pub(crate) fn report_publication_error(applied: bool, path: &Path, error: Error) -> Error {
     if applied {
         Error::new(

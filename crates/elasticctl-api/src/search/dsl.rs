@@ -1,5 +1,3 @@
-//! Query DSL responses and PIT + `search_after` pagination.
-
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::{Value, json};
 
@@ -44,8 +42,6 @@ pub fn decode(value: &Value) -> Result<DslPage> {
     Ok(DslPage { hits: out, total })
 }
 
-/// Run one bounded `POST /<index>/_search` with the operator's body verbatim.
-/// This is the peek path — one request, no PIT.
 pub async fn run_sync(t: &Transport, index: &str, body: &Value) -> Result<DslPage> {
     let response = t
         .post_absolute_es(&format!("/{index}/_search"), body)
@@ -53,9 +49,6 @@ pub async fn run_sync(t: &Transport, index: &str, body: &Value) -> Result<DslPag
     decode(&response)
 }
 
-/// Normalize `sort` to a total order by appending `_shard_doc` (ascending)
-/// when absent. A non-total sort makes `search_after` skip or repeat documents
-/// across pages, so every export pages over a total order.
 fn total_sort(sort: &Value) -> Value {
     let mut entries = match sort {
         Value::Array(items) => items.clone(),
@@ -72,10 +65,6 @@ fn total_sort(sort: &Value) -> Value {
     Value::Array(entries)
 }
 
-/// Open a point-in-time on `index` and page it fully with `search_after`.
-/// `query` is the operator's filter; `sort` is normalized to a total order by
-/// appending `_shard_doc` when absent. The PIT is closed on every exit path,
-/// success or error.
 pub async fn run_stream(
     t: &Transport,
     index: &str,
@@ -95,10 +84,6 @@ pub async fn run_stream(
     let sort = total_sort(sort);
     let result = page_loop(t, &pit_id, query, &sort, limit).await;
 
-    // Close the PIT on every path. The `_pit` delete takes the id in the
-    // request body, so it uses the body-carrying DELETE. The `let _` swallow is
-    // deliberate: the PIT self-expires after `keep_alive`, and any `page_loop`
-    // error is the error to surface, not a best-effort close failure.
     let _ = t
         .delete_absolute_es_json("/_pit", &json!({ "id": pit_id }))
         .await;

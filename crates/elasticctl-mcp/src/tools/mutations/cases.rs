@@ -1,4 +1,3 @@
-//! Case mutation planners.
 use crate::{
     ServerState,
     catalog::ToolId,

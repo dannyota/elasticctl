@@ -1,8 +1,3 @@
-//! Private Fleet reads shared by conformance tooling and live tests.
-//!
-//! Fleet list payloads contain unrelated policies, audit metadata, and package
-//! registry data. This module keeps only marker ids and package coordinates.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use elasticctl_core::{Error, ErrorKind, Result, Transport};

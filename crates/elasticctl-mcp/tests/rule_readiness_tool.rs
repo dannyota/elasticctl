@@ -1,5 +1,3 @@
-//! The `rule_readiness` tool through `serve_io`: catalog entry, validation,
-//! schema, projection, findings, cancellation, and deadline.
 #[allow(dead_code)]
 mod support;
 
@@ -51,8 +49,6 @@ fn ok_json(body: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(body)
 }
 
-/// An error response derived from the recorded classified 404 of
-/// `_resolve/index`, with `message` replaced when a sentinel is needed.
 fn error_status(status: u16, message: Option<&str>) -> ResponseTemplate {
     let mut error = recording("resolve_index_not_found.json")["error"].clone();
     error["http_status"] = json!(status);
@@ -158,8 +154,6 @@ fn target(uri: String) -> Resolved {
 
 type Answer = Box<dyn Fn(&str) -> ResponseTemplate + Send + Sync>;
 
-/// A stack that answers the rule, the data view list, every pattern and
-/// package read by its raw segment, and the policy page.
 async fn stack(body: &Value, patterns: Answer, packages: Answer, listed: &[&str]) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -260,7 +254,6 @@ fn findings(structured: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Each finding at most once, in the fixed order.
 fn assert_ordered_once(found: &[String]) {
     let positions = found
         .iter()
@@ -344,7 +337,6 @@ async fn invalid_arguments_are_refused_with_no_request() {
 
 #[tokio::test]
 async fn success_partial_and_failure_validate_against_the_output_schema() {
-    // Success: every part ok, nothing partial.
     let body = rule(Some(&["match-*", "none-*"]), None, &["system"]);
     let server = stack(
         &body,
@@ -395,7 +387,6 @@ async fn success_partial_and_failure_validate_against_the_output_schema() {
     harness.close_input();
     harness.join().await.expect("clean EOF");
 
-    // Partial: a denied pattern, a denied data view list, and a missing package.
     let body = rule(Some(&["denied-*"]), None, &["system", "gone"]);
     let server = stack(
         &body,
@@ -443,7 +434,6 @@ async fn success_partial_and_failure_validate_against_the_output_schema() {
     harness.close_input();
     harness.join().await.expect("clean EOF");
 
-    // Failure: the rule is absent by rule_id and by name.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(RULES))
@@ -525,9 +515,6 @@ async fn names_from_responses_and_error_bodies_never_reach_the_output() {
 
 #[tokio::test]
 async fn findings_appear_once_in_order_and_optional_fields_follow_the_row_state() {
-    // Many findings at once: a disabled rule, truncated patterns with
-    // exclusions and unresolved rows, and truncated integrations with two not
-    // installed and two without a policy.
     let names = (0..15).map(|i| format!("p{i}-*")).collect::<Vec<_>>();
     let mut index = vec!["-excluded-*", "-also-excluded-*", "..", "denied-*"];
     index.extend(names.iter().map(String::as_str));
@@ -624,7 +611,6 @@ async fn findings_appear_once_in_order_and_optional_fields_follow_the_row_state(
     harness.close_input();
     harness.join().await.expect("clean EOF");
 
-    // The findings the first rule cannot carry, one rule each.
     for (index, data_view_id, expected) in [
         (None, None, vec!["no_index_source"]),
         (None, Some("absent-view"), vec!["data_view_missing"]),
@@ -672,15 +658,12 @@ async fn findings_appear_once_in_order_and_optional_fields_follow_the_row_state(
     }
 }
 
-/// The rule for the router tests: eight patterns and one package.
 fn router_rule() -> Value {
     let names = (0..8).map(|i| format!("r{i}-*")).collect::<Vec<_>>();
     let index = names.iter().map(String::as_str).collect::<Vec<_>>();
     rule(Some(&index), None, &["system"])
 }
 
-/// A stack whose fifth pattern read is answered after `delay`, plus a held
-/// rule route for three other calls.
 async fn router_stack(body: &Value, delay: Duration, held: Duration) -> MockServer {
     let server = stack(
         body,
@@ -728,8 +711,6 @@ fn is_pattern(r: &wiremock::Request) -> bool {
     r.url.path().starts_with(RESOLVE)
 }
 
-/// Three calls held on a delayed route plus one more: the fourth is admitted,
-/// so every permit of the finished or cancelled call is free again.
 async fn assert_four_permits_free(harness: &mut Harness, server: &MockServer, first_id: u64) {
     for id in first_id..first_id + 3 {
         harness
@@ -843,12 +824,9 @@ async fn a_deadline_during_the_fifth_pattern_read_returns_no_data_and_frees_the_
     harness.join().await.expect("clean EOF");
 }
 
-/// The held reads outlast [`PROMPT_REPLY`] by a wide margin, so a reply inside it
-/// proves the call ended before the held reads, even on a slow runner.
 const HELD_PACKAGE_READ: Duration = Duration::from_secs(8);
 const PROMPT_REPLY: Duration = Duration::from_secs(4);
 
-/// A large rule stays below the inspection body cap.
 async fn large_package_stack() -> (MockServer, String) {
     let names = (0..100_000)
         .map(|i| format!("package_{i:06}"))
@@ -918,7 +896,6 @@ async fn large_package_scan_deadline_frees_the_permit_promptly() {
     harness.join().await.expect("clean EOF");
 }
 
-/// Fail one read at the socket boundary while keeping all other reads available.
 async fn fatal_stack(
     failed_path: &'static str,
     kind: &'static str,

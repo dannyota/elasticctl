@@ -742,8 +742,6 @@ async fn referenced_delete_refuses_before_guard_and_replacement_previews_depende
     assert_eq!(refuse.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&refuse.stderr).contains("[DRY RUN]"));
 
-    // Replacement mode is allowed and names the dependent saved object before
-    // any mutation.
     let preview = Command::cargo_bin("elasticctl")
         .unwrap()
         .args([

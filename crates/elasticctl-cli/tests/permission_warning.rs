@@ -1,8 +1,3 @@
-//! `Config::load` never prints. The layer that owns output reports a
-//! permissive config mode: ordinary commands emit a structured warning
-//! envelope on stderr, matching errors so stderr remains parseable JSON;
-//! `doctor` includes the warning in its report instead.
-
 #![cfg(unix)]
 
 use assert_cmd::Command;

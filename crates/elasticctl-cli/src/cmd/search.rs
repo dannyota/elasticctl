@@ -1,13 +1,9 @@
-//! Adapters for `search esql` and `search dsl`. Read-only: no mutation guard.
-
 use crate::context::Context;
 use elasticctl_api::search::{dsl, esql};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
-/// Convert ES|QL `columns`+`values` into an array of row objects for the
-/// render layer (serialization, so it lives in `-cli`).
 fn esql_rows(resp: &esql::EsqlResponse) -> Value {
     let mut used = HashSet::<String>::new();
     let names: Vec<String> = resp
@@ -17,10 +13,6 @@ fn esql_rows(resp: &esql::EsqlResponse) -> Value {
             if used.insert(c.name.clone()) {
                 return c.name.clone();
             }
-            // Disambiguate a duplicate name with a `.N` suffix. Check the
-            // candidate against every name already emitted, not just this
-            // column's duplicates, so a generated `field.N` never collides
-            // with a literal column already named `field.N`.
             let mut n = 1;
             loop {
                 let candidate = format!("{}.{}", c.name, n);
@@ -45,10 +37,6 @@ fn truncate(rows: &mut Value, limit: Option<usize>) {
     }
 }
 
-/// The rendered DSL row is the hit's `_source`. `--with-meta` merges the
-/// surfaced metadata (`_id`, `_index`, `_score`) into the object; a field the
-/// server left absent or null is omitted rather than nulled. `sort` is never
-/// rendered, with or without `--with-meta`.
 fn dsl_row(hit: &dsl::DslHit, with_meta: bool) -> Value {
     if !with_meta {
         return hit.source.clone();
@@ -66,10 +54,6 @@ fn dsl_row(hit: &dsl::DslHit, with_meta: bool) -> Value {
     Value::Object(row)
 }
 
-/// True when `query` already carries a top-level ES|QL `LIMIT` command, so a
-/// peek does not append a second one. `LIMIT` starts a pipeline stage (at the
-/// query start or after `|`); a field, function, or literal named `limit` in a
-/// clause does not count.
 fn has_limit(query: &str) -> bool {
     query.split('|').any(|stage| {
         stage
@@ -98,9 +82,6 @@ pub async fn esql(
     let resp = if ctx.global.out.is_some() {
         esql::run_async(t, &resolved).await?
     } else {
-        // A peek appends a server-side LIMIT one past the cap so a large result
-        // is never downloaded and discarded, while the extra row lets the
-        // client-side truncation below detect and report truncation.
         let peek_query = if has_limit(&resolved) {
             resolved
         } else {
@@ -110,10 +91,8 @@ pub async fn esql(
     };
     let mut rows = esql_rows(&resp);
     if ctx.global.out.is_some() {
-        // A bulk export is uncapped unless the operator set --limit.
         truncate(&mut rows, limit);
     } else {
-        // A peek defaults to 100 rows and reports the client-side cap.
         if rows.as_array().is_some_and(|items| items.len() > cap) {
             truncate(&mut rows, Some(cap));
             eprintln!("capped at {cap} rows");
@@ -168,7 +147,6 @@ pub async fn dsl(
                 .map(|h| dsl_row(&h, with_meta))
                 .collect(),
         );
-        // A peek defaults to 100 rows and reports the client-side cap.
         let cap = limit.unwrap_or(100);
         if rows.as_array().is_some_and(|items| items.len() > cap) {
             truncate(&mut rows, Some(cap));

@@ -22,7 +22,6 @@ use super::{
 };
 use crate::bounded_io::BoundedIo;
 
-/// Serve MCP over process stdin and stdout.
 pub async fn serve_stdio(target: Resolved, options: ServerOptions) -> Result<()> {
     let root = CancellationToken::new();
     let signal_root = root.clone();
@@ -64,7 +63,6 @@ async fn await_stdio_shutdown(root: CancellationToken) {
     }
 }
 
-/// Serve MCP over bounded newline-delimited JSON streams.
 pub async fn serve_io<R, W>(
     target: Resolved,
     options: ServerOptions,
@@ -86,12 +84,10 @@ where
     .await
 }
 
-/// Options available only through the integration test entry point.
 #[doc(hidden)]
 pub struct TestOptions {
     pub audit_writer: Box<dyn Fn(&str) + Send + Sync>,
     pub legacy_wait: Option<std::time::Duration>,
-    /// Test-only plan life override; `None` keeps the production life.
     pub plan_life: Option<std::time::Duration>,
 }
 impl<F: Fn(&str) + Send + Sync + 'static> From<F> for TestOptions {
@@ -120,7 +116,6 @@ impl TestOptions {
     }
 }
 
-/// Serve a routed session with integration test options.
 #[doc(hidden)]
 pub async fn serve_io_with_audit<R, W>(
     target: Resolved,
@@ -279,7 +274,6 @@ where
     Ok(())
 }
 
-// The mutation design section 8.1 bounds pending writes at shutdown.
 const APPLY_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 async fn serve_with_writes<R, W>(
     state: Arc<ServerState>,
@@ -458,7 +452,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn legacy_confirmation_waits_production_240_seconds() {
         let _serial = crate::plan::confirm::tests::LEGACY_SESSION.lock().await;
-        // Keep paused time from auto-advancing while TCP I/O is pending.
         let clock_guard = tokio::spawn(async {
             loop {
                 tokio::task::yield_now().await;
@@ -559,7 +552,6 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
         let last_pending = deadline - Duration::from_millis(1);
         tokio::time::advance(last_pending - tokio::time::Instant::now()).await;
-        // A read round trip lets the server process expired timers before checking pending output.
         send(
             &mut input,
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
@@ -576,7 +568,6 @@ mod tests {
             pending["result"]["structuredContent"]["data"]["plan"]["state"],
             "open"
         );
-        // Poll without a timer so the pending assertion cannot advance paused time.
         let mut next = Box::pin(receive(&mut output));
         assert!(
             std::future::poll_fn(|cx| std::task::Poll::Ready(next.as_mut().poll(cx).is_pending()))
@@ -630,7 +621,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn legacy_answer_deadline_includes_admission_and_second_check() {
         let _serial = crate::plan::confirm::tests::LEGACY_SESSION.lock().await;
-        // Keep paused time from auto-advancing while TCP I/O is pending.
         let clock_guard = tokio::spawn(async {
             loop {
                 tokio::task::yield_now().await;

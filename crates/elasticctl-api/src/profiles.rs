@@ -1,18 +1,6 @@
-//! Username-to-profile-uid resolution for alert (and, in 0.4.1, case)
-//! assignment.
-//!
-//! The assignees routes take user profile uids, and a uid exists only after
-//! its user has activated a profile by logging into Kibana at least once.
-//! Resolution is flavor-dependent (triage spec section 7): Hosted and
-//! self-managed use the public suggest API; Serverless answers 410 there, so
-//! it uses the Security solution's own internal suggestion route — the one
-//! the assignee picker in the UI calls.
-
 use elasticctl_core::{Error, ErrorKind, Flavor, Result, Transport, urlencode};
 use serde_json::{Value, json};
 
-/// Prefix that bypasses resolution: `uid:<profile_uid>` is passed through.
-/// The escape hatch, not the primary interface.
 pub const UID_PREFIX: &str = "uid:";
 
 pub const PUBLIC_SUGGEST_PATH: &str = "/_security/profile/_suggest";
@@ -28,7 +16,6 @@ pub fn internal_find_path(term: &str) -> String {
 pub struct UserProfile {
     pub uid: String,
     pub username: String,
-    /// The public route reports `realm_name`; the internal one does not.
     pub realm: Option<String>,
 }
 
@@ -56,7 +43,6 @@ fn decode_profile(entry: &Value, context: &str) -> Result<UserProfile> {
     })
 }
 
-/// Decode `POST /_security/profile/_suggest`: `{total, took, profiles: [...]}`.
 pub fn decode_public(value: &Value) -> Result<Vec<UserProfile>> {
     value
         .get("profiles")
@@ -67,7 +53,6 @@ pub fn decode_public(value: &Value) -> Result<Vec<UserProfile>> {
         .collect()
 }
 
-/// Decode `GET /internal/detection_engine/users/_find`: a bare array.
 pub fn decode_internal(value: &Value) -> Result<Vec<UserProfile>> {
     value
         .as_array()
@@ -82,17 +67,6 @@ pub fn decode_internal(value: &Value) -> Result<Vec<UserProfile>> {
         .collect()
 }
 
-/// A resolution route that is missing, withdrawn, or forbidden is a definite
-/// refusal with a remedy, not an unclassified failure. The internal route
-/// family answers a 400 "exists but is not available" instead of a 404 when
-/// `x-elastic-internal-origin` is absent or the route is otherwise refused;
-/// message-scoped so a genuine bad request (a different 400) still surfaces
-/// as `http`.
-///
-/// `missing_es_url` names a likely cause on the public route: without an
-/// `es_url`, `post_absolute_es` silently falls back to the Kibana host, and
-/// the 404 that follows would otherwise blame the deployment ("unavailable
-/// on elastic-cloud-hosted") for what is really a profile misconfiguration.
 fn downgrade_unavailable(e: Error, flavor: Flavor, missing_es_url: bool) -> Error {
     let unavailable = matches!(e.http_status, Some(404) | Some(410))
         || e.kind == ErrorKind::Permission
@@ -117,8 +91,6 @@ fn downgrade_unavailable(e: Error, flavor: Flavor, missing_es_url: bool) -> Erro
     }
 }
 
-/// Suggest activated profiles matching `name`, on the route this flavor
-/// serves.
 pub async fn suggest(t: &Transport, flavor: Flavor, name: &str) -> Result<Vec<UserProfile>> {
     match flavor {
         Flavor::Serverless => {
@@ -138,8 +110,6 @@ pub async fn suggest(t: &Transport, flavor: Flavor, name: &str) -> Result<Vec<Us
     }
 }
 
-/// Match the suggestion list exactly on `user.username`, mirroring rule-name
-/// resolution: never a prefix, never a silent first pick.
 pub fn pick_exact(candidates: &[UserProfile], username: &str) -> Result<String> {
     let matches: Vec<&UserProfile> = candidates
         .iter()
@@ -176,8 +146,6 @@ pub fn pick_exact(candidates: &[UserProfile], username: &str) -> Result<String> 
     }
 }
 
-/// Resolve an assignee argument to a profile uid. `uid:<uid>` bypasses
-/// resolution entirely; anything else is a username resolved per flavor.
 pub async fn resolve_assignee(t: &Transport, input: &str) -> Result<String> {
     if let Some(uid) = input.strip_prefix(UID_PREFIX) {
         if uid.is_empty() {

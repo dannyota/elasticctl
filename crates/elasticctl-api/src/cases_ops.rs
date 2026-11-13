@@ -1,5 +1,3 @@
-//! Case orchestration: filters, list/get, and the guarded mutation plans.
-
 mod recheck;
 pub use recheck::observe_cases;
 mod observed;
@@ -13,7 +11,6 @@ use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The `_find` route's per-page cap.
 pub const PAGE_SIZE: u32 = 100;
 
 #[derive(Debug, Clone, Default)]
@@ -21,12 +18,9 @@ pub struct CaseFilter {
     pub status: Option<CaseStatus>,
     pub severity: Option<String>,
     pub tag: Option<String>,
-    /// Matches title and description server-side.
     pub search: Option<String>,
 }
 
-/// Deterministic query string for `GET /api/cases/_find`. Key order is
-/// fixed so tests and fixtures are stable.
 pub fn find_query(f: &CaseFilter, page: u32, per_page: u32) -> String {
     let mut q = format!("page={page}&perPage={per_page}&sortField=createdAt&sortOrder=desc");
     if let Some(status) = f.status {
@@ -54,8 +48,6 @@ pub struct CaseList {
     pub truncated: bool,
 }
 
-/// One bounded peek: page until `limit + 1` rows are in hand or the server
-/// runs out, then truncate.
 pub async fn list(t: &Transport, f: &CaseFilter, limit: usize) -> Result<CaseList> {
     let mut cases = Vec::new();
     let mut total = 0;
@@ -79,14 +71,10 @@ pub async fn list(t: &Transport, f: &CaseFilter, limit: usize) -> Result<CaseLis
     })
 }
 
-/// The `--out` path: every page, unless `limit` stops it early.
 pub async fn export(t: &Transport, f: &CaseFilter, limit: Option<usize>) -> Result<Vec<Case>> {
     export_with_page_size(t, f, PAGE_SIZE, limit).await
 }
 
-/// The paging loop with an explicit page size, exposed for tests. Stops
-/// paging as soon as `limit` rows are in hand, mirroring
-/// `alerts_ops::export`'s shape.
 pub async fn export_with_page_size(
     t: &Transport,
     f: &CaseFilter,
@@ -128,8 +116,6 @@ fn case_noun(n: usize) -> &'static str {
     if n == 1 { "case" } else { "cases" }
 }
 
-/// Resolve explicit case ids. Fail-closed: every id must resolve or nothing
-/// proceeds; duplicates collapse preserving first-seen order.
 async fn resolve_cases(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedCase>> {
     Ok(resolve_case_values(t, ids)
         .await?
@@ -168,8 +154,6 @@ async fn resolve_case_values(t: &Transport, ids: &[String]) -> Result<Vec<Case>>
     Ok(resolved)
 }
 
-/// The compact case row for list output and mutation reports: stable columns
-/// in a fixed order (`preserve_order` makes this the render contract).
 pub fn case_row(case: &Case) -> Value {
     let mut row = serde_json::Map::new();
     row.insert("id".into(), Value::String(case.id.clone()));
@@ -196,13 +180,7 @@ pub struct CaseEditReport {
     pub applied: bool,
     pub total: u64,
     pub updated: u64,
-    /// `render::exit_code_for_value` keys on this field: a positive count
-    /// exits 1. Field order is the rendered JSON key order (`preserve_order`).
     pub failed: u64,
-    /// One entry per failed unit of work (currently only `apply_attach`'s
-    /// per-rule-group comment POSTs), naming what failed and why. Empty for
-    /// every other mutation's report. Appended after `failed` so existing
-    /// consumers of the field order are unaffected.
     pub failures: Vec<String>,
 }
 
@@ -265,17 +243,12 @@ pub async fn apply_create(t: &Transport, plan: &CreatePlan) -> Result<Value> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusPlan {
     pub target: CaseStatus,
-    /// Only the cases actually transitioning: (id, version, target).
     pub updates: Vec<(String, String, CaseStatus)>,
-    /// The resolved, deduplicated case count the preview names — what a
-    /// dry-run stub must report, not the raw argv count.
     pub resolved: usize,
     pub preview_action: String,
     pub preview_details: Vec<String>,
 }
 
-/// Fetch each case for its version, mark already-in-state rows, and PATCH
-/// only the rest. A no-op set still previews and reports zero updates.
 pub async fn plan_status(t: &Transport, ids: &[String], target: CaseStatus) -> Result<StatusPlan> {
     Ok(plan_status_observed(t, ids, target).await?.0)
 }
@@ -383,7 +356,6 @@ pub struct DeletePlan {
     pub preview_details: Vec<String>,
 }
 
-/// The 0.4 area's only destructive verb: the preview names each title.
 pub async fn plan_delete(t: &Transport, ids: &[String]) -> Result<DeletePlan> {
     let resolved = resolve_cases(t, ids).await?;
     Ok(DeletePlan {
@@ -423,16 +395,11 @@ pub struct AttachGroup {
 pub struct AttachPlan {
     pub case_id: String,
     pub groups: Vec<AttachGroup>,
-    /// The resolved, deduplicated alert count the preview names — what a
-    /// dry-run stub must report, not the raw argv count.
     pub resolved: usize,
     pub preview_action: String,
     pub preview_details: Vec<String>,
 }
 
-/// Resolve the case (for its title) and every alert (id, index, rule),
-/// fail-closed on any missing alert, then group by rule — the comments route
-/// takes one `rule` object per comment.
 pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> Result<AttachPlan> {
     if alert_ids.is_empty() {
         return Err(Error::new(ErrorKind::Error, "pass at least one --alert id"));
@@ -514,12 +481,6 @@ pub async fn plan_attach(t: &Transport, case_id: &str, alert_ids: &[String]) -> 
     })
 }
 
-/// One comments POST per rule group (the API takes one `rule` per comment).
-/// A failed group must not discard the groups that already attached: a `?`
-/// on the first error would report only the raw error while leaving earlier
-/// groups attached, and a retry would then double-attach them. Accumulate
-/// per-group outcomes instead, so a partial failure renders as counts plus
-/// per-group detail rather than an opaque error.
 pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditReport> {
     let total = plan.resolved as u64;
     let mut attached = 0u64;
@@ -543,9 +504,6 @@ pub async fn apply_attach(t: &Transport, plan: &AttachPlan) -> Result<CaseEditRe
         applied: true,
         total,
         updated: attached,
-        // `abs_diff`, not `saturating_sub`: a surplus (more alerts attached
-        // than the plan resolved) is a mismatch too, and `total - attached`
-        // would saturate that at 0 and read it as zero failures.
         failed: total.abs_diff(attached),
         failures,
     })

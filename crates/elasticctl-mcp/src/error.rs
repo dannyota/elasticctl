@@ -1,5 +1,3 @@
-//! Safe MCP-local error classifications.
-
 use elasticctl_core::{Error, ErrorKind};
 
 use crate::ToolError;
@@ -9,7 +7,6 @@ const BUSY_MESSAGE: &str = "Too many active tool calls are in progress.";
 const DEADLINE_MESSAGE: &str = "The tool call exceeded its time limit.";
 const RESULT_TOO_LARGE_MESSAGE: &str = "The tool result exceeds the configured size limit.";
 
-/// Return a static local tool failure. No caller-provided values are included.
 pub(crate) fn local(code: LocalError) -> ToolError {
     let (kind, code, message) = match code {
         LocalError::InvalidArgument => ("error", "invalid_argument", INVALID_ARGUMENT_MESSAGE),
@@ -25,7 +22,6 @@ pub(crate) fn local(code: LocalError) -> ToolError {
     }
 }
 
-/// Map a core failure without exposing its remote or transport message.
 pub(crate) fn core(error: &Error) -> ToolError {
     let message = match error.kind {
         ErrorKind::Auth => "The selected credential could not be authenticated.",

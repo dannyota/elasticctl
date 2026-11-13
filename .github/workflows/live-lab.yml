@@ -94,8 +94,6 @@ jobs:
           reports=(target/live-lab-public/*.json)
           test "${#reports[@]}" -eq 1
           test "${reports[0]}" = target/live-lab-public/traditional-9.5.1.json
-          # Same allowlist as check-conformance-reports.sh v0.9, narrowed to
-          # this one ephemeral report, with pass required for every contract.
           jq -e '
             (type == "object") and
             (keys == ["contracts", "flavor", "version"]) and

@@ -1,5 +1,3 @@
-//! `state pull`: write the scoped rules and the exception lists they reference.
-
 use super::reports::PullReport;
 use crate::codec::Format;
 use crate::exceptions;
@@ -13,8 +11,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Pull the mirror, scoped by `source`. The `custom`/`all` default lives on the
-/// clap flag, where `--help` shows it, not in this signature (spec 5.5).
 pub async fn pull(
     t: &Transport,
     dir: &Path,
@@ -24,38 +20,24 @@ pub async fn pull(
     search: Option<&str>,
     source: RuleSource,
 ) -> Result<PullReport> {
-    // The sibling lock is acquired before recovery and held through the
-    // remote read and local commit. A concurrent pull therefore cannot treat
-    // this process's prepared journal as a crashed transaction.
     let lock = acquire_pull(dir)?;
     recover_pull(&lock)?;
 
-    // Pull reads from the stack, so selectors name stack rules. The directory
-    // may not exist yet.
     let scope = super::scope_of(t, selectors, tag, search, source, &[], "pull").await?;
     let mut remote = scope.remote(t).await?;
-    // An empty unselected custom/prebuilt pull is valid only when both source
-    // totals still account for the whole corpus. `customized` overlaps
-    // prebuilt, so it has no partition proof.
     if remote.is_empty()
         && !scope.is_scoped()
         && matches!(scope.source, RuleSource::Custom | RuleSource::Prebuilt)
     {
         crate::rules::verify_source_partition(t).await?;
     }
-    // Sort unstable server output so collision reports and writes are stable.
     normalize::sort_rules(&mut remote);
 
-    // Spec 5.4: the mirror closes over the lists the scoped rules reference. A
-    // rule_default list belongs to one rule and is inlined in its file.
     let wanted: BTreeSet<ListKey> = super::referenced_keys(&remote);
     let mut fetched: BTreeMap<ListKey, (ExceptionList, Vec<ExceptionItem>)> = BTreeMap::new();
     for key in &wanted {
         let list = match exceptions::get_list(t, key).await {
             Ok(list) => list,
-            // Refuse rather than silently write a mirror missing a referenced
-            // list: that truncation would only surface as a `not_found` at
-            // apply time (spec 5.2).
             Err(e) if e.kind == ErrorKind::NotFound => {
                 return Err(Error::new(
                     ErrorKind::NotFound,
@@ -68,10 +50,6 @@ pub async fn pull(
             }
             Err(e) => return Err(e),
         };
-        // The full item set is fetched, never narrowed: `state pull` takes
-        // rule-level selectors only. `state/diff.rs` item reconciliation
-        // deletes an item absent locally on the strength of this — add an
-        // item-level selector and that deletion becomes unsound (spec 5.4).
         let items = exceptions::find_items(t, key).await?;
         fetched.insert(key.clone(), (list, items));
     }
@@ -81,8 +59,6 @@ pub async fn pull(
         Format::Ndjson => "ndjson",
     };
 
-    // Canonicalize every fetched container, embed its items, then split it by
-    // whether it gets its own file or is inlined into its owning rule.
     let mut lists_to_write: Vec<(ListKey, ExceptionList)> = Vec::new();
     let mut inlines: Vec<(ListKey, ExceptionList)> = Vec::new();
     let mut item_count = 0usize;
@@ -105,8 +81,6 @@ pub async fn pull(
         }
     }
 
-    // Attach each inline list to its owning rule by the (list_id, namespace)
-    // reference the rule carries. A list whose rule is out of scope is dropped.
     let mut inline_by_rule: BTreeMap<String, Vec<ExceptionList>> = BTreeMap::new();
     for (key, list) in &inlines {
         let owner = remote.iter().find_map(|rule| {
@@ -126,8 +100,6 @@ pub async fn pull(
         }
     }
 
-    // Plan every filename before writing. Failing after a write would leave a
-    // partial mirror and hide later collisions.
     let mut claimed_rules: BTreeMap<String, String> = BTreeMap::new();
     let mut planned_rules: Vec<(String, Rule)> = Vec::with_capacity(remote.len());
     let mut collisions: Vec<String> = Vec::new();
@@ -173,8 +145,6 @@ pub async fn pull(
         ));
     }
 
-    // Encode every planned object before starting the transaction. A collision
-    // or encoding refusal must leave an existing mirror byte-for-byte intact.
     let mut staged = Vec::with_capacity(planned_rules.len() + lists_to_write.len());
     for (filename, canonical) in &planned_rules {
         let rule_id = canonical.rule_id()?;

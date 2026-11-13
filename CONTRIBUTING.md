@@ -80,6 +80,58 @@ Kibana URL, Elasticsearch URL, and API key to the generic names and set
 `ELASTICCTL_FIXTURE_FLAVOR=ech` for that command. The exact example is in
 `.env.example`.
 
+## CI workflows
+
+- `ci.yml`, `codeql.yml`, and `wiki.yml` group runs by workflow and by the
+  pull request ref, or by the commit for any other event. A new push to a pull
+  request cancels its older run; a newer `master` push never cancels a pending
+  `master` run.
+- The wiki `publish` job runs one at a time in the `wiki-publish` group
+  without cancelling, and checks out the `master` tip. A run that starts late
+  cannot put older pages back.
+- `test-macos`, `transaction-windows`, and `declared-rust` wait for the Linux
+  `test` job, so a failing change does not hold the scarcer runners.
+- `taiki-e/install-action` supports neither gitleaks nor actionlint
+  ([tool list](https://github.com/taiki-e/install-action/blob/main/TOOLS.md)).
+  Those jobs download the pinned release and check its SHA-256 against the
+  value in the release's checksums file.
+- `gitleaks` scans with `--diff-merges=separate`. By default `git log -p`
+  shows no diff for a merge commit, so it would miss a secret added while
+  resolving a merge ([git log](https://git-scm.com/docs/git-log)).
+  `.gitleaks.toml` extends the default rules, and each allowlist entry names
+  one known non-secret value and why it is safe.
+- macOS ships Bash 3.2. Sample scripts and every script the macOS jobs run
+  avoid Bash 4 features such as associative arrays. `mcp-stdio-shim.sh` needs
+  Bash 4.4, so CI runs its test on Linux only.
+
+## Dependency policy
+
+`deny.toml` sets what `cargo deny check advisories bans licenses sources`
+enforces. CI runs it on every push and weekly, because a new advisory can
+affect an unchanged tree.
+
+- **Advisories.** Every RustSec vulnerability fails; cargo-deny has no
+  setting that downgrades one
+  ([advisories config](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html)).
+  A yanked version fails. An unmaintained advisory fails only for a direct
+  dependency: on a transitive crate it is a signal, not a release blocker.
+- **Licences.** The crates are Apache-2.0, and the allow list holds the
+  permissive licences the tree uses. Any other licence needs an explicit
+  decision. `MPL-2.0` covers `option-ext`, reached through `directories` and
+  `dirs-sys`, with no alternative licence. MPL-2.0 is file-level copyleft:
+  linking it is allowed, and only changes to its files would have to be
+  published. We vendor and change none. `Zlib` covers `foldhash`, reached
+  through `hashbrown` and `indexmap`.
+- **Bans.** Duplicate versions warn, because they usually mean transitive
+  lag. A wildcard version requirement fails, except on a path dependency
+  (`allow-wildcard-paths`), so the unpublished `elasticctl-api-test-support`
+  dev-dependency stays versionless and Cargo omits it from published
+  manifests. Keep direct dependencies current. Each `skip` names one exact
+  older version and the upstream that still needs it, so an upstream change
+  shows up instead of widening the exception.
+- **Sources.** Only crates.io. A git or other registry dependency needs an
+  explicit decision.
+
 ## What review will hold you to
 
 The reasoning is in the spec, sections 3 and 6. The rules themselves:

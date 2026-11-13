@@ -43,8 +43,6 @@ struct StderrCapture {
 impl StderrCapture {
     fn start() -> Self {
         let mut fds = [0; 2];
-        // The test redirects only the process stderr and restores it before
-        // asserting. A shared lock prevents another test from writing there.
         unsafe {
             assert_eq!(pipe(fds.as_mut_ptr()), 0);
             let original_fd = dup(STDERR_FILENO);
@@ -235,7 +233,6 @@ async fn wait_for_requests(
 
 #[test]
 fn space_path_prefixes_only_non_default_spaces() {
-    // Kibana serves the default space at the bare path.
     assert_eq!(Transport::space_path("default", "/api/x"), "/api/x");
     assert_eq!(Transport::space_path("soc", "/api/x"), "/s/soc/api/x");
 }
@@ -760,7 +757,6 @@ async fn the_cloud_edge_proxy_envelope_is_classified_too() {
 #[tokio::test]
 async fn a_429_is_retried_and_then_succeeds() {
     let server = MockServer::start().await;
-    // wiremock serves mounted mocks in order with `up_to_n_times`.
     Mock::given(method("GET"))
         .and(path("/api/flaky"))
         .respond_with(ResponseTemplate::new(429))
@@ -783,18 +779,16 @@ async fn a_400_is_never_retried() {
     Mock::given(method("GET"))
         .and(path("/api/bad"))
         .respond_with(ResponseTemplate::new(400).set_body_json(json!({"message": "bad input"})))
-        .expect(1) // exactly one call proves no retry happened
+        .expect(1)
         .mount(&server)
         .await;
 
     let t = Transport::new(&profile_for(&server)).unwrap();
     assert!(t.get("/api/bad").await.is_err());
-    // MockServer verifies `expect(1)` on drop.
 }
 
 #[test]
 fn urlencode_escapes_what_breaks_a_url_and_leaves_the_rest() {
-    // Escape only query-breaking characters to keep recorded fixtures readable.
     assert_eq!(elasticctl_core::urlencode("a-b_c.d~e"), "a-b_c.d~e");
     assert_eq!(elasticctl_core::urlencode("a b"), "a%20b");
     assert_eq!(elasticctl_core::urlencode("x\"y"), "x%22y");
@@ -814,7 +808,6 @@ async fn debug_output_never_shows_url_userinfo() {
         .mount(&server)
         .await;
 
-    // Insert dummy userinfo after the scheme, before the host.
     let uri = server.uri();
     let with_userinfo = uri.replacen("://", "://dummyuser:dummypass@", 1);
     let t = Transport::with_debug(&profile_for_url(with_userinfo), true).unwrap();
@@ -849,7 +842,6 @@ async fn post_absolute_es_sends_the_body_to_the_es_host() {
         .await;
 
     let mut profile = profile_for(&server);
-    // Cloud deployments use a different Elasticsearch host from Kibana.
     profile.es_url = Some(server.uri());
     profile.kibana_url = "https://kibana.invalid".into();
     let t = Transport::new(&profile).unwrap();
@@ -1034,8 +1026,6 @@ async fn absolute_es_once(
     }
 }
 
-/// Accept connections, read one request head, and close each connection
-/// without an answer. Counts every accepted connection.
 async fn closing_connection_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1209,7 +1199,6 @@ async fn absolute_es_once_writes_do_not_retry_a_dropped_connection() {
         let error = absolute_es_once(&t, operation, "/marker-index", &json!({}))
             .await
             .expect_err("a dropped connection must fail the write");
-        // Leave room for a replay to arrive before counting.
         tokio::time::sleep(Duration::from_millis(250)).await;
         server.abort();
         let _ = server.await;
@@ -1264,8 +1253,6 @@ async fn a_single_attempt_elasticsearch_post_without_a_body_sends_none() {
     assert!(!requests[0].headers.contains_key("content-type"));
 }
 
-/// One Kibana and one Elasticsearch method of each family, retrying and
-/// single-attempt, by name.
 const PATH_FAMILIES: [&str; 4] = ["kibana", "kibana_once", "es", "es_once"];
 
 async fn send_in_family(
@@ -1282,8 +1269,6 @@ async fn send_in_family(
     }
 }
 
-/// A Kibana profile in the default space, or an Elasticsearch profile whose
-/// Kibana host is unreachable, both aimed at `server`.
 fn family_profile(family: &str, server: &MockServer) -> Profile {
     if family.starts_with("es") {
         absolute_es_profile_for(server)

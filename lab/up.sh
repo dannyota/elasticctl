@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Disable inherited tracing before handling credentials, including when sourced.
 set +x
 
-# Shared with seed.sh. Parse data without executing lab/.env as shell code.
 lab_env() {
   python3 - "$@" <<'PYTHON'
 import os
@@ -45,13 +43,11 @@ for name in names:
         sys.exit(f"{name} must be a nonempty single-line value")
     values[name] = value
 
-# Keep every persisted value safe for unquoted Compose interpolation.
 if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or
        not re.fullmatch(r"[A-Za-z0-9._~:/+=@-]+", value)
        for name, value in values.items()):
     sys.exit("lab/.env contains unsupported characters")
 
-# mkstemp creates mode 0600 before any bytes are written; replace is atomic.
 fd, temporary = tempfile.mkstemp(prefix=".env.", dir=".")
 try:
     with os.fdopen(fd, "w") as output:
@@ -64,16 +60,12 @@ finally:
 PYTHON
 }
 
-# seed.sh imports only the helper.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return
 fi
 set -euo pipefail
 cd "$(dirname "$0")"
 umask 077
-# The lock records its owner's PID so a lock left by a killed up.sh (SIGKILL
-# skips the EXIT trap) can be reclaimed. A lock without a PID file is treated as
-# held for five minutes, covering the instant between mkdir and the PID write.
 acquire_lock() {
   if mkdir .up.lock 2>/dev/null; then
     echo "$$" > .up.lock/pid
@@ -113,8 +105,6 @@ ES=http://localhost:9200
 KB=http://localhost:5601
 AUTH="elastic:$ELASTIC_PASSWORD"
 
-# Select the first available Compose CLI with a version probe; this does not
-# verify daemon reachability.
 if docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif podman compose version >/dev/null 2>&1; then
@@ -130,7 +120,7 @@ if ! compose_diagnostics=$($COMPOSE config --quiet 2>&1); then
   echo "Compose configuration failed; diagnostics suppressed to protect credentials" >&2
   exit 1
 fi
-# shellcheck disable=SC2034 # Capture and discard credential-bearing diagnostics.
+# shellcheck disable=SC2034
 if ! compose_diagnostics=$($COMPOSE up -d 2>&1); then
   echo "Compose startup failed; diagnostics suppressed to protect credentials" >&2
   exit 1
@@ -152,7 +142,6 @@ if [ "$es_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Reset the kibana_system password before waiting for Kibana readiness.
 curl -sf -u "$AUTH" -X POST "$ES/_security/user/kibana_system/_password" \
   -H 'Content-Type: application/json' \
   -d "$(python3 -c 'import json,os; print(json.dumps({"password":os.environ["KIBANA_SYSTEM_PASSWORD"]}))')" >/dev/null
@@ -171,7 +160,6 @@ if [ "$kb_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Reuse qualifying licenses, including an already activated trial.
 qualifying_license() {
   local response
   response=$(curl -sf -u "$AUTH" "$ES/_license") || return 2
@@ -187,7 +175,6 @@ sys.exit(0 if license.get("status") == "active" and
          license.get("type") in ("trial", "platinum", "enterprise") else 1)
 '
 }
-# A failed read is fatal, rather than permission to start a trial.
 license_status=0
 qualifying_license || license_status=$?
 if [ "$license_status" -ne 0 ]; then
@@ -209,7 +196,6 @@ if [ "$license_status" -ne 0 ]; then
   esac
 fi
 
-# Create the signals index before running detection rules.
 curl -sf -u "$AUTH" -X POST "$KB/api/detection_engine/index" \
   -H 'kbn-xsrf: true' -H 'elastic-api-version: 2023-10-31' >/dev/null
 

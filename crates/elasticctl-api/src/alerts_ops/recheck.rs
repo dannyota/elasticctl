@@ -1,18 +1,12 @@
-//! Alert state re-checks.
-
 use super::*;
 use crate::{Observed, Preconditions};
 
-/// The alert state needed for a re-check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertFacet {
-    /// Compare workflow status.
     Status,
-    /// Compare presence only.
     Presence,
 }
 
-/// Read alert states by ID, returning absent state for missing alerts.
 pub async fn observe_alerts(
     t: &Transport,
     ids: &[String],

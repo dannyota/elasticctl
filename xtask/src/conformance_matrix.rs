@@ -1,15 +1,3 @@
-//! Concurrent runner for the three live conformance legs.
-//!
-//! `cargo xtask conformance` proves one flavor at a time and is the
-//! target-neutral release-evidence entrypoint (design spec 8.3). Recording
-//! must run serially against a single stack, but the three conformance
-//! targets are independent: proving serverless correctness never depends on
-//! the state of Elastic Cloud Hosted or the local lab. This runner spawns
-//! each requested flavor's `conformance` invocation as a child of the current
-//! executable and joins them, so the release matrix costs roughly the
-//! slowest leg's wall clock (usually the self-managed lab boot) instead of
-//! the sum of all three.
-
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -62,9 +50,6 @@ impl Args {
     }
 }
 
-/// Parse a comma-separated flavor list, trimming whitespace and rejecting an
-/// unknown name or a repeat without echoing the offending value, matching
-/// `conformance::Args::parse`'s style.
 fn parse_flavors(value: &str) -> Result<Vec<String>, String> {
     let mut seen = BTreeSet::new();
     let mut flavors = Vec::new();
@@ -90,17 +75,6 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Build the `live` integration test binary once before any leg starts.
-///
-/// `conformance` shells out to `cargo test --locked --test live <contract>`
-/// per contract. If all three legs hit that build for the first time at
-/// once, Cargo serializes the concurrent compiles behind its workspace build
-/// lock, and the wall-clock win this command exists for stalls into a
-/// compile queue instead (design spec 8.3).
-///
-/// Compiler output is inherited straight through rather than captured: a
-/// broken build must not fail silently while the operator waits, and
-/// `cargo`'s own diagnostics carry no credentials.
 async fn prebuild_live_tests(workspace: &Path) -> Result<(), String> {
     let status = Command::new("cargo")
         .current_dir(workspace)
@@ -119,15 +93,6 @@ async fn prebuild_live_tests(workspace: &Path) -> Result<(), String> {
     }
 }
 
-/// Build the child invocation `conformance --flavor <f> --report-dir <dir>`
-/// against the current executable, so a locally built `xtask` and one
-/// installed elsewhere both dispatch to themselves rather than a `PATH`
-/// lookup. `kill_on_drop` limits how long a live-marker-owning child can
-/// outlive this runner if a leg's task is aborted or panics — including a
-/// Ctrl-C abort of the traditional leg's conformance child mid-mutation,
-/// where `lab/down.sh`'s `compose down -v` is what actually disposes of any
-/// live-marker residue that leaves behind, since the local lab is destroyed
-/// wholesale rather than cleaned up object by object.
 fn spawn_conformance_child(exe: &Path, flavor: &str, report_dir: &Path) -> Command {
     let mut command = Command::new(exe);
     command
@@ -142,21 +107,6 @@ fn spawn_conformance_child(exe: &Path, flavor: &str, report_dir: &Path) -> Comma
     command
 }
 
-/// Stream a child's stdout and stderr to the parent, stdout via `println!`
-/// and stderr via `eprintln!`, each line prefixed with the flavor name, then
-/// wait for it to exit.
-///
-/// Reads raw byte segments split on `\n` and lossily converts each one,
-/// rather than using `AsyncBufReadExt::lines`, which returns an `Err` and
-/// ends the stream on the first invalid UTF-8 byte. That would leave the
-/// child's stdout pipe unread; if the child then wrote anything more, it
-/// could be killed by `SIGPIPE` mid-contract, leaving live-marker objects
-/// behind uncleaned.
-///
-/// `conformance` writes only public one-line messages (design spec 8.3), so
-/// no redaction happens here. This helper must never be pointed at a process
-/// that can print a credential; `lab/up.sh` and `lab/down.sh` are not run
-/// through it for exactly that reason.
 async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, String> {
     let stdout = child
         .stdout
@@ -168,6 +118,7 @@ async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, Str
         .expect("child was spawned with a piped stderr");
 
     let out_flavor = flavor.to_string();
+    // Not `lines()`: it errors on invalid UTF-8, the pipe stops draining, and the child can die of SIGPIPE: https://docs.rs/tokio/latest/tokio/io/trait.AsyncBufReadExt.html#method.lines
     let stdout_task = tokio::spawn(async move {
         let mut chunks = BufReader::new(stdout).split(b'\n');
         while let Ok(Some(chunk)) = chunks.next_segment().await {
@@ -192,8 +143,6 @@ async fn stream_output(flavor: &str, mut child: Child) -> Result<ExitStatus, Str
 }
 
 async fn run_serverless_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
-    // Inherit the parent environment unchanged: the generic `ELASTICCTL_*`
-    // vars already point at the Serverless target.
     let child = spawn_conformance_child(&exe, "serverless", &report_dir)
         .spawn()
         .map_err(|error| format!("spawning serverless leg: {error}"))?;
@@ -205,22 +154,6 @@ async fn run_serverless_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), Str
     }
 }
 
-/// Map the `ELASTICCTL_ECH_*` target onto the generic `ELASTICCTL_*` names the
-/// child expects, the same mapping AGENTS.md documents for the fixture
-/// recorder. Fail before spawning anything if a required piece is missing.
-/// `ELASTICCTL_SPACE` is set explicitly rather than left to inherit the
-/// parent's value, since a space configured for another purpose could
-/// silently scope this run to the wrong place.
-///
-/// When `ELASTICCTL_ECH_USERNAME` and `ELASTICCTL_ECH_PASSWORD` are both set,
-/// activate that user's profile first, the same step the traditional leg
-/// runs at boot: a Hosted deployment reached only through an API key has no
-/// activated profile for the `triage` contract's assign/unassign step to
-/// resolve. Without the pair, this falls back to whatever profile the
-/// deployment already carries from an operator's own SSO login, and the
-/// contract's own empty-profile check stays the backstop. An empty value
-/// counts as absent, so a placeholder in the environment does not fail the
-/// leg on a login that could never succeed.
 async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let kibana_url = std::env::var("ELASTICCTL_ECH_KIBANA_URL")
         .map_err(|_| "missing ELASTICCTL_ECH_KIBANA_URL".to_string())?;
@@ -262,12 +195,6 @@ async fn run_ech_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     }
 }
 
-/// Write a failure's real detail to a private, owner-only log and return a
-/// public message that names only the failing leg, its step, and the log's
-/// workspace-relative path, mirroring `conformance::private_failure`. The
-/// detail can carry an authentication error naming the request that failed —
-/// including a Hosted login — so it must never be returned as the failure
-/// message itself.
 fn private_failure(workspace: &Path, flavor: &str, name: &str, detail: impl AsRef<[u8]>) -> String {
     let path = private_log_path(workspace, flavor, name);
     if write_private_log(&path, detail.as_ref()).is_err() {
@@ -280,7 +207,6 @@ fn private_failure(workspace: &Path, flavor: &str, name: &str, detail: impl AsRe
     )
 }
 
-/// Resolve the lab bootstrap password without executing dotenv contents.
 fn traditional_password_from(environment: Option<String>, dotenv: &str) -> Result<String, String> {
     let value = environment.or_else(|| {
         dotenv.lines().rev().find_map(|line| {
@@ -316,7 +242,6 @@ fn traditional_password(workspace: &Path) -> Result<String, String> {
     traditional_password_from(None, &dotenv)
 }
 
-/// Mint an independent key; lab/up.sh stores its human-use key in lab/.env.
 async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
     let mut profile = elasticctl_core::Profile {
         kibana_url: "http://localhost:5601".to_string(),
@@ -369,18 +294,6 @@ async fn mint_traditional_api_key(workspace: &Path) -> Result<String, String> {
         })
 }
 
-/// Install Elastic's prebuilt rule pack against the freshly minted key, the
-/// same request `xtask seed` sends.
-///
-/// `lab/down.sh` always runs `compose down -v`, so every lab boot starts
-/// empty. Without this, `source_scoping` fails on every matrix run because it
-/// has no prebuilt rules to partition against custom ones (design spec 8.3).
-///
-/// The shared convergence helper sends exact `{}` install requests and then
-/// checks the four outstanding prebuilt counters. Only a valid, noncurrent
-/// status starts another PUT cycle; the read-only status GET retains normal
-/// transient retries. Raw failure detail remains solely in this leg's existing
-/// owner-only private log.
 async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), String> {
     let mut profile = elasticctl_core::Profile {
         kibana_url: "http://localhost:5601".to_string(),
@@ -390,8 +303,6 @@ async fn install_prebuilt_rules(workspace: &Path, api_key: &str) -> Result<(), S
         password: None,
         space: "default".to_string(),
         verify: true,
-        // A prepackaged install can exceed the normal 60-second timeout on a
-        // fresh stack; `xtask seed` uses the same 600-second allowance.
         timeout_secs: 600,
     };
     profile.strip_userinfo();
@@ -420,7 +331,6 @@ fn private_log_path(workspace: &Path, flavor: &str, name: &str) -> PathBuf {
         .join(format!("{name}.log"))
 }
 
-/// Keep defensive assignment redaction for captured lab output.
 fn redact_lab_output(bytes: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(bytes);
     text.lines()
@@ -436,9 +346,6 @@ fn redact_lab_output(bytes: &[u8]) -> Vec<u8> {
         .into_bytes()
 }
 
-/// Write a private log with the same owner-only permissions `conformance`
-/// uses for its own private logs (design spec 8.3): this file can hold
-/// redacted `lab/up.sh` output or a raw transport error.
 fn write_private_log(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -464,13 +371,6 @@ fn write_private_log(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|_| "conformance-matrix private log write failed".to_string())
 }
 
-/// Run `lab/up.sh` or `lab/down.sh` to completion without ever printing its
-/// output live. Script output may contain private details. Redacted output
-/// goes to a private log instead, the same pattern `conformance` uses to keep
-/// contract detail out of its public one-liners. `kill_on_drop` gives the
-/// script's immediate process a chance to die if this call is ever aborted
-/// mid-flight, though a `compose` grandchild it spawned can still be left
-/// running; `lab/down.sh` is what actually reconciles that.
 async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(), String> {
     println!("[traditional] {name} starting");
     let output = Command::new(script)
@@ -500,15 +400,6 @@ async fn run_lab_script(script: &Path, workspace: &Path, name: &str) -> Result<(
     }
 }
 
-/// Run the self-managed leg's boot-through-conformance sequence: `lab/up.sh`,
-/// minting a lab API key, installing the prebuilt rule pack so
-/// `source_scoping` has rules to partition, activating a user profile so the
-/// `triage` contract's assign/unassign step has one to resolve, then the
-/// conformance child.
-///
-/// This runs as its own spawned task (see `run_traditional_leg`) so a panic
-/// anywhere in it surfaces there as a `JoinError` instead of unwinding past
-/// the teardown that must always follow.
 async fn run_traditional_boot_and_leg(
     exe: PathBuf,
     report_dir: PathBuf,
@@ -518,11 +409,6 @@ async fn run_traditional_boot_and_leg(
     run_lab_script(&up_script, &workspace, "lab-up").await?;
     let api_key = mint_traditional_api_key(&workspace).await?;
     install_prebuilt_rules(&workspace, &api_key).await?;
-    // Serverless and Hosted already carry an activated profile from the
-    // operator's own SSO login; the lab boots headless, with no browser
-    // session ever logging in, so without this the triage contract's
-    // assign/unassign step finds no profile to resolve on this leg alone
-    // (design spec `elasticctl-triage-design.md` section 10).
     crate::activation::activate_profile(
         "http://localhost:5601",
         "elastic",
@@ -555,15 +441,6 @@ async fn run_traditional_boot_and_leg(
     }
 }
 
-/// Run the self-managed leg: boot the lab, mint a key, install the prebuilt
-/// rule pack, run the conformance child, then always tear the lab down.
-///
-/// The boot-through-conformance sequence races against Ctrl-C, and either
-/// outcome is followed by `lab/down.sh`; the same select's `JoinError`
-/// branch covers a plain panic in that sequence for the same reason. Booting
-/// dominates wall clock (design spec 9: roughly 20 minutes), so this whole
-/// function is one task the scheduler in `run` spawns alongside the other
-/// two flavors; nothing here blocks them.
 async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), String> {
     let workspace = workspace_root();
     let up_script = workspace.join("lab").join("up.sh");
@@ -578,11 +455,6 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
     ));
     let abort_handle = handle.abort_handle();
 
-    // Racing the whole sequence against Ctrl-C, rather than only the
-    // conformance child, means an interrupt during the up-to-20-minute lab
-    // boot also reaches the teardown below instead of killing the process
-    // outright. Polling `&mut handle` (instead of moving it in) leaves it
-    // ours to await again below if the ctrl_c branch wins.
     let result = tokio::select! {
         joined = &mut handle => match joined {
             Ok(inner_result) => inner_result,
@@ -590,12 +462,6 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
         },
         ctrl_c = tokio::signal::ctrl_c() => {
             abort_handle.abort();
-            // Wait for the aborted task to actually stop before teardown
-            // starts, so `lab/down.sh` always runs after the boot, mint,
-            // install, or conformance child has fully unwound rather than
-            // racing it. A `compose` grandchild the aborted conformance
-            // child may have influenced can still outlive the abort itself;
-            // `down.sh` is what reconciles that, not this wait.
             let _ = handle.await;
             match ctrl_c {
                 Ok(()) => Err("interrupted by ctrl-c; tearing down the lab".to_string()),
@@ -604,17 +470,8 @@ async fn run_traditional_leg(exe: PathBuf, report_dir: PathBuf) -> Result<(), St
         }
     };
 
-    // Always tear the lab down, whether the boot, the key mint, the prebuilt
-    // install, the leg itself, or a Ctrl-C interrupt of any of those failed:
-    // a partially started compose stack must not survive this command. This
-    // covers every case up to the point the select above resolves.
     let teardown = run_lab_script(&down_script, &workspace, "lab-down").await;
 
-    // Installing the `ctrl_c()` listener above replaced the OS's default
-    // SIGINT disposition for the whole process, and that listener does not
-    // survive past this point. Arm a fresh one-shot listener so a later
-    // Ctrl-C — for example while a sibling flavor is still running — still
-    // terminates the run instead of being silently swallowed.
     tokio::spawn(async {
         if tokio::signal::ctrl_c().await.is_ok() {
             std::process::exit(130)
@@ -779,7 +636,6 @@ mod tests {
 
     #[test]
     fn resolves_password_precedence_and_literal_dotenv_without_execution() {
-        // Derive test values at runtime; no password literals in source.
         let generated = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

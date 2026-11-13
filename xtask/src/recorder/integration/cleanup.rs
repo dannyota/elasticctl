@@ -1,5 +1,3 @@
-//! Cleanup helpers.
-
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::recorder::integration::proofs::{
     MarkerIntegrationInputs, require_parent_attachments_with_nonce,
@@ -27,9 +25,6 @@ pub(crate) fn require_exact_delete_id(
     }
 }
 
-/// An error or malformed 2xx create response is not proof that Fleet did not
-/// commit the write. Re-read only the fixed id and claim it only if its full
-/// marker state carries this session's exact creation description.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AmbiguousMarkerCreateOwnership {
     Claimed,
@@ -93,9 +88,6 @@ pub(crate) async fn claim_ambiguous_marker_integration_create_with_inputs(
     }
 }
 
-/// Parent creation can also commit despite an ambiguous response. A claimed
-/// parent must be the same nonce-bearing marker, have no agents, and have no
-/// attached integrations before cleanup is allowed to own it.
 pub(crate) async fn claim_ambiguous_marker_integration_parent_create(
     t: &elasticctl_core::Transport,
     nonce: &str,
@@ -274,9 +266,6 @@ async fn require_marker_integration_absent(
     }
 }
 
-/// A bootstrap delete has no fixture body to preserve. Its one-shot response
-/// can be malformed or lost after Fleet committed, so only a fresh absence
-/// proof decides whether the recorder can continue. It never retries here.
 pub(crate) async fn delete_bootstrap_marker_integration_once(
     t: &elasticctl_core::Transport,
     expected_version: &str,

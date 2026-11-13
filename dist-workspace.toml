@@ -1,28 +1,13 @@
 [workspace]
 members = ["cargo:."]
 
-# Configuration for `dist`.
-#
-# NOTE: .github/workflows/release.yml has manual generator edits: read-only
-# permissions except host, weekly/manual/path-filtered PR canaries, tag-push-only
-# publishing/host/announce gates, a seven-target matrix assertion, and SHA pins.
-# allow-dirty = ["ci"] preserves them; explicit CI generation fails instead of
-# overwriting. Remove allow-dirty to regenerate, then reapply all these edits.
 [dist]
-# Preferred dist version for CI (Cargo.toml SemVer syntax).
 cargo-dist-version = "0.32.0"
-# CI backend to generate.
 ci = "github"
-# Build and upload artifacts on canaries without publishing a release.
 pr-run-mode = "upload"
-# Allow the hand-edited release.yml to differ from generator output.
 allow-dirty = ["ci"]
-# Installers to generate for each app.
 installers = ["shell", "powershell"]
-# Target platforms to build (Rust target-triple syntax).
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
 
-# GitHub retired the macos-14 image that dist 0.32 assigns to Apple Silicon;
-# the v0.7.3 tag build failed with "macos-14-arm64-us-default is not supported".
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"

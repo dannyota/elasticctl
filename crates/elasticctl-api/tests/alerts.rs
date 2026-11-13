@@ -339,15 +339,6 @@ async fn an_unavailable_suggest_route_downgrades_to_unsupported() {
     );
 }
 
-/// Finding 4: the internal route family's spec-measured unavailability shape
-/// is a 400 whose message says "exists but is not available" (the
-/// `x-elastic-internal-origin` refusal), not a 404/410/Permission.
-/// `downgrade_unavailable` must classify it the same way.
-/// Finding 6: with no `es_url` configured, `post_absolute_es` silently falls
-/// back to the Kibana host, so a public-route 404 gets downgraded to
-/// "profile suggestion is unavailable on <flavor>" — blaming the deployment
-/// for what is actually a profile misconfiguration. The message must name
-/// the missing `es_url` when that is the likely cause.
 #[tokio::test]
 async fn a_missing_es_url_is_named_in_the_suggest_failure() {
     let server = MockServer::start().await;
@@ -411,7 +402,6 @@ async fn an_internal_route_400_is_not_available_downgrades_to_unsupported() {
 
 #[tokio::test]
 async fn resolve_assignee_bypasses_with_a_uid_prefix() {
-    // No mocks: the uid: path must not touch the network or the flavor probe.
     let t = test_transport("http://127.0.0.1:1");
     assert_eq!(
         profiles::resolve_assignee(&t, "uid:u_raw").await.unwrap(),
@@ -438,8 +428,6 @@ fn since_accepts_durations_and_passes_timestamps_through() {
 #[tokio::test]
 async fn build_query_composes_filters_and_resolves_the_rule() {
     let server = MockServer::start().await;
-    // `selection::to_rule_id` tries the rule GET first; answer it directly so
-    // no name-search fallback runs.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(wiremock::matchers::query_param("rule_id", "r-1"))
@@ -455,8 +443,6 @@ async fn build_query_composes_filters_and_resolves_the_rule() {
         severity: Some("high".into()),
         rule: Some("r-1".into()),
         tag: Some("triaged".into()),
-        // `uid:` bypasses resolution, so this needs no extra mock or flavor
-        // probe.
         assignee: Some("uid:u_1".into()),
         since: Some("7d".into()),
         search: Some("powershell".into()),
@@ -482,10 +468,6 @@ async fn build_query_composes_filters_and_resolves_the_rule() {
     );
 }
 
-/// Finding 3: `--search` text is interpolated into a `wildcard` value
-/// unescaped, so `--search '*'` matches every alert and text carrying `\`,
-/// `*`, or `?` injects its own wildcards. Mirror the rules-side
-/// `kql_escape_wildcard` behavior: escape `\` first, then `*` and `?`.
 #[tokio::test]
 async fn build_query_escapes_wildcard_metacharacters_in_search_text() {
     let t = test_transport("http://127.0.0.1:1");
@@ -541,10 +523,6 @@ async fn list_peeks_and_reports_truncation() {
     assert_eq!(out.total, Some(5));
 }
 
-/// Finding 9: `list`'s peek sizes the request `limit + 1` so truncation is
-/// observable without a second request; a plain `+` panics in debug builds
-/// (and wraps to 0 in release) at `usize::MAX`. `cmd/search.rs` already
-/// saturates at the same seam — `list` must too.
 #[tokio::test]
 async fn list_saturates_a_huge_limit_instead_of_overflowing() {
     let server = MockServer::start().await;
@@ -702,14 +680,8 @@ async fn an_empty_query_object_is_rejected() {
     );
 }
 
-/// Finding 7: the empty-`{}` rejection lives only in `plan_status_by_query`.
-/// `QueryStatusPlan`'s public fields plus the public `apply_status_by_query`
-/// let a caller that skips `plan_status_by_query` (the planned MCP server,
-/// or any other `-api` consumer) apply an unscoped query. `apply` must
-/// enforce the same rule, and refuse before any request reaches the mock.
 #[tokio::test]
 async fn apply_status_by_query_refuses_an_unscoped_query_before_any_request() {
-    // No mocks: a request that reaches the server fails the test.
     let t = test_transport("http://127.0.0.1:1");
     let plan = alerts_ops::QueryStatusPlan {
         status: AlertStatus::Closed,
@@ -732,8 +704,6 @@ async fn apply_status_by_query_refuses_an_unscoped_query_before_any_request() {
 
 #[tokio::test]
 async fn status_plan_and_apply_refuse_empty_targets_before_any_request() {
-    // No server is listening: validation must return the named local error
-    // instead of attempting either the preview search or the mutation.
     let t = test_transport("http://127.0.0.1:1");
     let err = alerts_ops::plan_status_by_ids(&t, &[], AlertStatus::Closed, None)
         .await
@@ -894,12 +864,8 @@ async fn apply_status_by_query_reports_conflicts_as_failures_under_abort() {
     assert_eq!(report.failed, 0, "proceed opts into best-effort");
 }
 
-/// The CLI's `required = true` is not the only door: both plans are public
-/// `-api` entry points, so an empty target list must be refused there too,
-/// before any resolution or request.
 #[tokio::test]
 async fn tag_and_assign_plans_refuse_an_empty_target_list_before_any_request() {
-    // No mocks: a request that reaches the server fails the test.
     let t = test_transport("http://127.0.0.1:1");
 
     let err = alerts_ops::plan_tags(&t, &[], vec!["triaged".into()], vec![])

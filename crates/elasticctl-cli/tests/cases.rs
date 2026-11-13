@@ -37,8 +37,6 @@ fn case_body(id: &str, status: &str) -> serde_json::Value {
     })
 }
 
-/// Finding 12: same as alerts list — `--limit`'s help text must not claim a
-/// universal default that does not hold on the uncapped `--out` path.
 #[test]
 fn cases_list_help_does_not_claim_a_universal_default_limit() {
     let out = bin().args(["cases", "list", "--help"]).output().unwrap();
@@ -145,9 +143,6 @@ async fn cases_get_does_not_derive_its_exit_code_from_the_case_document() {
     assert_eq!(doc["failed"], json!(2));
 }
 
-/// `cases list --out` must match `alerts list --out` and `search dsl --out`:
-/// JSONL by default, and `--limit` respected during export, not just the
-/// bounded peek.
 #[tokio::test]
 async fn cases_list_out_writes_jsonl_by_default_and_honors_limit() {
     let server = MockServer::start().await;
@@ -196,7 +191,6 @@ async fn a_delete_dry_run_names_titles_and_changes_nothing() {
         .respond_with(ResponseTemplate::new(200).set_body_json(case_body("c1", "open")))
         .mount(&server)
         .await;
-    // No DELETE mock: a dry run that reaches the route fails the test.
 
     let out = bin()
         .args(["--config", cfg.to_str().unwrap(), "--json"])
@@ -220,9 +214,6 @@ async fn a_delete_dry_run_names_titles_and_changes_nothing() {
     assert_eq!(report["applied"], json!(false));
 }
 
-/// The same case id passed twice must collapse to one resolved case: the
-/// dry-run stub reports the resolved count the preview names, not the raw
-/// argv count (finding I1).
 #[tokio::test]
 async fn a_close_dry_run_with_a_duplicate_id_reports_the_resolved_count() {
     let server = MockServer::start().await;
@@ -234,8 +225,6 @@ async fn a_close_dry_run_with_a_duplicate_id_reports_the_resolved_count() {
         .expect(1)
         .mount(&server)
         .await;
-    // The `.expect(1)` above proves `c1 c1` deduplicates before resolution.
-    // No PATCH mock: a dry run that reaches the route fails the test.
 
     let out = bin()
         .args(["--config", cfg.to_str().unwrap(), "--json"])

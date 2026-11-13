@@ -19,7 +19,10 @@ Portable import fully reads and validates the file before any server call.
 With neither conflict flag, any existing id makes the plan fail before the
 guard. `--skip-existing` reads the server, removes existing ids from the
 pending set, and reports them as skipped. `--overwrite` classifies each object
-as create, replace, or no-op and previews that exact action.
+as create, replace, or no-op and previews that exact action. A
+`data-views import` dry run with neither flag plans from the file alone and
+needs no credential; `--yes` or either flag reads the stack before the guard.
+`dashboards import` always reads the stack.
 
 The resolved file body and preflight snapshots travel in the plan. Apply does
 not re-read the path after the guard. Immediately before each write, it re-GETs

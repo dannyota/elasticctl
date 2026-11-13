@@ -1,5 +1,3 @@
-//! Typed agent-policy models and public Fleet route wrappers.
-
 use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -8,10 +6,8 @@ use serde_json::{Map, Value, json};
 const BASE: &str = "/api/fleet/agent_policies";
 const PACKAGES: &str = "/api/fleet/epm/packages";
 
-/// Fleet's create-time default for `inactivity_timeout`, in seconds.
 pub const DEFAULT_INACTIVITY_TIMEOUT: u64 = 1_209_600;
 
-/// Boolean flags that mark a policy Fleet or the deployment owns. Sorted.
 pub const PLATFORM_FLAGS: [&str; 7] = [
     "has_fleet_server",
     "is_default",
@@ -22,10 +18,8 @@ pub const PLATFORM_FLAGS: [&str; 7] = [
     "supports_agentless",
 ];
 
-/// Nullable object that marks an agentless policy when present.
 pub const AGENTLESS_FIELD: &str = "agentless";
 
-/// Target-local infrastructure references. Sorted.
 pub const ENVIRONMENT_IDS: [&str; 4] = [
     "data_output_id",
     "download_source_id",
@@ -35,7 +29,6 @@ pub const ENVIRONMENT_IDS: [&str; 4] = [
 
 const MONITORING_VALUES: [&str; 3] = ["logs", "metrics", "traces"];
 
-/// The portable, author-controlled agent-policy representation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AgentPolicySpec {
     pub id: String,
@@ -118,7 +111,6 @@ impl AgentPolicySpec {
         Ok(spec)
     }
 
-    /// Validate a portable 0.6.0 agent-policy artifact.
     pub fn validate(&self) -> Result<()> {
         for (field, value) in [
             ("id", &self.id),
@@ -230,8 +222,6 @@ impl<'de> Deserialize<'de> for AgentPolicySpec {
     }
 }
 
-/// A list row. `agents` is present on list and single reads; ops requires it
-/// for mutation planning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentPolicySummary {
     pub id: String,
@@ -253,8 +243,6 @@ impl AgentPolicySummary {
     }
 }
 
-/// Safe single-policy output. Raw Fleet items contain audit identities and
-/// populated integration configurations, so they never cross the API boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentPolicyDetail {
     pub id: String,
@@ -267,7 +255,6 @@ pub struct AgentPolicyDetail {
     pub blocked_by: Vec<String>,
 }
 
-/// One page of the paginated list route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentPolicyPage {
     pub items: Vec<Map<String, Value>>,
@@ -276,15 +263,11 @@ pub struct AgentPolicyPage {
     pub per_page: u64,
 }
 
-/// A single policy as returned by its read, create, or update route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentPolicy {
     pub item: Map<String, Value>,
 }
 
-/// The installed state of one package, from `GET /api/fleet/epm/packages/{name}`.
-/// The registry's `latestVersion` is deliberately not kept: it moves on a
-/// registry refresh and would make two snapshots of one installation unequal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PackageStatus {
     pub name: String,
@@ -330,7 +313,6 @@ fn optional_u64(item: &Map<String, Value>, field: &str) -> Result<Option<u64>> {
     }
 }
 
-/// Read one page of the list route with the measured deterministic ordering.
 pub async fn list_page(transport: &Transport, page: u64) -> Result<AgentPolicyPage> {
     transport.require_feature(Feature::FleetPolicies).await?;
     let body = transport
@@ -347,13 +329,10 @@ pub async fn list_page(transport: &Transport, page: u64) -> Result<AgentPolicyPa
     })
 }
 
-/// Read one policy by a stable id read from a response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<AgentPolicy> {
     get_selector(transport, require_path_segment(id)?).await
 }
 
-/// Read one policy by the caller's own selector, which keeps the caller's
-/// validation.
 pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Result<AgentPolicy> {
     transport.require_feature(Feature::FleetPolicies).await?;
     decode_item(
@@ -362,7 +341,6 @@ pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Resul
     )
 }
 
-/// Create a policy with its explicit id and no implicit System integration.
 pub async fn create(transport: &Transport, spec: &AgentPolicySpec) -> Result<AgentPolicy> {
     transport.require_feature(Feature::FleetPolicies).await?;
     spec.validate()?;
@@ -376,8 +354,6 @@ pub async fn create(transport: &Transport, spec: &AgentPolicySpec) -> Result<Age
     )
 }
 
-/// Replace a policy. `body` is the complete desired spec without `id`, plus
-/// explicit nulls; `agent_policy_ops::build_replace_body` builds it.
 pub async fn update(transport: &Transport, id: &str, body: &Value) -> Result<AgentPolicy> {
     let id = require_path_segment(id)?;
     transport.require_feature(Feature::FleetPolicies).await?;
@@ -387,7 +363,6 @@ pub async fn update(transport: &Transport, id: &str, body: &Value) -> Result<Age
     )
 }
 
-/// Delete one policy by id. Never sends `force`.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     transport.require_feature(Feature::FleetPolicies).await?;
     let body = json!({"agentPolicyId": id});
@@ -396,8 +371,6 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
         .await?;
     let deleted: DeleteEnvelope = decode(&response, "agent policy delete")?;
     if deleted.id != id {
-        // The route call above only surfaces the decoded body, not its HTTP
-        // status, and a body that decodes at all was a 2xx response.
         return Err(Error::with_status(
             ErrorKind::Http,
             200,
@@ -410,8 +383,6 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read a package's installation state. The full item is registry metadata;
-/// only the installation facts are kept.
 pub async fn package_status(transport: &Transport, name: &str) -> Result<PackageStatus> {
     let name = require_path_segment(name)?;
     transport.require_feature(Feature::FleetPolicies).await?;

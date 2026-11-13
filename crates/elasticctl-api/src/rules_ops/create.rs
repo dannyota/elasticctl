@@ -1,29 +1,19 @@
-//! Rule creation plans and outcomes.
-
 use super::*;
 use crate::Preconditions;
 
-/// A rule creation plan with its preview.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuleCreatePlan {
-    /// The rule to create.
     pub rule: Rule,
-    /// The mutation preview.
     pub preview: MutationPlan,
 }
 
-/// The outcome of creating a disabled rule.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct RuleCreateOutcome {
-    /// Whether the rule was created.
     pub applied: bool,
-    /// The created rule ID.
     pub rule_id: String,
-    /// Whether the created rule is enabled.
     pub enabled: bool,
 }
 
-/// Plan creation of a disabled rule and read its absence.
 pub async fn plan_create(t: &Transport, mut rule: Rule) -> Result<(RuleCreatePlan, Preconditions)> {
     validate_local(&rule)?;
     let id = rule.rule_id()?.to_owned();
@@ -124,7 +114,6 @@ fn sort_value(value: &mut Value) {
     }
 }
 
-/// Create the disabled rule in the plan.
 pub async fn apply_create(t: &Transport, plan: &RuleCreatePlan) -> Result<RuleCreateOutcome> {
     validate_local(&plan.rule)?;
     if plan.rule.as_map().get("enabled") != Some(&json!(false)) {

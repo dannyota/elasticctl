@@ -31,7 +31,6 @@ const REMOVED_FIELDS: [&str; 19] = [
     "version",
 ];
 
-/// Build a fresh portable policy from a simplified live Fleet response.
 pub fn normalize(item: &Map<String, Value>, active_space: &str) -> Result<IntegrationPolicySpec> {
     let id = required_string(item, "id", "integration policy")?;
     portability_check(item, &id, active_space)?;
@@ -146,8 +145,6 @@ fn normalize_inputs(item: &Map<String, Value>, id: &str) -> Result<Value> {
     Ok(Value::Object(normalized))
 }
 
-/// Keep package-defined input and stream maps open while rebuilding them
-/// without Fleet-generated ids or compiled content.
 fn normalize_package_map(value: &Value, compiled_field: &str) -> Result<Value> {
     let object = value
         .as_object()

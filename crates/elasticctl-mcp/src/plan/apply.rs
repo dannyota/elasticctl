@@ -1,4 +1,3 @@
-//! Confirmed writes, detached from the lifetime of a tool request.
 use super::{
     PlanError,
     audit::{self, Answer, Event},
@@ -398,7 +397,6 @@ async fn write(s: &ServerState, c: &CallContext, p: &Stored) -> Result<()> {
     store(s, c, |st| st.finish(&p.id, state, outcome, Instant::now()))?;
     let finished = get(s, c, &p.id)?;
     event(s, c, &finished, Event::ApplyFinished(status));
-    // A 409 closes the plan as stale, and design 8.4 logs every stale close.
     if state == PlanState::Stale {
         event(s, c, &finished, Event::PlanClosed);
     }

@@ -276,11 +276,6 @@ fn mutation_target_process_contract() {
     }
 }
 
-// Captured from unmodified a46f4c38a5de6405ff76824261d077c22e457dd2
-// (Task 0 on released 0.9.0), using this process test with
-// The capture-only test wrote compact result JSON from tools/list with
-// --allow-mutations rules-toggle, with and without --allow-query-tools.
-// The committed test only compares those frozen captures.
 #[test]
 fn toggle_catalog_snapshot() {
     for query in [false, true] {
@@ -299,7 +294,6 @@ fn toggle_catalog_snapshot() {
         let actual = serde_json::to_string(&reply["result"]).unwrap();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(format!("tests/snapshots/mcp_toggle_{query}.json"));
-        // A Windows checkout may convert the snapshot to CRLF; the server writes LF.
         assert_eq!(
             actual,
             std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
@@ -333,9 +327,6 @@ fn new_class_process_contract() {
     }
 }
 
-// Read-only results/instructions: tag v0.8.2. Toggle: unmodified a46f4c38 (0.9.0 + Task 0).
-// Reproduce by git archive of that revision, cargo build --locked -p elasticctl
-// --bin elasticctl --jobs 2, and these direct-start JSON-RPC requests.
 #[test]
 fn compatibility_results_and_instructions() {
     for toggle in [false, true] {
@@ -383,7 +374,6 @@ fn compatibility_results_and_instructions() {
         let actual = captures.concat();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(format!("tests/snapshots/mcp_compatibility_{toggle}.jsonl"));
-        // A Windows checkout may convert the snapshot to CRLF; the server writes LF.
         assert_eq!(
             actual,
             std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")

@@ -1,7 +1,3 @@
-//! CLI adapters for Fleet policy administration. API orchestration stays in
-//! `elasticctl_api::fleet`; this module only supplies context, the mutation
-//! guard, artifact delivery, and renderer values.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::content_codec::ContentFormat;
@@ -37,13 +33,11 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
     to_value(&agent_policy_ops::get_op(transport, selector).await?)
 }
 
-/// Check a portable file without building a context or transport.
 pub fn validate(path: &Path) -> Result<Value> {
     let specs = agent_policy_ops::validate(path)?;
     Ok(json!({"valid": true, "total": specs.len()}))
 }
 
-/// Validate the entire import artifact before configuration is consulted.
 pub fn validate_import_artifact(path: &Path) -> Result<()> {
     if agent_policy_ops::validate(path)?.is_empty() {
         return Err(Error::new(
@@ -140,13 +134,11 @@ pub async fn integration_get(ctx: &Context, selector: &str) -> Result<Value> {
     to_value(&integration_policy_ops::get_op(transport, selector).await?)
 }
 
-/// Check a portable integration-policy file without building a context or transport.
 pub fn integration_validate(path: &Path) -> Result<Value> {
     let specs = integration_policy_ops::validate(path)?;
     Ok(json!({"valid": true, "total": specs.len()}))
 }
 
-/// Read and retain the entire import artifact before configuration is consulted.
 pub fn validate_integration_import_artifact(
     path: &Path,
 ) -> Result<IntegrationPolicyImportArtifact> {

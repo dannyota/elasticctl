@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Check authored file lengths against limits and a shrinking baseline.
 set -euo pipefail
 
 RUST_MAX=700
@@ -24,8 +23,6 @@ cap_for() {
   '
 }
 
-# Reject malformed rows and duplicate paths before any comparison: a second
-# row for one path would otherwise turn a cap check into an arithmetic error.
 if ! awk '
   /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
   !/^[0-9]+ [^ ]/ { printf "%s: malformed baseline row: %s\n", FILENAME, $0; bad = 1; next }
@@ -46,10 +43,8 @@ if [[ -n "$base_ref" ]]; then
     base_has_baseline=1
     base_baseline=$(git show "$base_commit:$BASELINE")
   else
-    # The change that introduces the gate has no base baseline to compare.
     printf 'check-lengths: %s has no baseline; skipping base comparison\n' "$base_ref"
   fi
-  # `|| [[ -n $cap ]]` also reads a final line without a newline.
   ((base_has_baseline)) && while read -r cap file || [[ -n "$cap" ]]; do
     [[ -n "$cap" ]] || continue
     base_cap=$(cap_for "$file" <<<"$base_baseline")
@@ -63,7 +58,6 @@ if [[ -n "$base_ref" ]]; then
   done < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$BASELINE")
 fi
 
-# Delay a test attribute until the following line confirms an inline module.
 count_lines() {
   awk -v rust="$2" '
     { sub(/\r$/, "") }

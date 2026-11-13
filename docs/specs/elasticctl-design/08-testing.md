@@ -14,6 +14,12 @@ recording host in configured-authority and normalized-default-port forms,
 using URL hostname case-insensitive matching. Each fixture records its
 deployment flavor and stack version so drift is visible.
 
+The `_authenticate` fixture redacts every leaf of `metadata`, whatever its
+key. Elasticsearch returns the underlying user's cached metadata even for an
+API key, and for a user who has signed in through SAML or OIDC it has held SSO
+access and refresh tokens and an email under claim-URI keys that no key list
+anticipates. Nothing in elasticctl decodes it.
+
 The status fixture removes the top-level instance `name`, deployment `uuid`,
 and runtime `metrics` object. Product build fields under `version` remain as
 the public capability evidence. Recorder progress and retry diagnostics use

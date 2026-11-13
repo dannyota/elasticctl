@@ -146,8 +146,6 @@ impl<C: Child> Session<C> {
 }
 fn child_command(config: &Path, mutations: bool, api_key: Option<&str>) -> std::process::Command {
     let mut command = mcp_smoke::offline_child_command(config, false);
-    // Keep the config's target fields and pass only the live key back through
-    // the environment. Source changes, but banners and plans use the name.
     if let Some(key) = api_key {
         command.env("ELASTICCTL_API_KEY", key);
     }
@@ -217,9 +215,6 @@ fn rule_body(id: &str, index: &str) -> TestResult<elasticctl_api::model::Rule> {
     value["tags"] = json!([LIVE_TAG, id]);
     safe(elasticctl_api::model::Rule::from_value(value))
 }
-/// The rule as the plans see it. An enabled rule runs on its own, and Kibana then
-/// rewrites `execution_summary`, so "no change" compares this form, the same one
-/// stale detection uses, not the raw read.
 fn rule_state(rule: &elasticctl_api::model::Rule) -> elasticctl_api::model::Rule {
     elasticctl_api::normalize::canonical(rule)
 }

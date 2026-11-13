@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Validate every tracked conformance report without exposing matched data.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,7 +24,6 @@ declare -A CONTRACT_LISTS=(
 
 shopt -s nullglob
 dirs=(docs/conformance/v*)
-# Keep only directories: the glob would otherwise match a stray regular file.
 filtered=()
 for candidate in "${dirs[@]}"; do
   [ -d "$candidate" ] && filtered+=("$candidate")

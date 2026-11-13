@@ -1,11 +1,8 @@
-//! Data view deletion planning and apply.
-
 use super::{
     BTreeSet, DataViewReference, DataViewSummary, DeleteOutcome, Error, ErrorKind, MutationPlan,
     Result, Transport, data_views, invalid_plan, json, resolve_from_summaries,
 };
 
-/// One stable source and the reference/default facts shown in a delete guard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataViewDeleteTarget {
     pub source: DataViewSummary,
@@ -13,7 +10,6 @@ pub struct DataViewDeleteTarget {
     pub was_default: bool,
 }
 
-/// An immutable, guard-ready data-view deletion or reference replacement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataViewDeletePlan {
     pub preview: MutationPlan,
@@ -21,7 +17,6 @@ pub struct DataViewDeletePlan {
     pub replacement: Option<DataViewSummary>,
     pub default_before: Option<String>,
 }
-/// Resolve every delete selector and inspect all references before the guard.
 pub async fn plan_delete(
     transport: &Transport,
     selectors: &[String],
@@ -34,9 +29,6 @@ pub async fn plan_delete(
         ));
     }
 
-    // A single stable list snapshot resolves every selector, including the
-    // optional replacement, before any reference preview can observe a later
-    // state.
     let views = data_views::list(transport).await?;
     let mut seen = BTreeSet::new();
     let mut sources = Vec::new();
@@ -122,7 +114,6 @@ pub async fn plan_delete(
     })
 }
 
-/// Apply a guarded data-view deletion without resolving selectors again.
 pub async fn apply_delete(
     transport: &Transport,
     plan: &DataViewDeletePlan,
@@ -212,8 +203,6 @@ pub async fn apply_delete(
     })
 }
 
-/// Re-read the source's guarded safety facts in the route order that leaves
-/// the smallest documented check-to-write window.
 async fn check_delete_snapshot(
     transport: &Transport,
     target: &DataViewDeleteTarget,

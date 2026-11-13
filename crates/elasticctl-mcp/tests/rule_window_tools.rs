@@ -1,5 +1,3 @@
-//! `rules_list` threat filters and its request bounds.
-
 #[allow(dead_code)]
 mod support;
 
@@ -55,7 +53,6 @@ async fn call(harness: &mut Harness, id: u64, arguments: Value) -> Value {
     reply
 }
 
-/// The recorded `_find` response, served unchanged for every request.
 async fn recorded_find_server() -> MockServer {
     let fixture: Value = serde_json::from_str(FIXTURE).expect("rules_find fixture is JSON");
     let server = MockServer::start().await;
@@ -152,7 +149,6 @@ async fn rules_list_declares_optional_threat_inputs_with_their_grammar() {
     harness.join().await.expect("clean EOF");
 }
 
-/// Each threat input becomes its KQL clause on the one name-ordered page.
 #[tokio::test]
 async fn threat_inputs_become_kql_clauses_on_the_single_name_ordered_page() {
     let cases = [
@@ -263,8 +259,6 @@ async fn find_paths(stack: &MockStack) -> Vec<String> {
         .collect()
 }
 
-/// An empty source-only page proves the source partition; a threat filter
-/// narrows the selection, so its empty page does not.
 #[tokio::test]
 async fn an_empty_source_page_sends_four_requests_and_a_threat_filtered_one_sends_one() {
     for (arguments, finds) in [

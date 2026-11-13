@@ -1,8 +1,3 @@
-//! `compose::alert_context`: request plan, part rules, caps, and findings.
-//!
-//! A small scripted HTTP server stands in for the stack so a test can answer
-//! any step with a recorded body, an error status, a dropped connection, or
-//! no answer at all, and then compare the exact request sequence.
 use elasticctl_api::compose::{
     Part, SkipReason,
     alert_context::{self, AlertFinding},
@@ -34,7 +29,6 @@ fn fixture(name: &str) -> Value {
     assert!(!v.is_null(), "fixture {name} has a response");
     v
 }
-/// A recorded error body, sent with a chosen status.
 fn error_body() -> Value {
     recorded_file("data_view_not_found.json")["error"].clone()
 }
@@ -133,7 +127,6 @@ impl Stack {
         )
         .unwrap()
     }
-    /// Every request in arrival order, without the cached capability probe.
     fn requests(&self) -> Vec<Req> {
         self.log
             .lock()
@@ -212,7 +205,6 @@ async fn serve(mut stream: TcpStream, route: Route, log: Log) {
     }
 }
 
-/// The recorded alert as a one-hit search page, with `edit` applied to it.
 fn alert_page(edit: impl FnOnce(&mut Value)) -> Value {
     let mut page = fixture("signals_search_rule_activity.json");
     let mut hit = page["hits"]["hits"][0].clone();
@@ -223,7 +215,6 @@ fn alert_page(edit: impl FnOnce(&mut Value)) -> Value {
     page.as_object_mut().unwrap().remove("aggregations");
     page
 }
-/// The recorded rule with `n` exception references derived from its first.
 fn rule_with_refs(n: usize) -> Value {
     let mut rule = fixture("rule_get_executed.json");
     let first = rule["exceptions_list"][0].clone();
@@ -238,7 +229,6 @@ fn rule_with_refs(n: usize) -> Value {
     );
     rule
 }
-/// The recorded cases-by-alert answer with `n` rows derived from its first.
 fn case_refs(n: usize) -> Value {
     let row = fixture("cases_by_alert.json")[0].clone();
     json!(
@@ -257,15 +247,12 @@ fn case_detail(req: &Req) -> Value {
     case["id"] = json!(req.path().trim_start_matches("/api/cases/"));
     case
 }
-/// The recorded activity answer as a `size: 0` search returns it.
 fn activity() -> Value {
     let mut body = fixture("signals_search_rule_activity.json");
     body["hits"]["hits"] = json!([]);
     body
 }
 
-/// Recorded answers for a rule with `refs` exception references and an
-/// alert in `cases` cases.
 fn recorded(refs: usize, cases: usize) -> impl Fn(Step, &Req) -> Act + Send + Sync + Clone {
     move |step, req| match step {
         Alert => Act::Json(200, alert_page(|_| ())),
@@ -559,12 +546,8 @@ async fn malformed_cases_route_is_an_http_part_error() {
     }
 }
 
-/// Each step answered with a fatal error: the call fails with that kind and
-/// no later request is sent.
 #[tokio::test]
 async fn fatal_errors_at_each_step_fail_the_call() {
-    // The cases run one at a time: run together on a loaded runner, a hanging
-    // request could time out before it reached the server.
     let plan = [Alert, Rule, List, Count, Cases, Case, Activity];
     for (at, failing) in plan.into_iter().enumerate() {
         for fatal in [ErrorKind::Auth, ErrorKind::Connection, ErrorKind::Timeout] {
@@ -580,13 +563,11 @@ async fn fatal_errors_at_each_step_fail_the_call() {
                 }
             })
             .await;
-            // Only the hanging step relies on the timeout.
             let timeout = if fatal == ErrorKind::Timeout { 2 } else { 30 };
             let e = alert_context::alert_context(&s.transport(timeout), ALERT_ID, "24h")
                 .await
                 .unwrap_err();
             assert_eq!(e.kind, fatal, "{failing:?}");
-            // Leave room for a later request to arrive before counting.
             tokio::time::sleep(Duration::from_millis(200)).await;
             assert_eq!(s.steps(), plan[..=at], "{failing:?} {fatal:?}");
         }
@@ -624,7 +605,6 @@ async fn maximum_work_sends_nineteen_requests() {
         };
         assert_eq!((cs.total, cs.truncated), (cases, cases > 5));
         assert!(!c.partial());
-        // One cached capability probe precedes the first exception list read.
         assert_eq!(s.all(), 20);
     }
 }
@@ -695,8 +675,6 @@ async fn findings_follow_the_fixed_order() {
     );
 }
 
-/// A rule over a missing index reports `partial failure`, which is not a
-/// failed execution.
 #[tokio::test]
 async fn partial_failure_is_not_a_failed_execution() {
     let base = recorded(0, 0);
@@ -738,8 +716,6 @@ async fn invalid_inputs_send_nothing() {
     assert_eq!(s.all(), 0);
 }
 
-/// The alert id and every case id reach the cases routes as one encoded path
-/// segment under the fixed prefix.
 #[tokio::test]
 async fn ids_arrive_as_one_path_segment() {
     for (id, encoded) in [

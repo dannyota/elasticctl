@@ -4,8 +4,6 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Checking only nonempty output and an `elasticctl` token would accept the
-/// wrong shell. Pin each shell to one unique token and one forbidden token.
 #[test]
 fn completion_emits_the_right_script_for_each_shell() {
     let cases = [

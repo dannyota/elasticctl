@@ -21,8 +21,6 @@ pub(in crate::mcp_mutations) fn lab_target(opt_in: bool, profile: &Profile) -> b
     }
     opt_in && loopback(&profile.kibana_url) && profile.es_url.as_deref().is_some_and(loopback)
 }
-// Status has no Elasticsearch UUID. Console's GET / read compares the
-// cluster behind Kibana directly, without provisioning a probe object.
 pub(in crate::mcp_mutations) async fn fingerprint(profile: &Profile, opt_in: bool) -> TestResult {
     require(lab_target(opt_in, profile))?;
     let options = || elasticctl_core::transport::TransportOptions {
@@ -62,8 +60,6 @@ pub(in crate::mcp_mutations) async fn fingerprint(profile: &Profile, opt_in: boo
         .as_str()
         .filter(|v| !v.is_empty() && *v != "_na_")
         .ok_or("contract")?;
-    // Kibana's extended stats name the Elasticsearch cluster it uses. The
-    // Console proxy is an internal route on 9.5 and refuses a body on `GET /`.
     let through_kibana = safe(kibana.get("/api/stats?extended=true").await)?;
     require(through_kibana["cluster_uuid"] == uuid)
 }
@@ -123,8 +119,6 @@ pub(in crate::mcp_mutations) async fn measure_with_basic(
         report("M13", "inconclusive", start);
         return Ok(());
     };
-    // Kibana makes a rule's API key only when the rule is enabled, so each
-    // rule is enabled by the credential that created it before owners are read.
     let probe_id = unique_name("mutation-owner-probe");
     create_rule(&other, cleanup, &probe_id, index).await?;
     toggle(&other, cleanup, &probe_id, true).await?;
@@ -144,8 +138,6 @@ pub(in crate::mcp_mutations) async fn measure_with_basic(
         report("M13", "inconclusive", start);
         return Ok(());
     }
-    // The rule is enabled and owned by `elastic`. The other credential then
-    // disables it and enables it again; each read shows whose key it runs on.
     toggle(&other, cleanup, &rule_id, false).await?;
     let disabled = safe(t.get(&path).await)?;
     toggle(&other, cleanup, &rule_id, true).await?;

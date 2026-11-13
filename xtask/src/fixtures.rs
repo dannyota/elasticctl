@@ -1,5 +1,3 @@
-//! Recorded envelopes and disk writing.
-
 use crate::recorder::preview::{
     PREVIEW_HITS_RESPONSE_VOLATILE_FIELDS, PREVIEW_VOLATILE_FIELDS, RULE_VOLATILE_FIELDS,
 };
@@ -19,8 +17,6 @@ pub(crate) struct Recording {
     pub(crate) fixtures: Vec<RecordedFixture>,
 }
 
-/// Build one scrubbed response fixture. Fixture documents stay in memory until
-/// the recording session has cleaned every marker-owned object.
 pub(crate) fn response_fixture(
     name: &'static str,
     flavor: &str,
@@ -43,9 +39,6 @@ pub(crate) fn response_fixture(
     RecordedFixture { name, document }
 }
 
-/// Build one scrubbed request/response exchange. A response alone cannot prove
-/// which index and field were queried, so query-sensitive operations retain a
-/// scrubbed request alongside the response.
 pub(crate) fn exchange_fixture(
     name: &'static str,
     flavor: &str,
@@ -70,8 +63,6 @@ pub(crate) fn exchange_fixture(
     }
 }
 
-/// Record a rule, list, or item response, stripping the volatile server-owned
-/// fields so a re-record of the same object is byte-identical.
 pub(crate) fn rule_fixture(
     name: &'static str,
     flavor: &str,
@@ -82,8 +73,6 @@ pub(crate) fn rule_fixture(
     response_fixture(name, flavor, version, body, None)
 }
 
-/// Record a rule, list, or item exchange, stripping the same volatile fields
-/// from the response body.
 pub(crate) fn rule_exchange_fixture(
     name: &'static str,
     flavor: &str,
@@ -95,7 +84,6 @@ pub(crate) fn rule_exchange_fixture(
     exchange_fixture(name, flavor, version, request, body)
 }
 
-/// Record a preview response, stripping the per-run preview fields.
 pub(crate) fn preview_fixture(
     name: &'static str,
     flavor: &str,
@@ -106,8 +94,6 @@ pub(crate) fn preview_fixture(
     response_fixture(name, flavor, version, body, None)
 }
 
-/// Record a preview-hits exchange, stripping per-run fields from both the
-/// request (the preview id in the query) and the response (the alert hits).
 pub(crate) fn preview_exchange_fixture(
     name: &'static str,
     flavor: &str,
@@ -121,7 +107,6 @@ pub(crate) fn preview_exchange_fixture(
     exchange_fixture(name, flavor, version, request, body)
 }
 
-/// Record a classified endpoint error without inventing a success body.
 pub(crate) fn error_fixture(
     name: &'static str,
     flavor: &str,
@@ -143,10 +128,6 @@ pub(crate) fn error_fixture(
     }
 }
 
-/// Task 8 records classified Fleet lifecycle failures without copying a
-/// server-provided message into a public fixture. Fleet errors can name a
-/// user, deployment, policy, or secret reference, while the classification
-/// and HTTP status are sufficient route-contract evidence.
 pub(super) fn integration_policy_error_fixture(
     name: &'static str,
     flavor: &str,

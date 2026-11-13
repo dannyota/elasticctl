@@ -1,6 +1,3 @@
-//! The `rule_readiness` task tool: validate the selector, run the fixed read
-//! plan, and project counts and statuses. No index, alias, or data stream
-//! name from a response is projected.
 use super::*;
 use crate::server::validate_text;
 use elasticctl_api::compose::readiness::{
@@ -159,7 +156,7 @@ struct ReadinessData {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::large_enum_variant)] // Schema-only alternatives are never instantiated.
+#[allow(clippy::large_enum_variant)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum ReadinessOutput {

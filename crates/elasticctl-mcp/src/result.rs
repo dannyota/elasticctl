@@ -1,5 +1,3 @@
-//! Shared structured tool result envelopes.
-
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{
     RoleServer,
@@ -55,7 +53,6 @@ pub struct ToolFailure {
     pub error: ToolError,
 }
 
-/// Build a success result with identical structured and text representations.
 pub(crate) fn success(
     target: TargetContext,
     data: serde_json::Value,
@@ -69,7 +66,6 @@ pub(crate) fn success(
     )
 }
 
-/// Build a caller-safe tool error result.
 pub(crate) fn failure(
     target: TargetContext,
     error: ToolError,
@@ -82,8 +78,6 @@ pub(crate) fn failure(
     )
 }
 
-/// Build a list result, removing complete trailing rows until both copies of
-/// the envelope fit. Callers keep their schema-specific rows under `row_key`.
 pub(crate) fn success_with_truncated_rows(
     target: TargetContext,
     mut data: serde_json::Value,

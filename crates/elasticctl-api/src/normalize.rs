@@ -1,22 +1,11 @@
-//! Deterministic rule forms.
-//!
-//! `canonical` is what `pull` writes: volatile fields removed and keys sorted.
-//! `comparable` is what `diff` compares: `canonical` plus server defaults.
-//! They remain separate so `pull` does not write defaults the author omitted.
-
 use crate::model::{
     COMMENT_VOLATILE_FIELDS, ExceptionItem, ExceptionList, ITEM_VOLATILE_FIELDS,
     LIST_VOLATILE_FIELDS, Rule, VOLATILE_FIELDS, server_defaults,
 };
 use serde_json::{Map, Value};
 
-/// The tag Serverless appends to a rule that a project-scoped Elasticsearch
-/// API key enables (spec 7.2). It is server-applied state, so normalization
-/// drops it (spec 5.1).
 const CLOUD_API_KEY_TAG: &str = "Missing Elastic Cloud API Key";
 
-/// Remove the server-owned fields that change on every write, and every
-/// `tags` element equal to `CLOUD_API_KEY_TAG`.
 pub fn strip_volatile(rule: &mut Rule) {
     let map = rule.as_map_mut();
     for field in VOLATILE_FIELDS {
@@ -27,11 +16,6 @@ pub fn strip_volatile(rule: &mut Rule) {
     }
 }
 
-/// Remove the volatile pointer from every exception reference.
-///
-/// Spec 4.5: `id` is required on create and validated by nothing, while export
-/// and import both match on `list_id`. Identity is `list_id` plus
-/// `namespace_type`; `push` re-resolves `id` against the target stack.
 pub fn strip_exception_ids(rule: &mut Rule) {
     if let Some(Value::Array(refs)) = rule.as_map_mut().get_mut("exceptions_list") {
         for r in refs.iter_mut() {
@@ -42,7 +26,6 @@ pub fn strip_exception_ids(rule: &mut Rule) {
     }
 }
 
-/// Add fields the server fills on create without overwriting explicit values.
 pub fn fill_defaults(rule: &mut Rule) {
     let map = rule.as_map_mut();
     for (k, v) in server_defaults() {
@@ -50,11 +33,6 @@ pub fn fill_defaults(rule: &mut Rule) {
     }
 }
 
-/// Recursively sort object keys for deterministic output.
-///
-/// `serde_json::Map` uses `BTreeMap` by default. This workspace enables
-/// `preserve_order`, which retains insertion order, so rebuild the map to make
-/// the output order explicit.
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(m) => {
@@ -66,14 +44,11 @@ fn sort_value(value: &Value) -> Value {
             }
             Value::Object(out)
         }
-        // Array order is meaningful for tags, index patterns, and threat
-        // mappings, so preserve it.
         Value::Array(a) => Value::Array(a.iter().map(sort_value).collect()),
         other => other.clone(),
     }
 }
 
-/// The on-disk form.
 pub fn canonical(rule: &Rule) -> Rule {
     let mut out = rule.clone();
     strip_volatile(&mut out);
@@ -82,14 +57,11 @@ pub fn canonical(rule: &Rule) -> Rule {
     Rule::from_value(sorted).expect("rule_id survives normalization")
 }
 
-/// The comparison form.
 pub fn comparable(rule: &Rule) -> Rule {
     let mut out = rule.clone();
     strip_volatile(&mut out);
     strip_exception_ids(&mut out);
     fill_defaults(&mut out);
-    // A rule left with no tags compares equal whether `tags` is empty or
-    // absent, so dropping the server-applied tag never shows as drift.
     out.as_map_mut()
         .entry("tags")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -97,7 +69,6 @@ pub fn comparable(rule: &Rule) -> Rule {
     Rule::from_value(sorted).expect("rule_id survives normalization")
 }
 
-/// The on-disk form of an exception-list container.
 pub fn canonical_list(list: &ExceptionList) -> ExceptionList {
     let mut out = list.clone();
     for field in LIST_VOLATILE_FIELDS {
@@ -107,14 +78,11 @@ pub fn canonical_list(list: &ExceptionList) -> ExceptionList {
     ExceptionList::from_value(sorted).expect("list_id survives normalization")
 }
 
-/// The on-disk form of an exception item.
 pub fn canonical_item(item: &ExceptionItem) -> ExceptionItem {
     let mut out = item.clone();
     for field in ITEM_VOLATILE_FIELDS {
         out.as_map_mut().remove(field);
     }
-    // Comments carry server-minted fields too (spec 7.7). Skip non-object
-    // entries the way `exception_refs` skips malformed reference entries.
     if let Some(Value::Array(comments)) = out.as_map_mut().get_mut("comments") {
         for c in comments.iter_mut() {
             if let Value::Object(m) = c {
@@ -128,8 +96,6 @@ pub fn canonical_item(item: &ExceptionItem) -> ExceptionItem {
     ExceptionItem::from_value(sorted).expect("item_id survives normalization")
 }
 
-/// Sort rules for stable file output and diff reports. Rules with unreadable
-/// `rule_id` values sort last.
 pub fn sort_rules(rules: &mut [Rule]) {
     rules.sort_by(|a, b| {
         let (x, y) = (
@@ -140,8 +106,6 @@ pub fn sort_rules(rules: &mut [Rule]) {
     });
 }
 
-/// Sort exception-list containers for stable file output and diff reports.
-/// Lists with unreadable `list_id` values sort last.
 pub fn sort_lists(lists: &mut [ExceptionList]) {
     lists.sort_by(|a, b| {
         let (x, y) = (
@@ -152,8 +116,6 @@ pub fn sort_lists(lists: &mut [ExceptionList]) {
     });
 }
 
-/// Sort exception items for stable file output and diff reports. Items with
-/// unreadable identities sort last.
 pub fn sort_items(items: &mut [ExceptionItem]) {
     items.sort_by(|a, b| {
         let (x, y) = (
@@ -176,7 +138,6 @@ mod tests {
     use serde_json::json;
 
     fn pulled() -> Rule {
-        // A rule returned by the API.
         Rule::from_value(json!({
             "rule_id": "abc", "name": "a rule", "type": "query", "risk_score": 21,
             "id": "6b796e42-99fa-4296-8dc1-a693dd455dd0",
@@ -190,7 +151,6 @@ mod tests {
     }
 
     fn hand_authored() -> Rule {
-        // A hand-authored rule has no volatile fields or defaults.
         Rule::from_value(json!({
             "rule_id": "abc", "name": "a rule", "type": "query", "risk_score": 21
         }))
@@ -225,7 +185,6 @@ mod tests {
         Rule::from_value(json!({"rule_id": "abc", "tags": tags})).unwrap()
     }
 
-    /// Spec 5.1: Serverless appends this tag after an enable (spec 7.2).
     #[test]
     fn strip_volatile_removes_every_cloud_key_tag_and_keeps_other_tags_in_order() {
         let mut r = tagged(json!([
@@ -345,7 +304,6 @@ mod tests {
         );
     }
 
-    // The state engine relies on this property.
     #[test]
     fn a_pulled_rule_and_its_hand_authored_equivalent_compare_equal() {
         assert_eq!(
@@ -405,7 +363,6 @@ mod tests {
 
     #[test]
     fn sort_rules_puts_unreadable_rule_id_last_without_panicking() {
-        // Transparent `Deserialize` can create this; `from_value` rejects it.
         let bad: Rule = serde_json::from_value(json!({"rule_id": 123})).unwrap();
         let good_c = Rule::from_value(json!({"rule_id": "c"})).unwrap();
         let good_a = Rule::from_value(json!({"rule_id": "a"})).unwrap();
@@ -426,7 +383,6 @@ mod tests {
         untagged.as_map_mut().remove("tags");
         assert_eq!(comparable(&tagged), comparable(&untagged));
         assert_eq!(comparable(&untagged), comparable(&tagged));
-        // The on-disk form does not invent an empty array.
         assert!(!canonical(&untagged).as_map().contains_key("tags"));
     }
 
@@ -452,7 +408,6 @@ mod tests {
         assert_eq!(once, twice);
     }
 
-    /// Spec 4.5. Identity is `list_id`; `id` is a pointer resolved at push time.
     #[test]
     fn canonical_strips_the_exception_pointer_but_keeps_the_reference() {
         let r = Rule::from_value(json!({
@@ -473,8 +428,6 @@ mod tests {
         assert_eq!(refs[0]["namespace_type"], json!("single"));
     }
 
-    /// The bug this closes: a rule promoted between stacks carries a pointer to an
-    /// object that does not exist on the target.
     #[test]
     fn two_stacks_ids_for_one_list_do_not_read_as_drift() {
         let mk = |id: &str| {
@@ -542,7 +495,7 @@ mod tests {
             "exceptions_list": ["not an object", {"list_id": "already stripped"}]
         }))
         .unwrap();
-        strip_exception_ids(&mut r); // must not panic
+        strip_exception_ids(&mut r);
         let refs = r.as_map()["exceptions_list"].as_array().unwrap();
         assert_eq!(
             refs[0],
@@ -669,7 +622,6 @@ mod tests {
 
     #[test]
     fn sort_lists_puts_unreadable_list_id_last_without_panicking() {
-        // Transparent `Deserialize` can create this; `from_value` rejects it.
         let bad: ExceptionList =
             serde_json::from_value(json!({"namespace_type": "single"})).unwrap();
         let good_c =
@@ -685,7 +637,6 @@ mod tests {
 
     #[test]
     fn sort_items_puts_unreadable_list_id_last_without_panicking() {
-        // Transparent `Deserialize` can create this; `from_value` rejects it.
         let bad: ExceptionItem = serde_json::from_value(json!({"item_id": "i"})).unwrap();
         let good_c = ExceptionItem::from_value(json!({"list_id": "c", "item_id": "i"})).unwrap();
         let good_a = ExceptionItem::from_value(json!({"list_id": "a", "item_id": "i"})).unwrap();

@@ -1245,8 +1245,6 @@ async fn rule_api_failures_use_each_tool_schema_and_redact_remote_sentinels() {
     harness.join().await.expect("clean EOF");
 }
 
-/// A short `_find` page fails closed as an Elastic HTTP error rather than
-/// reporting fewer rules than the server total claims.
 #[tokio::test]
 async fn rules_list_refuses_a_short_server_page() {
     let server = MockServer::start().await;

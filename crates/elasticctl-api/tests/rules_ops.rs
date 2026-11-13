@@ -1,5 +1,3 @@
-//! The rules orchestration's contract, independent of the CLI.
-
 use elasticctl_api::model::Rule;
 use elasticctl_api::rules::{RuleFilter, RuleSource};
 use elasticctl_api::{codec, rules_ops};
@@ -19,7 +17,6 @@ async fn mock_stack_with_one_rule() -> MockStack {
     .await
 }
 
-/// Planning a disable must not disable anything.
 #[tokio::test]
 async fn plan_set_enabled_sends_no_write_request() {
     let stack = mock_stack_with_one_rule().await;
@@ -33,7 +30,6 @@ async fn plan_set_enabled_sends_no_write_request() {
     );
 }
 
-/// Planning a delete must not delete anything.
 #[tokio::test]
 async fn plan_delete_sends_no_write_request() {
     let stack = mock_stack_with_one_rule().await;
@@ -47,9 +43,6 @@ async fn plan_delete_sends_no_write_request() {
     );
 }
 
-/// Planning an import with `--skip-existing` reads which rules already exist
-/// (a GET) but must not write, and must name what would be skipped and leave
-/// the skipped rule out of the upload payload.
 #[tokio::test]
 async fn plan_import_sends_no_write_request_and_names_skips() {
     let stack = mock_stack_with_one_rule().await;
@@ -81,8 +74,6 @@ async fn plan_import_sends_no_write_request_and_names_skips() {
     );
 }
 
-/// A success body missing its required counters must not read as "nothing
-/// succeeded": that would silently drop a partial upload.
 #[tokio::test]
 async fn malformed_import_response_is_rejected() {
     let server = MockServer::start().await;
@@ -112,8 +103,6 @@ async fn malformed_import_response_is_rejected() {
     assert_eq!(err.kind, ErrorKind::Http);
 }
 
-/// An import whose rules all already exist must not upload anything. The
-/// empty NDJSON is reached through the all-skipped path, not passed by hand.
 #[tokio::test]
 async fn apply_import_of_an_all_skipped_file_uploads_nothing() {
     let stack = mock_stack_with_one_rule().await;
@@ -142,9 +131,6 @@ async fn apply_import_of_an_all_skipped_file_uploads_nothing() {
     );
 }
 
-/// Rules export produces a bundle: the rule plus the exception container and
-/// item it needs on the target stack. Dropping either exception line on import
-/// leaves the server with a rule whose reference cannot be resolved.
 #[tokio::test]
 async fn plan_import_preserves_the_full_ndjson_rule_bundle() {
     let dir = tempfile::tempdir().unwrap();
@@ -178,9 +164,6 @@ async fn plan_import_preserves_the_full_ndjson_rule_bundle() {
     assert_eq!(uploaded.items[0].item_id().unwrap(), "i");
 }
 
-/// `rules import` is guarded as a rule mutation. An exception-only bundle has
-/// no rule target for the guard to preview, so it must not become an unguarded
-/// exception write merely because it is valid NDJSON.
 #[tokio::test]
 async fn plan_import_drops_an_exception_only_ndjson_bundle() {
     let stack = MockStack::new().await;
@@ -216,9 +199,6 @@ async fn plan_import_drops_an_exception_only_ndjson_bundle() {
     );
 }
 
-/// State files intentionally omit volatile exception pointers. Before rules
-/// import crosses the wire, every readable list reference needs a syntactically
-/// valid placeholder so Kibana can re-resolve it to the target container.
 #[tokio::test]
 async fn plan_import_adds_upload_only_exception_pointer_placeholders() {
     let rule = Rule::from_value(json!({
@@ -274,9 +254,6 @@ async fn plan_import_adds_upload_only_exception_pointer_placeholders() {
     }
 }
 
-/// A skipped rule must not bring its exception objects along for the upload.
-/// The remaining rule still needs its own list and item, so filtering by a
-/// list id alone would be unsafe when namespaces differ.
 #[tokio::test]
 async fn plan_import_skip_existing_keeps_only_dependencies_of_uploaded_rules() {
     let stack = mock_stack_with_one_rule().await;
@@ -319,8 +296,6 @@ async fn plan_import_skip_existing_keeps_only_dependencies_of_uploaded_rules() {
     );
 }
 
-/// A rule read through an escaped selector is read again by its stored
-/// `rule_id`, because Kibana's KQL lookup decodes escapes.
 #[tokio::test]
 async fn get_one_rereads_a_rule_whose_rule_id_differs_from_the_selector() {
     let server = MockServer::start().await;
@@ -351,8 +326,6 @@ async fn get_one_rereads_a_rule_whose_rule_id_differs_from_the_selector() {
     assert_eq!(rule.name(), "Stored rule");
 }
 
-/// MCP's list reads one page of `limit` rules ordered by name, so its response
-/// stays bounded at any corpus size, and still reports the server total.
 #[tokio::test]
 async fn list_page_reads_one_bounded_page_ordered_by_name() {
     let rules = ["e", "d", "c", "b", "a"]
@@ -384,8 +357,6 @@ async fn list_page_reads_one_bounded_page_ordered_by_name() {
     }
 }
 
-/// An empty source-only page proves the source partition like `rules list`:
-/// the page plus three total reads.
 #[tokio::test]
 async fn list_page_proves_the_source_partition_on_an_empty_source_page() {
     let custom = RuleFilter {
@@ -440,8 +411,6 @@ async fn serve_find(server: &MockServer, rows: usize, per_page: u64, total: u64)
         .await;
 }
 
-/// A page shorter than both the request and the total is a short read; a page
-/// holding every match is complete even below `limit`, whatever `perPage` says.
 #[tokio::test]
 async fn list_page_refuses_only_a_short_page() {
     for (rows, per_page, total, ok) in [

@@ -73,9 +73,6 @@ struct IntegrationLease {
     delete_attempted: bool,
 }
 
-/// Test-only cleanup state for the Fleet contract. It never discovers marker
-/// objects by name: every mutation starts with a fresh exact GET and an owned
-/// id registered before the operation that may create it.
 pub(super) struct FleetCleanup {
     profile: Profile,
     nonce: String,
@@ -455,9 +452,6 @@ async fn cleanup_package(
     }
 }
 
-/// FleetState intentionally retains marker ids only. Package removal needs the
-/// complete package-policy list because an unrelated policy can consume the
-/// same exact coordinate without appearing in that marker-only audit.
 async fn require_no_system_consumers(transport: &Transport) -> CleanupResult {
     let policies = integration_policy_ops::collect(transport)
         .await

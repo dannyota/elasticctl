@@ -174,8 +174,6 @@ async fn delete_once_response_preserves_success_and_client_error_statuses_and_js
     }
 }
 
-/// The PATCH and upload variants return Kibana's own 2xx and 4xx bodies, so
-/// the recorder can store a 409, 413, or 415 exactly as Kibana sent it.
 #[tokio::test]
 async fn patch_and_upload_responses_preserve_success_and_client_error_bodies() {
     for operation in [Operation::PatchResponse, Operation::MultipartResponse] {
@@ -268,9 +266,6 @@ async fn send_once_calls_return_shared_503_errors_without_replaying() {
     }
 }
 
-/// A 429 is retryable on the ordinary transport. PATCH and the upload must
-/// still send once and return the shared rate-limit error; DELETE returns
-/// the 429 itself (see the response test above).
 #[tokio::test]
 async fn patch_and_upload_return_shared_429_errors_without_replaying() {
     for operation in [Operation::Patch, Operation::Multipart] {
@@ -323,7 +318,6 @@ async fn send_once_calls_return_shared_timeout_errors_without_replaying() {
     }
 }
 
-// Wiremock cannot reset a socket. Read the full request before sending a TCP RST.
 struct ResetServer {
     url: String,
     requests: Arc<AtomicUsize>,

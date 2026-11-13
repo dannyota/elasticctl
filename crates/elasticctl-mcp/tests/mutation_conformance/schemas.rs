@@ -23,7 +23,6 @@ fn validate(catalog: &Value, name: &str, r: &Value, error: bool) {
         .unwrap();
     let schema = &tool["outputSchema"];
     assert_eq!(schema["type"], "object", "{name}: {schema}");
-    // The envelope is an anyOf union; required fields belong to its definitions.
     for branch in ["ToolSuccess", "ToolFailure"] {
         let required = schema["$defs"][branch]["required"]
             .as_array()
@@ -57,18 +56,12 @@ fn validate(catalog: &Value, name: &str, r: &Value, error: bool) {
         !validator.is_valid(&broken),
         "{name}: accepts malformed payload: {broken}"
     );
-    // An unconstrained replacement accepts every negative control above.
     let permissive = jsonschema::validator_for(&json!({})).unwrap();
     assert!(permissive.is_valid(&json!({})) && permissive.is_valid(&broken));
     let text: Value =
         serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(&text, c);
 }
-/// Extends mutation_alerts::recorded_outcomes_and_consent_on_both_protocols,
-/// mutation_cases::recorded_flows_and_consent and mutation_rules_create::flow_exact_consent_and_routes_all_flavors_and_protocols
-/// with a named, exhaustive catalog sweep: rules_set_enabled_plan,
-/// rules_create_plan, alerts_set_status_plan, alerts_set_tags_plan, cases_create_plan,
-/// cases_comment_plan, cases_set_status_plan, plan_list, plan_get, plan_discard, plan_apply.
 #[tokio::test]
 async fn all_eleven_mutation_output_schemas_success_and_error() {
     let (s, mut h) = setup().await;
@@ -153,9 +146,6 @@ async fn all_eleven_mutation_output_schemas_success_and_error() {
     }
     finish(h).await;
 }
-/// Extends mutation_confirm_current::question's exact form check with a shape
-/// validator for design 6.2. The official 2026-07-28 schema file was not used:
-/// it is not vendored and this test runs without network access.
 #[tokio::test]
 async fn input_required_matches_documented_protocol_shape() {
     let (_s, mut h) = setup().await;

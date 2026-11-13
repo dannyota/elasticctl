@@ -1,6 +1,3 @@
-//! Offline proofs that each validator rejects unknown fields and
-//! inconsistent parts.
-
 use super::samples::{
     case_row, coverage_page, envelope, list_row, missing_list_row, not_found, ok, rule,
 };
@@ -82,7 +79,6 @@ fn rules_list_sample() -> Value {
     )
 }
 
-/// Insert one unknown field at `pointer` and require a rejection.
 fn rejects_unknown_at(
     sample: &Value,
     validate: fn(&Value) -> TestResult,

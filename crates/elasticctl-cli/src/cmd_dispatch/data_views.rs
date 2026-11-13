@@ -15,8 +15,6 @@ pub(crate) async fn data_views(args: &Cli, action: &DataViewsAction) -> Result<V
             Ok(ctx) => cmd::data_views::get(&ctx, selector).await,
             Err(e) => Err(e),
         },
-        // Local artifact validation must not read config or construct a
-        // transport, so it remains usable in an offline checkout.
         DataViewsAction::Validate { path } => cmd::data_views::validate(path),
         DataViewsAction::Export {
             selectors,

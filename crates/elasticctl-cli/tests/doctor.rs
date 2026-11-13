@@ -1,8 +1,3 @@
-//! Keep `doctor` usable when the configuration is broken—the time operators
-//! need it most. Unlike other commands, it turns `Context::build` failures
-//! into a failed `config` check in its JSON report instead of a bare stderr
-//! error envelope.
-
 use assert_cmd::Command;
 use serde_json::json;
 use std::fs;
@@ -13,10 +8,6 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Leave the mode to the process umask (usually 0644). `doctor` reports a
-/// permissive mode in its `config_permissions` check, not on stderr, so these
-/// fixtures need no workaround. Other commands are covered in
-/// `tests/permission_warning.rs`.
 fn write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     let path = dir.join("config.toml");
     fs::write(&path, body).unwrap();
@@ -46,7 +37,6 @@ timeout_secs = 30
     )
 }
 
-/// Point the default profile at a mock stack.
 fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
     write_config(
         dir,
@@ -65,8 +55,6 @@ timeout_secs = 5
     )
 }
 
-/// Serve the endpoints `doctor` needs for its `auth` check: a status probe,
-/// identity response, and empty rules page.
 async fn doctor_server(username: &str, realm: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -166,8 +154,6 @@ timeout_secs = 30
     assert_eq!(v["ok"], false);
     let config_check = find_check(&v, "config");
     assert_eq!(config_check["status"], "fail");
-    // Check `require_credential`'s message, not `Transport::new`'s generic
-    // message. Status alone cannot distinguish them.
     let msg = config_check["message"].as_str().unwrap();
     assert!(
         msg.contains("nocreds"),
@@ -202,8 +188,6 @@ fn doctor_reports_a_failed_config_check_for_a_missing_config_file() {
 
 #[test]
 fn an_unrelated_command_still_fails_fast_on_a_bad_profile() {
-    // Doctor's leniency must stay scoped to doctor; other commands still fail
-    // fast on `Context::build`.
     let dir = tempfile::tempdir().unwrap();
     let path = two_profile_config(dir.path());
     let out = bin()

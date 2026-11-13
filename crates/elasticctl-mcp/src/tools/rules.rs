@@ -1,5 +1,3 @@
-//! Read-only projections for Elastic Security rules.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::{PrebuiltStatus, Rule, RuleFilter, RuleSource, prebuilt, rules_ops};
@@ -26,17 +24,14 @@ const PREBUILT_STATUS_DESCRIPTION: &str =
 const DEFAULT_LIMIT: usize = 50;
 const MAX_TEXT_BYTES: usize = 1_024;
 
-/// The explicit adapter for all read-only rule tools.
 pub(crate) struct RulesAdapter;
 
 static ADAPTER: RulesAdapter = RulesAdapter;
 
-/// Return the read-only rule adapter.
 pub(crate) fn adapter() -> &'static dyn ToolAdapter {
     &ADAPTER
 }
 
-/// Return static rule definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
     vec![
         definition::<RulesGetInput, RulesGetOutput>("rules_get", GET_DESCRIPTION),
@@ -292,7 +287,7 @@ enum RulesListOutput {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::large_enum_variant)] // Schema-only alternatives are never instantiated.
+#[allow(clippy::large_enum_variant)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum RulesGetOutput {

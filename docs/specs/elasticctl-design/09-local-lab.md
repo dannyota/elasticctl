@@ -15,7 +15,14 @@ caller environment values take precedence. Passwords must match
 Compose. Values are written unquoted. Compose config and startup diagnostics
 are captured and replaced with fixed errors. An exclusive `mkdir lab/.up.lock`
 covers preparation through key persistence and fails fast if held; EXIT, INT,
-and TERM release it. Treat `lab/.env` as Compose data; never print or source it.
+and TERM release it. The lock records its owner's PID, so a lock left by a
+killed `up.sh` (SIGKILL skips the EXIT trap) is reclaimed once that process is
+gone. A lock without a PID file counts as held for five minutes, which covers
+the moment between `mkdir` and the PID write. Treat `lab/.env` as Compose
+data; never print or source it. `lab/up.sh` turns off inherited `set -x`
+tracing before it handles a credential, also when sourced, and parses
+`lab/.env` as data rather than running it. `lab/seed.sh` sources `up.sh` only
+for that parser.
 
 `lab/up.sh` waits for readiness, resets the `kibana_system` password, starts
 a 30-day trial when needed, bootstraps the signals index, and mints an API key.

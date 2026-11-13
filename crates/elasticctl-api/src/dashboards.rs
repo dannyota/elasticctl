@@ -1,5 +1,3 @@
-//! Typed dashboard models and public Kibana route wrappers.
-
 use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -8,10 +6,6 @@ use std::collections::BTreeSet;
 
 const BASE: &str = "/api/dashboards";
 
-/// The portable, author-controlled dashboard representation.
-///
-/// `data` is an ordered, open JSON map so new public API fields survive a
-/// portable artifact round trip.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DashboardSpec {
     pub id: String,
@@ -67,7 +61,6 @@ impl<'de> Deserialize<'de> for DashboardSpec {
     }
 }
 
-/// A dashboard list row returned by Kibana.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DashboardSummary {
@@ -79,14 +72,12 @@ pub struct DashboardSummary {
     pub tags: Option<Vec<String>>,
 }
 
-/// A warning Kibana returned while transforming a dashboard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DashboardWarning {
     pub message: String,
 }
 
-/// A full dashboard returned by Kibana.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dashboard {
     pub id: String,
@@ -95,7 +86,6 @@ pub struct Dashboard {
     pub warnings: Vec<DashboardWarning>,
 }
 
-/// One page returned by Kibana's dashboard list route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardPage {
     pub data: Vec<DashboardSummary>,
@@ -104,7 +94,6 @@ pub struct DashboardPage {
     pub total: u64,
 }
 
-/// One submitted value that Kibana did not persist.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DashboardLoss {
     pub path: String,
@@ -112,7 +101,6 @@ pub struct DashboardLoss {
     pub actual: Option<Value>,
 }
 
-/// List one page of dashboards through the public Dashboards API.
 pub async fn search(
     transport: &Transport,
     page: u64,
@@ -132,13 +120,10 @@ pub async fn search(
     decode_search(&transport.get(&route).await?)
 }
 
-/// Get one dashboard by a stable id read from a response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<Dashboard> {
     get_selector(transport, require_path_segment(id)?).await
 }
 
-/// Get one dashboard by the caller's own selector, which keeps the caller's
-/// validation.
 pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Result<Dashboard> {
     transport.require_feature(Feature::Dashboards).await?;
     decode_dashboard(
@@ -147,7 +132,6 @@ pub(crate) async fn get_selector(transport: &Transport, selector: &str) -> Resul
     )
 }
 
-/// Upsert one dashboard using only its portable body.
 pub async fn put(transport: &Transport, spec: &DashboardSpec) -> Result<Dashboard> {
     validate_spec(spec)?;
     let id = require_path_segment(&spec.id)?;
@@ -160,7 +144,6 @@ pub async fn put(transport: &Transport, spec: &DashboardSpec) -> Result<Dashboar
     )
 }
 
-/// Delete one dashboard by id.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     let id = require_path_segment(id)?;
     transport.require_feature(Feature::Dashboards).await?;
@@ -173,7 +156,6 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     }
 }
 
-/// Reject locally known dashboard values that Kibana accepts but drops.
 pub fn validate_spec(spec: &DashboardSpec) -> Result<()> {
     spec.validate_shape()?;
     if let Some(path) = time_range_mode_path(&Value::Object(spec.data.clone()), "$") {
@@ -185,7 +167,6 @@ pub fn validate_spec(spec: &DashboardSpec) -> Result<()> {
     Ok(())
 }
 
-/// Return sorted, unique data-view reference ids found anywhere in `value`.
 pub fn collect_data_view_refs(value: &Value) -> Vec<String> {
     fn collect(value: &Value, ids: &mut BTreeSet<String>) {
         match value {
@@ -213,7 +194,6 @@ pub fn collect_data_view_refs(value: &Value) -> Vec<String> {
     ids.into_iter().collect()
 }
 
-/// Find submitted values that are absent or changed in an accepted response.
 pub fn subset_losses(expected: &Value, actual: &Value) -> Vec<DashboardLoss> {
     fn collect(
         expected: &Value,
@@ -301,18 +281,11 @@ struct SearchEnvelope {
     meta: SearchMeta,
 }
 
-/// The wire row is intentionally separate from the flat rendering summary.
-/// Kibana nests dashboard fields under `data`; new nested fields do not affect
-/// list selection and are not rejected merely because this CLI does not render
-/// them yet.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchDashboardRow {
     id: String,
     data: SearchDashboardData,
-    // The measured row carries its own open metadata object. It is not part
-    // of the flat rendering summary, but requiring its object shape keeps a
-    // malformed successful response from being silently accepted.
     #[serde(rename = "meta")]
     _meta: Map<String, Value>,
 }
