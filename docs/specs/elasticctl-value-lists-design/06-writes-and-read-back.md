@@ -59,8 +59,10 @@ Values are compared as sets (section 3.6). The change runs in two phases
 
 - **Remove phase.** The phase first reads every item of the list with
   `GET /api/lists/items/_find?list_id=<id>` by `cursor` (D19). The values it
-  returns must equal the apply-time stored values, duplicates included;
-  otherwise the list stops with `conflict` before its first delete. Then, for
+  returns must equal, duplicates included, the stored values of the last read
+  before the phase: the apply-time read when removes run first, or the add
+  phase's verified read-back when adds ran first. Otherwise the list stops
+  with `conflict` before its first delete. Then, for
   each stored copy of each value in the remote set and not in the local set:
   `DELETE /api/lists/items?id=<item id>`. A delete by value is never sent
   (D13): Kibana runs it as a query on the list's field, which on `ip_range`
