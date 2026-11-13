@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.4"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.97.1"
 license = "Apache-2.0"
@@ -18,9 +18,9 @@ repository = "https://github.com/dannyota/elasticctl"
 authors = ["Danny"]
 
 [workspace.dependencies]
-elasticctl-core = { path = "crates/elasticctl-core", version = "0.9.4" }
-elasticctl-api = { path = "crates/elasticctl-api", version = "0.9.4" }
-elasticctl-mcp = { path = "crates/elasticctl-mcp", version = "0.9.4" }
+elasticctl-core = { path = "crates/elasticctl-core", version = "0.10.0" }
+elasticctl-api = { path = "crates/elasticctl-api", version = "0.10.0" }
+elasticctl-mcp = { path = "crates/elasticctl-mcp", version = "0.10.0" }
 elasticctl-api-test-support = { path = "crates/elasticctl-api/tests/support" }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 semver = "1.0.28"
