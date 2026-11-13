@@ -3,8 +3,8 @@
   "version": "9.5.6",
   "operation": "exception_create",
   "request": {
-    "list_id": "elasticctl-fixture-value-list-id-9",
-    "name": "elasticctl-fixture-value-list-id-9",
+    "list_id": "elasticctl-fixture-value-list-id-10",
+    "name": "elasticctl-fixture-value-list-id-10",
     "description": "elasticctl-live-marker",
     "type": "detection",
     "namespace_type": "single",
@@ -14,10 +14,10 @@
     ]
   },
   "response": {
-    "id": "elasticctl-fixture-value-list-id-10",
-    "list_id": "elasticctl-fixture-value-list-id-9",
+    "id": "elasticctl-fixture-value-list-id-11",
+    "list_id": "elasticctl-fixture-value-list-id-10",
     "type": "detection",
-    "name": "elasticctl-fixture-value-list-id-9",
+    "name": "elasticctl-fixture-value-list-id-10",
     "description": "elasticctl-live-marker",
     "immutable": false,
     "namespace_type": "single",
@@ -32,6 +32,6 @@
     "created_at": "2026-01-01T00:00:00.000Z",
     "created_by": "REDACTED",
     "updated_at": "2026-01-01T00:00:00.000Z",
-    "_version": "WzcyNzYsMV0="
+    "_version": "WzcyODAsMV0="
   }
 }

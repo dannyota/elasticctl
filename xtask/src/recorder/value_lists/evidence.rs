@@ -198,9 +198,14 @@ impl Evidence {
                     | "items_find_next"
                     | "items_import_settled"
                     | "items_delete_id"
+                    | "contain_delete_id"
                     | "item_create"
             );
-            let export = root == "/response" && matches!(name, "items_export" | "export_spellings");
+            let export = root == "/response"
+                && matches!(
+                    name,
+                    "items_export" | "export_spellings" | "contain_export" | "contain_export_after"
+                );
             if !export {
                 scrub_identities(
                     value,

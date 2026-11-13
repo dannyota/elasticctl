@@ -173,5 +173,11 @@ async fn refusal_import_408_keeps_parent_for_late_completion() {
         assert!(state.bootstrapped);
     }
     let requests = server.received_requests().await.unwrap();
-    assert!(requests[recorded..].iter().all(|r| r.method != "DELETE"));
+    assert!(
+        requests[recorded..]
+            .iter()
+            .filter(|r| r.method == "DELETE")
+            .all(|r| r.url.path() == "/api/lists"
+                && r.url.query_pairs().any(|(k, v)| k == "id" && v == CONTAIN))
+    );
 }

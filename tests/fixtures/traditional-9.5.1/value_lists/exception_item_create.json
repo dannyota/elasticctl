@@ -22,6 +22,15 @@
         },
         "field": "source.ip",
         "operator": "included"
+      },
+      {
+        "type": "list",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "field": "destination.ip",
+        "operator": "excluded"
       }
     ]
   },
@@ -41,6 +50,15 @@
           "type": "ip_range"
         },
         "operator": "included"
+      },
+      {
+        "type": "list",
+        "field": "destination.ip",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "operator": "excluded"
       }
     ],
     "namespace_type": "single",

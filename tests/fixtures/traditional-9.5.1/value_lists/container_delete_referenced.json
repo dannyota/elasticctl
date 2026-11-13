@@ -23,6 +23,15 @@
                     "type": "ip_range"
                   },
                   "operator": "included"
+                },
+                {
+                  "type": "list",
+                  "field": "destination.ip",
+                  "list": {
+                    "id": "elasticctl-fixture-value-list-id-3",
+                    "type": "ip_range"
+                  },
+                  "operator": "excluded"
                 }
               ],
               "id": "elasticctl-fixture-value-list-id-13",

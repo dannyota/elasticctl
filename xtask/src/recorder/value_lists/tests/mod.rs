@@ -370,8 +370,14 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "lists_find_next",
             "exception_create",
             "exception_item_create",
+            "exception_lists_find",
+            "exception_items_find",
             "container_delete_referenced",
             "container_delete",
+            "contain_create",
+            "contain_export",
+            "contain_delete_id",
+            "contain_export_after",
             "import_too_large",
             "import_wrong_extension",
             "import_absent_list",
@@ -463,7 +469,8 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
         [
             format!("{LIST}-item-0"),
             format!("{LIST}-item-1"),
-            format!("{LIST}-item-0")
+            format!("{LIST}-item-0"),
+            format!("{CONTAIN}-item-1")
         ]
     );
     for request in requests.iter().filter(|r| r.method == "DELETE") {

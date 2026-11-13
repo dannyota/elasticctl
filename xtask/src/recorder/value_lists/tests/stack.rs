@@ -119,16 +119,50 @@ impl Stack {
                 )
             }
             ("GET", "/api/exception_lists/_find") => {
+                if self.fail == Some("exception_lists_find") && query.contains_key("filter") {
+                    return response(503, json!({"message":"private-body"}));
+                }
                 let rows: Vec<_> =
                     if query.get("namespace_type").map(String::as_str) == Some("single") {
-                        self.exception.iter().cloned().collect()
+                        self.exception
+                            .iter()
+                            .filter(|row| {
+                                query.get("filter").is_none_or(|filter| {
+                                    filter
+                                        .strip_prefix("exception-list.attributes.list_id:")
+                                        .and_then(|v| v.strip_suffix('*'))
+                                        .is_some_and(|prefix| {
+                                            row["list_id"]
+                                                .as_str()
+                                                .is_some_and(|id| id.starts_with(prefix))
+                                        })
+                                })
+                            })
+                            .cloned()
+                            .collect()
                     } else {
                         vec![]
                     };
                 response(200, json!({"total": rows.len(), "data": rows}))
             }
             ("GET", "/api/exception_lists/items/_find") => {
-                let rows: Vec<_> = self.item.iter().cloned().collect();
+                if self.fail == Some("exception_items_find")
+                    && query.get("per_page").map(String::as_str) == Some("10")
+                {
+                    return response(503, json!({"message":"private-body"}));
+                }
+                let mut rows: Vec<_> = self.item.iter().cloned().collect();
+                if query.get("per_page").map(String::as_str) == Some("10") && !rows.is_empty() {
+                    if self.fail == Some("missing_operator") {
+                        rows[0]["entries"][1]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("operator");
+                    }
+                    if self.fail == Some("changed_operator") {
+                        rows[0]["entries"][1]["operator"] = json!("included");
+                    }
+                }
                 response(200, json!({"total": rows.len(), "data": rows}))
             }
             ("POST", "/api/lists") => {
@@ -142,7 +176,10 @@ impl Stack {
                     self.late_list = Some(value);
                     return response(503, json!({}));
                 }
-                self.lists.insert(key, value.clone());
+                self.lists.insert(key.clone(), value.clone());
+                if key == CONTAIN && self.fail == Some("contain_create") {
+                    return response(503, json!({"message":"private-body"}));
+                }
                 if self.fail == Some("create") {
                     return response(400, json!({}));
                 }
@@ -185,7 +222,18 @@ impl Stack {
                 if !text.contains('/') && !text.contains('-') {
                     value["value"] = json!(format!("{text}-{text}"));
                 }
-                self.values.entry(key).or_default().push(value.clone());
+                self.values
+                    .entry(key.clone())
+                    .or_default()
+                    .push(value.clone());
+                if key == CONTAIN
+                    && ((self.fail == Some("contain_add_item_0")
+                        && value["id"] == format!("{CONTAIN}-item-0"))
+                        || (self.fail == Some("contain_add_item_1")
+                            && value["id"] == format!("{CONTAIN}-item-1")))
+                {
+                    return response(503, json!({"message":"private-body"}));
+                }
                 response(200, value)
             }
             ("GET", "/api/lists/items/_find") => {
@@ -222,6 +270,17 @@ impl Stack {
                 )
             }
             ("POST", "/api/lists/items/_export") => {
+                if list == CONTAIN {
+                    let count = self.values.get(&list).map_or(0, Vec::len);
+                    if (self.fail == Some("contain_export") && count == 2)
+                        || (self.fail == Some("contain_export_after") && count == 1)
+                    {
+                        return response(503, json!({"message":"private-body"}));
+                    }
+                    if self.fail == Some("contain_missing_range") && count == 1 {
+                        return ResponseTemplate::new(200).set_body_string("");
+                    }
+                }
                 let text: String = self
                     .values
                     .get(&list)
@@ -265,6 +324,9 @@ impl Stack {
                 response(200, self.lists[&list].clone())
             }
             ("DELETE", "/api/lists/items") => {
+                if id == format!("{CONTAIN}-item-1") && self.fail == Some("contain_delete_id") {
+                    return response(400, json!({"message":"private-body"}));
+                }
                 for values in self.values.values_mut() {
                     if let Some(index) = values.iter().position(|v| v["id"] == id) {
                         return response(200, values.remove(index));

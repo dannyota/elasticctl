@@ -107,15 +107,15 @@ async fn inventory_recording(
     if identities {
         let containers = state.clone();
         Mock::given(method("GET")).and(path("/api/exception_lists/_find"))
-            .respond_with(move |_: &Request| {
-                let mut rows = vec![json!({"id": "unrelated-container", "list_id": "unrelated-list", "created_by": "10"})];
+            .respond_with(move |r: &Request| {
+                let mut rows = if r.url.query_pairs().any(|(k, _)| k == "filter") { vec![] } else { vec![json!({"id": "unrelated-container", "list_id": "unrelated-list", "created_by": "10"})] };
                 rows.extend(containers.lock().unwrap().exception.iter().cloned());
                 response(200, json!({"total": rows.len(), "data": rows}))
             }).with_priority(1).mount(&server).await;
         let items = state.clone();
         Mock::given(method("GET")).and(path("/api/exception_lists/items/_find"))
-            .respond_with(move |_: &Request| {
-                let mut rows = vec![json!({"id": "unrelated-item", "item_id": "unrelated-item", "created_by": "10", "entries": []})];
+            .respond_with(move |r: &Request| {
+                let mut rows = if r.url.query_pairs().any(|(k, v)| k == "per_page" && v == "10") { vec![] } else { vec![json!({"id": "unrelated-item", "item_id": "unrelated-item", "created_by": "10", "entries": []})] };
                 rows.extend(items.lock().unwrap().item.iter().cloned());
                 response(200, json!({"total": rows.len(), "data": rows}))
             }).with_priority(1).mount(&server).await;

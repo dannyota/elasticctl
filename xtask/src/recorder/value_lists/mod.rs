@@ -1,6 +1,7 @@
 mod cleanup;
 mod evidence;
 mod inventory;
+mod scenarios;
 mod steps;
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const PREFIX: &str = "elasticctl-live-vl-";
+const CONTAIN: &str = "elasticctl-live-vl-contain";
 const LIST: &str = "elasticctl-live-vl-record";
 const RANGES: &str = "elasticctl-live-vl-spellings";
 const EXCEPTION: &str = "elasticctl-live-vl-exception";
