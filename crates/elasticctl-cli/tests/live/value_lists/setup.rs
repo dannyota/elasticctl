@@ -139,7 +139,7 @@ pub(super) async fn index(t: &Transport, lease: &mut Lease, id: String) -> StepR
     });
     let result = t.put_absolute_es_once(&format!("/{id}"), &json!({"mappings": {
         "_meta": {"marker": LIVE_TAG, "nonce": lease.nonce},
-        "properties": {"@timestamp":{"type":"date"}, "source.ip":{"type":"ip"}, "event.action":{"type":"keyword"}}
+        "properties": {"@timestamp":{"type":"date"}, "source.ip":{"type":"ip"}, "event.action":{"type":"keyword"}, "event.code":{"type":"keyword"}}
     }})).await;
     if result
         .as_ref()
@@ -150,9 +150,12 @@ pub(super) async fn index(t: &Transport, lease: &mut Lease, id: String) -> StepR
     checked_step(result)?;
     lease.index.as_mut().ok_or(StepError::Failed)?.pending = false;
     for (number, ip, action) in [
-        (1, "10.0.0.5", "allow"),
-        (2, "192.0.2.5", "block"),
-        (3, "10.0.0.6", "block"),
+        (1, "192.0.2.5", "stay"),
+        (2, "198.51.100.5", "stay"),
+        (3, "203.0.113.1", "allow"),
+        (4, "203.0.113.2", "block"),
+        (5, "203.0.113.3", "stay"),
+        (6, "10.0.0.5", "stay"),
     ] {
         lease.check_interrupt()?;
         let event_id = format!("{id}-{number}");
@@ -160,7 +163,7 @@ pub(super) async fn index(t: &Transport, lease: &mut Lease, id: String) -> StepR
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| StepError::Failed)?
             .as_millis() as u64;
-        let event = json!({"@timestamp":timestamp, "source":{"ip":ip}, "event":{"action":action}});
+        let event = json!({"@timestamp":timestamp, "source":{"ip":ip}, "event":{"action":action,"code":number.to_string()}});
         write_event(t, lease, &id, event_id, event).await?;
     }
     Ok(())
@@ -211,7 +214,7 @@ pub(super) async fn objects(t: &Transport, lease: &mut Lease) -> StepResult {
         lease,
         keyword.clone(),
         api::ValueListType::Keyword,
-        vec!["allow".into()],
+        vec!["allow".into(), "stay".into()],
     )
     .await?;
     let container = format!("{base}-exceptions");

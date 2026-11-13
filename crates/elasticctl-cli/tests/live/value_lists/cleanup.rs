@@ -200,12 +200,18 @@ pub(super) async fn delete_index(
 }
 
 pub(super) async fn finish(t: &Transport, lease: &mut Lease) -> StepResult {
-    let mut failed = lease.init_pending;
+    let mut failed = lease.init_pending || lease.state_push_pending;
     if lease.init_pending {
         eprintln!("value-list init ownership is unresolved; refusing stream deletion");
     }
+    if lease.state_push_pending {
+        eprintln!("state push has unresolved writes; refusing list and stream deletion");
+    }
     lease.objects.sort_by_key(|o| o.kind);
     for kind in [Kind::Rule, Kind::Item, Kind::Exception, Kind::List] {
+        if kind == Kind::List && lease.state_push_pending {
+            break;
+        }
         if lease.objects.iter().any(|o| o.kind < kind) {
             failed = true;
             break;

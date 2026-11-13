@@ -82,29 +82,17 @@ fn four_failure_paths_emit_the_controller_class_lines() {
         assert_eq!(conformance_marker(failure.class()), expected);
     }
     assert_eq!(
-        classify(Ok(()), Err(StepError::NotWired(3)), Err(()), Err(())),
+        classify(Ok(()), Err(StepError::Step(3)), Err(()), Err(())),
         Err(Failure::Cleanup)
     );
     assert_eq!(
-        classify(Ok(()), Err(StepError::NotWired(3)), Ok(()), Err(())),
+        classify(Ok(()), Err(StepError::Step(3)), Ok(()), Err(())),
         Err(Failure::FinalBaseline)
     );
     assert_eq!(
-        classify(Ok(()), Err(StepError::NotWired(3)), Ok(()), Ok(())),
+        classify(Ok(()), Err(StepError::Step(3)), Ok(()), Ok(())),
         Err(Failure::Contract)
     );
-}
-
-#[test]
-fn state_preview_and_refusal_steps_are_explicitly_not_wired() {
-    for (number, step) in [
-        (3, state_pull as fn() -> StepResult),
-        (4, state_push),
-        (5, preview),
-        (6, refusals),
-    ] {
-        assert_eq!(step(), Err(StepError::NotWired(number)));
-    }
 }
 
 async fn registered_objects(
@@ -338,3 +326,6 @@ mod lifecycle_tests;
 
 #[path = "classification_tests.rs"]
 mod classification_tests;
+
+#[path = "round_trip_tests.rs"]
+mod round_trip_tests;

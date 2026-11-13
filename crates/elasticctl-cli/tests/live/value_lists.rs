@@ -8,6 +8,10 @@ use std::sync::{
 
 #[path = "value_lists/cleanup.rs"]
 mod cleanup;
+#[path = "value_lists/refusals.rs"]
+mod refusals;
+#[path = "value_lists/round_trip.rs"]
+mod round_trip;
 #[path = "value_lists/setup.rs"]
 mod setup;
 #[path = "value_lists/tests.rs"]
@@ -19,7 +23,7 @@ type StepResult<T = ()> = Result<T, StepError>;
 
 #[derive(Debug, PartialEq, Eq)]
 enum StepError {
-    NotWired(u8),
+    Step(u8),
     Failed,
     Interrupted,
 }
@@ -151,6 +155,7 @@ struct Lease {
     before: Option<api::BootstrapState>,
     restore_streams: bool,
     init_pending: bool,
+    state_push_pending: bool,
     stream_delete_sent: bool,
     budget: Duration,
     interval: Duration,
@@ -165,6 +170,7 @@ impl Lease {
             before: None,
             restore_streams: false,
             init_pending: false,
+            state_push_pending: false,
             stream_delete_sent: false,
             budget: Duration::from_secs(15),
             interval: Duration::from_millis(100),
@@ -180,17 +186,14 @@ impl Lease {
     }
 }
 
-fn state_pull() -> StepResult {
-    Err(StepError::NotWired(3))
-}
-fn state_push() -> StepResult {
-    Err(StepError::NotWired(4))
-}
-fn preview() -> StepResult {
-    Err(StepError::NotWired(5))
-}
-fn refusals() -> StepResult {
-    Err(StepError::NotWired(6))
+fn at_step<T>(step: u8, result: StepResult<T>) -> StepResult<T> {
+    result.map_err(|error| {
+        if error == StepError::Interrupted {
+            error
+        } else {
+            StepError::Step(step)
+        }
+    })
 }
 
 async fn referenced_delete(t: &Transport, lease: &Lease) -> StepResult {
@@ -230,13 +233,21 @@ async fn referenced_delete(t: &Transport, lease: &Lease) -> StepResult {
     )
 }
 
-async fn body(t: &Transport, lease: &mut Lease) -> StepResult {
+async fn body(
+    t: &Transport,
+    lease: &mut Lease,
+    config: &Path,
+    scratch: &Path,
+    profile: &Profile,
+) -> StepResult {
     setup::initialize(t, lease).await?;
     setup::objects(t, lease).await?;
-    state_pull()?;
-    state_push()?;
-    preview()?;
-    refusals()?;
+    let run = round_trip::RoundTrip::new(config, scratch, profile.api_key.as_deref(), lease)?;
+    at_step(3, run.pull(lease).await)?;
+    at_step(5, run.preview(t, lease, false).await)?;
+    at_step(4, run.push(t, lease).await)?;
+    at_step(5, run.preview(t, lease, true).await)?;
+    at_step(6, refusals::run(t, lease, &run).await)?;
     referenced_delete(t, lease).await
 }
 
@@ -292,7 +303,7 @@ fn execute() -> Result<(), Failure> {
     })();
     let result = if initial.is_ok() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(body(&t, &mut lease))
+            rt.block_on(body(&t, &mut lease, &config, dir.path(), &profile))
         }))
         .unwrap_or(Err(StepError::Failed))
     } else {
@@ -304,9 +315,6 @@ fn execute() -> Result<(), Failure> {
         rt.block_on(setup::audit_lists(&t, &lease)).map_err(|_| ())
     });
     signal.abort();
-    if let Err(StepError::NotWired(step)) = &result {
-        eprintln!("value-list step {step}: not wired");
-    }
     classify(initial.map_err(|_| ()), result, cleaned, final_baseline)
 }
 

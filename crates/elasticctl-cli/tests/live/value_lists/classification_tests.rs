@@ -18,7 +18,7 @@ fn emitted(
 fn contract_failure_emits_contract_line() {
     emitted(
         Ok(()),
-        Err(StepError::NotWired(3)),
+        Err(StepError::Step(3)),
         Ok(()),
         Ok(()),
         "elasticctl-conformance-class:contract",

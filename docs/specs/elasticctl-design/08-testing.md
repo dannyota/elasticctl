@@ -133,11 +133,12 @@ and, from 0.9.2, `mcp_mutations_plan_and_confirm`, the MCP mutation contract
 defined in [mutation design section 9.2](../elasticctl-mcp-mutation-design/09-testing-and-evidence.md#92-live-contract).
 From 0.10, `value_list_round_trip` adds value-list lifecycle and state
 conformance ([value-list design section 9.3](../elasticctl-value-lists-design/09-testing-and-conformance.md#93-live-contract)).
-Its scaffold returns typed not-wired errors for state, preview, and refusal
-steps until the state integration lands. Initial-baseline failures use the
-harness class; final-baseline failures use the cleanup class. An uncertain
-`init` cannot prove stream ownership through the API result, so cleanup
-refuses stream deletion and reports a cleanup failure.
+The contract uses CLI state pull/push and preview, comparing exact alert
+identities before and after value edits. Refusals verify unchanged remote
+objects; the unreferenced 201-dash candidate stays local. Initial-baseline
+failures use the harness class; final-baseline failures use cleanup. Unknown
+init ownership or unresolved child writes block stream deletion. Init,
+delete, and the local dash guard use the API until their CLI is available.
 Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker
