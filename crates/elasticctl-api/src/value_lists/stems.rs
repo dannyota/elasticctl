@@ -14,7 +14,6 @@ pub(super) fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// A portable, bounded name carrying a hash whenever the id is not safe as-is.
 pub fn file_stem(id: &str) -> String {
     let safe = !id.is_empty()
         && id.len() <= 64
@@ -27,7 +26,6 @@ pub fn file_stem(id: &str) -> String {
     if safe {
         return id.to_owned();
     }
-    // Same character mapping as state::safe_filename, without an extension.
     let mut prefix: String = id
         .chars()
         .map(|c| {
@@ -67,8 +65,6 @@ fn device_name(id: &str) -> bool {
             && matches!(base.as_bytes()[3], b'1'..=b'9'))
 }
 
-/// Return every colliding pair of identities, comparing stems without case.
-/// This also accepts names planned by the rule and exception writers.
 pub fn stem_collisions<'a>(
     names: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Vec<(String, String)> {

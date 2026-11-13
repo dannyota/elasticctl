@@ -6,9 +6,7 @@ use serde_json::Value;
 use super::address::rewrite_bare_range;
 use super::{Container, LocalPair, ValueListType, ValueSet, canonical_value, invalid};
 
-/// Read only the stable container keys, without YAML's string coercions.
 pub fn decode_container(yaml: &str) -> Result<Container> {
-    // The YAML value visitor also rejects duplicate mapping keys.
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml)
         .map_err(|e| invalid(format!("invalid container YAML: {e}")))?;
     let value = serde_json::to_value(value)
@@ -41,8 +39,6 @@ pub fn encode_container(container: &Container) -> Result<String> {
     serde_yaml_ng::to_string(container).map_err(|e| invalid(format!("encode container: {e}")))
 }
 
-/// Process each physical line in order, preserving every readable spelling
-/// except a bare `ip_range` address, which becomes a single-host CIDR.
 pub fn decode_values(kind: &ValueListType, text: &str) -> Result<ValueSet> {
     kind.require_supported()?;
     let mut values = ValueSet::new();
@@ -73,8 +69,6 @@ pub fn encode_values(values: &ValueSet) -> String {
     text
 }
 
-/// Read either half of a local `.yaml`/`.txt` pair. Refuse symlinks and
-/// non-regular files, including the parent directory when it is a symlink.
 pub fn read_pair(path: &Path) -> Result<LocalPair> {
     if !matches!(
         path.extension().and_then(|e| e.to_str()),

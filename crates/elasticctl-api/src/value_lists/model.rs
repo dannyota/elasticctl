@@ -5,7 +5,6 @@ use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Unsupported names remain visible when reading container inventories.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum ValueListType {
@@ -60,7 +59,6 @@ impl ValueListType {
     }
 }
 
-/// The stable fields of a local container file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Container {
@@ -73,18 +71,16 @@ pub struct Container {
     pub meta: Option<Map<String, Value>>,
 }
 
-/// Exact spellings in UTF-8 byte order, with duplicates collapsed.
 pub type ValueSet = BTreeSet<String>;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LocalPair {
     pub stem: String,
     pub container: Container,
     pub values: ValueSet,
 }
 
-/// Every exported item, including every copy of a duplicated spelling.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct StoredValues {
     pub values: Vec<String>,
 }

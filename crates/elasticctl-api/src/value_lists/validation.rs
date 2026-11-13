@@ -1,4 +1,5 @@
 use elasticctl_core::{Error, ErrorKind, Result};
+use serde::Serialize;
 
 use super::{
     LocalPair, StoredValues, ValueListType, ValueSet, canonical_value, decode_container,
@@ -7,7 +8,8 @@ use super::{
 
 pub const MAX_VALUE_BYTES_WITH_LF: usize = 8_000_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WarningKind {
     NonCanonical,
     Duplicates,
@@ -16,7 +18,7 @@ pub enum WarningKind {
     RuleTypeLimit,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Warning {
     pub kind: WarningKind,
     pub message: String,
@@ -34,8 +36,6 @@ pub struct LocalValidation {
     pub findings: Findings,
 }
 
-/// Validate in-memory bytes of a local pair. A missing values half is `None`.
-/// Readable non-canonical values warn here; only planned additions refuse.
 pub fn validate_local_pair(stem: &str, yaml: &[u8], values: Option<&[u8]>) -> LocalValidation {
     let mut findings = Findings::default();
     match decode_pair(stem, yaml, values) {
@@ -98,8 +98,6 @@ fn canonical_remedy(kind: &ValueListType, value: &str) -> Result<Option<String>>
     }))
 }
 
-/// Validate only the missing values a write plans to add. Kept spellings are
-/// deliberately absent from this check.
 pub fn validate_additions(kind: &ValueListType, additions: &ValueSet) -> Findings {
     let mut findings = Findings::default();
     if let Err(error) = kind.require_supported() {
@@ -183,7 +181,8 @@ pub fn size_warning<'a>(
     limited.then(|| Warning { kind: WarningKind::RuleTypeLimit, message: format!("{kind} list ({count} values) works only with custom query, saved query, machine learning, and indicator match rules") })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PhaseOrder {
     AddsFirst,
     RemovesFirst,
@@ -196,8 +195,6 @@ pub struct ProjectedStates {
     pub final_values: StoredValues,
 }
 
-/// Project disjoint add/remove sets computed from a comparison. Keep every
-/// copy of retained values; delete every copy of removed values; add once.
 pub fn project_states(
     current: &StoredValues,
     adds: &ValueSet,
@@ -239,8 +236,6 @@ pub fn project_states(
     }
 }
 
-/// Reference names are supplied by the caller's installed scan and desired
-/// policy. Creation with only desired references is safe after values land.
 #[derive(Clone, Debug, Default)]
 pub struct ReferenceUse {
     pub installed: Vec<String>,

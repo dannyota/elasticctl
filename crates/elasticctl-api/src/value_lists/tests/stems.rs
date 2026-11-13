@@ -41,7 +41,6 @@ fn plans_case_variants_distinctly_and_reports_all_case_insensitive_collisions() 
     let planned = plan_stems(["A", "a"]).unwrap();
     assert_eq!(planned["A"], "a-559aead08264");
     assert_eq!(planned["a"], "a");
-    // A safe id can equal another id's hashed fallback.
     let error = plan_stems(["A", "a-559aead08264", "B", "b-df7e70e50215"]).unwrap_err();
     for id in ["A", "a-559aead08264", "B", "b-df7e70e50215"] {
         assert!(error.message.contains(id), "{error}");
