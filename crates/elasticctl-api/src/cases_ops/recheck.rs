@@ -1,9 +1,6 @@
-//! Case state re-checks.
-
 use super::*;
 use crate::observe::{Observed, Preconditions};
 
-/// Read case states by ID, returning absent state for missing cases.
 pub async fn observe_cases(
     t: &Transport,
     ids: &[String],

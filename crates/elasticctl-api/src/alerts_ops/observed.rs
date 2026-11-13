@@ -1,5 +1,3 @@
-//! Alert mutation plans with observed state.
-
 use super::*;
 use crate::observe::{Observed, Preconditions};
 
@@ -10,7 +8,6 @@ pub(super) fn alert_state(status: &str, facet: AlertFacet) -> Value {
     }
 }
 
-/// Plan status changes and return the alert status read for each target.
 pub async fn plan_status_by_ids_observed(
     t: &Transport,
     ids: &[String],
@@ -62,7 +59,6 @@ pub async fn plan_status_by_ids_observed(
     ))
 }
 
-/// Plan tag changes and return the presence read for each target.
 pub async fn plan_tags_observed(
     t: &Transport,
     ids: &[String],

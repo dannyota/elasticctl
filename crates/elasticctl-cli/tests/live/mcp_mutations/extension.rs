@@ -37,7 +37,6 @@ impl<C: Child> Session<C> {
     }
 }
 
-// Both offline and live checks use these inputs and exact expected views.
 pub(super) fn change_view(tool: &str, args: &Value, version: Option<&str>) -> (Vec<String>, Value) {
     let strings = |key: &str| {
         args[key]
@@ -264,8 +263,6 @@ pub(super) fn run<C: Child>(
     require(result["data"]["outcome"]["created"]["rule_id"] == new_rule)?;
     refusal(s, rt, t, registry, &ids[1])
 }
-// A case read does not carry its comments on every stack, so the comment is
-// read through the comment search, one page of the largest size.
 async fn case_comments(t: &Transport, id: &str) -> TestResult<Value> {
     safe(
         t.get(&format!(

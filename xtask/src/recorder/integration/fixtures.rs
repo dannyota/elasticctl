@@ -1,5 +1,3 @@
-//! Fixtures helpers.
-
 use crate::diagnostics::recording_error;
 use crate::fixtures::{RecordedFixture, exchange_fixture, response_fixture};
 use crate::recorder::integration::inputs::{
@@ -27,9 +25,6 @@ use crate::recorder::markers::{
 };
 use serde_json::{Map, Value, json};
 
-/// Keep the marker integration only. Package-policy list responses otherwise
-/// expose every integration in a shared Fleet space, including user-owned
-/// configuration and possible secret references.
 #[cfg(test)]
 fn scope_integration_policy_list_to_marker_with_nonce(
     body: &mut Value,
@@ -268,10 +263,6 @@ pub(crate) fn integration_policy_exchange_fixture_in_space_with_inputs(
     Ok(exchange_fixture(name, flavor, version, request, body))
 }
 
-/// Reduce a marker integration response after proving its stable marker
-/// identity. The allowlist is intentionally smaller than the public Fleet
-/// schema: response-only metadata, active-space references, secrets, and new
-/// unknown fields do not prove this recorder's route contract.
 fn reduce_marker_integration_response_with_inputs(
     body: &Value,
     active_space: &str,

@@ -133,6 +133,12 @@ cannot replace the owner's settings check. Both workspace commands use
 uploading. It does not prove per-crate registry authorization or Trusted
 Publisher configuration.
 
+Both jobs check out `refs/tags/<tag>`, never the bare tag name: for an
+unqualified ref, `actions/checkout` takes a branch of the same name before
+the tag ([ref resolution](https://github.com/actions/checkout/blob/main/src/ref-helper.ts)).
+The `publish` job restores no build cache. It holds the publish token, and a
+cache holds bytes that other runs wrote; the rebuild costs minutes.
+
 [Trusted Publishing requires an existing crate](https://crates.io/docs/trusted-publishing).
 Version 0.7.0 of all four crates was published under an explicit, one-time
 owner exception for local publication. That exception is closed.
@@ -154,6 +160,23 @@ global artifacts, and uploads them as workflow artifacts. `pr-run-mode = "upload
 enables these builds. `host` and `announce` must show **skipped** on every
 canary, including manual dispatch on a tag. Only a tag push publishes.
 A canary does not replace release preflight or authorize crates.io publishing.
+
+## Hand edits to release.yml
+
+dist generates `.github/workflows/release.yml`, and the file carries hand
+edits: read-only permissions except for `host`, the weekly, manual, and
+path-filtered pull request canaries, publishing, `host`, and `announce` gated
+to tag pushes, the seven-target matrix assertion, and actions pinned by SHA.
+`allow-dirty = ["ci"]` in `dist-workspace.toml` stops dist from checking or
+regenerating `release.yml`
+([`allow-dirty`](https://opensource.axo.dev/cargo-dist/book/reference/config.html#allow-dirty)),
+which keeps those edits. To regenerate, remove `allow-dirty`, run
+`dist generate`, then reapply every edit.
+
+dist 0.32 assigns the `macos-14` image to `aarch64-apple-darwin`. GitHub has
+retired that image, and a tag build failed with
+`macos-14-arm64-us-default is not supported`, so
+`[dist.github-custom-runners]` pins `macos-15`.
 
 ## Do not write a credential-shaped URL in the changelog
 

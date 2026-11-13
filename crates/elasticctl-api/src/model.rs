@@ -1,14 +1,7 @@
-//! The rule, exception-list, and exception-item representations.
-//!
-//! A measured create response has 36 fields, which vary by rule type and
-//! Elastic version. A JSON map preserves unknown fields; a fixed struct would
-//! break round trips.
-
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// Server-owned rule fields excluded from comparison to avoid false drift.
 pub const VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "created_at",
@@ -20,10 +13,6 @@ pub const VOLATILE_FIELDS: [&str; 8] = [
     "execution_summary",
 ];
 
-/// Fields the server fills when a create request omits them.
-///
-/// Measured: a 13-field create returned 36 fields. Fill these defaults before
-/// comparison so omitted values do not appear as drift.
 pub fn server_defaults() -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("actions".into(), json!([]));
@@ -55,8 +44,6 @@ impl Rule {
             Value::Object(m) => m,
             _ => return Err(Error::new(ErrorKind::Error, "a rule must be a JSON object")),
         };
-        // Validate identity at the shared construction path. A non-string
-        // `rule_id` cannot match, name a file, or be reported.
         match map.get("rule_id") {
             Some(Value::String(_)) => {}
             Some(_) => {
@@ -86,11 +73,6 @@ impl Rule {
         self.0.get(key).and_then(Value::as_str).unwrap_or("")
     }
 
-    /// The stable identity used for state matching.
-    ///
-    /// `from_value` requires a string `rule_id`, but transparent `Deserialize`
-    /// and `as_map_mut` can bypass that validation. Return an error rather than
-    /// silently matching the wrong remote rule.
     pub fn rule_id(&self) -> Result<&str> {
         self.0
             .get("rule_id")
@@ -133,8 +115,6 @@ impl Rule {
     }
 }
 
-/// The trailer Kibana appends to an NDJSON export. It is the entire body for
-/// a zero-rule export, so it must not be parsed as a rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportSummary {
     #[serde(default)]
@@ -143,8 +123,6 @@ pub struct ExportSummary {
     pub exported_rules_count: u64,
     #[serde(default)]
     pub missing_rules_count: u64,
-    /// Rules selected for export but not returned, likely deleted after
-    /// selection. Kept as raw server values.
     #[serde(default)]
     pub missing_rules: Vec<Value>,
     #[serde(default)]
@@ -157,8 +135,6 @@ pub struct ExportSummary {
     pub missing_exception_list_items: Vec<Value>,
 }
 
-/// Server-owned exception-list fields excluded from comparison to avoid false
-/// drift.
 pub const LIST_VOLATILE_FIELDS: [&str; 8] = [
     "id",
     "_version",
@@ -170,9 +146,6 @@ pub const LIST_VOLATILE_FIELDS: [&str; 8] = [
     "updated_by",
 ];
 
-/// Server-owned exception-item fields excluded from comparison. This is the
-/// container set less `version`: a measured item carries `_version` but no
-/// `version`.
 pub const ITEM_VOLATILE_FIELDS: [&str; 7] = [
     "id",
     "_version",
@@ -183,10 +156,6 @@ pub const ITEM_VOLATILE_FIELDS: [&str; 7] = [
     "updated_by",
 ];
 
-/// Server-minted fields on an exception item comment. `id`, `created_at`, and
-/// `created_by` are measured; `updated_at` and `updated_by` were absent on a
-/// freshly created comment but name the same class on every other object in
-/// this API, and removing an absent key costs nothing.
 pub const COMMENT_VOLATILE_FIELDS: [&str; 5] =
     ["id", "created_at", "created_by", "updated_at", "updated_by"];
 
@@ -230,9 +199,6 @@ impl ExceptionList {
             .ok_or_else(|| Error::new(ErrorKind::Error, "exception list is missing list_id"))
     }
 
-    /// `single` is the API's own default and the value every measured response
-    /// carried. An absent value must resolve, or identity would depend on
-    /// whether a response happened to include the field.
     pub fn namespace_type(&self) -> &str {
         self.0
             .get("namespace_type")
@@ -316,8 +282,6 @@ impl ExceptionItem {
             .ok_or_else(|| Error::new(ErrorKind::Error, "exception item is missing item_id"))
     }
 
-    /// An item without a list has no home, so absence is an error rather than
-    /// a default.
     pub fn list_id(&self) -> Result<&str> {
         self.0
             .get("list_id")
@@ -351,7 +315,6 @@ pub struct ListKey {
     pub namespace_type: String,
 }
 
-/// The `{id, list_id, type, namespace_type}` reference a rule carries.
 pub struct ExceptionRef {
     pub list_id: String,
     pub namespace_type: String,
@@ -359,9 +322,6 @@ pub struct ExceptionRef {
     pub id: Option<String>,
 }
 
-/// Read a rule's `exceptions_list` array. A malformed entry is skipped rather
-/// than failing the rule: the field is server-owned and unknown shapes must
-/// survive a round trip.
 pub fn exception_refs(rule: &Rule) -> Vec<ExceptionRef> {
     let entries = match rule
         .as_map()
@@ -400,7 +360,6 @@ mod tests {
     use serde_json::json;
 
     fn probe_rule() -> Value {
-        // Trimmed from a Serverless Security 9.6.0 create response.
         json!({
             "rule_id": "elasticctl-schema-probe",
             "name": "elasticctl schema probe",
@@ -456,8 +415,6 @@ mod tests {
 
     #[test]
     fn a_non_string_rule_id_is_rejected() {
-        // State matching requires a readable identity, so construction rejects
-        // non-string `rule_id` values.
         let err = Rule::from_value(json!({"rule_id": 123, "name": "x"})).unwrap_err();
         assert_eq!(err.kind, elasticctl_core::ErrorKind::Error);
         assert!(err.message.contains("string"), "{}", err.message);
@@ -465,12 +422,9 @@ mod tests {
 
     #[test]
     fn a_null_rule_id_is_rejected() {
-        // `rule_id: null` has no identity and must fail like a numeric value.
         assert!(Rule::from_value(json!({"rule_id": null})).is_err());
     }
 
-    /// `from_value` validates construction, but transparent `Deserialize`
-    /// bypasses that validation. Read sites must still handle unreadable IDs.
     #[test]
     fn deserialize_bypasses_the_construction_check() {
         let r: Rule = serde_json::from_value(json!({"rule_id": 123})).unwrap();
@@ -526,13 +480,11 @@ mod tests {
 
     #[test]
     fn volatile_and_default_field_sets_do_not_overlap() {
-        // A field cannot be both stripped and filled.
         for v in VOLATILE_FIELDS {
             assert!(!server_defaults().contains_key(v), "{v} is in both sets");
         }
     }
 
-    /// Trimmed from the measured create response, 2026-08-14, Serverless 9.6.0.
     fn probe_list() -> Value {
         json!({
             "id": "3724d409-4c0f-4630-a1ef-706499730808",
@@ -605,7 +557,6 @@ mod tests {
 
     #[test]
     fn item_volatile_fields_match_the_measured_set() {
-        // Measured: an item carries `_version` but no `version`.
         let mut got = ITEM_VOLATILE_FIELDS.to_vec();
         got.sort_unstable();
         assert_eq!(

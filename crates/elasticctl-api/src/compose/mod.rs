@@ -1,4 +1,3 @@
-//! Bounded shared reads for cross-vertical reports.
 use elasticctl_core::{Error, ErrorKind, Result};
 mod alert_activity;
 pub mod alert_context;
@@ -47,9 +46,6 @@ pub fn degrade<T>(result: Result<T>) -> Result<Part<T>> {
 pub fn is_path_segment(value: &str) -> bool {
     !matches!(value, "" | "." | "..")
 }
-/// Refuse an id read from a response or a local file before it becomes one
-/// URL path segment. URL parsing removes `.` and `..` segments, so either
-/// would move the request to a parent route.
 pub fn require_path_segment(value: &str) -> Result<&str> {
     if is_path_segment(value) {
         Ok(value)

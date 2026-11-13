@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "id                                  type      name                                description             meta                                                             distinct_values  stored_values  warnings                                                                                                values                                             \nelasticctl-fixture-value-list-id-3  ip_range  elasticctl-fixture-value-list-id-3  elasticctl-live-marker  {\"marker\":\"elasticctl-live-marker\",\"recorder_nonce\":\"REDACTED\"}  3                4              [{\"kind\":\"duplicates\",\"message\":\"4 stored values have 3 distinct spellings; duplicates are retained\"}]  [\"10.0.0.5-10.0.0.5\",\"10.0.0.6/32\",\"10.0.0.7/32\"]  \n",
+  "stderr": ""
+}

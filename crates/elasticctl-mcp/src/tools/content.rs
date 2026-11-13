@@ -1,5 +1,3 @@
-//! Read-only projections for Kibana data views and dashboards.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::{
@@ -250,7 +248,7 @@ struct DashboardGetData {
 macro_rules! output {
     ($name:ident, $data:ty) => {
         #[allow(dead_code)]
-        #[allow(clippy::large_enum_variant)] // Schema-only alternatives are never instantiated.
+        #[allow(clippy::large_enum_variant)]
         #[derive(JsonSchema)]
         #[serde(untagged)]
         enum $name {

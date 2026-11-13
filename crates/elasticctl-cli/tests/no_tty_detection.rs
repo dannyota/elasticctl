@@ -1,9 +1,3 @@
-//! Output must not depend on whether stdout is a terminal. A pipe must receive
-//! the same bytes as a terminal. `assert_cmd` always pipes stdout, so an
-//! end-to-end test cannot exercise interactive-only code; a TTY regression
-//! could leave the other tests green. Scan the crate source and fail on
-//! terminal checks.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

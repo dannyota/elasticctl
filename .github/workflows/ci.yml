@@ -4,13 +4,9 @@ on:
     branches: [master]
   pull_request:
   schedule:
-    # Run weekly on Sunday at 03:00 UTC. Advisories can affect an unchanged
-    # dependency tree, so the audit job needs its own schedule.
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Other events group by
-# commit, so a newer master push never cancels a pending master run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,7 +29,6 @@ jobs:
         with:
           fetch-depth: 0
       - run: bash scripts/test/check-lengths-test.sh
-      # The shim needs Bash 4.4 or newer; the macOS runner ships Bash 3.2.
       - if: runner.os == 'Linux'
         run: bash scripts/test/mcp-stdio-shim-test.sh
       - name: Check file lengths
@@ -70,8 +65,6 @@ jobs:
       - run: cargo test --locked --workspace --doc
       - run: ./scripts/check-packages.sh
 
-  # macOS, Windows, and the declared toolchain wait for the Linux test job, so a
-  # failing change does not hold the scarcer runners.
   test-macos:
     needs: test
     runs-on: macos-15
@@ -142,8 +135,6 @@ jobs:
           tool: cargo-nextest@0.9.114
       - run: cargo nextest run --locked --no-fail-fast -p elasticctl-api -p elasticctl -E 'package(=elasticctl) | (package(=elasticctl-api) & (binary(=state) | test(transaction)))'
 
-  # Check advisories, licences, duplicate versions, and unvetted sources from
-  # deny.toml.
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -152,9 +143,6 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
-  # Check recorded fixtures for credentials and project identity. A generic
-  # secret scanner misses a project hostname in `kibana.alert.url` because it is
-  # identity in a value, not a credential in a key.
   fixture-leak:
     runs-on: ubuntu-latest
     steps:
@@ -171,8 +159,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # install-action has no gitleaks support, so fetch the pinned release and
-      # check it against the SHA-256 published in gitleaks_8.30.1_checksums.txt.
       - name: Install gitleaks 8.30.1
         env:
           GH_TOKEN: ${{ github.token }}
@@ -181,16 +167,12 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz" -C "$RUNNER_TEMP" gitleaks
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      # Include merge diffs: plain `git log -p --all` omits a secret added while
-      # resolving a merge.
       - run: gitleaks git --log-opts="--all --full-history --diff-merges=separate" --redact
 
   actionlint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # install-action has no actionlint support, so fetch the pinned release
-      # and check it against the SHA-256 in actionlint_1.7.12_checksums.txt.
       - name: Install actionlint 1.7.12
         env:
           GH_TOKEN: ${{ github.token }}

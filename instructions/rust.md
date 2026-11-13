@@ -37,5 +37,15 @@ parent page.
 
 ## Comments
 
-Use plain words. Do not use em dashes, plan or task IDs, or history wording
-such as "now" or "no longer".
+Design docs, not comments, hold decisions and explanations. Comments drift from
+the code and mislead readers.
+
+- Write no comments in code, scripts, or workflows, except tool directives
+  (`# shellcheck`, the `# vX.Y.Z` pin after an action SHA, generated-code
+  markers) and one line on why for a Kibana, Elasticsearch, or other external
+  behaviour that no design doc owns. That line names its source: an Elastic
+  docs page or a recorded fixture.
+- No doc comments that only repeat a name, and no comments that restate the
+  code or a design doc. Delete such comments in code you touch.
+- Use plain words. Do not use em dashes, plan or task IDs, or history wording
+  such as "now" or "no longer".

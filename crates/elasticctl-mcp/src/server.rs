@@ -18,7 +18,6 @@ mod runtime;
 
 pub use runtime::{TestOptions, serve_io, serve_io_with_audit, serve_stdio};
 
-/// MCP runtime settings supplied by the caller after configuration resolution.
 #[derive(Clone, Debug)]
 pub struct ServerOptions {
     pub call_timeout: Duration,
@@ -36,7 +35,6 @@ impl Default for ServerOptions {
     }
 }
 
-/// Shared state passed to every vertical adapter.
 pub struct ServerState {
     pub(crate) plans: Mutex<crate::plan::store::PlanStore<crate::plan::kind::Operation>>,
     pub(crate) audit: crate::plan::audit::AuditSink,
@@ -82,7 +80,6 @@ impl ServerState {
         }
     }
 
-    /// Lazily construct the one-attempt transport used only by query tools.
     pub async fn query_transport(&self) -> Result<&Transport> {
         self.query_transport
             .get_or_try_init(|| async {
@@ -100,7 +97,6 @@ impl ServerState {
             .await
     }
 
-    /// Lazily construct the one-attempt transport for confirmed mutations.
     pub async fn mutation_transport(&self) -> Result<&Transport> {
         self.mutation_transport
             .get_or_try_init(|| async {
@@ -118,7 +114,6 @@ impl ServerState {
             .await
     }
 
-    /// Lazily construct the restricted core transport shared by all adapters.
     pub async fn transport(&self) -> Result<&Transport> {
         self.transport
             .get_or_try_init(|| async {
@@ -136,7 +131,6 @@ impl ServerState {
             .await
     }
 
-    /// Return the resolved target fields bound into a stored plan.
     pub(crate) fn plan_binding(&self) -> serde_json::Value {
         serde_json::json!({
             "profile": self.resolved.name,
@@ -146,7 +140,6 @@ impl ServerState {
         })
     }
 
-    /// Return only the target identity safe for MCP output.
     pub fn target(&self) -> &TargetContext {
         &self.target
     }
@@ -168,15 +161,12 @@ impl ServerState {
     }
 }
 
-/// Startup error for a mutation target that cannot display on one line.
 pub const MUTATION_TARGET_MESSAGE: &str = "MCP mutation tools need a profile name, host, and space without line breaks or control characters.";
 
-/// Validate a target and options before starting the MCP server.
 pub fn validate_startup(target: &Resolved, options: &ServerOptions) -> elasticctl_core::Result<()> {
     validate_target(target, options).map(|_| ())
 }
 
-/// Validate configuration that can be rejected before MCP startup or network I/O.
 fn validate_target(target: &Resolved, options: &ServerOptions) -> Result<TargetContext> {
     crate::MutationClasses::parse(options.allow_mutations.names())?;
     if !options.allow_mutations.is_empty() && target.profile.es_url.is_none() {
@@ -252,7 +242,6 @@ fn validate_url(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a selector or filter without changing caller-provided text.
 pub(crate) fn validate_text(field: &'static str, value: &str, max_bytes: usize) -> Result<()> {
     if value.trim().is_empty() || value.len() > max_bytes {
         return Err(Error::new(
@@ -271,7 +260,6 @@ pub(crate) fn validate_path_id(field: &'static str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a list page size.
 pub(crate) fn validate_limit(value: usize) -> Result<()> {
     if !(1..=200).contains(&value) {
         return Err(Error::new(
@@ -399,8 +387,6 @@ mod tests {
         assert_eq!(state.legacy_wait, Duration::from_secs(240));
     }
 
-    /// The write transport is built on first use, follows no redirect,
-    /// retries nothing, and opens a fresh connection for every request.
     #[tokio::test]
     async fn mutation_transport_is_lazy_and_sends_each_request_once_on_its_own_socket() {
         use std::sync::atomic::AtomicUsize;

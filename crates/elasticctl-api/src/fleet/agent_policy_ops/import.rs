@@ -1,14 +1,9 @@
-//! Agent policy import planning and apply.
-
 use super::{
     AgentPolicySpec, AgentPolicySummary, BTreeMap, BTreeSet, Error, ErrorKind, LiveAgentPolicy,
     MutationPlan, Path, Result, Serialize, Transport, Value, agent_policies, collect, http, json,
     live_from_policy, read_live, validate,
 };
 
-/// What `plan_import` computed and `apply_import` uploads. Public fields are
-/// the guard preview and the summary counts; the rest are the exact
-/// snapshots and bodies `apply_import` rechecks against before every write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentPolicyImportPlan {
     pub preview: MutationPlan,
@@ -38,7 +33,6 @@ pub struct AgentPolicyImportReport {
 const MONITORING_PACKAGE: &str = "elastic_agent";
 const SERVER_SELECTED_INSTALL: &str = "elastic_agent@server-selected";
 
-/// Build the full-spec PUT body for a merge-semantics update route.
 pub fn build_replace_body(current: &AgentPolicySpec, desired: &AgentPolicySpec) -> Result<Value> {
     current.validate()?;
     desired.validate()?;
@@ -79,8 +73,6 @@ pub fn build_replace_body(current: &AgentPolicySpec, desired: &AgentPolicySpec) 
             "removing {field} is not supported by the agent-policy update API"
         ));
     }
-    // Nested objects need no removal check: Kibana maps them `flattened` and
-    // replaces the stored object with the supplied one.
     let mut body = serde_json::to_value(desired)
         .map_err(|error| Error::new(ErrorKind::Error, format!("encoding agent policy: {error}")))?
         .as_object()
@@ -121,9 +113,6 @@ pub async fn plan_import(
     }
     let total = specs.len();
 
-    // Read raw first: an existing policy that will only be skipped or
-    // reported conflict must never pay `normalize`'s portability refusal.
-    // Only a policy that survives to the overwrite path below is normalized.
     let mut before_raw = BTreeMap::new();
     let mut conflicts = Vec::new();
     for spec in &specs {
@@ -140,7 +129,6 @@ pub async fn plan_import(
             Err(error) => return Err(error),
         }
     }
-    // Fleet enforces unique names with a 409; catch it before the guard.
     let mut live_names = BTreeMap::new();
     for item in collect(transport).await? {
         let row = AgentPolicySummary::from_item(&item)?;
@@ -187,11 +175,6 @@ pub async fn plan_import(
         before_raw.retain(|id, _| specs.iter().any(|spec| spec.id == *id));
     }
 
-    // Every id remaining here is either absent or, having passed both the
-    // conflict guard above and the skip filter, is about to be replaced:
-    // `--overwrite` is required by this point for any `Some` entry. Only now
-    // is the existing policy normalized, so an unsupported existing policy
-    // still fails the plan here, exactly as it must for a replace.
     let mut before = BTreeMap::new();
     for (id, raw) in before_raw {
         let live = match raw {
@@ -460,10 +443,6 @@ async fn verify_stored(
     }
 }
 
-/// Recheck the live list for a policy name claimed by a different id, right
-/// before a planned create's POST. Fleet enforces unique names with a 409 on
-/// create, so a name another client claimed since planning must fail the row
-/// locally rather than reach the server.
 async fn other_owner_of_name(
     transport: &Transport,
     name: &str,
@@ -478,10 +457,6 @@ async fn other_owner_of_name(
     Ok(None)
 }
 
-/// Re-read the monitoring package after a write that could install it. The
-/// install is an observation: Fleet's create path tolerates an install error,
-/// and a replace installs only from an absent stored value, so a package that
-/// stays absent is not a failure. Only the read itself can fail the row.
 async fn observe_package_after_write(
     transport: &Transport,
     before: &agent_policies::PackageStatus,

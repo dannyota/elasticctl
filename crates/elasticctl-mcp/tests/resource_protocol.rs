@@ -43,7 +43,6 @@ async fn capabilities_lists_and_cursors_on_both_paths() {
                 uris
             );
             for (row, (name, title, tool)) in rows.iter().zip(entries) {
-                // The rule template is exact rule_id only, unlike rules_get.
                 let desc = if uri_key == "uriTemplate" && tool == "rules_get" {
                     json!("Inspect one rule by its exact rule_id.")
                 } else {

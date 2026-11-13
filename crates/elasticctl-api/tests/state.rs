@@ -1,4 +1,4 @@
-//! The state engine's contract, independent of the CLI.
+mod state_values_support;
 
 use elasticctl_api::rules_ops;
 use elasticctl_api::state::{self, StackIdentity};
@@ -55,8 +55,6 @@ fn write_local_rule(dir: &Path, id: &str, body: &str) {
     std::fs::write(rules.join(format!("{id}.ndjson")), body).unwrap();
 }
 
-/// A stack seeded with one remote rule that the local mirror does not contain,
-/// so the test's local rule reads as a planned create.
 async fn mock_stack_with_one_rule() -> MockStack {
     MockStack::with_rules(vec![json!({
         "rule_id": "seed",
@@ -66,7 +64,6 @@ async fn mock_stack_with_one_rule() -> MockStack {
     .await
 }
 
-/// The dry-run default is structural: planning must not mutate.
 #[tokio::test]
 async fn plan_push_sends_no_write_request() {
     let stack = mock_stack_with_one_rule().await;
@@ -103,8 +100,6 @@ async fn plan_push_sends_no_write_request() {
     assert_eq!(plan.report.space, "default");
 }
 
-/// `--search` resolves to a `rule_ids` scope, so the scoped remote read is a
-/// ruleId-filtered `_find` (`find_by_rule_ids`), not a corpus read (spec 5.3).
 #[tokio::test]
 async fn a_search_scoped_diff_reads_via_find_by_rule_ids() {
     let stack = MockStack::with_rules(vec![json!({
@@ -146,7 +141,6 @@ async fn a_search_scoped_diff_reads_via_find_by_rule_ids() {
     );
 }
 
-/// An Added change applies as one create request.
 #[tokio::test]
 async fn apply_push_issues_a_create_for_an_added_rule() {
     let stack = MockStack::with_rules(vec![]).await;
@@ -179,7 +173,6 @@ async fn apply_push_issues_a_create_for_an_added_rule() {
     );
 }
 
-/// A Modified change applies as one update request.
 #[tokio::test]
 async fn apply_push_issues_an_update_for_a_modified_rule() {
     let stack = MockStack::with_rules(vec![json!({
@@ -219,7 +212,6 @@ async fn apply_push_issues_an_update_for_a_modified_rule() {
     );
 }
 
-/// Push never deletes: a remote-only rule is reported but not written.
 #[tokio::test]
 async fn apply_push_issues_no_request_for_a_remote_only_rule() {
     let stack = MockStack::with_rules(vec![json!({
@@ -252,7 +244,6 @@ async fn apply_push_issues_no_request_for_a_remote_only_rule() {
     );
 }
 
-/// A per-rule failure lands in that entry's error and the loop continues.
 #[tokio::test]
 async fn apply_push_records_a_per_rule_failure_and_continues() {
     let stack = MockStack::with_rules(vec![]).await;
@@ -280,7 +271,6 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
 
     let applied = state::apply_push(stack.transport(), plan).await.unwrap();
 
-    // The mock answers no POST, so each create fails; both must be attempted.
     assert_eq!(
         stack.write_paths().await.len(),
         2,
@@ -297,16 +287,12 @@ async fn apply_push_records_a_per_rule_failure_and_continues() {
     );
 }
 
-/// The tag Serverless appends after an enable (spec 7.2).
 const CLOUD_KEY_TAG: &str = "Missing Elastic Cloud API Key";
 const SERVERLESS_FIND: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../tests/fixtures/serverless-9.7.0/rules_find.json"
 ));
 
-/// The recorded Serverless rule row, its tags `["elasticctl", "fixture"]`.
-/// Its exception reference is dropped so no container lookup is needed;
-/// `tagged` appends the Serverless tag.
 fn recorded_rule(tagged: bool) -> Value {
     let fixture: Value = serde_json::from_str(SERVERLESS_FIND).expect("rules_find fixture is JSON");
     let mut row = fixture["response"]["data"][0].clone();
@@ -325,7 +311,6 @@ fn write_recorded_rule(dir: &Path, rule: &Value) {
     write_local_rule(dir, id, &format!("{rule}\n"));
 }
 
-/// A mirror pulled from a stack whose rule does not hold the tag yet.
 async fn mirror_pulled_before_the_enable() -> tempfile::TempDir {
     let stack = MockStack::with_rules(vec![recorded_rule(false)]).await;
     let dir = tempfile::tempdir().unwrap();
@@ -343,7 +328,6 @@ async fn mirror_pulled_before_the_enable() -> tempfile::TempDir {
     dir
 }
 
-/// Spec 5.1: the tag is server-applied state, never mirror content.
 #[tokio::test]
 async fn pull_never_writes_the_cloud_key_tag() {
     let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
@@ -387,7 +371,6 @@ async fn diff_is_clean_when_only_the_server_holds_the_cloud_key_tag() {
     assert!(d.changes.is_empty());
 }
 
-/// A rule file that carries the tag by hand reads as not carrying it.
 #[tokio::test]
 async fn diff_is_clean_when_only_the_rule_file_holds_the_cloud_key_tag() {
     let stack = MockStack::with_rules(vec![recorded_rule(false)]).await;
@@ -430,8 +413,6 @@ async fn push_plans_no_update_when_only_the_server_holds_the_cloud_key_tag() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// A real change still writes, and the write omits the tag even when both the
-/// rule file and the server hold it.
 #[tokio::test]
 async fn push_never_sends_the_cloud_key_tag() {
     let stack = MockStack::with_rules(vec![recorded_rule(true)]).await;
@@ -469,7 +450,6 @@ async fn push_never_sends_the_cloud_key_tag() {
     assert_eq!(sent["risk_score"], json!(99));
 }
 
-/// A local mirror with one rule referencing a NEW list that has one item.
 fn mirror_with_rule_and_new_list() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let rules = dir.path().join("rules");
@@ -507,8 +487,6 @@ fn mirror_with_rule_and_new_list() -> tempfile::TempDir {
     dir
 }
 
-/// A local mirror with one rule whose `rule_default` list is inlined in the
-/// rule file, exactly as `pull` writes it.
 fn mirror_with_rule_default_list() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let rules = dir.path().join("rules");
@@ -537,7 +515,6 @@ fn mirror_with_rule_default_list() -> tempfile::TempDir {
     dir
 }
 
-/// Spec 5.4: the mirror closes over the lists the scoped rules reference.
 #[tokio::test]
 async fn pull_writes_the_referenced_lists_and_no_others() {
     let stack = mock_stack_with_rule_referencing("shared").await;
@@ -562,7 +539,6 @@ async fn pull_writes_the_referenced_lists_and_no_others() {
     );
 }
 
-/// Pull reports the operator's spelling rather than the resolved lock path.
 #[tokio::test]
 async fn requested_pull_path_is_preserved() {
     let stack = mock_stack_with_rule_referencing("shared").await;
@@ -586,9 +562,6 @@ async fn requested_pull_path_is_preserved() {
     assert_eq!(report.dir, requested.join("rules").display().to_string());
 }
 
-/// Pull replaces only the planned files. A scoped update must not infer that
-/// files outside its selection, local notes, or unrelated exception lists are
-/// stale and delete them.
 #[tokio::test]
 async fn a_scoped_pull_preserves_every_unplanned_mirror_path() {
     let stack = MockStack::with_rules(vec![json!({
@@ -639,7 +612,6 @@ async fn a_scoped_pull_preserves_every_unplanned_mirror_path() {
     );
 }
 
-/// Spec 5.4: a rule_default list belongs to one rule and lives in its file.
 #[tokio::test]
 async fn a_rule_default_list_is_inlined_in_its_rule_file() {
     let stack = mock_stack_with_rule_default_list().await;
@@ -663,7 +635,6 @@ async fn a_rule_default_list_is_inlined_in_its_rule_file() {
     );
 }
 
-/// A rule_default list's items are preserved inline, not dropped with the file.
 #[tokio::test]
 async fn pull_inlines_a_rule_default_lists_items() {
     let stack = mock_stack_with_rule_default_list().await;
@@ -686,8 +657,6 @@ async fn pull_inlines_a_rule_default_lists_items() {
     );
 }
 
-/// Spec 5.4: the existing collision contract extends to lists, including the
-/// single/agnostic pair that shares a list_id.
 #[tokio::test]
 async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
     let stack = mock_stack_with_colliding_namespaces("dup").await;
@@ -715,7 +684,6 @@ async fn a_single_and_an_agnostic_list_sharing_a_list_id_are_refused() {
     );
 }
 
-/// Spec 5.4: containers before items before rules, always.
 #[tokio::test]
 async fn push_creates_the_list_before_the_rule_that_points_at_it() {
     let stack = mock_empty_stack().await;
@@ -748,7 +716,6 @@ async fn push_creates_the_list_before_the_rule_that_points_at_it() {
     );
 }
 
-/// Spec 5.4: items for a new container are written before the rule too.
 #[tokio::test]
 async fn push_creates_the_items_before_the_rule() {
     let stack = mock_empty_stack().await;
@@ -785,9 +752,6 @@ async fn push_creates_the_items_before_the_rule() {
     );
 }
 
-/// Measured fact 3: `id` is required and unvalidated. Push must supply the
-/// target stack's id, not the one the file was pulled with, for every reference
-/// the rule carries.
 #[tokio::test]
 async fn push_injects_the_target_stacks_list_id() {
     let stack = mock_stack_with_two_list_ids().await;
@@ -843,8 +807,6 @@ async fn push_injects_the_target_stacks_list_id() {
     );
 }
 
-/// A rule referencing a list that is neither on the stack nor in the mirror is
-/// refused at plan time, before any write, never given a fabricated pointer.
 #[tokio::test]
 async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
     let stack = MockStack::with_rules(vec![]).await;
@@ -876,8 +838,6 @@ async fn push_refuses_a_rule_referencing_a_list_that_is_nowhere() {
     );
 }
 
-/// When an exception write fails after earlier writes succeeded, `apply_push`
-/// returns the plan with the evidence, not a bare error that discards it.
 #[tokio::test]
 async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
     let stack = mock_stack_with_failing_item_create().await;
@@ -924,8 +884,6 @@ async fn apply_push_returns_the_plan_when_an_exception_write_fails() {
     );
 }
 
-/// Spec 5.4: the banner names rule, list, and item counts. A push that changed
-/// exceptions while the banner spoke only of rules would defeat the guard.
 #[tokio::test]
 async fn the_push_preview_names_the_exception_counts() {
     let stack = mock_empty_stack().await;
@@ -953,7 +911,6 @@ async fn the_push_preview_names_the_exception_counts() {
     );
 }
 
-/// Spec 5.4: a remote-only container is reported and left alone.
 #[tokio::test]
 async fn push_never_deletes_a_container_absent_locally() {
     let stack = mock_stack_with_list_id("orphan", "id").await;
@@ -1044,15 +1001,12 @@ async fn diff_reports_a_modified_exception_list() {
     );
 }
 
-/// A container referenced by a remote rule but absent locally is reported as
-/// RemoteOnly and never deleted.
 #[tokio::test]
 async fn diff_reports_a_remote_only_exception_list_without_planning_a_delete() {
     let stack = mock_stack_with_rule_referencing("shared").await;
     let dir = tempfile::tempdir().unwrap();
     let rules = dir.path().join("rules");
     std::fs::create_dir_all(&rules).unwrap();
-    // The rule matches the remote one; only the list file is absent.
     std::fs::write(
         rules.join("r.ndjson"),
         "{\"rule_id\":\"r\",\"name\":\"R\",\"type\":\"query\",\"exceptions_list\":[{\"list_id\":\"shared\",\"type\":\"detection\",\"namespace_type\":\"single\"}]}\n",
@@ -1093,8 +1047,6 @@ async fn diff_reports_a_remote_only_exception_list_without_planning_a_delete() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// A YAML pull must read back clean: the rule and its exception file round-trip
-/// through `read_mirror`.
 #[tokio::test]
 async fn pull_then_diff_in_yaml_is_clean() {
     let stack = mock_stack_with_rule_referencing("shared").await;
@@ -1129,8 +1081,6 @@ async fn pull_then_diff_in_yaml_is_clean() {
     assert_eq!(d.exceptions.remote, 1);
 }
 
-/// A `rule_default` list is an ordinary container: pull then diff against the
-/// same stack must read clean, not report permanent fake drift.
 #[tokio::test]
 async fn pull_then_diff_is_clean_with_a_rule_default_list() {
     let stack = mock_stack_with_rule_default_list().await;
@@ -1167,8 +1117,6 @@ async fn pull_then_diff_is_clean_with_a_rule_default_list() {
     assert!(d.changes.is_empty());
 }
 
-/// A `rule_default` list is created like any other container before the rule
-/// that references it.
 #[tokio::test]
 async fn push_creates_a_rule_default_list_on_a_fresh_stack() {
     let stack = mock_empty_stack().await;
@@ -1206,8 +1154,6 @@ async fn push_creates_a_rule_default_list_on_a_fresh_stack() {
     );
 }
 
-/// A rule file produced by `rules export` carries a trailer; `read_mirror`
-/// must tolerate it rather than hard-error.
 #[tokio::test]
 async fn read_mirror_tolerates_an_export_trailer_in_a_rule_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -1225,8 +1171,6 @@ async fn read_mirror_tolerates_an_export_trailer_in_a_rule_file() {
     assert_eq!(mirror.rules[0].rule_id().unwrap(), "r");
 }
 
-/// A symlinked `rules` directory could read rules from outside the mirror, so
-/// it must be refused rather than followed.
 #[cfg(unix)]
 #[test]
 fn read_mirror_refuses_a_symlinked_rules_directory() {
@@ -1250,8 +1194,6 @@ fn read_mirror_refuses_a_symlinked_rules_directory() {
     );
 }
 
-/// A recognized rule file that is actually a symlink could escape the mirror,
-/// so it must be refused rather than followed.
 #[cfg(unix)]
 #[test]
 fn read_mirror_refuses_a_symlinked_rule_file() {
@@ -1276,7 +1218,6 @@ fn read_mirror_refuses_a_symlinked_rule_file() {
     );
 }
 
-/// An escaped mirror must fail `plan_push` before any write is issued.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_symlinked_rule_file_blocks_push_before_any_write() {
@@ -1312,8 +1253,6 @@ async fn a_symlinked_rule_file_blocks_push_before_any_write() {
     );
 }
 
-/// A local mirror with a rule `r` referencing `list_id` and the container file
-/// itself, so the list is present on both sides of the diff.
 fn mirror_with_rule_referencing(list_id: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_local_rule(
@@ -1345,8 +1284,6 @@ fn mirror_with_rule_referencing(list_id: &str) -> tempfile::TempDir {
     dir
 }
 
-/// A local mirror with a rule `r` referencing `list_id` and the container
-/// holding exactly `item_ids`.
 fn mirror_with_list_items(list_id: &str, item_ids: &[&str]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_local_rule(
@@ -1382,9 +1319,6 @@ fn mirror_with_list_items(list_id: &str, item_ids: &[&str]) -> tempfile::TempDir
     dir
 }
 
-/// A local mirror whose exception item references a value list, the entry type
-/// that requires the value-list data streams (spec 7.7). The value list id is
-/// caller-supplied and stable, so it round-trips without resolution.
 fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_local_rule(
@@ -1414,7 +1348,7 @@ fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::Tem
                     "name": "item i1", "namespace_type": "single",
                     "entries": [{
                         "field": "source.ip", "operator": "included", "type": "list",
-                        "list": {"id": value_list_id, "type": "ip"}
+                        "list": {"id": value_list_id, "type": "ip_range"}
                     }]
                 }]
             })
@@ -1424,9 +1358,8 @@ fn mirror_with_item_referencing_value_list(value_list_id: &str) -> tempfile::Tem
     dir
 }
 
-/// An absent value list is reported, never silently pushed (spec 7.7).
 #[tokio::test]
-async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
+async fn push_refuses_an_exception_entry_when_value_lists_are_not_initialized() {
     let stack = MockStack::with_value_lists_absent().await;
     let dir = mirror_with_item_referencing_value_list("ip-allowlist");
     let plan = state::plan_push(
@@ -1439,22 +1372,17 @@ async fn push_reports_an_exception_entry_referencing_an_absent_value_list() {
         &identity(),
     )
     .await
-    .unwrap();
-    assert!(
-        plan.preview_details
-            .iter()
-            .any(|d| d.contains("ip-allowlist")),
-        "{:?}",
-        plan.preview_details
-    );
+    .unwrap_err();
+    assert_eq!(plan.kind, ErrorKind::Unsupported);
+    assert!(plan.message.contains("init"));
+    assert!(stack.write_requests().await.is_empty());
 }
 
-/// The check must actually query the stack: when the data streams exist, the
-/// line is absent, so a bootstrapped stack is not reported as broken.
 #[tokio::test]
 async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
     let stack = MockStack::with_value_lists(&["ip-allowlist"]).await;
-    let dir = mirror_with_item_referencing_value_list("ip-allowlist");
+    let id = state_values_support::reads(stack.server(), true).await;
+    let dir = mirror_with_item_referencing_value_list(&id);
     let plan = state::plan_push(
         stack.transport(),
         dir.path(),
@@ -1467,17 +1395,12 @@ async fn push_is_silent_about_a_value_list_when_the_index_is_bootstrapped() {
     .await
     .unwrap();
     assert!(
-        !plan
-            .preview_details
-            .iter()
-            .any(|d| d.contains("ip-allowlist")),
+        !plan.preview_details.iter().any(|d| d.contains(&id)),
         "{:?}",
         plan.preview_details
     );
 }
 
-/// A 200 index must still be validated: a missing measured field makes the
-/// stack unverifiable, not silently absent.
 #[tokio::test]
 async fn malformed_value_list_index_response_fails_planning() {
     let stack = MockStack::with_value_list_index(json!({
@@ -1503,11 +1426,10 @@ async fn malformed_value_list_index_response_fails_planning() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// A bootstrapped index alone does not prove that a referenced value list
-/// exists; its id must be resolved through the public lookup route.
 #[tokio::test]
 async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
     let stack = MockStack::with_value_lists(&[]).await;
+    state_values_support::reads(stack.server(), false).await;
     let dir = mirror_with_item_referencing_value_list("missing");
     let plan = state::plan_push(
         stack.transport(),
@@ -1519,15 +1441,10 @@ async fn push_checks_a_missing_list_even_when_the_data_streams_exist() {
         &identity(),
     )
     .await
-    .unwrap();
-
-    assert!(
-        plan.preview_details
-            .iter()
-            .any(|line| line.contains("missing")),
-        "{:?}",
-        plan.preview_details
-    );
+    .unwrap_err();
+    assert_eq!(plan.kind, ErrorKind::NotFound);
+    assert!(plan.message.contains("missing"));
+    assert!(stack.write_requests().await.is_empty());
 }
 
 fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
@@ -1576,7 +1493,7 @@ fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
                         "name": item_id, "namespace_type": "single",
                         "entries": [{
                             "field": "source.ip", "operator": "included", "type": "list",
-                            "list": {"id": value_list_id, "type": "ip"}
+                            "list": {"id": value_list_id, "type": "ip_range"}
                         }]
                     }]
                 })
@@ -1587,12 +1504,16 @@ fn mirror_with_selected_and_unselected_value_list_refs() -> tempfile::TempDir {
     dir
 }
 
-/// Scoped planning only reads value lists reached through selected rules, so
-/// an unrelated broken reference cannot block or warn on this push.
 #[tokio::test]
 async fn scoped_push_checks_each_reachable_value_list_once() {
     let stack = MockStack::with_value_lists(&["ip-allowlist", "dns-allowlist"]).await;
+    let id = state_values_support::reads(stack.server(), true).await;
     let dir = mirror_with_selected_and_unselected_value_list_refs();
+    let selected = dir.path().join("exceptions/detect-a.ndjson");
+    let body = std::fs::read_to_string(&selected)
+        .unwrap()
+        .replace("ip-allowlist", &id);
+    std::fs::write(selected, body).unwrap();
     state::plan_push(
         stack.transport(),
         dir.path(),
@@ -1605,11 +1526,10 @@ async fn scoped_push_checks_each_reachable_value_list_once() {
     .await
     .unwrap();
 
-    assert_eq!(stack.value_list_lookups("ip-allowlist").await, 1);
+    assert_eq!(stack.value_list_lookups(&id).await, 1);
     assert_eq!(stack.value_list_lookups("dns-allowlist").await, 0);
 }
 
-/// Public exception drift is part of `DiffReport`, not only the push preview.
 #[tokio::test]
 async fn diff_reports_an_added_exception_item() {
     let stack = mock_stack_with_list_and_items("l", &[]).await;
@@ -1737,7 +1657,6 @@ async fn diff_reports_a_removed_exception_item() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// Spec 5.4. The single delete path in the tool's state engine.
 #[tokio::test]
 async fn an_item_absent_locally_is_deleted() {
     let stack = mock_stack_with_list_and_items("l", &["keep", "drop"]).await;
@@ -1778,8 +1697,6 @@ async fn an_item_absent_locally_is_deleted() {
     assert!(entry.error.is_none());
 }
 
-/// A standalone export item without a list identity must not make the valid
-/// mirrored list look empty and therefore authorize a remote item removal.
 #[tokio::test]
 async fn malformed_top_level_exception_item_cannot_plan_remote_deletion() {
     let stack = mock_stack_with_list_and_items("l", &["drop"]).await;
@@ -1895,7 +1812,6 @@ async fn push_refuses_a_multi_record_exception_file_before_any_item_delete() {
     assert!(stack.write_requests().await.is_empty());
 }
 
-/// The asymmetry must hold in the same run: items reconcile, containers do not.
 #[tokio::test]
 async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
     let stack = mock_stack_with_two_lists_one_mirrored().await;
@@ -1913,9 +1829,6 @@ async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
     .unwrap();
     state::apply_push(stack.transport(), plan).await.unwrap();
 
-    // The fixture must actually delete an item, or the "no container deleted"
-    // assertion below proves nothing: deletion has to be possible for its
-    // absence to mean anything.
     assert_eq!(
         stack.deleted_item_ids().await,
         vec!["drop"],
@@ -1930,7 +1843,6 @@ async fn a_container_absent_locally_survives_a_run_that_deletes_an_item() {
     );
 }
 
-/// A dry run deletes nothing, including items.
 #[tokio::test]
 async fn planning_an_item_deletion_deletes_nothing() {
     let stack = mock_stack_with_list_and_items("l", &["drop"]).await;
@@ -1949,9 +1861,6 @@ async fn planning_an_item_deletion_deletes_nothing() {
     assert!(stack.deleted_item_ids().await.is_empty());
 }
 
-/// Spec 4.5: the server does not catch a dangling pointer, so diff does.
-/// The check runs on the RAW remote rule, because `comparable` has already
-/// stripped the pointer by the time drift is computed.
 #[tokio::test]
 async fn diff_reports_a_rule_pointing_at_the_wrong_container_id() {
     let stack =
@@ -1993,9 +1902,6 @@ async fn a_pointer_matching_the_live_container_is_not_reported() {
     assert!(d.clean);
 }
 
-/// Spec 4.5: `push` repairs a dangling pointer by rewriting the rule, even when
-/// its normalized form is unchanged — the one change a normalized diff cannot
-/// see.
 #[tokio::test]
 async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
     let stack =
@@ -2027,8 +1933,6 @@ async fn push_rewrites_a_rule_whose_pointer_is_wrong() {
     );
 }
 
-/// Spec 5.4: an item added locally to an already-live container is created, so
-/// a retry after a partial push re-converges instead of assuming a clean slate.
 #[tokio::test]
 async fn an_item_added_to_an_existing_container_is_created() {
     let stack = mock_stack_with_list_and_items("l", &[]).await;
@@ -2077,7 +1981,6 @@ async fn an_item_added_to_an_existing_container_is_created() {
     assert!(entry.error.is_none());
 }
 
-/// Spec 5.4: a modified item is updated, not left to drift.
 #[tokio::test]
 async fn a_modified_item_is_updated() {
     let stack = mock_stack_with_list_and_items("l", &["keep"]).await;
@@ -2143,8 +2046,6 @@ async fn a_modified_item_is_updated() {
     assert!(entry.error.is_none());
 }
 
-/// A pull must refuse a missing referenced list before writing a partial
-/// mirror.
 #[tokio::test]
 async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
     let stack = MockStack::with_rules(vec![json!({
@@ -2178,9 +2079,6 @@ async fn pull_refuses_a_rule_referencing_a_list_that_does_not_exist() {
     );
 }
 
-/// A rule referencing two wrong pointers is one rule, repaired once, not once
-/// per pointer (spec 4.5). After a restore or stack rebuild every pointer is
-/// wrong, so any multi-list rule hits this.
 #[tokio::test]
 async fn a_rule_with_two_wrong_pointers_is_repaired_once() {
     let stack = mock_stack_with_rule_with_two_wrong_pointers().await;
@@ -2229,8 +2127,6 @@ async fn a_rule_with_two_wrong_pointers_is_repaired_once() {
     );
 }
 
-/// `live_id: None` is a distinct finding: no container with that `list_id`
-/// exists on the stack. The pointer is reported, not collapsed onto a wrong id.
 #[tokio::test]
 async fn diff_reports_a_pointer_whose_container_is_missing() {
     let stack = MockStack::with_rules(vec![json!({
@@ -2271,9 +2167,6 @@ async fn diff_reports_a_pointer_whose_container_is_missing() {
     );
 }
 
-/// An unchanged rule referencing a list that exists nowhere now blocks the push
-/// rather than being silently left dangling: the repair cannot resolve a live
-/// id, so the refusal is the honest answer (spec 4.5).
 #[tokio::test]
 async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
     let stack = MockStack::with_rules(vec![json!({
@@ -2314,9 +2207,6 @@ async fn push_refuses_an_unchanged_rule_referencing_a_nowhere_list() {
     );
 }
 
-/// A corpus split by source: `custom` rules carry `immutable: false`, `prebuilt`
-/// carry `immutable: true`. The mock's `_find` honors the filter, so a scoped
-/// read returns only the matching slice.
 async fn mock_mixed_corpus(custom: usize, prebuilt: usize) -> MockStack {
     let mut rules = Vec::with_capacity(custom + prebuilt);
     for i in 0..custom {
@@ -2338,8 +2228,6 @@ async fn mock_mixed_corpus(custom: usize, prebuilt: usize) -> MockStack {
     MockStack::with_rules(rules).await
 }
 
-/// A mirror holding one prebuilt rule, as a 0.1 `state pull` would have written
-/// it before `--source` existed.
 fn mirror_holding_a_prebuilt_rule() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let rules = dir.path().join("rules");
@@ -2352,11 +2240,9 @@ fn mirror_holding_a_prebuilt_rule() -> tempfile::TempDir {
     dir
 }
 
-/// Spec 5.5: a `custom`-scoped pull returns only authored rules, while a
-/// query with the default (all) filter hides nothing.
 #[tokio::test]
 async fn a_custom_pull_returns_only_authored_rules_while_the_default_filter_returns_all() {
-    let stack = mock_mixed_corpus(/* custom */ 2, /* prebuilt */ 5).await;
+    let stack = mock_mixed_corpus(2, 5).await;
     let dir = tempfile::tempdir().unwrap();
 
     let pulled = state::pull(
@@ -2381,7 +2267,6 @@ async fn a_custom_pull_returns_only_authored_rules_while_the_default_filter_retu
     assert_eq!(listed.total, 7, "a query command hides nothing");
 }
 
-/// Spec 5.5, the upgrade guard.
 #[tokio::test]
 async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
     let stack = mock_mixed_corpus(0, 1).await;
@@ -2404,8 +2289,6 @@ async fn a_local_file_outside_the_scope_is_out_of_scope_not_local_only() {
     );
 }
 
-/// A prebuilt-only stack has an honestly empty custom slice, so `pull` writes
-/// an empty mirror rather than treating it as an unsupported old stack.
 #[tokio::test]
 async fn a_prebuilt_only_stack_has_a_valid_empty_custom_scope() {
     let stack = mock_mixed_corpus(0, 3).await;
@@ -2447,8 +2330,6 @@ async fn malformed_source_partition_returns_a_typed_error_instead_of_an_empty_pu
         })))
         .mount(&server)
         .await;
-    // The first custom page is an honestly empty scope. The partition check's
-    // second page is malformed and must stop the pull before it writes a report.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(FirstEmptyThenMalformedSourcePage(AtomicUsize::new(0)))

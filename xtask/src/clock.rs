@@ -1,10 +1,3 @@
-//! Timestamp generation and calendar conversion.
-
-/// Format the current time as RFC3339 UTC with millisecond precision, e.g.
-/// `2026-09-01T12:34:56.789Z`. The workspace has no date-formatting
-/// dependency, so this hand-rolls it from `SystemTime` using Howard
-/// Hinnant's civil-from-days algorithm
-/// (<https://howardhinnant.github.io/date_algorithms.html>).
 pub(crate) fn now_rfc3339() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -21,8 +14,6 @@ pub(crate) fn now_rfc3339() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z")
 }
 
-/// Convert a day count since the Unix epoch (1970-01-01) to a proleptic
-/// Gregorian (year, month, day).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

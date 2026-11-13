@@ -178,7 +178,6 @@ fn test_command(
             "--exact",
             "--test-threads=1",
         ])
-        // Only the runner may confirm Fleet setup; never inherit the marker.
         .env_remove("ELASTICCTL_CONFORMANCE_FLEET_SETUP");
     if fleet_setup_confirmed
         && contract
@@ -497,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_table_is_the_approved_thirteen_in_order() {
+    fn contract_table_is_the_approved_fourteen_in_order() {
         assert_eq!(
             CONTRACTS
                 .iter()
@@ -517,8 +516,12 @@ mod tests {
                 "mcp_reads_existing_verticals",
                 "mcp_answers_across_verticals",
                 "mcp_mutations_plan_and_confirm",
+                "value_list_round_trip",
             ]
         );
+        let value_lists = &CONTRACTS[13];
+        assert_eq!(value_lists.test, "value_list_round_trip");
+        assert_eq!(value_lists.features[0].feature, Feature::ExceptionLists);
         let mutations = &CONTRACTS[12];
         assert_eq!(mutations.test, mutations.name);
         assert!(mutations.features.is_empty());
@@ -641,6 +644,7 @@ mod tests {
                 ContractResult::pass("mcp_reads_existing_verticals"),
                 ContractResult::pass("mcp_answers_across_verticals"),
                 ContractResult::pass("mcp_mutations_plan_and_confirm"),
+                ContractResult::pass("value_list_round_trip"),
             ],
         };
         assert_eq!(
@@ -711,6 +715,11 @@ mod tests {
                     },
                     {
                         "contract": "mcp_mutations_plan_and_confirm",
+                        "result": "pass",
+                        "error_class": null,
+                    },
+                    {
+                        "contract": "value_list_round_trip",
                         "result": "pass",
                         "error_class": null,
                     },
@@ -1095,8 +1104,6 @@ mod tests {
                 && value == Some(std::ffi::OsStr::new("1"))
         }));
 
-        // The mutation contract needs no Fleet setup, so a confirmed setup
-        // never reaches its child.
         let mutation_command =
             test_command(std::path::Path::new("/workspace"), &CONTRACTS[12], true);
         assert_eq!(
@@ -1123,8 +1130,6 @@ mod tests {
         assert!(fleet_setup_removed(&mutation_command));
     }
 
-    /// The child inherits the controller's environment, so a marker left in
-    /// the caller's shell must be removed, not only left unset.
     fn fleet_setup_removed(command: &std::process::Command) -> bool {
         command.get_envs().any(|(name, value)| {
             name == std::ffi::OsStr::new("ELASTICCTL_CONFORMANCE_FLEET_SETUP") && value.is_none()

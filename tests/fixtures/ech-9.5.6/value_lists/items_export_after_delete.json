@@ -1,0 +1,6 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "items_export_after_delete",
+  "response": "10.0.0.6/32\n10.0.0.7/32\n"
+}

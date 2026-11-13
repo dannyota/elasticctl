@@ -87,20 +87,26 @@ is given and the query names no source.
 converts it to a list of row objects `{name: value}` for the renderer. Column
 order comes from `columns`; duplicate column names (a `text` field emits both
 `message` and `message.keyword`) are preserved by position and disambiguated by
-suffix when rendered.
+suffix when rendered. A repeated name becomes `<name>.1`, `<name>.2`, and so
+on, skipping any name already used, so a generated `field.1` never collides
+with a column literally named `field.1`.
 
 **DSL** returns `{hits: {hits: [{_index, _id, _score, _source, sort}, …],
 total: {value, relation}}}`. The rendered row is the `_source` object; `_index`,
 `_id`, `_score`, and `sort` are dropped, because `_score`, `_id`, and `sort` are
 per-run noise in a bulk export. Hit metadata is opt-in from 0.3.1: `--with-meta`
-surfaces `_id`, `_index`, and `_score` as extra fields. `--fields` projects the
+surfaces `_id`, `_index`, and `_score` as extra fields, leaving out any the
+server omitted or returned as null; `sort` is never rendered. `--fields` projects the
 `_source` row, which is what makes `--format csv` meaningful for documents.
 
 ## 6. Pagination and export
 
 A **peek** (no `--out`) runs one request and renders what comes back, capped at
 `--limit` (default 100). For ES|QL the client appends a server-side `LIMIT` so
-a large result is never downloaded and discarded; for DSL the operator's body
+a large result is never downloaded and discarded. It appends `LIMIT <cap + 1>`,
+so the extra row shows truncation, and skips the append when a pipeline stage
+already starts with `LIMIT`; a field or function named `limit` does not count.
+For DSL the operator's body
 is sent verbatim. The client still truncates and reports "capped at N rows"
 the same way §4.1 of the main spec reports a capped rule-name search. It never
 claims a complete result when it truncated one.
@@ -199,7 +205,7 @@ Elasticsearch API key.
 | ES|QL `size` body param | Rejected: `{"query": "…", "size": 2}` returns a 400 with `{error, status}` |
 | ES|QL async | `POST /_query/async` with body `wait_for_completion_timeout` set short returns `{id, is_running: true}`; `GET /_query/async/<id>` returns the full result (no cursor) with `is_running: false`; `DELETE /_query/async/<id>` cleans up. A fast query with no timeout returns the inline result with `is_running: false` and no `id` |
 | ES|QL body params | `columnar`, `wait_for_completion_timeout`, `time_zone`, `locale`, `params`, and `filter` are request-body fields, not query-string params. A URL-placed `columnar` or `wait_for_completion_timeout` is a 400 `unrecognized parameter` |
-| ES|QL response formats | `format=csv` (and `tsv`/`txt`) on the sync `/_query` returns CSV directly with a header row; `columnar: true` returns `values` column-major instead of row-major. The async `/_query/async` accepts `columnar: true` but rejects `format` with a 400 `unknown field [format]`, so `format=csv` is sync-only |
+| ES|QL response formats | `format=csv` (and `tsv`/`txt`) on the sync `/_query` returns CSV directly with a header row; `columnar: true` returns `values` column-major instead of row-major, and a zero-row columnar result is `values: []`, not one empty array per column (Serverless 9.6.0). The async `/_query/async` accepts `columnar: true` but rejects `format` with a 400 `unknown field [format]`, so `format=csv` is sync-only |
 | DSL envelope | `{took, timed_out, _shards, hits: {hits: [{_index, _id, _score, _source, sort}], max_score, total: {value, relation}}}`. `pit_id` appears only with a PIT |
 | DSL PIT | `POST /<index>/_pit?keep_alive=1m` → `{id, _shards}`; `DELETE /_pit {id}` → `{succeeded, num_freed}`. Search with `pit` + `sort` + `search_after` pages cleanly; `search_after` takes the last hit's flat `sort` array |
 | Data views | `GET /api/data_views` → `{data_view: [{id, title, namespaces, …}]}`. `title` is the comma-separated index pattern, e.g. `security-solution-alert-default` → `.alerts-security.alerts-default`. Serverless reports 7 data views |

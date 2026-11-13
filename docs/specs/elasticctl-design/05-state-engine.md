@@ -47,7 +47,9 @@ requested spelling is retained only for user-facing output and errors.
 The sibling lock is `.<mirror-name>.elasticctl-pull.lock`. A filesystem root
 has no safe sibling lock and is refused with `ErrorKind::Error`; its message
 contains `filesystem root has no safe sibling lock`. This applies to Unix `/`,
-Windows drive roots, and UNC share roots.
+Windows drive roots, and UNC share roots. A root is recognized by path shape
+before any filesystem access: an existence check or canonicalization of a
+missing UNC share goes over the network and fails unpredictably.
 
 ### 5.0.1 Report path identity and locking
 
@@ -205,11 +207,24 @@ mirror; `exceptions export` covers it. That closure is what keeps `pull` and
 `push` symmetric: `push` manages the set `pull` wrote and never meets a list it
 was not told about.
 
+From 0.10 the closure gains one level: the value lists that the items of those
+exception lists reference, through entries of type `list`. A value list
+nothing in the mirror references is not mirrored; `value-lists export` covers
+it. The
+[value lists design](../elasticctl-value-lists-design/07-state-engine.md#71-the-selected-set)
+defines the selected set, the retained references `push` checks, and the
+`unreferenced` report.
+
 ```
 config/
   rules/<rule_id>.yaml
   exceptions/<list_id>.yaml
+  value-lists/<stem>.yaml
+  value-lists/<stem>.txt
 ```
+
+A value list is a container file and a values file with one stem
+([value lists design 7.2](../elasticctl-value-lists-design/07-state-engine.md#72-layout-and-file-names)).
 
 A `rule_default` list belongs to exactly one rule and is written inline in that
 rule's file. Its own file would be an object whose only consumer is one rule
@@ -220,8 +235,12 @@ and collisions are refused naming every colliding pair at once — section 5's
 existing contract, extended to lists. A `single` and an `agnostic` list sharing
 a `list_id` collide on filename and are refused the same way.
 
-`push` applies in a fixed order: containers, then items, then rules. A rule is
-never written before the list it points at exists.
+`push` applies in a fixed order: value lists, then exception containers, then
+items, then rules. A rule is never written before the list it points at
+exists, and an exception item is never written before the value list it names
+exists with its verified values. Each value list completes, container and then
+value phases, before the first exception write
+([value lists design 7.4](../elasticctl-value-lists-design/07-state-engine.md#74-push)).
 
 A scoped run reconciles items the same way, including in a container shared with
 rules outside the scope. That is sound for the same reason the deletion itself
@@ -244,6 +263,10 @@ selectors — so an item present remotely and absent locally *is* an instruction
 in the way a removed entry in a rule's `tags` array is. Removing an exception
 is how a detection is un-suppressed. A mirror that cannot express it cannot
 converge.
+
+Value lists follow the same rule: `push` never deletes a value-list container,
+and the values of a selected value list are reconciled exactly, deletes
+included, because `pull` writes a list's values in full.
 
 That deletion contract requires a complete, readable local item set. An
 exception file may contain one NDJSON object. An omitted `items` field means an
@@ -268,7 +291,9 @@ the messages `exception item field item_id must be a non-empty string`,
 field namespace_type must be a non-empty string`.
 
 `diff` gains an `exceptions` block mirroring the rules block, and `clean` is
-true only when both are.
+true only when both are. From 0.10, a mirror that holds `value-lists/` adds a
+`value_lists` block, and `clean` is true only when all three blocks are
+([value lists design 7.3](../elasticctl-value-lists-design/07-state-engine.md#73-pull-and-diff)).
 
 ### 5.5 Scoping by rule source
 
@@ -321,5 +346,6 @@ lists, or pull into it and leave its value lists stale. If the entry cannot
 be inspected, for example because the mirror is not searchable, the command
 fails closed with `error` and a message beginning `checking the mirror for
 value-lists/:`, rather than treating the mirror as free of value lists. 0.9.0
-to 0.9.3 do not have this check.
+to 0.9.3 do not have this check. From 0.10, `state` reads `value-lists/` as the
+value-lists design section 7 describes, and this refusal no longer applies.
 

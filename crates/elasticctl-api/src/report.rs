@@ -1,24 +1,53 @@
-//! Change evidence for a `push` attached to a change ticket.
-//!
-//! Records the proposed and applied changes, with values on both sides.
-
-use serde::Serialize;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ReportEntry {
-    /// The object this entry describes: a `rule_id` for rules, or a `list_id`
-    /// / `item_id` for exception writes.
     pub rule_id: String,
     pub name: String,
-    /// `create`, `update`, or `skipped_remote_only` for rules; `create_list`,
-    /// `update_list`, `create_item`, `update_item`, or `delete_item` for
-    /// exception writes.
     pub action: String,
     pub before: Option<Value>,
     pub after: Option<Value>,
     pub applied: bool,
     pub error: Option<String>,
+    pub value_list: Option<crate::value_lists::Evidence>,
+}
+
+impl Serialize for ReportEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        if let Some(evidence) = &self.value_list {
+            return evidence.serialize(serializer);
+        }
+        let mut value = serializer.serialize_struct("ReportEntry", 7)?;
+        value.serialize_field("rule_id", &self.rule_id)?;
+        value.serialize_field("name", &self.name)?;
+        value.serialize_field("action", &self.action)?;
+        value.serialize_field("before", &self.before)?;
+        value.serialize_field("after", &self.after)?;
+        value.serialize_field("applied", &self.applied)?;
+        value.serialize_field("error", &self.error)?;
+        value.end()
+    }
+}
+
+impl From<crate::value_lists::Evidence> for ReportEntry {
+    fn from(evidence: crate::value_lists::Evidence) -> Self {
+        Self {
+            rule_id: evidence.rule_id.clone(),
+            name: evidence.name.clone(),
+            action: serde_json::to_value(evidence.action)
+                .expect("action serializes")
+                .as_str()
+                .unwrap()
+                .into(),
+            before: None,
+            after: None,
+            applied: evidence.outcome == crate::value_lists::Outcome::Applied,
+            error: None,
+            value_list: Some(evidence),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,7 +55,6 @@ pub struct ChangeReport {
     pub profile: String,
     pub host: String,
     pub space: String,
-    /// `false` for a dry run.
     pub applied: bool,
     pub entries: Vec<ReportEntry>,
 }
@@ -52,10 +80,6 @@ impl ChangeReport {
         (created, updated, skipped, failed)
     }
 
-    /// Proposed `create` and `update` entries with neither success nor error.
-    /// A dry run leaves all actionable entries pending. After `push` runs,
-    /// pending is zero: each actionable entry succeeds or fails. Pending means
-    /// it awaits `--yes`, not that it failed.
     pub fn pending(&self) -> usize {
         self.entries
             .iter()
@@ -79,6 +103,7 @@ mod tests {
             after: None,
             applied,
             error: error.map(String::from),
+            value_list: None,
         }
     }
 

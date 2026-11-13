@@ -1,10 +1,3 @@
-//! Detection coverage over the verified corpus read.
-//!
-//! Every rule is the recorded marker rule of `rules_find_sorted_page.json`,
-//! cloned with only the fields a case needs changed: `rule_id`, `enabled`,
-//! `threat`, `index`, `data_view_id`, and `related_integrations`. Every
-//! `_find` body copies the recorded page shape.
-
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,11 +30,8 @@ static STATUS: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str::<Value>(text).expect("status fixture is JSON")["response"].clone()
 });
 
-/// The recorded marker rule: enabled, one MITRE ATT&CK entry (TA0002, T1059,
-/// subtechnique T1059.001), one index pattern, and the `system` package.
 static MARKER: LazyLock<Value> = LazyLock::new(|| SORTED_PAGE["data"][0].clone());
 
-/// The marker rule with a new identity, `enabled`, and replaced fields.
 fn row(rule_id: &str, enabled: bool, fields: Value) -> Value {
     let mut row = MARKER.clone();
     row["rule_id"] = json!(rule_id);
@@ -52,7 +42,6 @@ fn row(rule_id: &str, enabled: bool, fields: Value) -> Value {
     row
 }
 
-/// `row` with the named fields removed.
 fn without(mut row: Value, keys: &[&str]) -> Value {
     for key in keys {
         row.as_object_mut().expect("rule object").remove(*key);
@@ -64,8 +53,6 @@ fn rule(row: Value) -> Rule {
     Rule::from_value(row).expect("a rule with a rule_id")
 }
 
-/// The recorded MITRE ATT&CK entry with the tactic and technique list
-/// replaced. Each technique keeps one subtechnique, renamed to `<id>.001`.
 fn mitre(tactic: (&str, &str), techniques: &[(&str, &str)]) -> Value {
     let mut entry = MARKER["threat"][0].clone();
     entry["tactic"]["id"] = json!(tactic.0);
@@ -512,7 +499,6 @@ fn a_present_field_of_the_wrong_type_is_kind_http() {
     }
 }
 
-/// A grouping reads only its own fields.
 #[test]
 fn fields_of_another_grouping_are_not_read() {
     let rules = [rule(row(
@@ -543,7 +529,6 @@ fn transport(server: &MockServer) -> Transport {
     .unwrap()
 }
 
-/// The marker rule with identity `coverage-<n>`.
 fn corpus_rule(n: usize) -> Value {
     let mut row = MARKER.clone();
     row["rule_id"] = json!(format!("coverage-{n:04}"));
@@ -551,7 +536,6 @@ fn corpus_rule(n: usize) -> Value {
     row
 }
 
-/// A recorded-shape `_find` page holding the rules with these numbers.
 fn page(number: u64, total: u64, ids: impl IntoIterator<Item = usize>) -> Value {
     let mut body = SORTED_PAGE.clone();
     body["page"] = json!(number);
@@ -574,8 +558,6 @@ fn pages(total: usize) -> Vec<Value> {
         .collect()
 }
 
-/// Answers each `_find` request with the next scripted body. A request past
-/// the script gets a 500.
 struct Script {
     bodies: Vec<Value>,
     next: AtomicUsize,
@@ -608,8 +590,6 @@ async fn scripted(bodies: Vec<Value>) -> MockServer {
     server
 }
 
-/// The query of every `_find` request, in order. Every request is a GET to
-/// the status probe or to `_find`.
 async fn find_queries(server: &MockServer) -> Vec<BTreeMap<String, String>> {
     server
         .received_requests()
@@ -698,8 +678,6 @@ async fn the_request_count_equals_the_page_count() {
     }
 }
 
-/// The corpus limit and the two-pass conflict reach the caller with the kind
-/// and message `rules::find_window` gives.
 #[tokio::test]
 async fn the_corpus_limit_and_the_conflict_surface_unchanged() {
     let above = vec![page(1, 4_001, 0..500), page(2, 4_001, 500..1_000)];

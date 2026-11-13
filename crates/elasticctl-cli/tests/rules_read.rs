@@ -52,7 +52,6 @@ fn validate_reports_a_rule_missing_its_rule_id() {
 
 #[test]
 fn validate_shows_which_server_defaults_would_be_applied() {
-    // A sparse file is valid, and the output must show its server defaults.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sparse.yaml");
     fs::write(&path, "- rule_id: abc\n  name: A rule\n  type: query\n").unwrap();
@@ -126,8 +125,6 @@ fn validate_of_a_missing_file_is_a_clean_error_not_a_panic() {
     assert!(serde_json::from_slice::<serde_json::Value>(&out.stderr).is_ok());
 }
 
-/// `Rule::from_value` accepts a numeric `rule_id`, but `validate` must reject
-/// it instead of reporting a rule with an invalid identity as valid.
 #[test]
 fn validate_reports_a_rule_whose_rule_id_is_not_a_string() {
     let dir = tempfile::tempdir().unwrap();
@@ -169,7 +166,6 @@ fn validate_of_a_mixed_file_names_the_index_of_the_bad_rule() {
     assert!(msg.contains("rule_id"), "{msg}");
 }
 
-/// `validate` is local and offline, so it must work without a credential.
 #[test]
 fn validate_succeeds_against_a_credential_less_profile() {
     let dir = tempfile::tempdir().unwrap();
@@ -210,7 +206,6 @@ fn validate_succeeds_against_a_credential_less_profile() {
     assert_eq!(v["valid"], true);
 }
 
-/// A name lookup must use one filtered request instead of walking the corpus.
 #[tokio::test]
 async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
     let server = MockServer::start().await;
@@ -229,7 +224,6 @@ async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
         .expect(1)
         .mount(&server)
         .await;
-    // This fetch displays the rule and is separate from the name lookup.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules"))
         .and(query_param("rule_id", "abc"))
@@ -274,7 +268,6 @@ async fn a_name_lookup_makes_exactly_one_filtered_find_request() {
     );
 }
 
-/// A failed rule_id lookup must report both selector forms, not only a name.
 #[tokio::test]
 async fn a_miss_names_both_what_was_tried() {
     let server = MockServer::start().await;
@@ -308,8 +301,6 @@ async fn a_miss_names_both_what_was_tried() {
     assert!(msg.contains("does-not-exist-0000"), "{msg}");
 }
 
-/// A server-side filter can return near matches, but resolution still requires
-/// an exact name.
 #[tokio::test]
 async fn a_near_match_returned_by_the_filter_is_still_not_a_match() {
     let server = MockServer::start().await;

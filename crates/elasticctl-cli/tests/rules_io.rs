@@ -16,7 +16,6 @@ fn config_for(dir: &std::path::Path, uri: &str) -> std::path::PathBuf {
     p
 }
 
-/// Serves an export with volatile fields and unsorted keys.
 async fn exporting_server() -> MockServer {
     let server = MockServer::start().await;
     let body = concat!(
@@ -138,8 +137,6 @@ async fn export_yaml_carries_the_same_rules() {
     assert_eq!(rules[0].rule_id().unwrap(), "a");
 }
 
-/// With `--out` and `--json`, stdout carries a JSON confirmation report, not
-/// the rule file. The report must identify the requested output path.
 #[tokio::test]
 async fn export_with_out_reports_the_count_and_path_without_reprinting_the_file() {
     let server = exporting_server().await;
@@ -161,7 +158,6 @@ async fn export_with_out_reports_the_count_and_path_without_reprinting_the_file(
     assert_eq!(v["exported"], 2);
     assert_eq!(v["path"], out_file.display().to_string());
 
-    // Stdout must not overwrite the file passed to --out.
     let body = fs::read_to_string(&out_file).unwrap();
     assert_eq!(
         body.lines().count(),
@@ -189,8 +185,6 @@ async fn export_without_out_prints_the_file_body_to_stdout() {
     assert!(!text.contains("updated_at"), "{text}");
 }
 
-/// Exported rule content is the payload, not a report. Report formats such as
-/// `--format csv` must not re-encode it, or object fields would be lost.
 #[tokio::test]
 async fn export_without_out_bypasses_the_report_format_pipeline() {
     let server = exporting_server().await;
@@ -218,8 +212,6 @@ async fn export_without_out_bypasses_the_report_format_pipeline() {
     assert!(text.contains("rule_id"), "{text}");
 }
 
-/// `--json` controls report rendering. Without `--out`, stdout is the export
-/// file, so `--json` must not wrap the NDJSON in a report envelope.
 #[tokio::test]
 async fn export_without_out_emits_raw_ndjson_even_under_json() {
     let server = exporting_server().await;
@@ -251,7 +243,6 @@ async fn export_without_out_emits_raw_ndjson_even_under_json() {
     );
 }
 
-/// Stdout bytes must not depend on the report format.
 #[tokio::test]
 async fn export_to_stdout_is_identical_under_every_report_format() {
     let server = exporting_server().await;
@@ -273,8 +264,6 @@ async fn export_to_stdout_is_identical_under_every_report_format() {
     assert_eq!(plain, run(&["--format", "csv"]));
 }
 
-/// `--format-file` selects the file encoding, including when stdout is the
-/// destination.
 #[tokio::test]
 async fn export_to_stdout_honours_format_file_not_format() {
     let server = exporting_server().await;
@@ -419,9 +408,6 @@ async fn yes_uploads_the_ndjson_and_reports_the_outcome() {
     );
 }
 
-/// Kibana reports import errors per rule instead of returning a `failed` count.
-/// A partial failure must still set the shared non-zero exit code and report
-/// which rules failed.
 #[tokio::test]
 async fn a_partial_import_failure_exits_non_zero_and_names_the_failed_rule() {
     let server = MockServer::start().await;
@@ -472,8 +458,6 @@ async fn a_partial_import_failure_exits_non_zero_and_names_the_failed_rule() {
     assert_eq!(failed[0]["rule_id"], "b");
 }
 
-/// A selector must export only the named rules, not the whole corpus for the
-/// operator to filter by hand.
 #[tokio::test]
 async fn export_scopes_the_request_to_the_named_selectors() {
     let server = MockServer::start().await;
@@ -563,7 +547,6 @@ async fn export_by_tag_resolves_the_tag_to_ids_first() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
 }
 
-/// A tag that matches nothing must fail instead of widening to every rule.
 #[tokio::test]
 async fn a_selection_matching_nothing_is_refused_not_widened() {
     let server = MockServer::start().await;
@@ -612,8 +595,6 @@ async fn a_selection_matching_nothing_is_refused_not_widened() {
     );
 }
 
-/// A tag that matches nothing must remain a `not_found` error even when a
-/// separate selector resolves successfully.
 #[tokio::test]
 async fn a_tag_that_matched_nothing_is_refused_even_when_a_selector_resolved() {
     let server = MockServer::start().await;
@@ -663,8 +644,6 @@ async fn a_tag_that_matched_nothing_is_refused_even_when_a_selector_resolved() {
     );
 }
 
-/// A rule deleted between selection and export is reported as missing, not as
-/// a successful short export.
 #[tokio::test]
 async fn a_missing_rule_is_reported_as_a_failure() {
     let server = MockServer::start().await;
@@ -706,8 +685,6 @@ async fn a_missing_rule_is_reported_as_a_failure() {
     assert_eq!(v["failed"][0]["rule_id"], "gone");
 }
 
-/// With `--out`, a short export reports `failed` on stdout. When stdout is the
-/// file, the same failure must be conveyed by the exit code.
 #[tokio::test]
 async fn a_short_export_to_stdout_exits_non_zero() {
     let server = MockServer::start().await;
@@ -748,8 +725,6 @@ async fn a_short_export_to_stdout_exits_non_zero() {
     );
 }
 
-/// Existing rules should be skipped before import, so scripts can distinguish
-/// them from failed uploads.
 #[tokio::test]
 async fn skip_existing_uploads_only_the_new_rules() {
     let server = MockServer::start().await;
@@ -820,8 +795,6 @@ async fn skip_existing_uploads_only_the_new_rules() {
     );
 }
 
-/// A dry run must identify rules that would be skipped instead of listing all
-/// rules as pending imports.
 #[tokio::test]
 async fn the_skip_existing_dry_run_names_what_would_be_skipped() {
     let server = MockServer::start().await;
@@ -875,7 +848,6 @@ async fn the_skip_existing_dry_run_names_what_would_be_skipped() {
 
 #[tokio::test]
 async fn skip_existing_and_overwrite_cannot_be_combined() {
-    // These flags give opposite answers to the same conflict.
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), "http://127.0.0.1:1");
     let src = dir.path().join("in.ndjson");
@@ -901,8 +873,6 @@ async fn skip_existing_and_overwrite_cannot_be_combined() {
         .code(2);
 }
 
-/// Without either flag, an import conflict remains a reported failure and
-/// exits 1.
 #[tokio::test]
 async fn the_default_import_still_reports_a_conflict_as_a_failure() {
     let server = MockServer::start().await;
@@ -939,9 +909,6 @@ async fn the_default_import_still_reports_a_conflict_as_a_failure() {
     assert!(v["skipped"].as_array().unwrap().is_empty());
 }
 
-/// A dry-run import without `--skip-existing` only reads the file, so it must
-/// not require a credential. 0.1.3 printed its preview against an unconfigured
-/// profile; the move must not have turned that into a credential error.
 #[tokio::test]
 async fn import_dry_run_against_a_credential_less_profile_still_previews() {
     let dir = tempfile::tempdir().unwrap();
@@ -986,8 +953,6 @@ async fn import_dry_run_against_a_credential_less_profile_still_previews() {
     assert_eq!(v["applied"], false);
 }
 
-/// A missing file must report the file error before a missing credential, as
-/// 0.1.3 did.
 #[tokio::test]
 async fn import_of_a_missing_file_reports_the_file_error_first() {
     let dir = tempfile::tempdir().unwrap();

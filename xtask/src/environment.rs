@@ -1,10 +1,6 @@
-//! Environment transport and recorder activation.
-
 use crate::activation;
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 
-/// Build a transport from the environment as the CLI does. The caller supplies
-/// the default timeout; `ELASTICCTL_TIMEOUT` overrides it.
 pub(crate) fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::Transport {
     let timeout_secs = std::env::var("ELASTICCTL_TIMEOUT")
         .ok()
@@ -24,9 +20,6 @@ pub(crate) fn transport_from_env(default_timeout_secs: u64) -> elasticctl_core::
     elasticctl_core::Transport::new(&profile).expect("transport")
 }
 
-/// The only recorder flavor that starts headless needs a profile activation
-/// before the later alert-assignment probe can resolve an assignee. Keep the
-/// decision pure so tests never race on process environment variables.
 struct TraditionalRecorderLogin<'a> {
     username: &'a str,
     password: &'a str,

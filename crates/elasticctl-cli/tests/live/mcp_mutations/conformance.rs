@@ -11,7 +11,6 @@ pub(super) fn fixture(name: &str) -> Value {
     serde_json::from_slice::<Value>(&std::fs::read(file).unwrap()).unwrap()["response"].clone()
 }
 
-// Retain real frames so a failed shared validator reports the wire evidence.
 pub(super) struct Observed {
     pub(super) child: McpChild,
     frames: Vec<Value>,
@@ -57,7 +56,6 @@ pub(super) async fn setup() -> (MockServer, tempfile::TempDir, PathBuf) {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let config = mcp_smoke::mcp_subprocess_config(dir.path(), &server.uri());
-    // The shared command uses the same Cargo-provided binary as the live path.
     assert_eq!(
         mcp_smoke::offline_child_command(&config, false).get_program(),
         std::ffi::OsStr::new(env!("CARGO_BIN_EXE_elasticctl"))

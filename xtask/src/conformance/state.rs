@@ -13,35 +13,11 @@ pub(super) struct TargetState {
     pub(super) marked_data_views: usize,
     pub(super) marked_dashboards: u64,
     pub(super) default_data_view: Option<String>,
-    /// Open (non-`closed`) `elasticctl-live-*` marker alerts. Closed marker
-    /// alerts are never counted here at all — the capture query below
-    /// excludes them, which *is* the triage contract's accepted alert-residue
-    /// tolerance (design spec `elasticctl-triage-design.md` section 9): a
-    /// closed marker alert is inert and stays out of every baseline count.
     pub(super) open_marked_alerts: u64,
-    /// `elasticctl-live-marker`-tagged cases. Unlike alerts, cases delete
-    /// cleanly through a public API, so this carries no such tolerance and
-    /// must be zero like every other partition (same spec section).
     pub(super) marked_cases: u64,
     pub(super) fleet: Option<FleetState>,
 }
 
-/// Whether a feature is available on the measured target.
-///
-/// This mirrors the per-contract skip gate exactly: both use the same
-/// `Capabilities::require_feature` floor. A below-floor target reports every
-/// feature as unavailable, so `TargetState::capture` defaults the gated
-/// partitions to 0 instead of failing the baseline before the skip
-/// classification can run.
-///
-/// Exception: `open_marked_alerts` and `marked_cases` are *not* gated by this
-/// function at all — no `Feature::Alerts`/`Feature::Cases` variant exists,
-/// because every supported stack (9.5.1+) serves `signals/search` and
-/// `cases/_find` unconditionally. A target that cannot answer those routes
-/// cannot be audited for triage residue either, so `capture` fails the whole
-/// baseline for it instead of defaulting the two triage partitions to 0 —
-/// silently reporting "clean" when the harness could not actually check
-/// would be the dishonest outcome, not the fail.
 pub(super) fn feature_available(capabilities: &Capabilities, feature: Feature) -> bool {
     capabilities.require_feature(feature).is_ok()
 }
@@ -143,11 +119,6 @@ impl TargetState {
         };
         let default_data_view = elasticctl_api::data_views::get_default(transport).await?;
 
-        // Same prefix + must_not-closed body live.rs's own baseline counter
-        // sends (crates/elasticctl-cli/tests/live.rs::open_marker_alert_count):
-        // every `elasticctl-live-`-prefixed marker rule's alerts, excluding
-        // `workflow_status: closed`. Un-gated by `Feature`: every supported
-        // stack serves `signals/search`.
         let open_marked_alerts = {
             let body = serde_json::json!({
                 "query": {"bool": {
@@ -170,8 +141,6 @@ impl TargetState {
                 })?
         };
 
-        // Same tag-filtered find query live.rs's own baseline counter sends
-        // (crates/elasticctl-cli/tests/live.rs::marker_case_count).
         let marked_cases = {
             let query = elasticctl_api::cases_ops::find_query(
                 &elasticctl_api::cases_ops::CaseFilter {
@@ -202,12 +171,6 @@ impl TargetState {
         })
     }
 
-    /// `open_marked_alerts` is already the *open* count only — `capture`'s
-    /// query excludes `workflow_status: closed`, so a closed marker alert
-    /// never reaches this field at all. Requiring it to be zero here still
-    /// tolerates closed residue without a separate branch: the exclusion at
-    /// capture time *is* the tolerance (triage spec section 9). `marked_cases`
-    /// carries no such deviation and is held to zero unconditionally.
     fn markers_are_clean(&self) -> bool {
         self.marked_rules == 0
             && self.marked_lists == 0

@@ -1,12 +1,9 @@
-//! Agent policy artifact validation and export.
-
 use super::{
     AgentPolicySpec, AgentPolicySummary, BTreeMap, BTreeSet, ContentFormat, Error, ErrorKind,
     ExportOutcome, Path, Result, Transport, collect, content_codec, is_platform_owned,
     live_from_item, read_live, resolve_item,
 };
 
-/// Read, decode, validate, and sort a portable artifact.
 pub fn validate(path: &Path) -> Result<Vec<AgentPolicySpec>> {
     let body = std::fs::read_to_string(path).map_err(|error| {
         Error::new(
@@ -53,7 +50,6 @@ pub fn validate(path: &Path) -> Result<Vec<AgentPolicySpec>> {
     Ok(specs)
 }
 
-/// Export selected policies, or every custom policy, as a portable artifact.
 pub async fn export(
     transport: &Transport,
     selectors: &[String],

@@ -30,7 +30,7 @@ pub(crate) enum PlanError {
     ConfirmationPending,
     ConfirmationTimeout,
     CredentialUnsuitable,
-    #[allow(dead_code)] // Reserved for the specified case sync guard.
+    #[allow(dead_code)]
     CaseSyncAlerts,
     ApplyPending,
     ApplyOutcomeUnknown(elasticctl_core::ErrorKind),

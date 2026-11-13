@@ -1,5 +1,3 @@
-//! Integration policy exercise.
-
 use super::lifecycle::{Context, Evidence};
 use crate::diagnostics::{
     record_trace, recording_error, safe_recording_error_summary, safe_recording_transport_error,
@@ -77,9 +75,6 @@ pub(super) async fn record_primary(
             Some(&create_body),
         )
         .await;
-    // The recorder permits only an already-installed exact package. Observe
-    // after every create attempt anyway, including a failed one, so a server
-    // implementation change cannot leave hidden package inventory residue.
     record_trace("fleet-integration-policy-inventory-after-create");
     let inventory_observation = require_unchanged_installed_package_inventory(
         t,

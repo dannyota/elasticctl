@@ -1,5 +1,3 @@
-//! Defaults helpers.
-
 use crate::diagnostics::{record_trace, recording_error, safe_recording_transport_error};
 use crate::fixtures::Recording;
 use crate::recorder::data_views::fixtures::data_view_fixture;
@@ -52,9 +50,6 @@ pub(super) fn require_acknowledged(body: &Value, context: &str) -> elasticctl_co
     }
 }
 
-/// Decode the raw default response the recorder puts in a public fixture.
-/// Production canonicalizes the same two no-default values; this separate
-/// strict decoder preserves their raw shape for fixture evidence.
 fn decode_raw_data_view_default(body: &Value) -> elasticctl_core::Result<Option<String>> {
     let Value::Object(values) = body else {
         return Err(recording_error(
@@ -236,9 +231,6 @@ fn require_pending_data_view_default_restore_state(
     lease: &PendingDefaultRestore,
     current_raw: &Value,
 ) -> elasticctl_core::Result<()> {
-    // Source create that displaced a preexisting default is a main-flow
-    // failure, but cleanup owns that source and must still be able to restore
-    // the preexisting default without widening normal-flow acceptance.
     if lease.phase == PendingDefaultRestorePhase::CreateMayImplicitlySetSource
         && decode_raw_data_view_default(current_raw)?.as_deref() == Some(DATA_VIEW_SOURCE_ID)
     {
@@ -301,9 +293,6 @@ pub(super) async fn record_empty_data_view_self_preview(
     Ok((request, response))
 }
 
-/// Claim the validated raw default immediately before creating the fixed
-/// source. Source create may implicitly set that source as default, so this
-/// pending lease and source ownership must exist before the POST can start.
 pub(super) async fn create_source_with_pending_default_lease(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,

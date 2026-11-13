@@ -4,7 +4,6 @@ use rmcp::{
     service::RequestContext,
 };
 
-/// Supported protocol revisions for adapter calls and audit records.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum CallProtocol {
     Legacy,
@@ -20,7 +19,6 @@ impl CallProtocol {
     }
 }
 
-/// Metadata from the session lifecycle for one tool call.
 #[derive(Clone, Debug, Default)]
 pub struct CallContext {
     pub form_elicitation: bool,
@@ -41,7 +39,6 @@ impl CallContext {
                 None,
             ));
         }
-        // The SDK stores negotiated initialize data in peer_info. Direct startup has none.
         let (version, capabilities) = if let Some(info) = context.peer.peer_info() {
             (
                 Some(info.protocol_version.clone()),

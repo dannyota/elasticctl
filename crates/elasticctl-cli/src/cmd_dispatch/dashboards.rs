@@ -22,8 +22,6 @@ pub(crate) async fn dashboards(args: &Cli, action: &DashboardsAction) -> Result<
             Ok(ctx) => cmd::dashboards::get(&ctx, selector).await,
             Err(e) => Err(e),
         },
-        // Local artifact validation must not read config or construct a
-        // transport, so it remains usable in an offline checkout.
         DashboardsAction::Validate { path } => cmd::dashboards::validate(path),
         DashboardsAction::Export {
             selectors,
@@ -49,8 +47,6 @@ pub(crate) async fn dashboards(args: &Cli, action: &DashboardsAction) -> Result<
             },
             Err(e) => Err(e),
         },
-        // Reject empty selectors before building a context so this cannot
-        // express an unscoped mutation.
         DashboardsAction::Delete { selectors } if selectors.is_empty() => Err(Error::new(
             ErrorKind::Error,
             "Name at least one dashboard to delete",

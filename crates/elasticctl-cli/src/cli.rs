@@ -1,5 +1,3 @@
-//! Argument definitions. Nothing here reaches into `elasticctl-api`.
-
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum, builder::OsStringValueParser};
 use elasticctl_core::{Error, ErrorKind};
 use std::ffi::OsString;
@@ -10,6 +8,8 @@ mod content;
 mod detection;
 mod fleet;
 mod triage;
+mod value_lists;
+pub use value_lists::ValueListsAction;
 
 pub use content::{
     DashboardBundleAction, DashboardsAction, DataViewDefaultAction, DataViewsAction,
@@ -35,8 +35,6 @@ fn mcp_detection_command() -> clap::Command {
     command
 }
 
-/// Detect the MCP group without accepting its arguments or rendering a clap
-/// error. The ordinary typed parse remains the only authority for syntax.
 pub fn is_mcp_invocation(argv: &[OsString]) -> bool {
     mcp_detection_command()
         .try_get_matches_from(argv)
@@ -44,8 +42,6 @@ pub fn is_mcp_invocation(argv: &[OsString]) -> bool {
         .is_some_and(|matches| matches.subcommand_name() == Some("mcp"))
 }
 
-/// Reject an empty or whitespace-only `--search`, which would otherwise widen a
-/// scoped operation to every rule instead of narrowing it (spec 4.7).
 fn non_empty(value: &str) -> Result<String, String> {
     if value.trim().is_empty() {
         Err("value must not be empty".into())
@@ -135,8 +131,6 @@ pub struct GlobalArgs {
 }
 
 impl GlobalArgs {
-    /// `--json` is a shorthand that wins over `--format`, so a script can force
-    /// JSON without knowing what else was configured.
     pub fn effective_format(&self) -> Format {
         if self.json {
             Format::Json
@@ -180,6 +174,11 @@ pub enum Command {
     Exceptions {
         #[command(subcommand)]
         action: ExceptionsAction,
+    },
+    #[command(about = "Manage value lists")]
+    ValueLists {
+        #[command(subcommand)]
+        action: ValueListsAction,
     },
     /// Manage Kibana data views
     DataViews {

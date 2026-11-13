@@ -1,8 +1,5 @@
-//! Static MCP tool catalog.
-
 use rmcp::model::Tool;
 
-/// The complete MCP tool namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolId {
     AlertContext,
@@ -133,7 +130,6 @@ impl ToolId {
     }
 }
 
-/// Return the registered production catalog.
 pub fn definitions() -> Vec<Tool> {
     crate::tools::definitions(&crate::ServerOptions::default())
 }
@@ -175,7 +171,6 @@ impl ToolId {
     }
 }
 
-/// Resolve the enabled namespace before argument decoding.
 pub(crate) fn enabled_name<'a>(name: &'a str, options: &crate::ServerOptions) -> &'a str {
     match ToolId::parse(name) {
         Some(tool) if !tool.enabled(options) => "",

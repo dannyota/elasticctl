@@ -1,4 +1,3 @@
-//! The `rule_health` task tool: validate, call, and project one rule's health.
 use super::*;
 use crate::server::validate_text;
 use elasticctl_api::compose::{
@@ -70,7 +69,7 @@ struct RuleHealthData {
     findings: Vec<FindingCode>,
 }
 
-#[allow(dead_code, clippy::large_enum_variant)] // Schema-only alternatives are never instantiated.
+#[allow(dead_code, clippy::large_enum_variant)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum RuleHealthOutput {

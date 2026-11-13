@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 1,
+  "stdout": "",
+  "stderr": "{\"error\":{\"kind\":\"conflict\",\"message\":\"refusing to overwrite existing files: ROOT/occupied.yaml, ROOT/occupied.txt\"}}\n"
+}

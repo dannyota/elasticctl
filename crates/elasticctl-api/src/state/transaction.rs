@@ -1,9 +1,3 @@
-//! Crash-recoverable replacement for the files written by `state pull`.
-//!
-//! The transaction lives below the mirror so staged bytes and backups cannot
-//! cross a filesystem boundary. Its journal is append-only: a crash can lose
-//! at most its final, unterminated record, never the prepared manifest.
-
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -37,11 +31,6 @@ enum Phase {
 }
 
 impl Phase {
-    /// Whether `next` is the single legal successor of `self`.
-    ///
-    /// The journal is append-only, so each entry must advance one phase at a
-    /// time. A record that jumps ahead is corrupt and must fail recovery rather
-    /// than roll back on a phase the transaction never reached.
     fn can_advance_to(self, next: Phase) -> bool {
         matches!(
             (self, next),
@@ -72,14 +61,10 @@ struct PreparedRecord {
 }
 
 pub(crate) struct StagedFile {
-    /// Relative to the mirror root and under rules/ or exceptions/.
     pub relative: PathBuf,
     pub bytes: Vec<u8>,
 }
 
-/// Transaction removal discards the only rollback evidence. A later
-/// mirror-directory sync failure therefore leaves the installed mirror as the
-/// terminal state.
 enum CleanupOutcome {
     Synced,
     CommittedAfterSyncFailure,
@@ -93,7 +78,6 @@ pub(crate) fn acquire_pull(requested: &Path) -> Result<PullLock> {
 
 fn acquire_pull_from(requested: &Path, current_dir: &Path) -> Result<PullLock> {
     let root = resolve_mirror_root(requested, current_dir)?;
-    super::mirror::refuse_value_lists(&root)?;
     let parent = mirror_parent(&root)?;
     let mirror_name = root
         .file_name()
@@ -138,11 +122,6 @@ fn resolve_mirror_root(requested: &Path, current_dir: &Path) -> Result<PathBuf> 
         current_dir.join(requested)
     };
 
-    // Reject a filesystem root — `/`, a drive root, or a UNC share root — by
-    // shape before any filesystem access. `parent()` is None exactly for these
-    // roots and Some for aliases like `./` and `foo/..`, while `try_exists` and
-    // `canonicalize` on a non-existent UNC share resolve over the network and
-    // are nondeterministic (os error 64).
     let parent = absolute
         .parent()
         .ok_or_else(|| filesystem_root_error(requested))?;
@@ -350,13 +329,9 @@ fn recover_pull_with(lock: &PullLock, ops: &dyn FileOps) -> Result<()> {
     require_directory(&transaction, "reading pull transaction directory")?;
     let journal = journal_path(&transaction);
     if !journal.exists() {
-        // No prepared record exists, so no target rename was permitted. This
-        // directory contains only transaction-owned staging bytes.
         return remove_transaction(lock, ops).map(|_| ());
     }
     let Some(entries) = read_journal(&transaction)? else {
-        // The first record was never fully appended, so no prepared manifest
-        // existed and no target rename was allowed to start.
         return remove_transaction(lock, ops).map(|_| ());
     };
     for entry in &entries {
@@ -410,10 +385,6 @@ fn recover_one(
     } else if matches!(entry.phase, Phase::Installing | Phase::Installed) && !staged.exists() {
         let target_parent = ensure_target_parent(lock, &entry.relative, ops)?;
         if target_is_regular_file(lock, &entry.relative)? {
-            // A staged file disappearing proves the transaction performed the
-            // install. Do not remove a target while the staged side still
-            // exists: an interrupted pre-rename must leave an absent target
-            // untouched.
             remove_file(
                 ops,
                 &target,
@@ -473,8 +444,6 @@ fn read_journal(transaction: &Path) -> Result<Option<Vec<JournalEntry>>> {
     }
     for record in records {
         if !record.ends_with(b"\n") {
-            // A crash can only leave the final append incomplete. No later
-            // record exists, because this is the final unterminated slice.
             break;
         }
         let update: PhaseRecord = serde_json::from_slice(record).map_err(|e| {
@@ -1055,7 +1024,6 @@ mod tests {
         fs::write(txn.join("journal.ndjson"), journal).unwrap();
     }
 
-    /// The legal phase records from `Prepared` through `phase`.
     fn phases_through(phase: Phase) -> Vec<Phase> {
         use Phase::*;
         match phase {
@@ -1096,13 +1064,9 @@ mod tests {
     fn recovery_restores_the_pre_transaction_bytes_for_every_phase_twice() {
         for (phase, state) in [
             (Phase::Prepared, RecoveryState::TargetAndStaged),
-            // `BackingUp` is recorded before the rename, so recovery must
-            // tolerate both its source and destination sides.
             (Phase::BackingUp, RecoveryState::TargetAndStaged),
             (Phase::BackingUp, RecoveryState::BackupAndStaged),
             (Phase::BackedUp, RecoveryState::BackupAndStaged),
-            // `Installing` is likewise recorded before the staged-to-target
-            // rename and must recover both observable states.
             (Phase::Installing, RecoveryState::BackupAndStaged),
             (Phase::Installing, RecoveryState::BackupAndTarget),
             (Phase::Installed, RecoveryState::BackupAndTarget),
@@ -1153,9 +1117,6 @@ mod tests {
         fs::create_dir_all(transaction.join("staged")).unwrap();
         fs::create_dir_all(transaction.join("backups")).unwrap();
 
-        // A prepared manifest for a target absent before the transaction,
-        // followed directly by an illegal Installed record that skips
-        // BackingUp, BackedUp, and Installing.
         let entry = JournalEntry {
             relative: "rules/a.ndjson".into(),
             existed_before: false,
@@ -1176,9 +1137,6 @@ mod tests {
         )
         .unwrap();
 
-        // No staged file exists (this corrupt journal skips straight to
-        // Installed) and a user target is present; the illegal transition must
-        // neither remove it nor discard the journal.
         fs::create_dir_all(root.join("rules")).unwrap();
         fs::write(root.join("rules/a.ndjson"), b"user bytes\n").unwrap();
 
@@ -1280,5 +1238,39 @@ mod tests {
 
         assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
         assert!(!root.exists());
+    }
+    #[test]
+    fn value_list_pairs_are_installed_and_rolled_back_with_rules_and_exceptions() {
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("mirror");
+            let paths = [
+                "rules/a.yaml",
+                "exceptions/a.yaml",
+                "value-lists/a.yaml",
+                "value-lists/a.txt",
+            ];
+            for path in paths {
+                fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                fs::write(root.join(path), b"old\n").unwrap();
+            }
+            let lock = acquire_pull(&root).unwrap();
+            let files: Vec<_> = paths.iter().map(|path| staged(path, b"new\n")).collect();
+            if fail {
+                assert!(
+                    replace_staged_files_with(&lock, &files, &FailingFileOps::once("rename", 8))
+                        .is_err()
+                );
+            } else {
+                replace_staged_files(&lock, &files).unwrap();
+            }
+            for path in paths {
+                assert_eq!(
+                    fs::read(root.join(path)).unwrap(),
+                    if fail { b"old\n" } else { b"new\n" }
+                );
+            }
+            assert!(!root.join(TRANSACTION_DIR).exists());
+        }
     }
 }

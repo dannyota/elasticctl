@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""Make converted Sigma rules safe to import into a shared project.
-
-Every object gets the elasticctl-sample marker so a live run can find and
-remove everything it created, and so no untagged rule is ever touched:
-
-  * rule_id becomes elasticctl-sample-<slug>
-  * tags become ["elasticctl-sample"]
-  * enabled is false
-  * index points at the sample data stream
-
-Server-owned fields are stripped so the import assigns its own. The DRL
-attribution the converter emits — author, references, license — is kept
-untouched: the license requires it.
-
-Reads NDJSON on argv, writes NDJSON on stdout. Standard library only.
-"""
-
 import json
 import re
 import sys
@@ -64,7 +47,6 @@ def main():
                     continue
                 rule = prepare(json.loads(line))
                 if rule["rule_id"] in seen:
-                    # Two rules with the same slug would import as one.
                     print(f"skipping duplicate id {rule['rule_id']}", file=sys.stderr)
                     continue
                 seen.add(rule["rule_id"])

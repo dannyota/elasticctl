@@ -1,5 +1,3 @@
-//! Inputs helpers.
-
 use crate::diagnostics::recording_error;
 #[cfg(test)]
 use crate::recorder::markers::TEST_INTEGRATION_RECORDING_NONCE;
@@ -84,9 +82,6 @@ fn sensitive_marker_input_field(name: &str) -> bool {
     .any(|needle| name.contains(needle))
 }
 
-/// Inspect only input-map field names and container structure. Values never
-/// participate in this recorder-side backstop; the production export path is
-/// the authority for secret classification.
 fn marker_inputs_have_sensitive_field_names(value: &Value) -> bool {
     match value {
         Value::Object(fields) => fields.iter().any(|(name, value)| {

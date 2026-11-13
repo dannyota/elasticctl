@@ -1,15 +1,10 @@
-//! State orchestration: pull, diff, and push.
-//!
-//! Split by concern: report types, mirror file I/O, and one module per command.
-//! `mod.rs` holds the shared selection scope and the filename helpers every
-//! command uses.
-
 mod diff;
 mod mirror;
 mod pull;
 mod push;
 mod reports;
 mod transaction;
+mod values;
 
 pub use diff::diff;
 pub use mirror::{read_local, read_mirror};
@@ -19,6 +14,7 @@ pub use reports::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, Mirror, PullReport, PushReport,
     StackIdentity,
 };
+pub use values::{ValueListChange, ValueListDrift, ValueListIssue};
 
 use crate::model::{ListKey, Rule};
 use crate::rules::{RuleFilter, RuleSource};
@@ -36,8 +32,6 @@ fn exceptions_dir(dir: &Path) -> PathBuf {
     dir.join("exceptions")
 }
 
-/// Rule IDs are caller-supplied strings. Replace characters that could escape
-/// the directory or are unsafe in filenames.
 fn safe_filename(id: &str, ext: &str) -> String {
     let safe: String = id
         .chars()
@@ -52,9 +46,6 @@ fn safe_filename(id: &str, ext: &str) -> String {
     format!("{safe}.{ext}")
 }
 
-/// Whether this scan should parse a directory entry as a rule or list file.
-/// Unlike `FileFormat::from_path`, ignore unknown extensions because mirror
-/// directories commonly contain files such as `README.md` and `.DS_Store`.
 fn is_rule_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
@@ -62,7 +53,6 @@ fn is_rule_file(path: &Path) -> bool {
     )
 }
 
-/// The `ListKey` of every exception list the rules reference, deduplicated.
 fn referenced_keys(rules: &[Rule]) -> BTreeSet<ListKey> {
     let mut wanted = BTreeSet::new();
     for rule in rules {
@@ -76,10 +66,6 @@ fn referenced_keys(rules: &[Rule]) -> BTreeSet<ListKey> {
     wanted
 }
 
-/// Rules selected for a scoped run.
-///
-/// `None` in `rule_ids` means no selector was given and the command acts on
-/// every rule inside the `source` scope.
 struct Scope {
     rule_ids: Option<Vec<String>>,
     source: RuleSource,
@@ -95,7 +81,6 @@ impl Scope {
         self.rule_ids.as_ref().map(Vec::len).unwrap_or(0)
     }
 
-    /// Keep only scoped rules. An unscoped run keeps all rules.
     fn narrow(&self, rules: Vec<Rule>) -> Vec<Rule> {
         match &self.rule_ids {
             None => rules,
@@ -106,9 +91,6 @@ impl Scope {
         }
     }
 
-    /// Split unscoped local rules by source scope, returning the in-scope rules
-    /// and the count outside it. A rule outside the scope is reported as
-    /// `out_of_scope`, never as a pending create (spec 5.5).
     fn split_by_source(&self, rules: Vec<Rule>) -> (Vec<Rule>, usize) {
         let mut kept = Vec::with_capacity(rules.len());
         let mut out_of_scope = 0;
@@ -122,9 +104,6 @@ impl Scope {
         (kept, out_of_scope)
     }
 
-    /// Read only the scoped remote rules. An unscoped run reads the active
-    /// `source` scope; a scoped run uses a `rule_id`-filtered `_find` instead
-    /// of reading the full corpus.
     async fn remote(&self, t: &Transport) -> Result<Vec<Rule>> {
         match &self.rule_ids {
             None => {
@@ -141,7 +120,6 @@ impl Scope {
         }
     }
 
-    /// Describe the scope for the guard banner. Return nothing when unscoped.
     fn describe(&self) -> String {
         match &self.rule_ids {
             None => String::new(),
@@ -154,10 +132,6 @@ impl Scope {
     }
 }
 
-/// Whether a local rule file falls inside the active `--source` scope, judged
-/// on the field that scope filters server-side. A missing `immutable` reads as
-/// its server default (`false`, custom), so a sparse local file is not
-/// mistaken for a prebuilt rule.
 fn in_source(source: RuleSource, rule: &Rule) -> bool {
     match source {
         RuleSource::All => true,
@@ -177,10 +151,6 @@ fn is_prebuilt(rule: &Rule) -> bool {
     rule.as_map().get("immutable").and_then(Value::as_bool) == Some(true)
 }
 
-/// Resolve selectors against local rules, then the stack.
-///
-/// `local` is empty for `pull`, which reads from the stack and whose selectors
-/// therefore name stack rules.
 async fn scope_of(
     t: &Transport,
     selectors: &[String],
@@ -221,8 +191,6 @@ mod tests {
         assert!(!is_rule_file(Path::new("noextension")));
     }
 
-    // Rule directories commonly contain a README. Do not parse it as a rule
-    // or fail `diff` and `push`.
     #[test]
     fn read_local_skips_non_rule_files_and_reads_the_valid_ones() {
         let dir = tempfile::tempdir().unwrap();

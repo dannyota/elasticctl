@@ -1,8 +1,5 @@
 use super::common::*;
 
-/// Exact package-defined secret variables. The companion `known_*` maps are
-/// deliberately private implementation detail: a configured value is safe
-/// only after Fleet metadata proves it has a definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SecretSchema {
     package_vars: BTreeSet<String>,

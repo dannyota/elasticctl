@@ -1,8 +1,3 @@
-//! Fixture recorder: drive a live stack and write scrubbed exchanges.
-//!
-//! Fixtures capture what Elastic sent. Hand-written mocks capture assumptions,
-//! which is where API bugs hide.
-
 mod activation;
 mod conformance;
 mod conformance_matrix;
@@ -25,6 +20,7 @@ async fn main() {
     match args.first().map(String::as_str) {
         Some("record") => record().await,
         Some("record-compose") => recorder::compose::record_compose().await,
+        Some("record-value-lists") => recorder::value_lists::record_value_lists().await,
         Some("seed") => seed().await,
         Some("conformance") => {
             if let Err(error) = conformance::run(&args[1..]).await {
@@ -40,7 +36,7 @@ async fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask [record|record-compose|seed|conformance|conformance-matrix]"
+                "usage: cargo xtask [record|record-compose|record-value-lists|seed|conformance|conformance-matrix]"
             );
             std::process::exit(2);
         }

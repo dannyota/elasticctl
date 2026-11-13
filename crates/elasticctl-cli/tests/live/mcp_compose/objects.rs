@@ -1,9 +1,3 @@
-//! Marker identities, cleanup registration, and provisioning for the shared
-//! objects and the two object sets of design section 12.3. The maximum-work
-//! set makes every plan send its maximum; the degradation set makes parts
-//! degrade. No rule of the maximum-work set names a missing list, an
-//! exclusion, or an unknown package.
-
 use std::path::Path;
 
 use elasticctl_api::model::{ListKey, Rule};
@@ -18,8 +12,6 @@ use crate::{
     open_marker_rule_alerts_query, refresh_content_index, unique_name, write_json_artifact,
 };
 
-/// Packages on rule W, `system` first. Each is a real registry package, so
-/// every status read succeeds and the integrations part stays complete.
 pub(crate) const WORK_PACKAGES: [&str; 8] = [
     "system",
     "endpoint",
@@ -34,18 +26,15 @@ pub(crate) const PACKAGE_VERSION: &str = "^1.0.0";
 pub(crate) const WORK_WILDCARDS: usize = 15;
 pub(crate) const WORK_LISTS: usize = 5;
 pub(crate) const WORK_CASES: usize = 5;
-/// The case description `validate_case_row` expects of an owned case.
 pub(crate) const CASE_DESCRIPTION: &str = "MCP smoke case";
 const RULE_DESCRIPTION: &str = "Created by elasticctl's live conformance suite. Safe to delete.";
 
-/// A marker exception list and the items it holds.
 #[derive(Clone, Debug)]
 pub(crate) struct ListFixture {
     pub(crate) list_id: String,
     pub(crate) item_ids: Vec<String>,
 }
 
-/// Every name the contract writes or reads, fixed before the first write.
 #[derive(Clone, Debug)]
 pub(crate) struct ComposeIds {
     pub(crate) index: String,
@@ -55,23 +44,19 @@ pub(crate) struct ComposeIds {
     pub(crate) work_wildcards: Vec<String>,
     pub(crate) case_titles: Vec<String>,
     pub(crate) degraded_list: ListFixture,
-    /// A list key that is never created.
     pub(crate) missing_list: String,
     pub(crate) degraded_rule: String,
     pub(crate) exclusion: String,
-    /// A package name in the registry grammar that no registry holds.
     pub(crate) unknown_package: String,
     pub(crate) view_rule: String,
     pub(crate) fill_nonce: String,
 }
 
-/// What provisioning learned from the stack.
 #[derive(Clone, Debug)]
 pub(crate) struct Provisioned {
     pub(crate) flavor: Flavor,
     pub(crate) work_alert: String,
     pub(crate) degraded_alert: String,
-    /// `(case id, title)` for the five cases holding the rule W alert.
     pub(crate) cases: Vec<(String, String)>,
     pub(crate) prebuilt_total: u64,
 }
@@ -113,8 +98,6 @@ impl ComposeIds {
         }
     }
 
-    /// The display name differs from the `rule_id`, so a by-name selector
-    /// takes the three-request selector path.
     pub(crate) fn name_of(rule_id: &str) -> String {
         format!("{rule_id} rule")
     }
@@ -123,7 +106,6 @@ impl ComposeIds {
         Self::name_of(&self.work_rule)
     }
 
-    /// The 16 patterns of rule W: the marker index, then 15 wildcards.
     pub(crate) fn work_patterns(&self) -> Vec<String> {
         std::iter::once(self.index.clone())
             .chain(self.work_wildcards.iter().cloned())
@@ -136,7 +118,6 @@ impl ComposeIds {
             .chain(std::iter::once(&self.degraded_list))
     }
 
-    /// Every object name a provisioning step writes or a rule refers to.
     pub(crate) fn named_objects(&self) -> Vec<String> {
         let mut names = vec![self.index.clone(), self.data_view.clone()];
         for list in self.created_lists() {
@@ -157,7 +138,6 @@ impl ComposeIds {
     }
 }
 
-/// Nanoseconds since the epoch, the clock `unique_name` also uses.
 fn fill_nonce() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -166,16 +146,12 @@ fn fill_nonce() -> String {
         .to_string()
 }
 
-/// A marker name: the live prefix, an exclusion of one, or the fill prefix.
 pub(crate) fn is_marked(name: &str) -> bool {
     let name = name.strip_prefix('-').unwrap_or(name);
     (name.starts_with(LIVE_PREFIX) && name.len() > LIVE_PREFIX.len())
         || (name.starts_with(FILL_PREFIX) && name.len() > FILL_PREFIX.len())
 }
 
-/// Register every written object before the first write. The data-view
-/// default is registered because a data-view create may set it when the
-/// space has none.
 pub(crate) fn register_compose(
     cleanup: &mut LiveCleanup,
     ids: &ComposeIds,
@@ -201,7 +177,6 @@ pub(crate) fn register_compose(
     }
 }
 
-/// Names a write step would create that cleanup does not own.
 pub(crate) fn unregistered(ids: &ComposeIds, cleanup: &LiveCleanup) -> Vec<String> {
     let mut missing = Vec::new();
     let mut need = |owned: bool, name: &str| {
@@ -240,8 +215,6 @@ pub(crate) fn unregistered(ids: &ComposeIds, cleanup: &LiveCleanup) -> Vec<Strin
     missing
 }
 
-/// An exception bundle: one list and every item it holds. No item matches a
-/// marker document, so rule W still alerts.
 pub(crate) fn list_bundle(list: &ListFixture) -> String {
     let mut lines = vec![json!({
         "list_id": list.list_id,
@@ -292,8 +265,6 @@ fn reference(list_id: &str, pointer: &str) -> Value {
     json!({"id": pointer, "list_id": list_id, "namespace_type": "single", "type": "detection"})
 }
 
-/// Rule W. `pointers` are the saved-object ids of the five work lists, in
-/// list order; the create route requires them.
 pub(crate) fn work_rule_body(ids: &ComposeIds, pointers: &[String]) -> Value {
     let mut rule = base_rule(&ids.work_rule, true);
     rule["index"] = json!(ids.work_patterns());
@@ -331,8 +302,6 @@ pub(crate) fn work_rule_body(ids: &ComposeIds, pointers: &[String]) -> Value {
     rule
 }
 
-/// Rule D: one existing list and one missing list key, an exclusion, and one
-/// package that no registry holds.
 pub(crate) fn degraded_rule_body(ids: &ComposeIds, pointer: &str) -> Value {
     let mut rule = base_rule(&ids.degraded_rule, true);
     rule["index"] = json!([ids.index, ids.exclusion]);
@@ -345,14 +314,12 @@ pub(crate) fn degraded_rule_body(ids: &ComposeIds, pointer: &str) -> Value {
     rule
 }
 
-/// Rule V reads through the marker data view and stays disabled.
 pub(crate) fn view_rule_body(ids: &ComposeIds) -> Value {
     let mut rule = base_rule(&ids.view_rule, false);
     rule["data_view_id"] = json!(ids.data_view);
     rule
 }
 
-/// Write both object sets. Refuses to write when any name is unregistered.
 pub(crate) fn provision_live(
     config: &Path,
     scratch: &Path,
@@ -372,16 +339,13 @@ pub(crate) fn provision_live(
         .map_err(|e| format!("Compose probe failed: {}.", e.kind.as_str()))?
         .flavor;
 
-    // Shared: the marker index with documents, then a data view over it.
     runtime.block_on(seed_index(transport, &ids.index))?;
     import_data_view(config, scratch, &ids.data_view, &ids.index)?;
 
-    // Lists: the five work lists, then the degradation list.
     for list in ids.created_lists() {
         import_list(config, scratch, list)?;
     }
 
-    // Rules W, D, and V, each through the create route.
     runtime.block_on(async {
         let mut work = Vec::with_capacity(WORK_LISTS);
         for list in &ids.work_lists {
@@ -396,8 +360,6 @@ pub(crate) fn provision_live(
     let work_alert = runtime.block_on(wait_for_alert(transport, &ids.work_rule))?;
     let degraded_alert = runtime.block_on(wait_for_alert(transport, &ids.degraded_rule))?;
 
-    // Five cases, each holding the rule W alert. The rule D alert stays in
-    // no case.
     let mut cases = Vec::with_capacity(WORK_CASES);
     for title in &ids.case_titles {
         let id = create_registered_case(cleanup, title, |_| {

@@ -12,9 +12,6 @@ pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use std::fmt;
 pub(super) use std::path::{Path, PathBuf};
 
-/// Strictly reduced package installation state. Fleet's public status decoder
-/// intentionally preserves registry text for agent-policy orchestration; an
-/// integration dependency must not accept an ambiguous state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PackageDependencyState {
     Installed { version: String },

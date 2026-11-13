@@ -1,0 +1,56 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "state_items_repeated_10000",
+  "request": {
+    "path": "/api/exception_lists/items/_find?list_id=elasticctl-fixture-value-list-id-10&namespace_type=single&page=1&per_page=10000"
+  },
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-13",
+        "item_id": "elasticctl-fixture-value-list-id-10-item",
+        "list_id": "elasticctl-fixture-value-list-id-10",
+        "type": "simple",
+        "name": "elasticctl-fixture-value-list-id-10-item",
+        "description": "elasticctl-live-marker",
+        "entries": [
+          {
+            "type": "list",
+            "field": "source.ip",
+            "list": {
+              "id": "elasticctl-fixture-value-list-id-3",
+              "type": "ip_range"
+            },
+            "operator": "included"
+          },
+          {
+            "type": "list",
+            "field": "destination.ip",
+            "list": {
+              "id": "elasticctl-fixture-value-list-id-3",
+              "type": "ip_range"
+            },
+            "operator": "excluded"
+          }
+        ],
+        "namespace_type": "single",
+        "os_types": [],
+        "tags": [
+          "elasticctl-live-marker",
+          "REDACTED"
+        ],
+        "comments": [],
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzQwMTAzLDFd"
+      }
+    ],
+    "page": 1,
+    "per_page": 10000,
+    "total": 1
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "exception_item_create",
+  "request": {
+    "item_id": "elasticctl-fixture-value-list-id-10-item",
+    "list_id": "elasticctl-fixture-value-list-id-10",
+    "name": "elasticctl-fixture-value-list-id-10-item",
+    "description": "elasticctl-live-marker",
+    "type": "simple",
+    "namespace_type": "single",
+    "tags": [
+      "elasticctl-live-marker",
+      "REDACTED"
+    ],
+    "entries": [
+      {
+        "type": "list",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "field": "source.ip",
+        "operator": "included"
+      },
+      {
+        "type": "list",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "field": "destination.ip",
+        "operator": "excluded"
+      }
+    ]
+  },
+  "response": {
+    "id": "elasticctl-fixture-value-list-id-13",
+    "item_id": "elasticctl-fixture-value-list-id-10-item",
+    "list_id": "elasticctl-fixture-value-list-id-10",
+    "type": "simple",
+    "name": "elasticctl-fixture-value-list-id-10-item",
+    "description": "elasticctl-live-marker",
+    "entries": [
+      {
+        "type": "list",
+        "field": "source.ip",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "operator": "included"
+      },
+      {
+        "type": "list",
+        "field": "destination.ip",
+        "list": {
+          "id": "elasticctl-fixture-value-list-id-3",
+          "type": "ip_range"
+        },
+        "operator": "excluded"
+      }
+    ],
+    "namespace_type": "single",
+    "os_types": [],
+    "tags": [
+      "elasticctl-live-marker",
+      "REDACTED"
+    ],
+    "comments": [],
+    "updated_by": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "created_by": "REDACTED",
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "_version": "WzQwMTAzLDFd"
+  }
+}

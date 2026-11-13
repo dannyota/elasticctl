@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "applied  lists                                                                            \ntrue     [{\"id\":\"elasticctl-fixture-value-list-id-3\",\"outcome\":\"applied\",\"evidence\":[]}]  \n",
+  "stderr": "Applying: value-lists import (profile: default @ HOST, space: default)\n  elasticctl-fixture-value-list-id-3 (ip_range)\n  container: none\n  phase order: none\n  phase reason: an installed reference is excluded or removing values first would empty the list\n  warning: 4 stored values have 3 distinct spellings; duplicates are retained\n"
+}

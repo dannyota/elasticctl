@@ -1,7 +1,5 @@
 name: Wiki
 
-# A pull request renders a read-only preview. A push to master, or a manual run
-# on master, publishes docs/wiki/ to the GitHub wiki.
 on:
   pull_request:
     branches: [master]
@@ -17,8 +15,6 @@ on:
       - .github/workflows/wiki.yml
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run. Other events group by
-# commit, so a newer master push never cancels a pending master run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -41,8 +37,6 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # One publish at a time. Each run publishes the current master tip, so a
-    # run that starts late cannot put older pages back.
     concurrency:
       group: wiki-publish
       cancel-in-progress: false

@@ -1,6 +1,3 @@
-//! Request plan, part independence, fatal kinds, and findings of the rule
-//! health report. Every mock body is a recorded fixture or a variant derived
-//! from one in code.
 use elasticctl_api::compose::{
     Part, RECENT_ALERTS,
     rule_health::{HealthFinding, RuleHealth, rule_health},
@@ -63,8 +60,6 @@ fn list_id(i: usize) -> String {
     if i == 0 { base } else { format!("{base}-{i}") }
 }
 
-/// The recorded executed rule with `count` references copied from its one
-/// recorded reference.
 fn rule_with_lists(count: usize) -> Value {
     let mut rule = recorded("rule_get_executed.json");
     let template = rule["exceptions_list"][0].clone();
@@ -78,7 +73,6 @@ fn rule_with_lists(count: usize) -> Value {
     rule
 }
 
-/// One readable label per logical request, without the capability probe.
 fn label(method: &str, path: &str, query: &[(String, String)]) -> Option<String> {
     let q = |k: &str| {
         query
@@ -123,7 +117,6 @@ fn plan(lists: usize) -> Vec<String> {
     out
 }
 
-/// A stack that answers the whole plan from recorded bodies.
 async fn stack(rule: Value, activity: Value) -> MockServer {
     let s = MockServer::start().await;
     for (verb, route, body) in [
@@ -154,7 +147,6 @@ async fn stack(rule: Value, activity: Value) -> MockServer {
     s
 }
 
-/// Answer one request with `response`, ahead of the recorded route.
 async fn override_route(
     s: &MockServer,
     verb: &str,
@@ -346,8 +338,6 @@ async fn a_missing_list_keeps_activity_and_skips_its_count() {
     assert_eq!(h.findings(), [HealthFinding::ExceptionListMissing]);
 }
 
-/// The fatal kinds at each part read: an authentication failure and a
-/// client timeout.
 #[tokio::test]
 async fn auth_and_timeout_in_a_part_fail_the_call_with_no_later_request() {
     let stages: [(&str, &str, Option<String>, usize); 4] = [
@@ -375,9 +365,6 @@ async fn auth_and_timeout_in_a_part_fail_the_call_with_no_later_request() {
     }
 }
 
-/// A plain HTTP server that answers each request from recorded bodies and
-/// closes the connection without a response for the request labelled
-/// `dropped`.
 async fn closing_server(dropped: String) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -463,7 +450,6 @@ async fn a_dropped_connection_in_a_part_fails_the_call_with_no_later_request() {
     }
 }
 
-/// The report for a rule and activity body, with an optional missing list.
 async fn health_of(rule: Value, activity: Value, missing_list: bool) -> Result<RuleHealth> {
     let s = stack(rule, activity).await;
     if missing_list {

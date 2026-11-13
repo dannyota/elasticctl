@@ -100,11 +100,6 @@ async fn alerts_get_merges_the_id_into_the_document() {
     assert_eq!(doc["kibana.alert.rule.name"], json!("Alpha"));
 }
 
-/// Finding 2: `alerts get`'s document is the raw `_source`, which can
-/// legitimately carry a top-level `failed` key from the source event (not
-/// elasticctl's own report convention). `render::exit_code_for_value` must
-/// not be applied to it, or an alert whose event happens to log `"failed":
-/// 2` would print correctly but exit 1.
 #[tokio::test]
 async fn alerts_get_does_not_derive_its_exit_code_from_the_alert_document() {
     let server = MockServer::start().await;
@@ -155,8 +150,6 @@ async fn a_close_dry_run_previews_on_stderr_and_changes_nothing() {
         .respond_with(ResponseTemplate::new(200).set_body_json(one_open_alert()))
         .mount(&server)
         .await;
-    // No mock for signals/status: a dry run that POSTs there fails the test
-    // with a 404-driven non-zero exit.
 
     let out = bin()
         .args(["--config", cfg.to_str().unwrap(), "--json"])
@@ -251,9 +244,6 @@ async fn a_query_close_previews_count_and_sample() {
     assert!(err.contains("advisory"), "{err}");
 }
 
-/// Both forms at once must be rejected by `clap`'s `conflicts_with`; neither
-/// form is now a `clap`-level `required_unless_present` refusal (exit 2,
-/// usage text), not the adapter's own message (finding 1).
 #[tokio::test]
 async fn ids_and_query_are_mutually_exclusive_and_one_is_required() {
     let dir = tempfile::tempdir().unwrap();
@@ -326,9 +316,6 @@ async fn tag_and_assign_dry_runs_preview_edits() {
     assert!(err.contains("add uid:u_1 -> u_1"), "{err}");
 }
 
-/// `ack` and `open` dispatch different status values from main.rs; a
-/// copy-paste swap in the dispatched status would silently preview the
-/// wrong verb in the banner while still exiting 0.
 #[tokio::test]
 async fn ack_and_open_dry_runs_preview_the_correct_verb() {
     for (subcommand, expected) in [("ack", "Acknowledge 1 alert"), ("open", "Open 1 alert")] {
@@ -340,8 +327,6 @@ async fn ack_and_open_dry_runs_preview_the_correct_verb() {
             .respond_with(ResponseTemplate::new(200).set_body_json(one_open_alert()))
             .mount(&server)
             .await;
-        // No mock for signals/status: a dry run that POSTs there fails the
-        // test with a 404-driven non-zero exit.
 
         let out = bin()
             .args(["--config", cfg.to_str().unwrap(), "--json"])
@@ -358,11 +343,6 @@ async fn ack_and_open_dry_runs_preview_the_correct_verb() {
     }
 }
 
-/// `--conflicts` names a version-conflict policy for the server-side
-/// update-by-query the `--query` form runs; explicit ids resolve and
-/// transition individually, so passing it there must be refused, not
-/// silently ignored (it would otherwise apply the opposite of `proceed` with
-/// no diagnostic, since `status_by_ids` sends no `conflicts` key at all).
 #[tokio::test]
 async fn conflicts_is_rejected_on_ids_and_applied_on_query() {
     let dir = tempfile::tempdir().unwrap();
@@ -425,10 +405,6 @@ async fn conflicts_is_rejected_on_ids_and_applied_on_query() {
     assert_eq!(report["updated"], json!(42));
 }
 
-/// Finding 12: `--limit`'s help text says "default 100" unconditionally,
-/// but that default only applies to the bounded peek — the `--out` export
-/// path is uncapped unless `--limit` is passed explicitly. The help text
-/// must not claim a default that does not hold on that path.
 #[test]
 fn alerts_list_help_does_not_claim_a_universal_default_limit() {
     let out = bin().args(["alerts", "list", "--help"]).output().unwrap();
@@ -443,8 +419,6 @@ fn alerts_list_help_does_not_claim_a_universal_default_limit() {
     );
 }
 
-/// `alerts list --out` must match `search dsl --out`: JSONL by default, and
-/// `--limit` respected during export, not just the bounded peek.
 #[tokio::test]
 async fn alerts_list_out_writes_jsonl_by_default_and_honors_limit() {
     let server = MockServer::start().await;

@@ -1,10 +1,3 @@
-//! Public timing lines a passing contract may print.
-//!
-//! The runner keeps every contract's output in a private log. The one
-//! exception is a line in the exact whole-second timing format the
-//! cross-vertical MCP contract prints, which carries no host, id, or
-//! server text and is forwarded to the public output.
-
 const PREFIX: &str = "mcp_answers_across_verticals timing ";
 const TOOLS: [&str; 4] = [
     "alert_context",
@@ -13,7 +6,6 @@ const TOOLS: [&str; 4] = [
     "rule_readiness",
 ];
 
-/// Every line of `output` in the public timing format, in order.
 pub(super) fn public_timing_lines(output: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(output)
         .lines()
@@ -22,8 +14,6 @@ pub(super) fn public_timing_lines(output: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// `<prefix><tool> <N>s[ <N>s]...[ pages <N>]`, with an allowed tool and
-/// only ASCII digits for every number.
 fn is_public_timing(line: &str) -> bool {
     let Some(rest) = line.strip_prefix(PREFIX) else {
         return false;

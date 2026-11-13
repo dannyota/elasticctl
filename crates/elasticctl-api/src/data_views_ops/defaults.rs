@@ -1,18 +1,14 @@
-//! Default data view selection and updates.
-
 use super::{
     DataViewSummary, Error, ErrorKind, MutationPlan, Result, Transport, data_views, invalid_plan,
     resolve_from_summaries,
 };
 
-/// An immutable, guard-ready default data-view change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefaultPlan {
     pub preview: MutationPlan,
     pub before: Option<String>,
     pub after: Option<String>,
 }
-/// Resolve a data view and prepare a guarded default change.
 pub async fn plan_default_set(transport: &Transport, selector: &str) -> Result<DefaultPlan> {
     let views = data_views::list(transport).await?;
     let target = resolve_from_summaries(&views, selector)?;
@@ -21,7 +17,6 @@ pub async fn plan_default_set(transport: &Transport, selector: &str) -> Result<D
     Ok(default_plan(before, Some(target.id), Some(label)))
 }
 
-/// Prepare a guarded request that explicitly clears the current default.
 pub async fn plan_default_unset(transport: &Transport) -> Result<DefaultPlan> {
     Ok(default_plan(
         data_views::get_default(transport).await?,
@@ -30,8 +25,6 @@ pub async fn plan_default_unset(transport: &Transport) -> Result<DefaultPlan> {
     ))
 }
 
-/// Apply a guarded default change after checking the observed default remains
-/// the exact snapshot shown to the operator.
 pub async fn apply_default(transport: &Transport, plan: &DefaultPlan) -> Result<()> {
     validate_default_plan(plan)?;
     let current = data_views::get_default(transport).await?;

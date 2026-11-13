@@ -6,8 +6,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 impl Transport {
-    /// Read a response body without retrying an operation that may have
-    /// completed after its headers were received.
     async fn response_text(
         &self,
         method: &Method,
@@ -85,6 +83,21 @@ impl Transport {
         method: Method,
         url: &str,
         attempt_limit: u32,
+        build: F,
+    ) -> Result<Response>
+    where
+        F: FnMut() -> Result<reqwest::RequestBuilder>,
+    {
+        self.send_retrying_with_client_errors(method, url, attempt_limit, false, build)
+            .await
+    }
+
+    async fn send_retrying_with_client_errors<F>(
+        &self,
+        method: Method,
+        url: &str,
+        attempt_limit: u32,
+        return_client_errors: bool,
         mut build: F,
     ) -> Result<Response>
     where
@@ -119,17 +132,16 @@ impl Transport {
 
             let status = response.status();
             self.debug_log(&method, url, status.as_u16(), attempt);
-            if status.is_success() {
+            if status.is_success()
+                || (return_client_errors
+                    && status.is_client_error()
+                    && (status != StatusCode::TOO_MANY_REQUESTS || attempt >= attempt_limit))
+            {
                 return Ok(response);
             }
 
-            // Retry transient failures only. Retrying a 4xx repeats the same
-            // caller error.
             let transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             if transient && attempt < attempt_limit {
-                // A configured limit applies to error bodies too. Read the
-                // body before deciding to retry so an over-limit response is
-                // rejected rather than replayed.
                 if self.response_body_limit.is_some() {
                     self.response_text(&method, url, response).await?;
                 }
@@ -168,24 +180,42 @@ impl Transport {
         body: Option<&Value>,
         attempt_limit: u32,
     ) -> Result<Response> {
+        self.send_with_client_options(client, method, path, body, attempt_limit, false)
+            .await
+    }
+
+    async fn send_with_client_options(
+        &self,
+        client: &Client,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        attempt_limit: u32,
+        return_client_errors: bool,
+    ) -> Result<Response> {
         let url = self.url(path)?;
         let request_method = method.clone();
-        self.send_retrying(method, &url, attempt_limit, || {
-            let mut req = client
-                .request(request_method.clone(), &url)
-                .header("Authorization", &self.auth_header)
-                .header("elastic-api-version", API_VERSION);
+        self.send_retrying_with_client_errors(
+            method,
+            &url,
+            attempt_limit,
+            return_client_errors,
+            || {
+                let mut req = client
+                    .request(request_method.clone(), &url)
+                    .header("Authorization", &self.auth_header)
+                    .header("elastic-api-version", API_VERSION);
 
-            // Kibana rejects any state-changing request without this header.
-            if request_method != Method::GET {
-                req = req.header("kbn-xsrf", "true");
-            }
-            if let Some(b) = body {
-                req = req.json(b);
-            }
+                if request_method != Method::GET {
+                    req = req.header("kbn-xsrf", "true");
+                }
+                if let Some(b) = body {
+                    req = req.json(b);
+                }
 
-            Ok(req)
-        })
+                Ok(req)
+            },
+        )
         .await
     }
 
@@ -233,11 +263,22 @@ impl Transport {
         self.send_json(Method::GET, path, None).await
     }
 
-    /// GET a Kibana *internal* route. Internal routes sit outside the public
-    /// API's versioning contract: Kibana requires `x-elastic-internal-origin`
-    /// on them (without it the route family answers 400 "exists but is not
-    /// available"), and `elastic-api-version: 2023-10-31` names a public-API
-    /// version internal routes do not serve, so it is omitted.
+    pub async fn get_response(&self, path: &str) -> Result<(u16, Value)> {
+        let method = Method::GET;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(
+                &self.client,
+                method.clone(),
+                path,
+                None,
+                self.attempt_limit,
+                true,
+            )
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
     pub async fn get_internal(&self, path: &str) -> Result<Value> {
         let method = Method::GET;
         let url = self.url(path)?;
@@ -251,10 +292,6 @@ impl Transport {
             })
             .await?;
 
-        // Convert the response exactly as `get` does: the same
-        // response_text/parse_response_json path `send_json` uses after its
-        // send, with the same `Error::from_response_body` classification
-        // already applied inside `send_retrying`.
         let text = self.response_text(&method, &url, response).await?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
@@ -262,15 +299,6 @@ impl Transport {
         parse_response_json(&text)
     }
 
-    /// POST a Kibana *internal* route with a JSON body. Mirrors
-    /// `get_internal`'s reasoning (same `x-elastic-internal-origin`
-    /// requirement, `elastic-api-version` still omitted), plus `kbn-xsrf`:
-    /// Kibana rejects any state-changing request without it, same as every
-    /// other non-GET call `send` makes.
-    ///
-    /// Its only caller today is xtask's profile-activation login
-    /// (`POST /internal/security/login`) — not reachable from
-    /// `elasticctl-api` or `elasticctl-cli`.
     pub async fn post_internal(&self, path: &str, body: &Value) -> Result<Value> {
         let method = Method::POST;
         let url = self.url(path)?;
@@ -293,10 +321,6 @@ impl Transport {
         parse_response_json(&text)
     }
 
-    /// GET a body with its captured headers.
-    ///
-    /// This is separate from `get` because only the capability probe needs
-    /// headers.
     pub async fn get_with_headers(&self, path: &str) -> Result<Responded> {
         let method = Method::GET;
         let url = self.url(path)?;
@@ -325,26 +349,27 @@ impl Transport {
         self.send_json(Method::POST, path, body).await
     }
 
-    /// Send a JSON POST exactly once.
-    ///
-    /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects, connection pooling, and protocol-level
-    /// retries. It otherwise uses the same request construction, response
-    /// parsing, timeout handling, and error classification as [`Self::post`].
     pub async fn post_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
         self.send_json_once(Method::POST, path, body).await
+    }
+
+    pub async fn post_once_response(
+        &self,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value)> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(&self.one_shot_client, method.clone(), path, body, 1, true)
+            .await?;
+        self.status_and_body(&method, &url, response).await
     }
 
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_json(Method::PUT, path, Some(body)).await
     }
 
-    /// Send a JSON PUT exactly once.
-    ///
-    /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects, connection pooling, and protocol-level
-    /// retries. It otherwise uses the same request construction, response
-    /// parsing, timeout handling, and error classification as [`Self::put`].
     pub async fn put_once(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_json_once(Method::PUT, path, Some(body)).await
     }
@@ -353,69 +378,104 @@ impl Transport {
         self.send_json(Method::PATCH, path, Some(body)).await
     }
 
+    pub async fn patch_once(&self, path: &str, body: &Value) -> Result<Value> {
+        self.send_json_once(Method::PATCH, path, Some(body)).await
+    }
+
+    pub async fn patch_once_response(&self, path: &str, body: &Value) -> Result<(u16, Value)> {
+        let method = Method::PATCH;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(
+                &self.one_shot_client,
+                method.clone(),
+                path,
+                Some(body),
+                1,
+                true,
+            )
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
+    async fn status_and_body(
+        &self,
+        method: &Method,
+        url: &str,
+        response: Response,
+    ) -> Result<(u16, Value)> {
+        let status = response.status().as_u16();
+        let text = self
+            .response_text(method, url, response)
+            .await
+            .map_err(|error| {
+                if (400..500).contains(&status) {
+                    Error::with_status(ErrorKind::from_status(status), status, error.message)
+                } else {
+                    error
+                }
+            })?;
+        let body = if (400..500).contains(&status) {
+            parse_response_json(&text).unwrap_or_else(|_| Value::String(text))
+        } else if text.trim().is_empty() {
+            Value::Null
+        } else {
+            parse_response_json(&text)?
+        };
+        Ok((status, body))
+    }
+
     pub async fn delete(&self, path: &str) -> Result<Value> {
         self.send_json(Method::DELETE, path, None).await
     }
 
-    /// Send a JSON DELETE exactly once.
-    ///
-    /// This is for mutations whose endpoint does not provide an idempotency
-    /// key. It disables redirects, connection pooling, and protocol-level
-    /// retries. It otherwise uses the same request construction, response
-    /// parsing, timeout handling, and error classification as [`Self::delete`].
     pub async fn delete_once(&self, path: &str) -> Result<Value> {
         self.send_json_once(Method::DELETE, path, None).await
     }
 
-    /// GET Elasticsearch without a Kibana space prefix.
-    ///
-    /// Cloud deployments use a different Elasticsearch host.
+    pub async fn delete_once_response(&self, path: &str) -> Result<(u16, Value)> {
+        let method = Method::DELETE;
+        let url = self.url(path)?;
+        let response = self
+            .send_retrying_with_client_errors(method.clone(), &url, 1, true, || {
+                Ok(self
+                    .one_shot_client
+                    .delete(&url)
+                    .header("Authorization", &self.auth_header)
+                    .header("elastic-api-version", API_VERSION)
+                    .header("kbn-xsrf", "true"))
+            })
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
     pub async fn get_absolute_es(&self, path: &str) -> Result<Value> {
         self.send_absolute_es(Method::GET, path, None).await
     }
 
-    /// POST JSON to Elasticsearch without a Kibana space prefix or `kbn-xsrf`
-    /// header.
     pub async fn post_absolute_es(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_absolute_es(Method::POST, path, Some(body)).await
     }
 
-    /// PUT JSON to Elasticsearch exactly once.
-    ///
-    /// This is for a write whose outcome must not be blurred by a retry, such
-    /// as an index create whose answer decides who owns the index. It uses
-    /// the one-shot client of [`Self::put_once`] and otherwise the request
-    /// construction, response parsing, and error classification of
-    /// [`Self::post_absolute_es`].
     pub async fn put_absolute_es_once(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_absolute_es_with(&self.one_shot_client, Method::PUT, path, Some(body), 1)
             .await
     }
 
-    /// POST to Elasticsearch exactly once, with a JSON body or none. A route
-    /// such as `_refresh` rejects any body. See
-    /// [`Self::put_absolute_es_once`].
     pub async fn post_absolute_es_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
         self.send_absolute_es_with(&self.one_shot_client, Method::POST, path, body, 1)
             .await
     }
 
-    /// DELETE from Elasticsearch.
-    ///
-    /// The fixture recorder uses this to remove its scratch index.
     pub async fn delete_absolute_es(&self, path: &str) -> Result<Value> {
         self.send_absolute_es(Method::DELETE, path, None).await
     }
 
-    /// DELETE from Elasticsearch exactly once. See
-    /// [`Self::put_absolute_es_once`].
     pub async fn delete_absolute_es_once(&self, path: &str) -> Result<Value> {
         self.send_absolute_es_with(&self.one_shot_client, Method::DELETE, path, None, 1)
             .await
     }
 
-    /// DELETE from Elasticsearch with a JSON body. The PIT close needs one;
-    /// the plain `delete_absolute_es` sends no body.
     pub async fn delete_absolute_es_json(&self, path: &str, body: &Value) -> Result<Value> {
         self.send_absolute_es(Method::DELETE, path, Some(body))
             .await
@@ -460,7 +520,6 @@ impl Transport {
         parse_response_json(&text)
     }
 
-    /// POST and return the raw body for NDJSON endpoints.
     pub async fn post_text(&self, path: &str, body: Option<&Value>) -> Result<String> {
         let method = Method::POST;
         let url = self.url(path)?;
@@ -468,13 +527,77 @@ impl Transport {
         self.response_text(&method, &url, response).await
     }
 
-    /// Upload a multipart NDJSON file for Kibana rule import.
+    pub async fn post_text_once(&self, path: &str, body: Option<&Value>) -> Result<String> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_attempt_limit(&self.one_shot_client, method.clone(), path, body, 1)
+            .await?;
+        self.response_text(&method, &url, response).await
+    }
+
     pub async fn post_multipart_ndjson(&self, path: &str, ndjson: &str) -> Result<Value> {
         self.post_multipart_ndjson_named(path, "rules.ndjson", ndjson)
             .await
     }
 
-    /// Upload a multipart NDJSON file for Kibana import with the requested filename.
+    pub async fn post_multipart_once_named(
+        &self,
+        path: &str,
+        filename: &str,
+        content_type: &str,
+        body: &str,
+    ) -> Result<Value> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_multipart_once(&url, filename, content_type, body, false)
+            .await?;
+        let text = self.response_text(&method, &url, response).await?;
+        parse_response_json(&text)
+    }
+
+    pub async fn post_multipart_once_named_response(
+        &self,
+        path: &str,
+        filename: &str,
+        content_type: &str,
+        body: &str,
+    ) -> Result<(u16, Value)> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_multipart_once(&url, filename, content_type, body, true)
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
+    async fn send_multipart_once(
+        &self,
+        url: &str,
+        filename: &str,
+        content_type: &str,
+        body: &str,
+        return_client_errors: bool,
+    ) -> Result<Response> {
+        self.send_retrying_with_client_errors(Method::POST, url, 1, return_client_errors, || {
+            let part = reqwest::multipart::Part::text(body.to_string())
+                .file_name(filename.to_string())
+                .mime_str(content_type)
+                .map_err(|e| Error::new(ErrorKind::Error, format!("building upload: {e}")))?;
+            let form = reqwest::multipart::Form::new().part("file", part);
+
+            Ok(self
+                .one_shot_client
+                .post(url)
+                .header("Authorization", &self.auth_header)
+                .header("elastic-api-version", API_VERSION)
+                .header("kbn-xsrf", "true")
+                .multipart(form))
+        })
+        .await
+    }
+
     pub async fn post_multipart_ndjson_named(
         &self,
         path: &str,
@@ -485,8 +608,6 @@ impl Transport {
         let url = self.url(path)?;
         let response = self
             .send_retrying(method.clone(), &url, self.attempt_limit, || {
-                // Retryable HTTP responses deliberately replay this POST. Part and Form are
-                // recreated here because reqwest consumes multipart bodies while sending.
                 let part = reqwest::multipart::Part::text(ndjson.to_string())
                     .file_name(filename.to_string())
                     .mime_str("application/octet-stream")
@@ -505,5 +626,170 @@ impl Transport {
 
         let text = self.response_text(&method, &url, response).await?;
         parse_response_json(&text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Profile;
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn transport(server: &MockServer) -> Transport {
+        Transport::new(&Profile {
+            kibana_url: server.uri(),
+            es_url: None,
+            api_key: Some("test".into()),
+            username: None,
+            password: None,
+            space: "security".into(),
+            verify: true,
+            timeout_secs: 1,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_response_returns_client_error_body() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({"statusCode": 404, "message": "list indices missing"});
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .and(header("Authorization", "ApiKey test"))
+            .and(header("elastic-api-version", "2023-10-31"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (404, body)
+        );
+    }
+
+    #[tokio::test]
+    async fn get_response_retries_429_then_returns_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_json(serde_json::json!({"message": "rate limited"})),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let body = serde_json::json!({"list_index": true, "list_item_index": true});
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (200, body)
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_response_retries_429_then_returns_last_body() {
+        let server = MockServer::start().await;
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                ResponseTemplate::new(429).set_body_json(
+                    serde_json::json!({"message": "rate limited", "attempt": attempt}),
+                )
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (
+                429,
+                serde_json::json!({"message": "rate limited", "attempt": 3})
+            )
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn post_once_response_returns_429_without_replaying() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({"message": "rate limited"});
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .post_once_response("/api/lists/index", None)
+                .await
+                .unwrap(),
+            (429, body)
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_once_response_returns_client_error_body() {
+        let server = MockServer::start().await;
+        let request = serde_json::json!({"flows": ["create-list-indices"]});
+        let body = serde_json::json!({"statusCode": 404, "message": "flow unavailable"});
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/security_solution/initialize"))
+            .and(header("kbn-xsrf", "true"))
+            .and(header("Authorization", "ApiKey test"))
+            .and(header("elastic-api-version", "2023-10-31"))
+            .and(body_json(&request))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .post_once_response("/api/security_solution/initialize", Some(&request))
+                .await
+                .unwrap(),
+            (404, body)
+        );
+    }
+
+    #[tokio::test]
+    async fn post_once_response_never_replays_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .set_body_json(serde_json::json!({"message": "unavailable"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = transport(&server)
+            .post_once_response("/api/lists/index", None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.http_status, Some(503));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

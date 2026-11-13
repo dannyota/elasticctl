@@ -1,9 +1,3 @@
-//! The twelfth contract, `mcp_answers_across_verticals` (design section
-//! 12.3). The harness prepares the shared marker objects and two separate
-//! object sets outside MCP, fills the self-managed corpus to 4,000 rules,
-//! then calls the four task tools through `elasticctl mcp serve` children.
-//! Every object is registered with cleanup before its first write.
-
 #[path = "mcp_compose/calls.rs"]
 mod calls;
 #[path = "mcp_compose/expect.rs"]
@@ -28,8 +22,6 @@ use expect::Expected;
 use fill::{LiveFillRemote, RuleFill};
 use objects::{ComposeIds, Provisioned};
 
-/// The contract's stages. The live stack runs them against the target;
-/// offline tests replace it to prove ordering and failure handling.
 trait ComposeStack {
     fn read_default(&mut self) -> TestResult<Option<String>>;
     fn provision(&mut self, ids: &ComposeIds, cleanup: &mut LiveCleanup)
@@ -46,9 +38,6 @@ trait ComposeStack {
     fn unfill(&mut self, fill: &RuleFill, cleanup: &mut LiveCleanup) -> TestResult;
 }
 
-/// Register, provision, lease Fleet, fill, call, and remove the fill. The
-/// fill is removed after the call phase even when a call failed; cleanup
-/// keeps its registration until that removal is verified.
 fn run_compose(
     stack: &mut impl ComposeStack,
     cleanup: &mut LiveCleanup,
@@ -186,7 +175,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// A stack that records each stage and fails the named one.
     struct FakeStack {
         events: Rc<RefCell<Vec<&'static str>>>,
         failure: &'static str,
@@ -258,8 +246,6 @@ mod tests {
         }
     }
 
-    /// The root test's step order, with the general cleanup reduced to the
-    /// fill deletion so no command reaches a stack.
     struct ComposeRunSteps {
         stack: FakeStack,
         cleanup: LiveCleanup,

@@ -1,5 +1,3 @@
-//! Ad hoc data search: ES|QL and Query DSL.
-
 pub mod dataview;
 pub mod dsl;
 pub mod esql;
@@ -12,9 +10,6 @@ pub struct SearchRequest {
     pub limit: Option<usize>,
 }
 
-/// Return `query` with leading whitespace and ES|QL comments (`// …` to end of
-/// line, `/* … */` blocks) stripped, so classification reads the first real
-/// token rather than a comment.
 fn skip_leading_comments(query: &str) -> &str {
     let mut rest = query;
     loop {
@@ -51,10 +46,6 @@ pub fn prepend_from(query: &str, pattern: &str) -> String {
     }
 }
 
-/// Rewrite an ES|QL query's source to `pattern`, used when `--index` or
-/// `--data-view` is given. A leading `FROM <source>` becomes `FROM <pattern>`
-/// with any `| …` pipeline kept; `ROW`/`SHOW`/`METRICS` pass through untouched;
-/// a query with no source command gets `FROM <pattern>` prepended.
 pub fn rewrite_from(query: &str, pattern: &str) -> String {
     let rest = skip_leading_comments(query);
     let leading = &query[..query.len() - rest.len()];
@@ -79,8 +70,6 @@ pub fn rewrite_from(query: &str, pattern: &str) -> String {
     }
 }
 
-/// Resolve an ES|QL query's source: `--index` wins, then `--data-view`, then
-/// the query's own source, then the space's default alerts index.
 pub async fn resolve_esql_query(t: &Transport, query: &str, req: &SearchRequest) -> Result<String> {
     match (&req.index, &req.data_view) {
         (Some(i), _) => Ok(rewrite_from(query, i)),
@@ -98,8 +87,6 @@ pub async fn resolve_esql_query(t: &Transport, query: &str, req: &SearchRequest)
     }
 }
 
-/// Resolve a DSL search's index: `--index` wins, then `--data-view`, then the
-/// space's default alerts index.
 pub async fn resolve_dsl_index(t: &Transport, req: &SearchRequest) -> Result<String> {
     match (&req.index, &req.data_view) {
         (Some(i), _) => Ok(i.clone()),

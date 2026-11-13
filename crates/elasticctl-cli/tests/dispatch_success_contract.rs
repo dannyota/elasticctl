@@ -1,4 +1,3 @@
-//! Success contracts to record on the original dispatch before extraction.
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -6,7 +5,6 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 mod common;
 
 fn fixture(name: &str) -> Value {
-    // The async ES|QL exchange is recorded on Serverless only.
     let set = if name.starts_with("esql_async_") {
         "serverless-9.7.0"
     } else {
@@ -34,7 +32,6 @@ async fn server(state: bool, reopen_case: bool) -> MockServer {
                         .set_body_json(json!({"list_index": true, "list_item_index": true}));
                 }
                 ("GET", "/api/detection_engine/rules/_find") if state => {
-                    // Isolate state rule updates from exception reconciliation.
                     let mut rule = fixture("rules_get");
                     rule["exceptions_list"] = json!([]);
                     return ResponseTemplate::new(200).set_body_json(
@@ -103,7 +100,6 @@ async fn server(state: bool, reopen_case: bool) -> MockServer {
                     return ResponseTemplate::new(200).set_body_json(response);
                 }
                 ("POST", "/logs-*/_pit" | "/logs-%2A/_pit") => {
-                    // The recorder strips the PIT id; restore only its test placeholder.
                     let mut response = fixture("search_pit_open");
                     response["id"] = json!("pit-1");
                     return ResponseTemplate::new(200).set_body_json(response);
@@ -134,7 +130,6 @@ async fn server(state: bool, reopen_case: bool) -> MockServer {
     server
 }
 
-// Keep byte streams intact; only addresses and filesystem roots are volatile.
 async fn capture(args: &[&str]) -> Value {
     let state = args[0] == "state";
     let server = server(state, args.starts_with(&["cases", "open"])).await;
@@ -179,9 +174,6 @@ async fn capture(args: &[&str]) -> Value {
         .unwrap();
     let normalize = |s: &[u8]| {
         let mut text = String::from_utf8(s.to_vec()).unwrap();
-        // Map every spelling of the temporary root to ROOT: raw, canonical
-        // (macOS /private/var, Windows \\?\ prefix), and JSON-escaped
-        // (Windows backslashes are doubled inside JSON strings).
         let raw = dir.path().to_str().unwrap().to_string();
         let canonical = fs::canonicalize(dir.path())
             .map(|p| p.to_str().unwrap().to_string())
@@ -198,7 +190,6 @@ async fn capture(args: &[&str]) -> Value {
         for root in roots.iter().filter(|r| !r.is_empty()) {
             text = text.replace(root.as_str(), "ROOT");
         }
-        // Use forward slashes inside every ROOT-relative path.
         let mut out = String::with_capacity(text.len());
         let mut rest = text.as_str();
         while let Some(at) = rest.find("ROOT") {

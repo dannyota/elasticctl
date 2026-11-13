@@ -412,7 +412,6 @@ async fn search_dsl_out_writes_jsonl_by_default() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
         .mount(&server)
         .await;
-    // A single page whose hits carry no `sort` ends the stream after one request.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -447,9 +446,6 @@ async fn search_dsl_out_writes_jsonl_by_default() {
     assert!(lines[0].contains("\"seq\":1"), "{text}");
 }
 
-/// The bulk-export (PIT) path must surface hit metadata too, not only the
-/// one-request peek. `--with-meta` merges `_id`, `_index`, and `_score` into
-/// each written row alongside its `_source` fields.
 #[tokio::test]
 async fn search_dsl_out_with_meta_writes_hit_metadata() {
     let server = MockServer::start().await;
@@ -462,7 +458,6 @@ async fn search_dsl_out_with_meta_writes_hit_metadata() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "pit-1"})))
         .mount(&server)
         .await;
-    // A single page whose hits carry no `sort` ends the stream after one request.
     Mock::given(method("POST"))
         .and(path("/_search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({

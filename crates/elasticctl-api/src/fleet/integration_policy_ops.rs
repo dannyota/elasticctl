@@ -1,5 +1,3 @@
-//! Integration-policy selection, normalization, and local validation.
-
 mod common;
 mod delete_apply;
 mod delete_plan;

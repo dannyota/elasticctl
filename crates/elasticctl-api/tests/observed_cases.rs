@@ -27,7 +27,6 @@ async fn mount(server: &MockServer, id: &str, status: u16, body: Value) {
         .await;
 }
 
-/// The recorded case, with the id, version, and sync setting these tests name.
 fn body() -> Value {
     let recorded: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/traditional-9.5.1/case_get.json"
@@ -40,7 +39,6 @@ fn body() -> Value {
     case
 }
 
-/// The recorded Kibana error body, served here at other statuses.
 fn error_body() -> Value {
     let recorded: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/traditional-9.5.1/case_conflict.json"

@@ -1,7 +1,3 @@
-//! CLI adapters for dashboard administration. API orchestration stays in
-//! `elasticctl_api::dashboards_ops`; this module only supplies context, the
-//! mutation guard, artifact delivery, and renderer values.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use elasticctl_api::content_codec::ContentFormat;
@@ -34,14 +30,11 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
     }))
 }
 
-/// Check a portable file without building a context or transport.
 pub fn validate(path: &Path) -> Result<Value> {
     let specs = dashboards_ops::validate(path)?;
     Ok(json!({"valid": true, "total": specs.len()}))
 }
 
-/// Validate the entire import artifact before configuration is consulted.
-/// `plan_import` remains the authoritative plan builder and validates again.
 pub fn validate_import_artifact(path: &Path) -> Result<()> {
     let specs = dashboards_ops::validate(path)?;
     if specs.is_empty() {

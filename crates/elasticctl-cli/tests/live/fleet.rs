@@ -1,5 +1,3 @@
-//! Fleet conformance lifecycle and its cleanup lease.
-
 #[path = "fleet/cleanup.rs"]
 mod cleanup;
 #[path = "fleet/fixture.rs"]
@@ -22,8 +20,6 @@ pub(super) enum FleetFailure {
     Cleanup(String),
 }
 
-/// The root ignored test delegates here so the controller's exact test filter
-/// stays stable while this module owns the lifecycle implementation.
 pub(super) fn run_contract(
     config: &std::path::Path,
     profile: Profile,
@@ -195,8 +191,6 @@ async fn fleet_lifecycle_inner(
         &integration_id,
     )?;
 
-    // The command must refuse locally while attached. The dedicated wiremock
-    // regression covers the no-parent-delete-route property offline.
     assert_attached_parent_conflict(config, &parent.id)?;
     delete_via_cli(config, "integration-policies", &integration_id)?;
     delete_via_cli(config, "agent-policies", &parent.id)?;
@@ -298,7 +292,6 @@ async fn ensure_system(
             return Err("system package install returned an invalid success response".to_string());
         }
         Err(_) => {
-            // An unconfirmed claim is deliberately never uninstalled.
             let observed = installed_packages(transport).await.map_err(|error| {
                 format!(
                     "observing ambiguous system install: {}",
@@ -325,9 +318,6 @@ async fn ensure_system(
     Ok(version)
 }
 
-/// Package installation returns a decoded asset-list response. Its response
-/// does not carry the requested version coordinate, so the exact coordinate
-/// remains proved by the status and inventory reads below.
 fn decoded_system_install_success(body: &Value) -> bool {
     body.get("items")
         .and_then(Value::as_array)
@@ -712,8 +702,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// A delete attempt made ambiguous by transport failure must retain the
-    /// cleanup obligation, rather than permitting a second delete request.
     #[test]
     fn ambiguous_package_delete_retains_cleanup_pending_lease() {
         let lease = PackageLease::owned("2.0.0");
@@ -723,8 +711,6 @@ mod tests {
         );
     }
 
-    /// A package discovered before this run is outside this lease even when
-    /// the package name matches the conformance dependency.
     #[test]
     fn preexisting_package_cannot_become_cleanup_owned() {
         assert!(PackageLease::none().can_uninstall().is_none());

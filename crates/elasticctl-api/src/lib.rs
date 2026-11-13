@@ -27,6 +27,7 @@ pub mod saved_objects;
 pub mod search;
 pub mod selection;
 pub mod state;
+pub mod value_lists;
 
 pub use alerts::{AlertHit, AlertPage, AlertStatus, Conflicts, SignalsOutcome};
 pub use alerts_ops::{

@@ -1,5 +1,3 @@
-//! Typed data-view models and public Kibana route wrappers.
-
 use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -7,7 +5,6 @@ use serde_json::{Map, Value, json};
 
 const BASE: &str = "/api/data_views";
 
-/// The portable, author-controlled data-view representation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DataViewSpec {
@@ -37,9 +34,6 @@ pub struct DataViewSpec {
     pub type_meta: Option<Map<String, Value>>,
 }
 
-/// The deserialization form is deliberately separate from `DataViewSpec` so
-/// every construction path passes through the same validation and
-/// canonicalization boundary without recursive deserialization.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawDataViewSpec {
@@ -70,9 +64,6 @@ struct RawDataViewSpec {
 }
 
 impl DataViewSpec {
-    /// Validate the local shape before applying this release's portability
-    /// capability rules. Deserialization uses this boundary so callers that
-    /// validate an artifact receive the stable Unsupported classification.
     fn validate_shape(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             return Err(Error::new(
@@ -91,7 +82,6 @@ impl DataViewSpec {
         Ok(())
     }
 
-    /// Validate a portable 0.5.0 data-view artifact.
     pub fn validate(&self) -> Result<()> {
         self.validate_shape()?;
         if !self.fields.is_empty() {
@@ -191,7 +181,6 @@ impl<'de> Deserialize<'de> for DataViewSpec {
     }
 }
 
-/// The documented partial-update fields. `None` omits a field from the body.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataViewUpdate {
@@ -217,7 +206,6 @@ pub struct DataViewUpdate {
     pub type_meta: Option<Map<String, Value>>,
 }
 
-/// A list row returned by Kibana.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataViewSummary {
@@ -229,16 +217,11 @@ pub struct DataViewSummary {
     pub time_field_name: Option<String>,
 }
 
-/// A data view returned from its detail, create, or update route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataView {
-    /// The complete object returned by Kibana. It includes server-owned
-    /// fields and generated mapped-field cache entries, which Task 2 removes
-    /// only when building a portable `DataViewSpec`.
     pub data_view: Map<String, Value>,
 }
 
-/// A saved object that refers to a data view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataViewReference {
@@ -247,7 +230,6 @@ pub struct DataViewReference {
     pub object_type: String,
 }
 
-/// The delete result returned by a reference swap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteStatus {
@@ -255,26 +237,22 @@ pub struct DeleteStatus {
     pub remaining_refs: u64,
 }
 
-/// The affected references and deletion status from a reference swap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceSwap {
     pub result: Vec<DataViewReference>,
     pub delete_status: DeleteStatus,
 }
 
-/// List all data views in the active space.
 pub async fn list(transport: &Transport) -> Result<Vec<DataViewSummary>> {
     let body = transport.get(BASE).await?;
     decode_envelope::<ListEnvelope>(&body, "data views list").map(|envelope| envelope.data_view)
 }
 
-/// Get one data view by its stable id.
 pub async fn get(transport: &Transport, id: &str) -> Result<DataView> {
     let id = require_path_segment(id)?;
     decode_data_view(&transport.get(&data_view_path(id)).await?, "data view get")
 }
 
-/// Create a data view with its explicit, portable id.
 pub async fn create(transport: &Transport, spec: &DataViewSpec) -> Result<DataView> {
     spec.validate()?;
     let body = json!({"data_view": spec, "override": false});
@@ -286,7 +264,6 @@ pub async fn create(transport: &Transport, spec: &DataViewSpec) -> Result<DataVi
     )
 }
 
-/// Apply the documented partial data-view update.
 pub async fn update(transport: &Transport, id: &str, update: &DataViewUpdate) -> Result<DataView> {
     let id = require_path_segment(id)?;
     if let Some(fields) = &update.fields {
@@ -308,7 +285,6 @@ pub async fn update(transport: &Transport, id: &str, update: &DataViewUpdate) ->
     )
 }
 
-/// Update the field metadata delta for one data view.
 pub async fn update_fields_metadata(
     transport: &Transport,
     id: &str,
@@ -322,13 +298,11 @@ pub async fn update_fields_metadata(
     decode_field_metadata_success(&response, id)
 }
 
-/// Delete one unreferenced data view.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     let id = require_path_segment(id)?;
     decode_delete_success(&transport.delete(&data_view_path(id)).await?)
 }
 
-/// Get the active space's default data-view id, if one is set.
 pub async fn get_default(transport: &Transport) -> Result<Option<String>> {
     let body = transport.get(&format!("{BASE}/default")).await?;
     match decode_envelope::<DefaultEnvelope>(&body, "data view default")?.data_view_id {
@@ -342,7 +316,6 @@ pub async fn get_default(transport: &Transport) -> Result<Option<String>> {
     }
 }
 
-/// Set a default data view, or clear it when `id` is `None`.
 pub async fn set_default(transport: &Transport, id: Option<&str>) -> Result<()> {
     if matches!(id, Some(value) if value.trim().is_empty()) {
         return Err(Error::new(
@@ -359,7 +332,6 @@ pub async fn set_default(transport: &Transport, id: Option<&str>) -> Result<()> 
     )
 }
 
-/// Preview the saved-object references a swap would change.
 pub async fn preview_swap(
     transport: &Transport,
     from_id: &str,
@@ -374,7 +346,6 @@ pub async fn preview_swap(
     )
 }
 
-/// Replace references and delete the source data view.
 pub async fn swap(transport: &Transport, from_id: &str, to_id: &str) -> Result<ReferenceSwap> {
     let body = json!({"delete": true, "fromId": from_id, "toId": to_id});
     let response = transport

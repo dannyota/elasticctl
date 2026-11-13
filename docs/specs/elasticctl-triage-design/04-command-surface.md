@@ -38,5 +38,26 @@ after the standard name-or-id resolution, `--tag` →
 text, consistent with the 0.3.1 `--search` semantics. Default sort is
 `@timestamp` descending. A peek caps at `--limit` (default 100) and reports
 when it truncates; `--out` pages with `sort` plus `search_after` through the
-same route. `alerts get` is a `_id`-filtered search returning one document.
+same route. `alerts get` is a `_id`-filtered search returning one document,
+with `_id` always merged in; `alerts list` merges it only with `--with-meta`.
+`--conflicts` applies only to `--query`. With explicit ids it is refused, not
+ignored: the by-id route is sent no `conflicts` key, and that shape is
+unmeasured.
+
+`--since` takes digits and one of `s`, `m`, `h`, `d`, or `w`, sent as
+`now-<duration>`; any other value goes to the server verbatim, to validate as
+a timestamp or date math. `--search` escapes `\` first, then `*` and `?`, so
+its text cannot add wildcards to the substring match. The sort ends with
+`kibana.alert.uuid`, the total-order tiebreaker `search_after` needs.
+
+`alerts tag`, `alerts assign`, and `cases attach` refuse an empty target list
+in `-api` before any request, so a caller that skips the CLI's required
+arguments cannot send a request with no target. Both the plan and the apply of a
+query-scoped transition refuse an empty query (section 6). `cases create` sends the title as the description when `--description` is
+absent, empty, or only whitespace, because the route requires a non-empty one
+(section 10). It sends the `.none` connector and `settings.syncAlerts: false`,
+so alert status changes stay explicit `alerts` commands. `cases attach` posts
+one alert comment per rule, because the comment takes one `rule` object. It
+continues after a failed group and reports each group's failure, because a
+retry after an early stop would attach the earlier groups twice.
 

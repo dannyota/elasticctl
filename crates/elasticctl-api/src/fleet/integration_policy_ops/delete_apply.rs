@@ -5,7 +5,6 @@ use super::delete_plan::{
 };
 use super::metadata::validate_package_metadata_snapshot;
 
-/// The result of applying an integration-policy deletion plan.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IntegrationPolicyDeleteReport {
     pub applied: bool,
@@ -15,9 +14,6 @@ pub struct IntegrationPolicyDeleteReport {
     pub affected_agents: u64,
 }
 
-/// Recheck the exact planning snapshots, then delete each independent target.
-/// An acknowledged wrong-id response is deliberately not treated as a clean
-/// deletion, and never advances shared parent expectations.
 pub async fn apply_delete(
     transport: &Transport,
     plan: &IntegrationPolicyDeletePlan,

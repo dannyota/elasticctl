@@ -13,8 +13,6 @@ use super::metadata::{
 };
 use super::normalization::normalize;
 
-/// Read, validate, and retain an integration-policy artifact before context
-/// or credential construction. The returned value has no public raw fields.
 pub fn prepare_import(path: &Path) -> Result<IntegrationPolicyImportArtifact> {
     let canonical = validate(path)?;
     if canonical.is_empty() {
@@ -30,8 +28,6 @@ pub fn prepare_import(path: &Path) -> Result<IntegrationPolicyImportArtifact> {
     })
 }
 
-/// Plan a retained integration-policy import without reopening its source or
-/// sending a write. Apply uses only the returned plan.
 pub async fn plan_prepared_import(
     transport: &Transport,
     artifact: IntegrationPolicyImportArtifact,
@@ -46,9 +42,6 @@ pub async fn plan_prepared_import(
         ));
     }
 
-    // Read only the requested ids. A conflicting or skipped existing policy is
-    // deliberately kept raw: normalize can refuse an unsupported object, but
-    // that object will not be written on those paths.
     let mut existing = BTreeMap::new();
     let mut conflicts = Vec::new();
     for spec in &canonical {
@@ -81,9 +74,6 @@ pub async fn plan_prepared_import(
         ));
     }
 
-    // This phase comes before every parent, package-status, and metadata read.
-    // A package-coordinate replacement is a different Fleet operation, never
-    // a package-policy import update.
     for spec in &canonical {
         if skip_existing && matches!(existing.get(&spec.id), Some(Some(_))) {
             continue;
@@ -101,9 +91,6 @@ pub async fn plan_prepared_import(
         }
     }
 
-    // Every artifact name stays relevant even if its id is skipped. A foreign
-    // claimant is always a conflict, and this read deliberately happens before
-    // any skipped object's raw response would be normalized.
     let names: BTreeSet<String> = canonical.iter().map(|spec| spec.name.clone()).collect();
     let name_owners = relevant_name_owners(transport, &names)
         .await
@@ -321,9 +308,6 @@ pub async fn plan_prepared_import(
     Ok(plan)
 }
 
-/// Plan a canonical integration-policy import without sending a write. This
-/// convenience wrapper reads the source once, then delegates to the retained
-/// artifact planner.
 pub async fn plan_import(
     transport: &Transport,
     path: &Path,
@@ -334,7 +318,6 @@ pub async fn plan_import(
     plan_prepared_import(transport, artifact, overwrite, skip_existing).await
 }
 
-/// Decode one JSON or YAML artifact without constructing transport or config.
 pub fn validate(path: &Path) -> Result<Vec<IntegrationPolicySpec>> {
     let body = std::fs::read_to_string(path).map_err(|error| {
         Error::new(

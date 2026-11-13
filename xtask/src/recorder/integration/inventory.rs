@@ -1,5 +1,3 @@
-//! Inventory helpers.
-
 use crate::diagnostics::{
     recording_error, safe_recording_error_summary, safe_recording_transport_error,
 };
@@ -63,9 +61,6 @@ pub(crate) async fn require_absent_integration_markers(
     require_absent_integration_policy_parent(t).await
 }
 
-/// Decode an installed-package inventory into memory-only coordinates. Fleet
-/// returns the last-item sort cursor even when the fixed one-page request is
-/// complete, so completeness comes from the total and item count instead.
 fn decode_installed_package_inventory(
     body: &Value,
 ) -> elasticctl_core::Result<BTreeSet<(String, String)>> {
@@ -215,9 +210,6 @@ pub(crate) fn decode_system_package_status(
     }
 }
 
-/// `package_system` is an integration-recorder-only fixture. Build it solely
-/// from the strict status decoder so registry metadata such as `latestVersion`
-/// never reaches a public fixture.
 pub(crate) fn reduce_system_package_status(status: &SystemPackageStatus) -> Value {
     let mut item = json!({
         "name": INTEGRATION_POLICY_PACKAGE,

@@ -1,5 +1,3 @@
-//! Fixtures helpers.
-
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::fixtures::{RecordedFixture, exchange_fixture, response_fixture};
 use crate::recorder::markers::{
@@ -198,10 +196,6 @@ pub(super) fn require_saved_objects_import(
     Ok(())
 }
 
-/// Kibana assigns panel ids after a marker dashboard PUT. They appear as a
-/// direct panel `id`, as JSON inside Saved Objects `panelsJSON`, and inside
-/// the associated Saved Objects reference name. Collect only panel ids so the
-/// caller-selected root dashboard and data-view ids remain untouched.
 fn scrub_dashboard_panel_ids(value: &mut Value) {
     fn is_canonical_uuid(value: &str) -> bool {
         value.len() == 36

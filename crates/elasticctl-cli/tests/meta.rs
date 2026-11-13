@@ -4,8 +4,6 @@ fn bin() -> Command {
     Command::cargo_bin("elasticctl").unwrap()
 }
 
-/// Checking only nonempty output and an `elasticctl` token would accept the
-/// wrong shell. Pin each shell to one unique token and one forbidden token.
 #[test]
 fn completion_emits_the_right_script_for_each_shell() {
     let cases = [
@@ -121,7 +119,7 @@ fn data_view_command_tree_has_the_documented_guarded_paths() {
 }
 
 #[test]
-fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_one_mutations() {
+fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_four_mutations() {
     fn count_mutations(node: &serde_json::Value) -> usize {
         usize::from(node["mutates"] == true)
             + node["subcommands"]
@@ -161,7 +159,7 @@ fn integration_policy_command_tree_has_all_verbs_and_exactly_thirty_one_mutation
             .iter()
             .map(count_mutations)
             .sum::<usize>(),
-        31
+        34
     );
 }
 

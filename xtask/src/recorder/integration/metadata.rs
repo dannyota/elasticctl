@@ -1,5 +1,3 @@
-//! Metadata helpers.
-
 use crate::diagnostics::recording_error;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,11 +17,6 @@ struct ReducedMetadataTemplate {
     inputs: BTreeMap<String, ReducedMetadataInput>,
 }
 
-/// The package registry exposes a broad, deployment-specific document. The
-/// recorder accepts its schema only after reducing it to the exact fields the
-/// integration-policy secret classifier needs. The structural checks mirror
-/// the production secret parser so an ambiguous public fixture never becomes
-/// a more permissive test input than a live package response.
 pub(crate) fn reduce_integration_package_metadata(
     body: &Value,
     expected_name: &str,
@@ -543,10 +536,6 @@ mod tests {
 
     #[test]
     fn integration_package_reducer_records_bounded_measured_system_metadata() {
-        // A bounded copy of the measured System 2.23.4 shape: package vars
-        // are absent, all five measured input types are present, template
-        // selectors distinguish absent from empty, and stream schemas live in
-        // top-level data_streams rather than legacy input streams.
         let raw = json!({
             "item": {
                 "name": "system",

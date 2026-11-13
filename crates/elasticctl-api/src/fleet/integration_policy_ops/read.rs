@@ -17,14 +17,12 @@ pub struct IntegrationPolicyList {
     pub truncated: bool,
 }
 
-/// A resolved selector retains the one-object response for later operations.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedIntegrationPolicy {
     pub(crate) summary: IntegrationPolicySummary,
     pub(crate) item: Map<String, Value>,
 }
 
-/// Collect all measured pages then sort by stable id locally.
 pub async fn collect(transport: &Transport) -> Result<Vec<Map<String, Value>>> {
     let mut page_number = 1;
     let mut total = None;
@@ -81,7 +79,6 @@ pub async fn collect(transport: &Transport) -> Result<Vec<Map<String, Value>>> {
     Ok(items)
 }
 
-/// List with local case-insensitive search and post-sort limiting.
 pub async fn list_op(
     transport: &Transport,
     filter: &IntegrationPolicyFilter,
@@ -109,13 +106,10 @@ pub async fn list_op(
     })
 }
 
-/// Resolve a stable id first, then a unique exact name.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<IntegrationPolicySummary> {
     Ok(resolve_item(transport, selector).await?.summary)
 }
 
-/// Resolve a selector and retain the checked one-object response for later
-/// read-only operations.
 pub(crate) async fn resolve_item(
     transport: &Transport,
     selector: &str,
@@ -153,9 +147,6 @@ pub(crate) async fn resolve_item(
     }
 }
 
-/// Bind a one-object response to its route id and, when it came from a list
-/// selection, to that row's safe summary. Do not include raw values in errors:
-/// simplified items can contain user configuration.
 fn checked_read(
     requested_id: &str,
     item: Map<String, Value>,
@@ -175,9 +166,6 @@ fn checked_read(
     Ok(ResolvedIntegrationPolicy { summary, item })
 }
 
-/// Fleet can return parent ids in a different order between its list and
-/// single-item routes. Sort for comparison without removing duplicates, so a
-/// malformed repeated parent remains visible to later validation.
 fn same_summary(fetched: &IntegrationPolicySummary, selected: &IntegrationPolicySummary) -> bool {
     fetched.id == selected.id
         && fetched.name == selected.name
@@ -193,8 +181,6 @@ fn sorted_parent_ids(ids: &[String]) -> Vec<&str> {
     sorted
 }
 
-/// Return a safe integration-policy view. Parent reads are both the attachment
-/// race check and the sole source of affected-agent counts.
 pub async fn get_op(transport: &Transport, selector: &str) -> Result<IntegrationPolicyDetail> {
     let resolved = resolve_item(transport, selector).await?;
     let mut blocked_by = live_blocked_by(&resolved.item, &resolved.summary.id, transport.space())?;
@@ -236,10 +222,6 @@ pub async fn get_op(transport: &Transport, selector: &str) -> Result<Integration
     })
 }
 
-/// Validate every live shape that a safe detail can reason about without
-/// erasing its direct portability blockers. The projection keeps package-owned
-/// configuration intact while replacing only values that a detail reports in
-/// `blocked_by`, so `normalize` remains the single structural validator.
 fn validate_safe_detail_shape(item: &Map<String, Value>, active_space: &str) -> Result<()> {
     let mut projected = item.clone();
     projected.insert("enabled".into(), Value::Bool(true));
@@ -258,9 +240,6 @@ fn validate_safe_detail_shape(item: &Map<String, Value>, active_space: &str) -> 
     normalize(&projected, active_space).map(|_| ())
 }
 
-/// Export selected integrations or every custom integration. A selector is
-/// resolved once and deduplicated by its stable id before any parent, package,
-/// or metadata reads.
 pub async fn export(
     transport: &Transport,
     selectors: &[String],
@@ -362,8 +341,6 @@ async fn effective_spec(
         }
         spec.namespace = namespaces.into_iter().next().map(str::to_owned);
     }
-    // A package policy can only have been compiled from the exact installed
-    // coordinate. Treat a divergent or absent state as a loud conflict.
     match dependency.state {
         PackageDependencyState::Installed { ref version } if version == &spec.package.version => {}
         PackageDependencyState::Installed { .. } => {

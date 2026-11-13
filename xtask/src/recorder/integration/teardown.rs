@@ -1,5 +1,3 @@
-//! Integration policy teardown.
-
 use super::lifecycle::{Context, Evidence};
 use crate::diagnostics::{record_trace, recording_error, safe_recording_transport_error};
 use crate::fixtures::{Recording, integration_policy_error_fixture};

@@ -1,5 +1,3 @@
-//! MCP resources: fixed-argument calls of existing tool adapters.
-
 pub(crate) mod uri;
 
 use crate::catalog::ToolId;
@@ -132,8 +130,6 @@ pub(crate) fn list() -> Vec<Resource> {
         .collect()
 }
 
-/// The rule template takes an exact `rule_id` only, so it cannot reuse the
-/// `rules_get` description, which also offers a display name.
 const RULE_TEMPLATE_DESCRIPTION: &str = "Inspect one rule by its exact rule_id.";
 
 pub(crate) fn templates() -> Vec<ResourceTemplate> {

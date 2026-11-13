@@ -1,6 +1,3 @@
-//! `rule_readiness`: the fixed request plan, path safety, parts, and findings.
-//!
-//! Every mock body copies a recorded fixture; variants are derived in code.
 use elasticctl_api::compose::{
     Part, SkipReason,
     readiness::{
@@ -39,9 +36,6 @@ fn response(name: &str) -> Value {
     recording(SERVERLESS, name)["response"].clone()
 }
 
-/// An error response derived from the recorded classified 404 of
-/// `_resolve/index`. The transport keeps no raw 404 body, so the recording
-/// holds the classified error; other statuses reuse its body.
 fn error_status(status: u16) -> ResponseTemplate {
     let mut error = recording(SERVERLESS, "resolve_index_not_found.json")["error"].clone();
     assert_eq!(error["http_status"], 404);
@@ -62,7 +56,6 @@ fn resolve_none(set: &str) -> ResponseTemplate {
     ok_json(recording(set, "resolve_index_no_match.json")["response"].clone())
 }
 
-/// The recorded marker rule with its index source and packages replaced.
 fn rule(index: Option<&[&str]>, data_view_id: Option<&str>, packages: &[(&str, &str)]) -> Value {
     let mut rule = response("rule_get_executed.json");
     let template = rule["related_integrations"][0].clone();
@@ -92,7 +85,6 @@ fn rule_id(rule: &Value) -> String {
     rule["rule_id"].as_str().unwrap().to_owned()
 }
 
-/// The recorded data-view list with rows replaced by `(id, title)` pairs.
 fn views(rows: &[(&str, &str)]) -> Value {
     let mut body = response("data_views_list.json");
     let template = body["data_view"][0].clone();
@@ -109,7 +101,6 @@ fn views(rows: &[(&str, &str)]) -> Value {
     body
 }
 
-/// The recorded integration-policy page with one row per package name.
 fn policies(packages: &[&str], total: Option<u64>) -> Value {
     let mut body = response("integration_policies_list.json");
     let template = body["items"][0].clone();
@@ -157,7 +148,6 @@ fn transport(kibana: &str, es: Option<String>, timeout_secs: u64) -> Transport {
     .unwrap()
 }
 
-/// The one non-empty segment after `prefix`, when the path has exactly that.
 fn segment<'a>(request: &'a Request, prefix: &str) -> Option<&'a str> {
     request
         .url
@@ -202,8 +192,6 @@ impl Stack {
             .await;
     }
 
-    /// Answer every `_resolve/index` request whose path is exactly one
-    /// segment under the prefix, by that raw, still encoded, segment.
     async fn resolve(&self, answer: impl Fn(&str) -> ResponseTemplate + Send + Sync + 'static) {
         Mock::given(method("GET"))
             .and(|r: &Request| segment(r, RESOLVE).is_some())
@@ -212,8 +200,6 @@ impl Stack {
             .await;
     }
 
-    /// Answer every package status read with an installed package of the
-    /// requested name.
     async fn packages_installed(&self) {
         Mock::given(method("GET"))
             .and(|r: &Request| segment(r, PACKAGES).is_some())
@@ -222,7 +208,6 @@ impl Stack {
             .await;
     }
 
-    /// Every received path in order, without the cached capability probe.
     async fn paths(&self) -> Vec<String> {
         let requests = self.server.received_requests().await.unwrap();
         assert!(
@@ -918,7 +903,6 @@ async fn the_fleet_feature_floor_makes_integrations_unavailable() {
     assert_eq!(paths, [RULES, STATUS]);
 }
 
-/// A fatal kind at any step fails the call, and nothing after it is sent.
 #[tokio::test]
 async fn fatal_kinds_fail_the_call_with_no_later_request() {
     for step in ["views", "pattern", "policies", "package"] {
@@ -1035,8 +1019,6 @@ async fn connection_and_timeout_on_a_pattern_fail_the_call() {
     assert_eq!(stack.paths().await, [RULES, VIEWS, "/_resolve/index/a-%2A"]);
 }
 
-/// Mount the maximum-work rule, found by display name, and every route its
-/// plan reads.
 async fn maximum_work_stack(index: &[&str], packages: &[(&str, &str)]) -> (Stack, String) {
     let stack = Stack::new().await;
     let body = rule(Some(index), None, packages);
@@ -1084,7 +1066,6 @@ async fn maximum_work_sends_exactly_twenty_nine_requests_in_plan_order() {
     assert_eq!(expected.len(), 29);
     assert_eq!(stack.paths().await, expected);
 
-    // Inputs far beyond both caps still send 29 requests.
     let names = (0..40).map(|i| format!("o{i}-*")).collect::<Vec<_>>();
     let index = names.iter().map(String::as_str).collect::<Vec<_>>();
     let packages = (0..20).map(|i| format!("over_{i}")).collect::<Vec<_>>();
@@ -1100,8 +1081,6 @@ async fn maximum_work_sends_exactly_twenty_nine_requests_in_plan_order() {
     assert_eq!(stack.paths().await.len(), 29);
 }
 
-/// Hostile values become exactly one segment under the fixed prefix or send
-/// nothing. Any other path fails the test through the catch-all route.
 #[tokio::test]
 async fn hostile_patterns_and_packages_stay_under_their_fixed_prefix() {
     let long = "a".repeat(1025);
@@ -1206,7 +1185,6 @@ async fn hostile_patterns_and_packages_stay_under_their_fixed_prefix() {
     }
 }
 
-/// Fail one read at the socket boundary while keeping all other reads available.
 async fn fatal_stack(
     failed_path: &'static str,
     kind: &'static str,

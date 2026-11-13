@@ -1,5 +1,3 @@
-//! Integration policy preparation.
-
 use super::lifecycle::{Context, Evidence};
 use crate::diagnostics::{record_trace, recording_error, safe_recording_transport_error};
 use crate::fixtures::{Recording, integration_policy_error_fixture, response_fixture};
@@ -93,9 +91,6 @@ pub(super) async fn preflight(
         ));
     }
 
-    // Keep each preflight result as classified fixture evidence. Exact-id
-    // reads prevent a shared-space policy list from leaking unrelated policy
-    // content.
     record_trace("fleet-integration-policy-preflight");
     match t
         .get(&format!(
@@ -190,9 +185,6 @@ pub(super) async fn create_parent(
 ) -> elasticctl_core::Result<Value> {
     let t = session.transport;
 
-    // No mutation before this point can change the package inventory. Retain
-    // the exact package version and session nonce before the first marker
-    // write, so any ambiguous create can prove only this session's ownership.
     session.ownership.integration_package_inventory = Some(baseline_inventory.clone());
     session.ownership.integration_system_package_version = Some(package_status.version.clone());
     session.ownership.integration_recording_nonce = Some(nonce.to_owned());
@@ -289,9 +281,6 @@ pub(super) async fn bootstrap(
 ) -> elasticctl_core::Result<Bootstrap> {
     let t = session.transport;
 
-    // Fleet expands an empty simplified map to package defaults. Record no
-    // bootstrap body or response: production export classifies the exact
-    // marker and supplies the only map allowed into public fixtures.
     let bootstrap_body = marker_integration_create_body_with_nonce(&package_status.version, nonce);
     record_trace("fleet-integration-policy-bootstrap-preflight");
     reread_system_package_before_integration_policy_create(
@@ -410,9 +399,6 @@ pub(super) async fn bootstrap(
     record_trace("fleet-integration-policy-bootstrap-delete");
     delete_bootstrap_marker_integration_once(t, &package_status.version, nonce, &stable_inputs)
         .await?;
-    // The delete helper has proved exact-id absence. Leave the captured map in
-    // memory for the recorded second create, but no longer claim a live
-    // integration before proving the parent detached.
     session.ownership.integration_policy = false;
     reread_marker_parent_before_mutation_with_nonce(
         t,

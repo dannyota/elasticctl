@@ -1,5 +1,3 @@
-//! Async columnar ES|QL exchange, as `search esql --out` sends it.
-
 use crate::diagnostics::{
     recording_error, safe_recording_error_summary, safe_recording_transport_error,
 };
@@ -10,23 +8,14 @@ use crate::scrub::strip_volatile;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-/// Fixed stand-in for the per-run async query id. The id encodes the
-/// coordinating node and task, so a re-record would differ without it.
 pub(crate) const ESQL_ASYNC_ID_PLACEHOLDER: &str = "elasticctl-fixture-esql-async";
 
-/// Start attempts before the recorder gives up on the running branch. A query
-/// that finishes inside the 1ms wait returns its rows inline, which leaves no
-/// poll or delete to record.
 const START_ATTEMPTS: usize = 5;
 
-/// Poll budget for the recorded query. The probe reads three documents, so a
-/// query still running after this many polls means the stack is unhealthy.
 const MAX_POLLS: usize = 30;
 
-/// Production poll interval, matching `elasticctl_api::search::esql::run_async`.
 pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The body `elasticctl_api::search::esql::run_async` sends.
 fn start_body(query: &str) -> Value {
     json!({"query": query, "wait_for_completion_timeout": "1ms", "columnar": true})
 }
@@ -36,23 +25,18 @@ fn async_path(id: &str) -> elasticctl_core::Result<String> {
     Ok(format!("/_query/async/{}", elasticctl_core::urlencode(id)))
 }
 
-/// Replace the top-level async id, when present, with the fixed placeholder.
 fn redact_async_id(value: &mut Value) {
     if let Some(id) = value.get_mut("id") {
         *id = json!(ESQL_ASYNC_ID_PLACEHOLDER);
     }
 }
 
-/// Drop per-run counters and timestamps and pin the async id. `is_running`
-/// and `is_partial` stay: they decide whether a client polls.
 fn scrub_async(mut body: Value) -> Value {
     strip_volatile(&mut body, ESQL_ASYNC_VOLATILE_FIELDS);
     redact_async_id(&mut body);
     body
 }
 
-/// Delete one stored async result. Session ownership of the id ends only when
-/// the delete succeeds or the result is already gone.
 async fn delete_owned(
     session: &mut RecordingSession<'_>,
     id: &str,
@@ -70,9 +54,6 @@ async fn delete_owned(
     })
 }
 
-/// Record the start, the completed poll, and the delete of one async columnar
-/// ES|QL query. Every id a start returns is owned by the session until its
-/// delete succeeds, so session cleanup retries any delete that fails here.
 pub(super) async fn record_esql_async(
     session: &mut RecordingSession<'_>,
     query: &str,
@@ -98,7 +79,6 @@ pub(super) async fn record_esql_async(
             started = Some((id, start));
             break;
         }
-        // A completed query that still returned an id is stored; remove it.
         delete_owned(session, &id).await?;
     }
     let (id, start) = started.ok_or_else(|| {
@@ -149,8 +129,6 @@ async fn poll(
 }
 
 impl RecordingSession<'_> {
-    /// Delete every async ES|QL result the recording still owns. Failures keep
-    /// ownership and report only the error class and status.
     pub(crate) async fn cleanup_esql_async(&mut self, errors: &mut Vec<String>) {
         for id in self.ownership.esql_async_ids.clone() {
             if let Err(error) = delete_owned(self, &id).await
@@ -205,8 +183,6 @@ mod tests {
     }
 
     fn failure(status: u16) -> ResponseTemplate {
-        // A body naming a private host, the async id, and an identity must
-        // never reach a recorder error.
         ResponseTemplate::new(status).set_body_json(json!({"error": {
             "reason": "a1 on private.example.internal for operator@example.internal"
         }}))
@@ -614,8 +590,6 @@ mod tests {
         session.ownership.esql_async_ids.push("a1".into());
         session.ownership.search_index = true;
 
-        // The unmocked alert baseline audit fails; only the async and search
-        // index steps matter here.
         let cleanup = session.cleanup().await.err().expect("unmocked audit");
         assert!(
             !cleanup.message.contains("async ES|QL"),

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Exercise byte transparency and lifecycle handling with disposable servers.
 set -euo pipefail
 ROOT=$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/elasticctl-shim.XXXXXX")
 trap 'pkill -KILL -f "$WORK/" 2>/dev/null || :; rm -rf -- "$WORK"' EXIT
-# The shim canonicalizes its log dir, so process patterns need the real path.
 WORK=$(cd -P -- "$WORK" && pwd -P)
 SHIM=$ROOT/scripts/mcp-stdio-shim.sh
 cases=0
 fail() { printf 'mcp-stdio-shim-test: %s\n' "$*" >&2; exit 1; }
 command -v pgrep >/dev/null || fail 'pgrep is required'
-# A shell started with SIGINT ignored cannot pass a default one to the shim.
 [ -z "$(trap -p INT)" ] || fail 'SIGINT is ignored; run the test in the foreground'
 cat >"$WORK/server" <<'SERVER'
 #!/usr/bin/env bash
@@ -23,11 +20,9 @@ case ${MODE:-} in
   kill) kill -KILL "$$" ;;
   line) IFS= read -r line; printf '%s\n' "$line" >"$MARKER" ;;
   hold)
-    # The grandchild holds stdout open; "<" keeps Bash from giving it /dev/null.
     READY='' MODE='wait' bash "$0" <"$HOLD" &
     printf '%s' "$!" >"$MARKER"
     trap 'printf term >"$MARKER.term"' TERM
-    # A forwarded TERM interrupts the first read.
     read -r line || read -r line
     ;;
   *)
@@ -42,16 +37,11 @@ printf 'server stderr\n' >"$WORK/server-err"
 mkfifo "$WORK/clock" "$WORK/fifo"
 exec 8<>"$WORK/clock"
 nap() { read -r -t "$1" -u 8 || :; }
-# Wait up to 5 s for a file to have content.
 await() {
   local _
   for _ in {1..500}; do [ ! -s "$1" ] || return 0; nap 0.01; done
   fail "$2"
 }
-# Start the shim in the background with SIGINT at its default, as a client
-# would, the way the shim starts its command. Return once a fresh Bash has
-# closed fd 7, so no signal is lost. The explicit "<&0" keeps Bash from giving
-# the background shim /dev/null.
 launch() {
   local gate
   exec 7> >(read -r || :)
@@ -61,7 +51,6 @@ launch() {
   exec 7>&-
   wait "$gate" || :
 }
-# Wait up to 5 s for a background shim and set got to its status.
 reap() {
   local _
   for _ in {1..500}; do kill -0 "$1" 2>/dev/null || break; nap 0.01; done
@@ -69,7 +58,6 @@ reap() {
   got=0
   wait "$1" 2>/dev/null || got=$?
 }
-# Record a running shim's relays and command.
 children() {
   local p
   kids=()
@@ -204,9 +192,6 @@ head -c "$size" "$WORK/burst" | cmp -s - "$WORK/burst-log/in.jsonl" || fail 'ear
 cmp -s "$WORK/server-err" "$WORK/err" || fail 'early exit stderr'
 gone 'early exit leftover'
 cases=$((cases+1))
-# A grandchild keeps stdout open after the command exits 3. Exactly one TERM,
-# sent while the command runs ("early") or while shutdown waits ("late"),
-# must stop the relays.
 exec 9<>"$WORK/fifo"
 for when in early late; do
   rm -f "$WORK/ready" "$WORK/holder" "$WORK/holder.term"
@@ -237,10 +222,6 @@ for when in early late; do
 done
 exec 9>&-
 cases=$((cases+1))
-# A signal at any point of startup ends the shim with 128 plus its number: by
-# the default action before the traps exist, by the shim before the command
-# runs, and through the command, which has no traps, after. Only the server's
-# stderr line may appear, and no process from the run remains.
 exec 9<>"$WORK/fifo"
 signals=(TERM INT HUP)
 for i in {0..44}; do

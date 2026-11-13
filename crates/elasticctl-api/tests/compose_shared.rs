@@ -567,8 +567,6 @@ async fn recorded_failed_execution() {
             .execution
             .unwrap()
             .status,
-        // A rule over a missing index reports a partial failure, not a
-        // failure (tasks design section 11.2, M4).
         "partial failure"
     );
 }

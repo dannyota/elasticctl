@@ -1,4 +1,3 @@
-//! Dispatch helpers shared by command families.
 use crate::cli::SourceArg;
 use elasticctl_api::rules::RuleSource;
 use elasticctl_core::{Error, ErrorKind};
@@ -9,6 +8,8 @@ mod diagnostics;
 pub(crate) use diagnostics::{doctor, info};
 mod rules;
 pub(crate) use rules::rules;
+mod value_lists;
+pub(crate) use value_lists::value_lists;
 mod exceptions;
 pub(crate) use exceptions::exceptions;
 mod data_views;
@@ -28,8 +29,6 @@ pub(crate) use cases::cases;
 mod meta;
 pub(crate) use meta::{commands, completion, mcp};
 
-/// Map the CLI's `--source` flag onto the `-api` value. The parsed `clap`
-/// enum never crosses into `-api`.
 fn source_to_api(source: SourceArg) -> RuleSource {
     match source {
         SourceArg::Custom => RuleSource::Custom,
@@ -39,8 +38,6 @@ fn source_to_api(source: SourceArg) -> RuleSource {
     }
 }
 
-/// Parse the rule-file format. `--format-file` controls file content;
-/// `--format` controls the command report.
 fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
     use elasticctl_api::codec::Format;
     match s.to_ascii_lowercase().as_str() {
@@ -53,8 +50,6 @@ fn parse_file_format(s: &str) -> Result<elasticctl_api::codec::Format, Error> {
     }
 }
 
-/// Parse a portable data-view artifact format. `--format-file` controls this
-/// file only; the global `--format` still selects report rendering.
 fn parse_content_format(s: &str) -> Result<elasticctl_api::content_codec::ContentFormat, Error> {
     use elasticctl_api::content_codec::ContentFormat;
     match s.to_ascii_lowercase().as_str() {

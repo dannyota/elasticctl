@@ -37,7 +37,7 @@ baseline rules still apply.
 
 - The Serverless project holds Elastic prebuilt rules for scale testing. `cargo xtask seed`
   installs or updates the prebuilt pack until its status reports current. They are read-only ground truth: never mutate an
-  untagged rule.
+  untagged rule. An install can exceed 60 seconds on a fresh stack, so `seed` and the matrix default to a 600-second timeout; `ELASTICCTL_TIMEOUT` overrides it for `seed`.
 - Every object a live contract creates carries the live marker: the `elasticctl-live-` prefix on `rule_id`s, ids, and index names, and the `elasticctl-live-marker` tag. The baseline audit checks for that marker. The fixture recorder, the corpus fill, and sample data use the `elasticctl-sample` marker instead. Every remote mutation targets explicit ids, and a cleanup deletes a rule by its exact `rule_id`, never by name.
 - A run ends by verifying the project is back to baseline: unchanged prebuilt-rule count, no
   sample rules, and no sample indices.
@@ -64,6 +64,8 @@ mutation contract, so `live-lab.yml` runs every contract.
   `ELASTICCTL_PASSWORD="$ELASTIC_PASSWORD"` after loading the lab password.
 - Trial-license and signals-index bootstrap failures stop startup. Kibana needs
   the `UPPER_SNAKE` encryption settings; dotted names are ignored by its entrypoint.
+  Without `XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY` every rule create fails,
+  with an error that does not mention encryption.
 - Ports bind to 127.0.0.1. `lab/down.sh` removes volumes and orphans.
 - `live-lab.yml` runs the traditional matrix with per-run masked passwords, no
   repository secrets, and only a validated public report artifact. Private logs

@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "applied  outcome       \ntrue     bootstrapped  \n",
+  "stderr": "Applying: value-lists init (profile: default @ HOST, space: default)\n  flow: create-list-indices\n  already bootstrapped: false\n"
+}

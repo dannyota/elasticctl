@@ -1,5 +1,3 @@
-//! `alert_context` through `serve_io`: input validation, the declared output
-//! schema, projections, findings, size limits, cancellation, and deadlines.
 #[allow(dead_code)]
 mod support;
 
@@ -59,7 +57,6 @@ fn step_of(req: &Request) -> Step {
         _ => Other,
     }
 }
-/// The alert id a step-one search asks for.
 fn asked_alert(req: &Request) -> String {
     body(req)["query"]["ids"]["values"][0]
         .as_str()
@@ -92,7 +89,6 @@ fn ok(body: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(body)
 }
 
-/// Recorded answers for every step of the plan.
 fn recorded(step: Step) -> ResponseTemplate {
     match step {
         Status => ok(fixture("status.json")),
@@ -491,7 +487,6 @@ async fn sentinels_outside_the_projection_are_absent() {
         Rule => {
             let mut rule = fixture("rule_get_executed.json");
             rule["setup"] = json!(SENTINEL);
-            // The message is returned by design; a sentinel past the cap is cut.
             rule["execution_summary"]["last_execution"]["message"] =
                 json!(format!("{}{SENTINEL}", "m".repeat(2_048)));
             Some(ok(rule))
@@ -580,8 +575,6 @@ async fn oversized_rule_is_result_too_large() {
     h.join().await.unwrap();
 }
 
-/// Delay the third request of the plan, the first exception list read, and
-/// hold any alert whose id starts with `held`.
 async fn delayed_stack(list_delay: Duration, held_delay: Duration) -> MockServer {
     stack(move |step, req| match step {
         List => Some(recorded(List).set_delay(list_delay)),
@@ -619,7 +612,6 @@ async fn cancellation_on_the_third_request_frees_the_permit() {
     }))
     .await;
     sleep(Duration::from_millis(200)).await;
-    // Three calls are held, so this one is admitted only with the freed permit.
     for (id, alert_id) in [(5, "."), (6, "..")] {
         let reply = call(&mut h, id, json!({"alert_id": alert_id})).await;
         assert_eq!(structured(&reply)["error"]["code"], "invalid_argument");
@@ -667,7 +659,6 @@ async fn deadline_on_the_third_request_frees_the_permit() {
         [Alert, Rule, List],
         "the expired call sent a later request"
     );
-    // Four concurrent calls are all admitted only when every permit is free.
     for id in 2..=5 {
         send(&mut h, id, json!({"alert_id": format!("held-{id}")})).await;
     }
@@ -826,7 +817,6 @@ mod failure_matrix {
             });
             Stack { url, log }
         }
-        /// Every request in arrival order, without the cached capability probe.
         fn requests(&self) -> Vec<Req> {
             self.log
                 .lock()
@@ -902,7 +892,6 @@ mod failure_matrix {
         }
     }
 
-    /// The recorded alert as a one-hit search page, with `edit` applied to it.
     fn alert_page(edit: impl FnOnce(&mut Value)) -> Value {
         let mut page = fixture("signals_search_rule_activity.json");
         let mut hit = page["hits"]["hits"][0].clone();
@@ -913,7 +902,6 @@ mod failure_matrix {
         page.as_object_mut().unwrap().remove("aggregations");
         page
     }
-    /// The recorded rule with `n` exception references derived from its first.
     fn rule_with_refs(n: usize) -> Value {
         let mut rule = fixture("rule_get_executed.json");
         let first = rule["exceptions_list"][0].clone();
@@ -928,7 +916,6 @@ mod failure_matrix {
         );
         rule
     }
-    /// The recorded cases-by-alert answer with `n` rows derived from its first.
     fn case_refs(n: usize) -> Value {
         let row = fixture("cases_by_alert.json")[0].clone();
         json!(
@@ -947,15 +934,12 @@ mod failure_matrix {
         case["id"] = json!(req.path().trim_start_matches("/api/cases/"));
         case
     }
-    /// The recorded activity answer as a `size: 0` search returns it.
     fn activity() -> Value {
         let mut body = fixture("signals_search_rule_activity.json");
         body["hits"]["hits"] = json!([]);
         body
     }
 
-    /// Recorded answers for a rule with `refs` exception references and an
-    /// alert in `cases` cases.
     fn recorded(refs: usize, cases: usize) -> impl Fn(Step, &Req) -> Act + Send + Sync + Clone {
         move |step, req| match step {
             Alert => Act::Json(200, alert_page(|_| ())),

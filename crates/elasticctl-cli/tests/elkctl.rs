@@ -1,7 +1,5 @@
 use assert_cmd::Command;
 
-/// `elkctl` is the short alias binary; the surface is byte-identical to
-/// `elasticctl` because both compile from the same entrypoint.
 #[test]
 fn elkctl_serves_the_same_command_tree() {
     let long = Command::cargo_bin("elasticctl")

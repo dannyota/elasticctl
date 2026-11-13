@@ -1,5 +1,3 @@
-//! Recording helpers.
-
 pub(crate) mod defaults;
 pub(crate) mod fixtures;
 
@@ -24,9 +22,6 @@ use crate::recorder::markers::{
 use crate::recorder::session::{PendingDefaultRestorePhase, RecordingSession};
 use serde_json::{Value, json};
 
-/// Record the full marker-scoped data-view lifecycle. Responses remain in
-/// memory until the source, replacement, backing index, and original default
-/// have all been restored or deleted.
 pub(super) async fn record_data_views(
     session: &mut RecordingSession<'_>,
     recording: &mut Recording,
@@ -41,8 +36,6 @@ pub(super) async fn record_data_views(
     record_trace("data-views-preflight-index");
     require_absent_data_view_index(t).await?;
 
-    // The direct get is deliberately recorded as a classified 404, proving
-    // the stable route before this run creates its marker source.
     record_trace("data-views-source-not-found");
     match t
         .get(&format!("/api/data_views/data_view/{DATA_VIEW_SOURCE_ID}"))
@@ -73,9 +66,6 @@ pub(super) async fn record_data_views(
         ));
     }
 
-    // Validate and resolve the read-only baseline only after the source
-    // direct-404 and backing-index setup. A second exact raw GET immediately
-    // before create becomes the pending cleanup lease and fixture evidence.
     record_trace("data-views-default-snapshot");
     let (baseline_raw, original_default) = capture_data_view_default_snapshot(t).await?;
 

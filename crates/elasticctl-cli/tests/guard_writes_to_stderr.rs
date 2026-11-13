@@ -1,8 +1,3 @@
-//! Keep dry-run previews on stderr so piped JSON on stdout remains valid. This
-//! source check rejects `print!`/`println!` outside the test module. The
-//! end-to-end assertion in `rules_mutate.rs` also runs `rules disable` as a
-//! dry run and checks both output streams.
-
 use std::fs;
 use std::path::Path;
 
@@ -25,8 +20,6 @@ fn guard_module_writes_the_preview_to_stderr_only() {
             path.display()
         ),
     };
-    // Remove stderr macros before scanning: their names contain the stdout
-    // macro names as substrings.
     let scrubbed = production.replace("eprintln!(", "").replace("eprint!(", "");
     for needle in ["print!(", "println!("] {
         assert!(

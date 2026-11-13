@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "id container values\nelasticctl-fixture-value-list-id-3 ROOT/text/elasticctl-fixture-value-list-id-3.yaml ROOT/text/elasticctl-fixture-value-list-id-3.txt\n",
+  "stderr": ""
+}

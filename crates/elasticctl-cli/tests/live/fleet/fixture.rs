@@ -1,5 +1,3 @@
-//! Reusable marked Fleet fixture for live MCP reads.
-
 use elasticctl_api::fleet::{agent_policies, integration_policies};
 use elasticctl_api_test_support::fleet::FleetState;
 use elasticctl_core::{Profile, Transport};
@@ -8,7 +6,6 @@ use serde_json::json;
 use super::cleanup::FleetCleanup;
 use super::{FleetFailure, SYSTEM_PACKAGE, assert_system_unchanged, ensure_system, prepare_fleet};
 
-/// A nonce-owned parent and integration policy retained for a live reader.
 pub(crate) struct FleetFixtureLease {
     profile: Profile,
     nonce: String,
@@ -602,8 +599,6 @@ mod tests {
             .await;
     }
 
-    /// Removing the no-I/O constructor guarantee would create a remote
-    /// dependency before callers can retain the lease for cleanup.
     #[tokio::test]
     async fn new_assigns_distinct_marker_ids_without_remote_io() {
         let server = MockServer::start().await;
@@ -616,8 +611,6 @@ mod tests {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
-    /// Removing the marker-baseline refusal would permit package or policy
-    /// mutations against a target that a prior run may still own.
     #[tokio::test]
     async fn dirty_marker_baseline_stops_before_package_or_policy_creation() {
         let server = MockServer::start().await;

@@ -1,5 +1,3 @@
-//! Profile management. `show` and `list` redact secrets.
-
 use crate::cli::GlobalArgs;
 use crate::context::{self, Context};
 use elasticctl_core::{Config, Error, ErrorKind, Overrides, Profile, Result};
@@ -12,8 +10,6 @@ pub fn list(global: &GlobalArgs) -> Result<Value> {
         .profiles
         .iter()
         .map(|(name, p)| {
-            // Scrub URL userinfo so a credential embedded in a URL never
-            // reaches `config list` output.
             let mut scrubbed = p.clone();
             scrubbed.strip_userinfo();
             json!({
@@ -31,7 +27,6 @@ pub fn show(global: &GlobalArgs) -> Result<Value> {
     let path = context::config_path(global);
     let config = Config::load(&path)?;
     let resolved = config.resolve(global.profile.as_deref(), &Overrides::default())?;
-    // Redact here so no caller can omit it.
     serde_json::to_value(resolved.profile.redacted())
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding profile: {e}")))
 }
@@ -66,8 +61,6 @@ pub fn init(global: &GlobalArgs, name: Option<&str>, from_env: bool) -> Result<V
         timeout_secs: env.timeout_secs.unwrap_or(30),
     };
 
-    // `resolve` strips user info on read. Strip it here so a credential in
-    // ELASTICCTL_KIBANA_URL is never written to disk.
     let mut profile = profile;
     profile.strip_userinfo();
     config.profiles.insert(name.clone(), profile);

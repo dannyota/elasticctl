@@ -1,0 +1,13 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "cleanup_exception_absent",
+  "request": {
+    "path": "/api/exception_lists?list_id=elasticctl-fixture-value-list-id-10&namespace_type=single"
+  },
+  "response": {
+    "message": "exception list list_id: \"elasticctl-fixture-value-list-id-10\" does not exist",
+    "status_code": 404
+  },
+  "http_status": 404
+}

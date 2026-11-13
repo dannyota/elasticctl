@@ -1,4 +1,3 @@
-//! Typed operations and their projections for stored plans.
 use super::{
     PlanError,
     store::{Outcome, PlanState},
@@ -40,7 +39,6 @@ impl PlanKind {
             Self::RulesCreate => "rules-create",
         }
     }
-    /// Refuse organization-level API keys for every mutation kind.
     pub(crate) fn credential_suitable(self, identity: &CredentialIdentity) -> bool {
         identity.realm_type != "_cloud_api_key"
     }
@@ -50,7 +48,7 @@ impl PlanKind {
             &credential[..12]
         )
     }
-    #[allow(dead_code)] // Used by the class planners when implemented.
+    #[allow(dead_code)]
     pub(crate) fn consent_note(self, credential: &str) -> Option<String> {
         match self {
         Self::RulesSetEnabled=>Some(self.note(credential)),
@@ -73,7 +71,7 @@ impl PlanKind {
     }
 }
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Constructed by the class planners when implemented.
+#[allow(dead_code)]
 pub(crate) enum Operation {
     RulesSetEnabled {
         plan: MutationPlan,
@@ -204,7 +202,7 @@ impl Operation {
             Self::RulesCreate { .. } => vec![],
         }
     }
-    #[allow(dead_code)] // Used by the class planners when implemented.
+    #[allow(dead_code)]
     pub(crate) fn cli_arguments(&self) -> Option<Vec<String>> {
         if matches!(self, Self::RulesCreate { .. }) {
             None
@@ -212,7 +210,7 @@ impl Operation {
             Some(self.cli_equivalent())
         }
     }
-    #[allow(dead_code)] // Used by the class planners when implemented.
+    #[allow(dead_code)]
     pub(crate) fn details(&self) -> Vec<String> {
         match self {
             Self::RulesSetEnabled { plan, .. } => plan.preview_details.clone(),
@@ -314,7 +312,7 @@ impl Operation {
         }
     }
 }
-#[allow(dead_code)] // Used by the class planners when implemented.
+#[allow(dead_code)]
 pub(crate) fn require_sync_alerts_off(
     seen: &Preconditions,
 ) -> std::result::Result<(), crate::ToolError> {

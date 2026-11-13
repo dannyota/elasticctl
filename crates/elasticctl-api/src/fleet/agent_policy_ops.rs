@@ -1,5 +1,3 @@
-//! Agent-policy selection, normalization, portability, planning, and apply.
-
 use crate::content_codec::{self, ContentFormat};
 use crate::fleet::agent_policies::{
     self, AGENTLESS_FIELD, AgentPolicyDetail, AgentPolicySpec, AgentPolicySummary, ENVIRONMENT_IDS,
@@ -45,7 +43,6 @@ struct ResolvedAgentPolicy {
     item: Map<String, Value>,
 }
 
-/// A single live read reduced to what planning needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveAgentPolicy {
     pub spec: AgentPolicySpec,
@@ -53,10 +50,6 @@ pub struct LiveAgentPolicy {
     pub attached: Vec<String>,
 }
 
-/// The narrow parent facts an integration-policy operation needs to compare
-/// attachment, namespace, ownership, and blast radius. This deliberately does
-/// not apply agent-policy portability checks: environment references are not
-/// integration-parent facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPolicyParentSnapshot {
     pub id: String,
@@ -68,7 +61,6 @@ pub(crate) struct AgentPolicyParentSnapshot {
     pub protected: bool,
 }
 
-/// Collect every page in the measured deterministic order, then sort by id.
 pub async fn collect(transport: &Transport) -> Result<Vec<Map<String, Value>>> {
     let mut page_number = 1;
     let mut total = None;
@@ -150,13 +142,10 @@ pub async fn list_op(transport: &Transport, filter: &AgentPolicyFilter) -> Resul
     })
 }
 
-/// Stable id first through the single-object route; exact name second.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<AgentPolicySummary> {
     Ok(resolve_item(transport, selector).await?.summary)
 }
 
-/// Resolve a selector and retain the single-object response needed by callers
-/// that require populated agent and integration facts.
 async fn resolve_item(transport: &Transport, selector: &str) -> Result<ResolvedAgentPolicy> {
     match agent_policies::get_selector(transport, selector).await {
         Ok(policy) => {
@@ -229,9 +218,6 @@ pub async fn get_op(transport: &Transport, selector: &str) -> Result<AgentPolicy
     })
 }
 
-/// True when a boolean platform flag is true or `agentless` is non-null.
-/// Used only by `--all-custom` filtering;
-/// `normalize` still refuses these policies when selected explicitly.
 pub fn is_platform_owned(item: &Map<String, Value>) -> Result<bool> {
     for flag in PLATFORM_FLAGS {
         if optional_server_bool(item, flag)? == Some(true) {
@@ -247,9 +233,6 @@ pub fn is_platform_owned(item: &Map<String, Value>) -> Result<bool> {
     }
 }
 
-/// Read one agent-policy parent while retaining only integration-operation
-/// facts. Missing `agents` is a Fleet privilege error; all other malformed
-/// known parent fields are malformed HTTP responses.
 pub(crate) async fn read_parent_snapshot(
     transport: &Transport,
     id: &str,
@@ -313,11 +296,6 @@ const PORTABLE_OPTIONAL: [&str; 13] = [
     "namespace",
 ];
 
-/// Live top-level fields normalization removes or refuses as server-owned or
-/// derived, per spec 5.2: audit and saved-object identity, agent and
-/// version-condition facts, populated `package_policies`, the platform and
-/// portability-refusal fields, and the active space's `space_ids`. Sorted.
-/// A live field outside this list and the portable set is `unsupported`.
 const REMOVED_FIELDS: [&str; 31] = [
     "agentless",
     "agents",
@@ -352,7 +330,6 @@ const REMOVED_FIELDS: [&str; 31] = [
     "version",
 ];
 
-/// Convert a live policy into its filled portable form, or refuse it.
 pub fn normalize(item: &Map<String, Value>, active_space: &str) -> Result<AgentPolicySpec> {
     let id = item
         .get("id")
@@ -487,17 +464,11 @@ fn optional_server_bool(item: &Map<String, Value>, field: &str) -> Result<Option
     }
 }
 
-/// Read one policy and reduce it to the facts planning compares and rechecks.
 pub(crate) async fn read_live(transport: &Transport, id: &str) -> Result<LiveAgentPolicy> {
     let policy = agent_policies::get(transport, id).await?;
     live_from_policy(&policy, id, transport.space())
 }
 
-/// Reduce an already-read policy to the facts planning compares and rechecks,
-/// without a further route call. Shared by `read_live` and `plan_import`'s
-/// conversion of a raw existing snapshot, which must defer this call (and its
-/// `normalize` refusal) until the row is known to need it: a skipped or
-/// conflicting existing policy is never normalized.
 fn live_from_policy(
     policy: &agent_policies::AgentPolicy,
     id: &str,
@@ -527,7 +498,6 @@ fn live_from_item(
     })
 }
 
-/// `package_policies` is a list of ids or of populated objects carrying `id`.
 fn attached_integration_ids(item: &Map<String, Value>, id: &str) -> Result<Vec<String>> {
     let entries = item
         .get("package_policies")
@@ -566,8 +536,6 @@ fn attached_integration_ids(item: &Map<String, Value>, id: &str) -> Result<Vec<S
     Ok(ids)
 }
 
-/// Kibana populates `agents` only for a caller with Fleet agents read, so an
-/// absent field is a privilege gap, not a malformed response.
 fn required_agents(item: &Map<String, Value>, id: &str) -> Result<u64> {
     match item.get("agents") {
         None => Err(Error::new(

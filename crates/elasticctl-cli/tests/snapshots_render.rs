@@ -1,9 +1,3 @@
-//! Rendered output is a contract. The original baselines were committed before
-//! the 0.2 retrofit, so they guarded the move into `-api`.
-//!
-//! If a snapshot fails, rendered output changed. Fix the code. Do not accept
-//! the new snapshot unless the spec changed in the same commit.
-
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -14,8 +8,6 @@ use elasticctl_api_test_support::MockStack;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// The rules `with_rules` seeds, in the `elasticctl-sample` marker style every
-/// live test uses.
 fn sample_rules() -> Vec<Value> {
     vec![
         json!({
@@ -45,9 +37,6 @@ fn sample_rules() -> Vec<Value> {
     ]
 }
 
-/// Representative report-rendering commands and formats.
-/// `rules export` without `--out` is excluded on purpose: its stdout is the
-/// rule file, not a report (spec 6.2), and `tests/rules_io.rs` covers it.
 const CASES: &[(&str, &[&str])] = &[
     ("rules_list_table", &["rules", "list"]),
     ("rules_list_json", &["rules", "list", "--json"]),
@@ -84,19 +73,13 @@ const CASES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The mock server binds an ephemeral port, which would change every run. Pin
-/// it so `info` and `doctor` snapshots do not read as drift.
 const PORT_FILTER: (&str, &str) = (r"127\.0\.0\.1:\d+", "127.0.0.1:<port>");
 
-/// `info` echoes the crate version, which changes every release. Pin it so a
-/// version bump is not drift. The pattern still requires a semver shape, and
-/// `tests/cli.rs` asserts `--version` against the manifest.
 const VERSION_FILTER: (&str, &str) = (
     r#""elasticctl_version": "\d+\.\d+\.\d+[^"]*""#,
     r#""elasticctl_version": "<version>""#,
 );
 
-/// Replace the path placeholders with their real values.
 fn substitute(arg: &str, mirror: &Path, rule_file: &Path) -> String {
     match arg {
         "FIXTURE_DIR" => mirror.to_string_lossy().into_owned(),
@@ -105,8 +88,6 @@ fn substitute(arg: &str, mirror: &Path, rule_file: &Path) -> String {
     }
 }
 
-/// Write the sample rules into a `rules/` directory so `state diff` compares
-/// an equal local and remote state and reports a clean diff.
 fn fixture_mirror(rules: &[Value]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let rules_dir = dir.path().join("rules");
@@ -122,8 +103,6 @@ fn fixture_mirror(rules: &[Value]) -> tempfile::TempDir {
     dir
 }
 
-/// Write one sparse rule so `rules validate` reports a non-empty
-/// `defaults_applied`.
 fn fixture_rule_file(dir: &Path) -> PathBuf {
     let path = dir.join("sparse.ndjson");
     std::fs::write(
@@ -163,20 +142,6 @@ async fn rendered_output_is_stable() {
     }
 }
 
-/// Two alert hits with overlapping-but-unequal dotted `kibana.alert.*` key
-/// sets: `a1` carries `reason`, which `a2` lacks; `a2` carries
-/// `workflow_tags`, which `a1` lacks. `render::table`'s column set comes
-/// from the *first* row only (`columns()` in `render.rs`), so this pins two
-/// things at once: a later row's missing key renders as a blank cell, and a
-/// later row's *extra* key never gets a column at all — it silently drops
-/// from the table output. `--json` renders every hit's full `_source`
-/// regardless, so the two formats' snapshots are the contrast that shows the
-/// table behavior is table-specific, not a data problem.
-///
-/// Hand-built wiremock bodies, matching this suite's alerts/cases CLI test
-/// convention (`crates/elasticctl-cli/tests/alerts.rs`), not `MockStack`:
-/// `alerts list` needs no capability probe, so the plain
-/// `signals/search` mock is enough.
 fn alert_hits_with_uneven_keys() -> Value {
     json!({
         "hits": {
@@ -233,15 +198,6 @@ async fn alerts_list_table_and_json_render_uneven_keys_differently() {
     }
 }
 
-/// Two cases with an unequal optional-field set (one carries `severity` and
-/// a comment count, the other neither) over `cases list --format table`.
-/// `case_row` inserts its optional fields conditionally and `render::columns`
-/// derives the column set from the first row alone, so the columns here are
-/// exactly the first case's keys: `severity`/`comments`/`created_at` appear
-/// because case 1 carries them, and `updated_at` is absent because case 1
-/// does not — a second case's extra optional would not add a column at all.
-/// The snapshot pins that current behavior; it is not immunity to a dropped
-/// column.
 #[tokio::test]
 async fn cases_list_table_renders_two_cases_with_uneven_optional_fields() {
     let server = MockServer::start().await;
@@ -277,19 +233,15 @@ async fn cases_list_table_renders_two_cases_with_uneven_optional_fields() {
     insta::assert_snapshot!("cases_list_table", rendered);
 }
 
-/// Verify that the request recorder observes writes and ignores reads.
 #[tokio::test]
 async fn the_harness_records_a_write_and_ignores_a_read() {
     let stack = MockStack::with_rules(vec![]).await;
 
-    // A read issues only GETs, none of which are writes.
     elasticctl_api::rules::find_all(stack.transport(), &Default::default())
         .await
         .unwrap();
     assert!(stack.write_paths().await.is_empty(), "a GET is not a write");
 
-    // A write is recorded even though no mock answers it: the server logs the
-    // request regardless of the 404 it returns.
     let _ = stack
         .transport()
         .post(

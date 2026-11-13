@@ -339,8 +339,6 @@ fn tools_list_rejects_a_nonempty_next_cursor() {
     assert!(!error.contains(sentinel));
 }
 
-/// The default MCP child must not advertise the opt-in query tools. Removing
-/// the child-mode gate would expose synchronous query access to every caller.
 #[test]
 fn default_catalog_rejects_opt_in_query_tools() {
     let mut tools = required_catalog();
@@ -357,8 +355,6 @@ fn default_catalog_rejects_opt_in_query_tools() {
     );
 }
 
-/// The query-enabled MCP child has its own exact catalog. Accepting a partial
-/// or reordered extension would stop this smoke from detecting flag drift.
 #[test]
 fn query_catalog_requires_both_opt_in_query_tools_in_order() {
     let mut tools = required_catalog();
@@ -1227,7 +1223,7 @@ fn seed_content_boundary<T>(result: TestResult<T>, static_error: &'static str) -
     result.map_err(|_| static_error.to_string())
 }
 
-#[allow(clippy::too_many_arguments)] // Existing fixture values remain independent until Task 6A's setup review lands.
+#[allow(clippy::too_many_arguments)]
 fn exercise_protocol(
     child: &mut McpChild,
     rule_id: &str,
@@ -1339,7 +1335,7 @@ pub(super) fn initialize_child(child: &mut McpChild, allow_query_tools: bool) ->
     validate_catalog(&catalog, allow_query_tools, child.protocol_path)
 }
 
-#[allow(clippy::too_many_arguments)] // Each live assertion receives only the identity it owns.
+#[allow(clippy::too_many_arguments)]
 fn exercise_inspection_reads(
     child: &mut McpChild,
     data_view: &str,
@@ -1381,8 +1377,6 @@ fn exercise_inspection_reads(
     validate_empty_list(
         &child.tool(
             "cases_list",
-            // Cases uses tokenized simple_query_string with OR semantics, so
-            // avoid the shared hyphenated live-fixture terms in this miss.
             json!({"search":unique_name("missing").replace('-', ""),"limit":10}),
         )?,
         "cases",
@@ -2258,8 +2252,6 @@ impl Drop for ChildOwner {
     }
 }
 
-/// Variables that take precedence over the configuration file. An offline
-/// child drops them so an exported shell target cannot replace the mock.
 pub(super) const TARGET_OVERRIDES: [&str; 5] = [
     "ELASTICCTL_KIBANA_URL",
     "ELASTICCTL_ES_URL",
@@ -2302,7 +2294,6 @@ impl McpChild {
         Self::spawn_command(child_command(config, allow_query_tools), allow_query_tools)
     }
 
-    /// Starts a child for an offline test, against the mock target only.
     pub(super) fn spawn_offline(config: &Path, allow_query_tools: bool) -> TestResult<Self> {
         Self::spawn_command(
             offline_child_command(config, allow_query_tools),

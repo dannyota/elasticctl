@@ -1,0 +1,98 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "state_rule_q",
+  "request": {
+    "rule_id": "elasticctl-fixture-value-list-id-36-other",
+    "name": "elasticctl-fixture-value-list-id-36-other",
+    "description": "elasticctl-live-marker",
+    "type": "query",
+    "language": "kuery",
+    "query": "*:*",
+    "index": [
+      "elasticctl-live-vl-events"
+    ],
+    "enabled": false,
+    "interval": "1m",
+    "from": "now-5m",
+    "to": "now",
+    "risk_score": 21,
+    "severity": "low",
+    "tags": [
+      "elasticctl-live-marker",
+      "REDACTED"
+    ],
+    "exceptions_list": [
+      {
+        "id": "elasticctl-fixture-value-list-id-10",
+        "list_id": "elasticctl-fixture-value-list-id-9",
+        "type": "detection",
+        "namespace_type": "single"
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-30",
+        "list_id": "elasticctl-fixture-value-list-id-31",
+        "type": "detection",
+        "namespace_type": "agnostic"
+      }
+    ]
+  },
+  "response": {
+    "name": "elasticctl-fixture-value-list-id-36-other",
+    "description": "elasticctl-live-marker",
+    "risk_score": 21,
+    "severity": "low",
+    "output_index": "",
+    "version": 1,
+    "tags": [
+      "elasticctl-live-marker",
+      "REDACTED"
+    ],
+    "enabled": false,
+    "risk_score_mapping": [],
+    "severity_mapping": [],
+    "interval": "1m",
+    "from": "now-5m",
+    "to": "now",
+    "actions": [],
+    "exceptions_list": [
+      {
+        "id": "elasticctl-fixture-value-list-id-10",
+        "list_id": "elasticctl-fixture-value-list-id-9",
+        "type": "detection",
+        "namespace_type": "single"
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-30",
+        "list_id": "elasticctl-fixture-value-list-id-31",
+        "type": "detection",
+        "namespace_type": "agnostic"
+      }
+    ],
+    "author": [],
+    "false_positives": [],
+    "references": [],
+    "max_signals": 100,
+    "threat": [],
+    "setup": "",
+    "related_integrations": [],
+    "required_fields": [],
+    "id": "elasticctl-fixture-value-list-id-39",
+    "rule_id": "elasticctl-fixture-value-list-id-36-other",
+    "immutable": false,
+    "rule_source": {
+      "type": "internal"
+    },
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "updated_by": "REDACTED",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "created_by": "REDACTED",
+    "revision": 0,
+    "type": "query",
+    "index": [
+      "elasticctl-live-vl-events"
+    ],
+    "query": "*:*",
+    "language": "kuery"
+  }
+}

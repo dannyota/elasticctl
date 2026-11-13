@@ -1,11 +1,3 @@
-//! `detection_coverage` through the MCP router.
-//!
-//! Rule rows are the recorded marker rules of `rules_find_sorted_page.json`,
-//! cloned with only `rule_id`, `threat`, or `index` changed. Every `_find`
-//! body copies the recorded page shape; the status and rule bodies are the
-//! recorded responses, with only the version number changed where a case
-//! needs an older stack.
-
 #[allow(dead_code)]
 mod support;
 
@@ -56,8 +48,6 @@ static STATUS: LazyLock<Value> = LazyLock::new(|| {
     ))
 });
 
-/// The recorded marker rule with a technique, a tactic, an index pattern,
-/// and the `system` package.
 fn marker() -> Value {
     SORTED_PAGE["data"][0].clone()
 }
@@ -79,8 +69,6 @@ fn target_for(server: &MockServer) -> Resolved {
     }
 }
 
-/// Serves `_find` pages of a fixed corpus by the `page` and `per_page`
-/// query, optionally delaying one page.
 struct Corpus {
     rules: Vec<Value>,
     delayed: Option<(usize, Duration)>,
@@ -128,7 +116,6 @@ async fn mount_status(server: &MockServer, version: &str) {
         .await;
 }
 
-/// The recorded rule, served through the explicit gate.
 async fn mount_held_rule(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path(RULE))
@@ -152,7 +139,6 @@ impl Session for Harness {
     }
 }
 
-/// Capture the isolated MCP runtime without changing the shared harness.
 struct RuntimeInput {
     input: tokio::io::DuplexStream,
     runtime: Option<tokio::sync::oneshot::Sender<tokio::runtime::Handle>>,
@@ -209,7 +195,6 @@ impl ClockHarness {
             Duration::from_secs(30),
             runtime.spawn(async {
                 let (blocker, waiting) = std::sync::mpsc::channel::<()>();
-                // Tokio inhibits paused-clock auto-advance while this task is outstanding.
                 tokio::task::spawn_blocking(move || {
                     let _ = waiting.recv();
                 });
@@ -314,7 +299,6 @@ impl Drop for Clock {
     }
 }
 
-/// Forward requests to wiremock, holding rule replies until explicitly released.
 struct Gate {
     target: Resolved,
     arrivals: Arc<AtomicUsize>,
@@ -379,7 +363,6 @@ impl Gate {
                                 r.acquire().await.unwrap().forget();
                                 d.fetch_add(1, Ordering::SeqCst);
                             }
-                            // A deadline can close the client before the gate opens.
                             let _ = tokio::io::copy(&mut remote, socket.get_mut()).await;
                         });
                     }
@@ -387,14 +370,12 @@ impl Gate {
                 }
             }
         };
-        // The test runtime can stop polling while MCP's deadline keeps running.
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
             runtime.block_on(task);
-            // Dropping the JoinSet aborts every connection, including held replies.
             runtime.shutdown_timeout(Duration::from_secs(1));
         });
         let mut target = target_for(server);
@@ -430,7 +411,6 @@ impl Gate {
     }
 }
 
-/// The marker rule as `coverage-<n>` with one technique, `T<n>`.
 fn technique_rule(n: usize) -> Value {
     let mut rule = marker();
     rule["rule_id"] = json!(format!("coverage-{n:04}"));
@@ -440,7 +420,6 @@ fn technique_rule(n: usize) -> Value {
     rule
 }
 
-/// The marker rule as `coverage-<n>` with the given index patterns.
 fn index_rule(n: usize, patterns: &[String]) -> Value {
     let mut rule = marker();
     rule["rule_id"] = json!(format!("coverage-{n:04}"));
@@ -593,8 +572,6 @@ async fn the_definition_declares_the_description_inputs_and_defaults() {
     harness.join().await.expect("clean EOF");
 }
 
-/// No arguments: the whole corpus, every source, grouped by technique, at
-/// most 50 rows, read in one page with no filter and no capability probe.
 #[tokio::test]
 async fn defaults_are_technique_all_sources_and_limit_50() {
     let rules = SORTED_PAGE["data"].as_array().unwrap().clone();
@@ -868,8 +845,6 @@ async fn page_total_is_the_group_count_and_201_groups_at_limit_200_are_truncated
     harness.join().await.expect("clean EOF");
 }
 
-/// Rows that do not fit the structured cap are dropped whole from the end;
-/// `summary` still describes the whole corpus.
 #[tokio::test]
 async fn byte_cap_trimming_drops_whole_trailing_rows() {
     let patterns: Vec<String> = ["a", "b", "c", "d"]
@@ -922,9 +897,6 @@ async fn wait_for(server: &MockServer, route: &str, expected: usize) {
     .unwrap_or_else(|_| panic!("{expected} requests to {route} did not arrive"));
 }
 
-/// With three `rules_get` calls held, a fourth call is still admitted: the
-/// call that ended released its permit. The admitted call fails validation
-/// before any request. Returns the replies of the three held calls.
 async fn assert_a_permit_is_free(
     harness: &mut ClockHarness,
     gate: &Gate,
@@ -940,15 +912,12 @@ async fn assert_a_permit_is_free(
     replies
 }
 
-/// `expire_attempts` advances the clock before probing to exercise void attempts.
 async fn permit_check(
     harness: &mut ClockHarness,
     gate: &Gate,
     expire_held: bool,
     expire_attempts: usize,
 ) -> (Vec<Value>, usize) {
-    // A gate cannot prevent a one-second holder from reaching its deadline.
-    // Freeze that clock so only the call that ended can have freed a permit.
     let clock = harness.pause_clock().await;
     let baseline = gate.arrivals.load(Ordering::SeqCst);
     for attempt in 1..=6 {
@@ -988,8 +957,6 @@ async fn permit_check(
             admitted["result"]["structuredContent"]["error"]["code"], "invalid_argument",
             "admitted, not busy"
         );
-        // Arrival counts alone do not prove holders stayed inside their permits.
-        // Unchanged server time and closed gates rule out both ways they can finish.
         let void = !replies.is_empty() || clock.now().await != started;
         if !void && expire_held {
             clock.advance(Duration::from_secs(2)).await;
@@ -1093,7 +1060,6 @@ async fn the_permit_probe_is_busy_while_four_gated_calls_hold_every_permit() {
     harness.join().await.expect("clean EOF");
 }
 
-/// 1,200 rules read in three pages; page 2 answers after `delay`.
 async fn three_page_server(delay: Duration) -> MockServer {
     let rules = (0..1_200).map(technique_rule).collect();
     let server = corpus_server(rules, Some((2, delay))).await;
@@ -1115,7 +1081,6 @@ async fn cancelling_during_page_2_of_3_sends_no_page_3_and_frees_the_permit() {
             "params": {"requestId": 1, "reason": "test", "_meta": current_metadata()},
         }))
         .await;
-    // Past the delayed page 2: a live call would have requested page 3.
     sleep(Duration::from_millis(1_000)).await;
     assert_eq!(find_count(&requests(&server).await), 2, "no page 3");
     for reply in assert_a_permit_is_free(&mut harness, &gate, false).await {
@@ -1151,7 +1116,6 @@ async fn a_one_second_deadline_during_page_2_of_3_sends_no_page_3_and_frees_the_
     assert!(structured.get("page").is_none(), "no partial page");
     assert_schema(&schema, structured);
     assert_eq!(find_count(&requests(&server).await), 2);
-    // Past the delayed page 2: a live call would have requested page 3.
     sleep(Duration::from_millis(1_500)).await;
     assert_eq!(find_count(&requests(&server).await), 2, "no page 3");
     for reply in assert_a_permit_is_free(&mut harness, &gate, true).await {

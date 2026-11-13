@@ -1,5 +1,3 @@
-//! Read-only projections for stack diagnostics.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::{DoctorReport, InfoReport, Status, health};
@@ -22,17 +20,14 @@ const DOCTOR_DESCRIPTION: &str = "Run read-only health checks against the select
 const INFO_DESCRIPTION: &str =
     "Inspect the selected Elastic stack version, flavor, license tier, and spaces.";
 
-/// The explicit adapter for the two stack diagnostic tools.
 pub(crate) struct StackAdapter;
 
 static ADAPTER: StackAdapter = StackAdapter;
 
-/// Return the stack diagnostics adapter.
 pub(crate) fn adapter() -> &'static dyn ToolAdapter {
     &ADAPTER
 }
 
-/// Return the static stack diagnostic definitions in catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
     vec![
         definition::<DoctorOutput>("stack_doctor", DOCTOR_DESCRIPTION),
@@ -122,7 +117,7 @@ impl From<DoctorReport> for DoctorData {
     }
 }
 
-#[allow(dead_code)] // Used only to generate the public output schema.
+#[allow(dead_code)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum InfoOutput {
@@ -130,7 +125,7 @@ enum InfoOutput {
     Failure(ToolFailure),
 }
 
-#[allow(dead_code)] // Used only to generate the public output schema.
+#[allow(dead_code)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum DoctorOutput {

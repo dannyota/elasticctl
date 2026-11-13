@@ -1,6 +1,3 @@
-//! Run conformance tests against a real stack:
-//!   ELASTICCTL_LIVE=1 cargo test -- --ignored
-
 use assert_cmd::Command;
 use elasticctl_core::{ErrorKind, Profile, Transport};
 use serde_json::{Value, json};
@@ -21,8 +18,15 @@ mod mcp_mutations;
 #[path = "live/mcp_smoke.rs"]
 mod mcp_smoke;
 
-/// The thirteenth contract stays at this integration-test root because the
-/// conformance controller invokes this exact name.
+#[path = "live/value_lists.rs"]
+mod value_lists;
+
+#[test]
+#[ignore = "requires a live stack"]
+fn value_list_round_trip() {
+    value_lists::run_contract();
+}
+
 #[test]
 #[ignore = "requires a live stack"]
 fn mcp_mutations_plan_and_confirm() {
@@ -35,8 +39,6 @@ fn mcp_mutation_measurements() {
     mcp_mutations::run_measurements();
 }
 
-/// The twelfth contract stays at this integration-test root because the
-/// conformance controller invokes this exact name.
 #[test]
 #[ignore = "requires a live stack"]
 fn mcp_answers_across_verticals() {
@@ -72,8 +74,6 @@ fn mcp_answers_across_verticals() {
     }
 }
 
-/// The eleventh contract stays at this integration-test root because the
-/// conformance controller invokes this exact name.
 #[test]
 #[ignore = "requires a live stack"]
 fn mcp_reads_existing_verticals() {
@@ -109,8 +109,6 @@ fn mcp_reads_existing_verticals() {
     }
 }
 
-/// The tenth contract stays at this integration-test root because the
-/// conformance controller invokes this exact name.
 #[test]
 #[ignore = "requires a live stack"]
 fn fleet_transfers_agent_and_integration_policies_without_residue() {
@@ -191,7 +189,6 @@ fn run_mcp_steps(steps: &mut impl McpRunSteps) -> Result<(), McpOutcomeFailure> 
     classify_mcp_outcome(contract, fleet_cleanup, general_cleanup, baseline_audit)
 }
 
-/// One MCP contract body. Both MCP contracts share the same cleanup steps.
 type McpContract =
     fn(&Path, &Path, &mut LiveCleanup, &mut fleet::fixture::FleetFixtureLease) -> TestResult;
 
@@ -239,9 +236,6 @@ fn panic_conformance(class: ConformanceFailureClass, detail: impl std::fmt::Disp
     panic!("{}\n{detail}", conformance_marker(class));
 }
 
-/// The MCP smoke owns two cleanup domains. A failed protocol must not hide a
-/// Fleet cleanup failure, and both cleanup kinds must remain visible when
-/// they fail together.
 #[test]
 fn mcp_outcome_classifier_gives_combined_cleanup_failures_precedence() {
     let outcome = classify_mcp_outcome(
@@ -382,15 +376,8 @@ fn mcp_baseline_failure_takes_precedence_over_contract_after_every_step() {
         ]
     );
 }
-/// Fact G, measured on Serverless 9.6.0: runtime exception matching follows
-/// `list_id`, so replacing only the saved-object pointer still suppresses the
-/// matching event.
 const EXPECTED_STALE_POINTER_HITS: Option<u64> = Some(0);
 
-/// Serialize tests that share one remote space. The round-trip test creates
-/// and deletes a rule while the pull/diff test reads the remote twice; without
-/// the lock, one test could change the other's results. Recover lock poisoning
-/// so an assertion failure does not strand later tests.
 static LIVE_LOCK: Mutex<()> = Mutex::new(());
 
 fn serialize_live() -> MutexGuard<'static, ()> {
@@ -411,8 +398,6 @@ fn skip_unless_live() -> bool {
 
 const SENTINEL_KEY: &str = "elasticctl-live-offline-key-sentinel";
 
-// Run environment-dependent checks in a separate process without changing the
-// test runner's environment while other tests build offline children.
 fn isolated_live_environment(test: &str) -> bool {
     if std::env::var("ELASTICCTL_API_KEY").as_deref() == Ok(SENTINEL_KEY) {
         return false;
@@ -460,7 +445,6 @@ fn live_config_has_no_api_key() {
     }
     let dir = tempfile::tempdir().unwrap();
     let path = write_live_config(dir.path());
-    // Config::load parses the file as TOML. An absent optional key stays None.
     let config = elasticctl_core::Config::load(&path).unwrap();
     assert!(config.profiles["default"].api_key.is_none());
     let saved = config.resolve(None, &Default::default()).unwrap();
@@ -521,10 +505,6 @@ fn bin() -> Command {
     command
 }
 
-/// Build a profile from environment variables so live tests never use the
-/// operator's `~/.elasticctl/config.toml`. `ELASTICCTL_ES_URL` is optional:
-/// self-managed single hosts use the Kibana URL for ES, while Cloud requires a
-/// separate ES host.
 fn write_live_config(dir: &Path) -> PathBuf {
     let kibana_url =
         std::env::var("ELASTICCTL_KIBANA_URL").expect("ELASTICCTL_KIBANA_URL must be set");
@@ -542,7 +522,6 @@ fn write_live_config(dir: &Path) -> PathBuf {
 
     let path = dir.join("config.toml");
     std::fs::write(&path, body).unwrap();
-    // The tool rejects world-readable configs, so this fixture must be 0600.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -644,9 +623,6 @@ fn command_is_not_found(out: &Output) -> bool {
     text.contains("not_found") || text.contains("not found")
 }
 
-/// The open, rule-scoped alert filter shared by the poll loop, the final
-/// sweep, and cleanup's close-then-verify step: every alert this marker rule
-/// produced whose workflow status is not `closed`.
 fn open_marker_rule_alerts_query(rule_id: &str) -> Value {
     json!({"bool": {
         "filter": [{"term": {"kibana.alert.rule.rule_id": rule_id}}],
@@ -654,34 +630,19 @@ fn open_marker_rule_alerts_query(rule_id: &str) -> Value {
     }})
 }
 
-/// Identities are registered before their writes. The guard runs the same CLI
-/// deletion paths after an assertion panic and retries each transient failure.
 struct LiveCleanup {
     config: PathBuf,
     profile: Profile,
     rules: BTreeSet<String>,
     lists: BTreeSet<String>,
-    /// Items are deleted with their registered parent list because the CLI
-    /// deliberately exposes list deletion, not an unsafe item-only delete.
     items: BTreeSet<(String, String)>,
     indices: BTreeSet<String>,
-    /// Case ids to delete. A 404 on delete is tolerated as already-clean.
     cases: BTreeSet<String>,
-    /// Exact title/tag pairs known before case creation. If creation succeeds
-    /// but its response cannot be decoded, this scope still discovers the id.
     case_scopes: BTreeSet<(String, String)>,
-    /// `rule_id`s whose alerts must be closed by a marker-scoped query before
-    /// the rest of cleanup runs. Alerts have no delete API (triage spec
-    /// section 9), so "cleaned" means "closed", not "gone".
     alert_rules: BTreeSet<String>,
     dashboards: BTreeSet<String>,
     data_views: BTreeSet<String>,
-    /// `None` means no content mutation can affect the default. `Some(None)`
-    /// records an original no-default state.
     default_data_view: Option<Option<String>>,
-    /// Generated rules owned by an exact `rule_id` prefix and count. Each rule
-    /// is `<prefix><n>` for `n` in `1..=count`; cleanup deletes only those
-    /// explicit ids.
     rule_fills: BTreeSet<(String, usize)>,
     finished: bool,
 }
@@ -782,7 +743,6 @@ impl LiveCleanup {
         self.rule_fills.insert((prefix.into(), count));
     }
 
-    /// Drop a fill whose deletion the contract has already verified.
     fn forget_rule_fill(&mut self, prefix: &str, count: usize) {
         self.rule_fills.remove(&(prefix.to_string(), count));
     }
@@ -841,8 +801,6 @@ impl LiveCleanup {
         mcp_compose::fill::delete_rule_fill(&self.profile, prefix, count)
     }
 
-    /// Delete every registered fill with the shared retry policy. The delete
-    /// step is a parameter so offline tests can fail it on purpose.
     fn clean_rule_fills(&self, mut delete: impl FnMut(&str, usize) -> TestResult) -> Vec<String> {
         let mut failures = Vec::new();
         for (prefix, count) in &self.rule_fills {
@@ -974,9 +932,6 @@ impl LiveCleanup {
         })
     }
 
-    /// Close every open alert a marker rule generated, then verify none
-    /// remain open. Alerts have no delete API (triage spec section 9), so a
-    /// closed alert is the cleanup end state, not an intermediate one.
     fn close_marker_alerts(&self, rule_id: &str) -> TestResult {
         let profile = self.profile.clone();
         let rule_id = rule_id.to_string();
@@ -985,14 +940,6 @@ impl LiveCleanup {
         runtime.block_on(async move {
             let transport = Transport::new(&profile)
                 .map_err(|e| format!("building alert-cleanup transport: {}", e.message))?;
-            // Best-effort: the rule is still enabled at this point (its own
-            // `rules delete` runs later in `clean()`), so without disabling
-            // it here first, a 1-minute-interval execution can land a fresh
-            // open alert between this close-by-query and the verify below.
-            // Mirrors the recorder's `sweep_close_marker_alerts`
-            // (xtask/src/main.rs). Errors are ignored: the rule may already
-            // be deleted or never created, and the close-and-verify plus the
-            // baseline backstop are the real guarantees, not this PATCH.
             let _ = transport
                 .patch(
                     "/api/detection_engine/rules",
@@ -1027,8 +974,6 @@ impl LiveCleanup {
         })
     }
 
-    /// Delete a case. A 404 means it is already clean (e.g. the contract's
-    /// own `plan_delete`/`apply_delete` already removed it).
     fn delete_case(&self, case_id: &str) -> TestResult {
         let profile = self.profile.clone();
         let case_id = case_id.to_string();
@@ -1048,10 +993,6 @@ impl LiveCleanup {
         })
     }
 
-    /// Resolve a case through the marker identity known before its POST, then
-    /// delete only exact title/tag matches. The server-side search narrows the
-    /// set; the exact client-side check prevents a substring match from
-    /// widening cleanup.
     fn delete_case_scope(&self, title: &str, tag: &str) -> TestResult {
         let profile = self.profile.clone();
         let title = title.to_string();
@@ -1085,11 +1026,6 @@ impl LiveCleanup {
     fn clean(&mut self) -> TestResult {
         let mut failures = Vec::new();
 
-        // Alerts are closed, and cases deleted, before the rule/list/index
-        // deletions below. The alert-close retries 3x on its own, and the
-        // contract's own final sweep (triage_probe step 9) already closes
-        // this rule's alerts before cleanup ever runs; deleting the rule in
-        // the loop below stops it from generating any more.
         for rule_id in &self.alert_rules {
             if let Err(error) = Self::retry(&format!("alerts for rule {rule_id}"), || {
                 self.close_marker_alerts(rule_id)
@@ -1112,10 +1048,6 @@ impl LiveCleanup {
             }
         }
 
-        // A remaining dashboard may still refer to a tracked data view. A
-        // failed default restore may leave a tracked view as the active
-        // default. Either failure retains every dependent view and index for a
-        // later Drop retry rather than leaving broken shared-space state.
         let mut content_dependencies_clean = true;
         for dashboard in &self.dashboards {
             if let Err(error) = Self::retry(&format!("dashboard {dashboard}"), || {
@@ -1158,9 +1090,6 @@ impl LiveCleanup {
                 failures.push(error);
             }
         }
-        // The list deletion above is the only supported CLI path that removes
-        // an item. Refuse a guard whose registered item lacks that parent,
-        // rather than silently claiming the item has a cleanup route.
         for (list_id, item_id) in &self.items {
             if !self.lists.contains(list_id) {
                 failures.push(format!(
@@ -1368,10 +1297,6 @@ fn marked_indices(profile: &Profile) -> TestResult<Vec<String>> {
     })
 }
 
-/// Open `elasticctl-live-*` marker alerts and `elasticctl-live-marker` cases
-/// must be zero at baseline and after cleanup. Closed marker alerts are
-/// tolerated: alerts have no delete API, so a closed residue row is inert
-/// (triage spec section 9).
 fn triage_residue_is_clean(open_marker_alerts: u64, marker_cases: u64) -> bool {
     open_marker_alerts == 0 && marker_cases == 0
 }
@@ -1385,16 +1310,10 @@ fn content_residue_is_clean(
     marker_dashboards == 0 && marker_data_views == 0 && current_default == original_default
 }
 
-/// Count queries set `track_total_hits: true`; a response without the total
-/// is malformed and cannot prove cleanup. `AlertPage` keeps this optional for
-/// ordinary searches whose callers do not request a count, so count contexts
-/// enforce the stronger contract here.
 fn required_alert_total(total: Option<u64>, context: &str) -> TestResult<u64> {
     total.ok_or_else(|| format!("{context}: decoding alerts response field `hits.total.value`"))
 }
 
-/// Count open alerts across every marker rule, not just one contract's rule:
-/// baseline verification must catch any live triage contract's leftovers.
 fn open_marker_alert_count(profile: &Profile) -> TestResult<u64> {
     let profile = profile.clone();
     let runtime = tokio::runtime::Runtime::new()
@@ -1792,8 +1711,6 @@ fn conformance_panic_keeps_private_detail_outside_the_class_marker() {
     assert_eq!(lines.next(), None);
 }
 
-/// A guard has to know every identity before a mutation starts, otherwise a
-/// panic between the remote write and the next statement leaks a live object.
 #[test]
 fn cleanup_guard_tracks_identities_registered_before_a_mutation() {
     let mut cleanup = LiveCleanup::for_test();
@@ -1803,8 +1720,6 @@ fn cleanup_guard_tracks_identities_registered_before_a_mutation() {
     cleanup.finished = true;
 }
 
-/// The triage contract registers a case and the rule whose alerts it must
-/// close, mirroring `rule()`/`list()`'s registered-before-mutation contract.
 #[test]
 fn cleanup_guard_tracks_triage_identities_registered_before_a_mutation() {
     let mut cleanup = LiveCleanup::for_test();
@@ -2343,9 +2258,6 @@ async fn cleanup_keeps_an_index_when_its_data_view_delete_fails() {
     );
 }
 
-/// Open marker alerts and marker cases must both be zero; a closed marker
-/// alert is not a valid input to this function at all (see comment on
-/// `triage_residue_is_clean`), so it has no row in this table.
 #[test]
 fn triage_residue_is_clean_truth_table() {
     assert!(triage_residue_is_clean(0, 0));
@@ -2354,9 +2266,6 @@ fn triage_residue_is_clean_truth_table() {
     assert!(!triage_residue_is_clean(3, 2));
 }
 
-/// A count request sets `track_total_hits: true`, so a successful response
-/// without `hits.total.value` is malformed. Treating the missing count as
-/// zero would let standalone live cleanup certify unknown residue as clean.
 #[tokio::test(flavor = "multi_thread")]
 async fn open_marker_alert_count_refuses_a_response_without_total() {
     let server = MockServer::start().await;
@@ -2599,7 +2508,6 @@ fn exception_crud_and_bundle_round_trip_preserve_a_marked_list() {
     let list_id = unique_name("exceptions");
     let item_id = unique_name("exception-item");
     let mut cleanup = LiveCleanup::new(config.clone(), profile);
-    // Register before the import can create either object.
     cleanup.list(list_id.clone());
     cleanup.item(list_id.clone(), item_id.clone());
 
@@ -2736,7 +2644,6 @@ fn a_stale_exception_pointer_is_observed_repaired_and_rewritten_on_import() {
     let rule_id = unique_name("pointer-rule");
     let index = unique_name("pointer-index");
     let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
-    // Every registration precedes its create/import operation.
     cleanup.list(list_id.clone());
     cleanup.item(list_id.clone(), item_id.clone());
     cleanup.rule(rule_id.clone());
@@ -3027,8 +2934,6 @@ fn source_defaults_keep_custom_rules_and_allow_selected_prebuilt_rules() {
     conclude(result, &mut cleanup, baseline);
 }
 
-/// Find the canonical export line containing `rule_id`.
-/// Export writes one canonical rule per line, with sorted keys and no trailer.
 fn rule_line_in_export(path: &Path, rule_id: &str) -> TestResult<String> {
     let body =
         std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
@@ -3677,9 +3582,6 @@ fn a_rule_survives_a_create_export_import_round_trip() {
     conclude(result, &mut cleanup, baseline);
 }
 
-/// Seed three marker-scoped documents and read them back through the ES|QL and
-/// Query DSL production paths. The index uses the `elasticctl-live-` prefix so
-/// the cleanup audit catches any leak.
 fn search_probe(profile: &Profile, index: &str) -> TestResult {
     let profile = profile.clone();
     let index = index.to_string();
@@ -3794,19 +3696,9 @@ fn search_reads_marked_documents_through_esql_and_dsl() {
     conclude(result, &mut cleanup, baseline);
 }
 
-/// ~5-minute alert budget, the recorder's proven cadence
-/// (`xtask/src/main.rs`'s `ALERT_POLL_ATTEMPTS`/`ALERT_POLL_INTERVAL`).
 const TRIAGE_POLL_ATTEMPTS: u32 = 30;
 const TRIAGE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Seed a marker index, enable a marker rule over it, wait for the alert it
-/// generates, then drive every shipped alerts/cases plan-apply pair over
-/// that one alert: by-id and query-scoped status transitions, tags,
-/// assignment, and a full case round trip that attaches, comments, closes,
-/// and deletes. `cleanup.rule(rule_id)`/`cleanup.alert_rule(rule_id)` and
-/// `cleanup.index(index)` plus the case's exact title/tag cleanup scope are
-/// registered by the caller before this runs; `cleanup.case(id)` is added
-/// immediately once the create response supplies the id.
 fn triage_probe(
     profile: &Profile,
     index: &str,
@@ -3824,7 +3716,6 @@ fn triage_probe(
         let transport = Transport::new(&profile)
             .map_err(|e| format!("building triage transport: {}", e.message))?;
 
-        // 1. Seed three marker-scoped documents the marker rule will match.
         for seq in 1..=3_i64 {
             transport
                 .post_absolute_es(
@@ -3840,7 +3731,6 @@ fn triage_probe(
                 .map_err(|e| format!("seeding triage document {seq}: {}", e.message))?;
         }
 
-        // 2. Create the marker rule, enabled, over the seeded index.
         let rule_body = json!({
             "rule_id": rule_id,
             "name": rule_id,
@@ -3862,7 +3752,6 @@ fn triage_probe(
             .await
             .map_err(|e| format!("creating triage marker rule: {}", e.message))?;
 
-        // 3. Poll for the alert the marker rule generates.
         let mut alert_id: Option<String> = None;
         for attempt in 0..TRIAGE_POLL_ATTEMPTS {
             let page = elasticctl_api::alerts::search(
@@ -3892,7 +3781,6 @@ fn triage_probe(
             )
         })?;
 
-        // 4. By-id transitions: open -> acknowledged -> closed.
         let plan = elasticctl_api::alerts_ops::plan_status_by_ids(
             &transport,
             std::slice::from_ref(&alert_id),
@@ -3927,7 +3815,6 @@ fn triage_probe(
             ));
         }
 
-        // 5. Query-scoped transitions: re-open, then close again.
         let query = json!({"term": {"kibana.alert.rule.rule_id": rule_id}});
         let plan = elasticctl_api::alerts_ops::plan_status_by_query(
             &transport,
@@ -3977,7 +3864,6 @@ fn triage_probe(
             return Err(format!("close by query must have no failures: {report:?}"));
         }
 
-        // 6. Tag and untag.
         let plan = elasticctl_api::alerts_ops::plan_tags(
             &transport,
             std::slice::from_ref(&alert_id),
@@ -4010,8 +3896,6 @@ fn triage_probe(
             ));
         }
 
-        // 7. Resolve an activated profile and assign/unassign it. This also
-        // exercises the per-flavor profile-suggest route switch.
         let flavor = transport
             .capabilities()
             .await
@@ -4050,7 +3934,6 @@ fn triage_probe(
             return Err(format!("unassign must update exactly 1 alert: {report:?}"));
         }
 
-        // 8. Case round trip: create, attach, comment, close, delete.
         let plan = elasticctl_api::cases_ops::plan_create(
             &transport,
             &case_title,
@@ -4136,10 +4019,6 @@ fn triage_probe(
             Err(e) => return Err(format!("verifying case delete: {}", e.message)),
         }
 
-        // 9. Final sweep: close every straggler alert this rule produced and
-        // confirm none stay open. Cleanup's rule deletion disables the rule,
-        // so one in-flight execution may still land an alert after step 5's
-        // close; this absorbs that race.
         elasticctl_api::alerts::status_by_query(
             &transport,
             &json!({"term": {"kibana.alert.rule.rule_id": rule_id}}),
@@ -4196,7 +4075,6 @@ fn triage_transitions_alerts_and_cases_and_leaves_only_closed_residue() {
     let rule_id = unique_name("triage-rule");
     let case_title = unique_name("case");
     let mut cleanup = LiveCleanup::new(config.clone(), profile.clone());
-    // Registered before triage_probe can create either object.
     cleanup.index(index.clone());
     cleanup.rule(rule_id.clone());
     cleanup.alert_rule(rule_id.clone());
@@ -4213,7 +4091,6 @@ fn triage_transitions_alerts_and_cases_and_leaves_only_closed_residue() {
 async fn cleanup_rule_delete_never_resolves_another_rules_display_name() {
     let server = MockServer::start().await;
     let gone = "elasticctl-live-gone-rule";
-    // A selector lookup would find this unrelated rule by its display name.
     Mock::given(method("GET"))
         .and(path("/api/detection_engine/rules/_find"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -4236,7 +4113,6 @@ async fn cleanup_rule_delete_never_resolves_another_rules_display_name() {
     let mut cleanup = LiveCleanup::new(PathBuf::from("unused"), profile);
     cleanup.rule(gone);
     let result = tokio::task::spawn_blocking(move || {
-        // Keep a failing implementation's Drop from adding another trace.
         cleanup.finished = true;
         cleanup.clean()
     })

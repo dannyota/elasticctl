@@ -317,7 +317,6 @@ async fn mixed_session_mutations_reject_before_reads_and_audit() {
     let id = common::plan(&mut h).await;
     let meta = json!({"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}});
     let baseline = common::call(&mut h, "rules_get", json!({"selector":"r"}), json!({})).await;
-    // Read calls retain the initialized session behavior despite request metadata.
     let r = common::call(&mut h, "rules_get", json!({"selector":"r"}), meta.clone()).await;
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(r.get("error").is_none(), "{r}");

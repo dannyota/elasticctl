@@ -196,7 +196,6 @@ pub(super) fn run(
             org.username = None;
             org.password = None;
             let org = safe(Transport::new(&org))?;
-            // Start from a disabled rule, so an enable is a real change and not a skip.
             toggle(t, cleanup, id, false).await?;
             let plan = safe(rules_ops::plan_set_enabled(t, &[id.into()], true).await)?;
             exact_targets(&plan.targets, &[id.into()])?;

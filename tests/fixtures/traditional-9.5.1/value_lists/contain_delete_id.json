@@ -1,0 +1,18 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "contain_delete_id",
+  "response": {
+    "id": "elasticctl-fixture-value-list-id-13-item-0",
+    "type": "ip_range",
+    "list_id": "elasticctl-fixture-value-list-id-13",
+    "value": "10.0.0.5/32",
+    "@timestamp": "2026-01-01T00:00:00.000Z",
+    "updated_by": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "created_by": "REDACTED",
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "_version": "WzEyLDFd"
+  }
+}

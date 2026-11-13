@@ -1,6 +1,3 @@
-//! Data readiness of one rule: whether its index patterns resolve, whether
-//! its data view exists, and whether its related Fleet packages are installed
-//! and used. Reads run one at a time in a fixed order with fixed caps.
 use super::{
     MAX_PACKAGES, MAX_PATTERNS, Part, SkipReason, degrade, is_fatal, is_path_segment,
     snapshot_by_selector,
@@ -16,13 +13,9 @@ use elasticctl_core::{Error, ErrorKind, Result, Transport, urlencode};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// The longest index pattern sent to Elasticsearch, in UTF-8 bytes.
 pub const PATTERN_BYTES: usize = 1_024;
-/// The longest package name sent to Fleet. The grammar is ASCII, so this is
-/// both characters and bytes.
 pub const PACKAGE_NAME_BYTES: usize = 128;
 
-/// Where the rule takes its index patterns from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexSource {
     Index,
@@ -41,7 +34,6 @@ pub struct RuleDataView {
 #[derive(Debug)]
 pub struct DataViewFacts {
     pub count: usize,
-    /// Present only when the index source is a data view.
     pub rule_data_view: Option<RuleDataView>,
 }
 
@@ -57,11 +49,8 @@ pub enum PatternState {
 pub struct PatternRow {
     pub pattern: String,
     pub state: PatternState,
-    /// Indices, aliases, and data streams. Present for `Matches` and `NoMatch`.
     pub counts: Option<(u64, u64, u64)>,
-    /// Present only for an `Unresolved` row whose read failed.
     pub error: Option<Error>,
-    /// Present only when the data view list was read.
     pub data_view_ids: Option<Vec<String>>,
 }
 
@@ -82,7 +71,6 @@ pub struct PackageUse {
 #[derive(Debug)]
 pub struct PackageRow {
     pub package: String,
-    /// The version range the rule requires.
     pub version: Option<String>,
     pub status: std::result::Result<PackageUse, Error>,
 }
@@ -103,7 +91,6 @@ pub struct Readiness {
     pub integrations: Part<IntegrationFacts>,
 }
 
-/// Static finding codes, in output order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadinessFinding {
     RuleDisabled,
@@ -117,16 +104,12 @@ pub enum ReadinessFinding {
     IntegrationsTruncated,
 }
 
-/// The index source with the values the later reads need.
 enum Source {
     Index(Vec<String>),
     DataView(String),
     None,
 }
 
-/// Read one rule and report whether it can see data. The rule read is
-/// primary; every later read is a part. At most 29 requests: 3 for the rule,
-/// 1 data view list, 16 patterns, 1 policy page, and 8 package reads.
 pub async fn rule_readiness(t: &Transport, selector: &str) -> Result<Readiness> {
     let rule = snapshot_by_selector(t, selector).await?.rule;
     let source = source(&rule);
@@ -228,8 +211,6 @@ fn rule_data_view(list: &[DataViewSummary], id: &str) -> RuleDataView {
     }
 }
 
-/// Sorted ids of the data views whose title, split on `,`, holds `pattern`
-/// as a whole component.
 fn data_view_ids(views: &[DataViewSummary], pattern: &str) -> Vec<String> {
     let mut ids = views
         .iter()
@@ -241,9 +222,6 @@ fn data_view_ids(views: &[DataViewSummary], pattern: &str) -> Vec<String> {
     ids
 }
 
-/// Whether a pattern may become one URL path segment. The empty string,
-/// `.`, and `..` are refused because URL parsing removes dot segments and
-/// would move the request off its prefix; the rest bounds what is sent.
 fn sendable_pattern(pattern: &str) -> bool {
     !pattern.trim().is_empty()
         && pattern.len() <= PATTERN_BYTES
@@ -295,7 +273,6 @@ async fn resolve_patterns(
     })
 }
 
-/// One `_resolve/index` read, reduced to three counts. No name is kept.
 async fn resolve(t: &Transport, pattern: &str) -> Result<(u64, u64, u64)> {
     let body = t
         .get_absolute_es(&format!("/_resolve/index/{}", urlencode(pattern)))
@@ -309,8 +286,6 @@ async fn resolve(t: &Transport, pattern: &str) -> Result<(u64, u64, u64)> {
     Ok((count("indices")?, count("aliases")?, count("data_streams")?))
 }
 
-/// Whether a package name is 1 to 128 characters from `a-z`, `0-9`, `_`,
-/// and `-`. This also refuses `.`, `..`, and every reserved URL byte.
 fn is_package_name(name: &str) -> bool {
     (1..=PACKAGE_NAME_BYTES).contains(&name.len())
         && name
@@ -323,7 +298,6 @@ struct RelatedPackages {
     entries: Vec<(String, Option<String>)>,
 }
 
-/// Count distinct packages and keep the first eight in rule order.
 async fn related_packages(rule: &Rule) -> Result<RelatedPackages> {
     let invalid = || Error::new(ErrorKind::Http, "invalid related integrations on the rule");
     let entries = match rule.as_map().get("related_integrations") {
@@ -401,7 +375,6 @@ async fn integrations(t: &Transport, rule: &Rule) -> Result<Part<IntegrationFact
     }))
 }
 
-/// One package row. The outer error is fatal; the inner one is the row's.
 async fn package_use(
     t: &Transport,
     package: &str,
@@ -428,8 +401,6 @@ async fn package_use(
 }
 
 impl Readiness {
-    /// Findings in their fixed order, each at most once. Each comes from an
-    /// `ok` part or row only.
     pub fn findings(&self) -> Vec<ReadinessFinding> {
         use ReadinessFinding::*;
         let mut findings = Vec::new();
@@ -497,7 +468,6 @@ impl Readiness {
         findings
     }
 
-    /// True when a part or row is unavailable, or a pattern is unresolved.
     pub fn partial(&self) -> bool {
         let patterns = match &self.patterns {
             Part::Ok(facts) => facts

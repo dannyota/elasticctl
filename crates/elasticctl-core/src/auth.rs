@@ -1,5 +1,3 @@
-//! Credential selection and `Authorization` header construction.
-
 use crate::config::Profile;
 use crate::error::{Error, ErrorKind, Result};
 use base64::Engine as _;
@@ -7,17 +5,11 @@ use base64::engine::general_purpose::STANDARD;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Credential {
-    /// An Elastic API key, already Base64-encoded as `id:key`.
     ApiKey(String),
-    Basic {
-        username: String,
-        password: String,
-    },
+    Basic { username: String, password: String },
 }
 
 impl std::fmt::Debug for Credential {
-    /// Redacts keys and passwords. Derived `Debug` could expose them in logs
-    /// or panic messages.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Credential::ApiKey(_) => f.write_str("Credential::ApiKey(***)"),
@@ -32,8 +24,6 @@ impl std::fmt::Debug for Credential {
 }
 
 impl Credential {
-    /// Prefer an API key when both credential types are configured. It is the
-    /// documented default and works on all deployment flavors.
     pub fn from_profile(p: &Profile) -> Result<Credential> {
         if let Some(key) = &p.api_key
             && !key.trim().is_empty()
@@ -52,8 +42,6 @@ impl Credential {
         }
     }
 
-    /// Whether the profile has a usable credential. Reuse credential selection
-    /// so this rule does not diverge from `from_profile`.
     pub fn is_configured(profile: &Profile) -> bool {
         Self::from_profile(profile).is_ok()
     }
@@ -100,7 +88,6 @@ mod tests {
             username: "elastic".into(),
             password: "changeme".into(),
         };
-        // Base64 of "elastic:changeme".
         assert_eq!(c.header_value(), "Basic ZWxhc3RpYzpjaGFuZ2VtZQ==");
     }
 

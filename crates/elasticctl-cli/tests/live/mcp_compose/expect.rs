@@ -1,7 +1,3 @@
-//! Expected values for each call of design section 12.3. Every function
-//! first runs the exact-field shape check, then compares values with the
-//! objects this run provisioned.
-
 use std::collections::BTreeSet;
 
 use serde_json::Value;
@@ -12,16 +8,12 @@ use super::shape;
 use crate::mcp_smoke::validate_case_row;
 use crate::{LIVE_TAG, TestResult};
 
-/// Rules a default `detection_coverage` call must read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Corpus {
-    /// The lab after the fill.
     Exact(u64),
-    /// Serverless and Hosted: at least the prebuilt rules.
     AtLeast(u64),
 }
 
-/// What the call phase compares against.
 pub(crate) struct Expected<'a> {
     pub(crate) ids: &'a ComposeIds,
     pub(crate) provisioned: &'a Provisioned,
@@ -66,7 +58,6 @@ fn findings(content: &Value) -> Vec<&str> {
     strings(at(content, "/data/findings"))
 }
 
-/// The alert projection holds the owned alert of `rule_id`.
 fn owned_alert(alert: &Value, alert_id: &str, rule_id: &str) -> TestResult {
     let source = &alert["source"];
     require(
@@ -78,7 +69,6 @@ fn owned_alert(alert: &Value, alert_id: &str, rule_id: &str) -> TestResult {
     )
 }
 
-/// The rule context of an executed, enabled marker rule.
 fn executed_rule(rule: &Value, rule_id: &str) -> TestResult {
     require(
         rule["rule_id"] == rule_id && rule["enabled"] == true && rule["execution"].is_object(),
@@ -86,7 +76,6 @@ fn executed_rule(rule: &Value, rule_id: &str) -> TestResult {
     )
 }
 
-/// The exception rows of rule W: five lists in rule order, all `ok`.
 fn work_lists(coverage: &Value, ids: &ComposeIds) -> TestResult {
     let rows = coverage["lists"].as_array().map_or(&[][..], Vec::as_slice);
     require(
@@ -372,7 +361,6 @@ fn counts(rows: &[Value], key: &str) -> Option<(u64, u64)> {
     })
 }
 
-/// `source: custom` for one grouping: the marker keys with their counts.
 pub(crate) fn coverage_custom(content: &Value, group_by: &str, e: &Expected<'_>) -> TestResult {
     shape::detection_coverage(content)?;
     let ids = e.ids;
@@ -414,7 +402,6 @@ pub(crate) fn coverage_custom(content: &Value, group_by: &str, e: &Expected<'_>)
     )
 }
 
-/// A default call. Returns the rules it read.
 pub(crate) fn coverage_default(content: &Value, e: &Expected<'_>) -> TestResult<u64> {
     shape::detection_coverage(content)?;
     let rules = at(content, "/data/summary/rules")
@@ -435,12 +422,10 @@ pub(crate) fn coverage_default(content: &Value, e: &Expected<'_>) -> TestResult<
     Ok(rules)
 }
 
-/// Pages a corpus read sends: `ceil(rules / 500)`.
 pub(crate) fn corpus_pages(rules: u64) -> u64 {
     rules.div_ceil(500)
 }
 
-/// A threat-filtered `rules_list` scoped to the marker tag: rule W only.
 pub(crate) fn rules_list_threat(content: &Value, e: &Expected<'_>) -> TestResult {
     shape::rules_list(content, 10)?;
     let rows = at(content, "/data/rules");

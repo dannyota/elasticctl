@@ -1,5 +1,3 @@
-//! Filesystem operations and path checks for pull transactions.
-
 use super::{PullLock, StagedFile};
 use elasticctl_core::{Error, ErrorKind, Result};
 use std::collections::BTreeSet;
@@ -9,8 +7,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-/// The mutation points are isolated so failure tests can verify that recovery
-/// works across every rename boundary without a special filesystem.
 pub(super) trait FileOps {
     fn write(&self, path: &Path, bytes: &[u8], append: bool) -> io::Result<()>;
     fn sync_file(&self, path: &Path) -> io::Result<()>;
@@ -45,8 +41,6 @@ impl FileOps for FsFileOps {
         }
         #[cfg(windows)]
         {
-            // Windows does not provide a directory fsync through `File`.
-            // Every file payload and journal append is still synced above.
             let _ = path;
             Ok(())
         }
@@ -87,7 +81,7 @@ pub(super) fn validate_relative(relative: &Path) -> Result<()> {
     let Some(Component::Normal(first)) = components.next() else {
         return invalid_relative(relative);
     };
-    if first != "rules" && first != "exceptions" {
+    if first != "rules" && first != "exceptions" && first != "value-lists" {
         return invalid_relative(relative);
     }
     let mut has_file_component = false;
@@ -112,7 +106,7 @@ fn invalid_relative(relative: &Path) -> Result<()> {
     Err(Error::new(
         ErrorKind::Error,
         format!(
-            "pull replacement path {} must be a relative rules/ or exceptions/ file",
+            "pull replacement path {} must be a relative rules/, exceptions/, or value-lists/ file",
             relative.display()
         ),
     ))

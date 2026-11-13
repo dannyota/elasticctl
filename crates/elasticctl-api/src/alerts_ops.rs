@@ -1,6 +1,3 @@
-//! Alert orchestration: filter construction, list/get, and the triage
-//! mutation plans behind the CLI guard.
-
 mod recheck;
 pub use recheck::{AlertFacet, observe_alerts};
 mod observed;
@@ -11,27 +8,17 @@ use crate::{profiles, selection};
 use elasticctl_core::{Error, ErrorKind, Result, Transport};
 use serde_json::{Value, json};
 
-/// The `alerts list` filter set. Every field composes into one boolean query
-/// over the measured `kibana.alert.*` fields (triage spec section 4).
 #[derive(Debug, Clone, Default)]
 pub struct AlertFilter {
     pub status: Option<AlertStatus>,
     pub severity: Option<String>,
-    /// A rule name or `rule_id`, resolved through the standard name-or-id
-    /// resolution before filtering on `kibana.alert.rule.rule_id`.
     pub rule: Option<String>,
     pub tag: Option<String>,
-    /// A username or `uid:<profile_uid>`, resolved to a profile uid.
     pub assignee: Option<String>,
-    /// A duration (`90m`, `24h`, `7d`) or an ISO timestamp.
     pub since: Option<String>,
-    /// Substring match on the rule name and reason text.
     pub search: Option<String>,
 }
 
-/// `--since` as a range clause: `<digits><s|m|h|d|w>` becomes `now-<dur>`;
-/// anything else passes through verbatim for the server to validate as a
-/// timestamp or date-math expression.
 pub fn since_clause(since: &str) -> Value {
     let bytes = since.as_bytes();
     let is_duration = bytes.len() >= 2
@@ -45,8 +32,6 @@ pub fn since_clause(since: &str) -> Value {
     json!({"range": {"@timestamp": {"gte": gte}}})
 }
 
-/// Newest first, with `kibana.alert.uuid` as the total-order tiebreaker
-/// `search_after` needs.
 pub fn default_sort() -> Value {
     json!([
         {"@timestamp": {"order": "desc"}},
@@ -54,12 +39,6 @@ pub fn default_sort() -> Value {
     ])
 }
 
-/// Escape `\`, `*`, and `?` so `--search` text cannot inject its own
-/// Elasticsearch `wildcard` metacharacters into the substring match. Escape
-/// backslashes first, or an inserted `\*`/`\?` escape would itself be
-/// re-escaped. Mirrors `rules::kql_escape_wildcard`'s ordering, though this
-/// value sits in a plain Query DSL string, not a quoted KQL literal, so no
-/// quote-escaping applies here.
 fn escape_wildcard(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -67,8 +46,6 @@ fn escape_wildcard(value: &str) -> String {
         .replace('?', "\\?")
 }
 
-/// Compose the filter into one boolean query, resolving `rule` and
-/// `assignee` first. An empty filter is an explicit `match_all`.
 pub async fn build_query(t: &Transport, f: &AlertFilter) -> Result<Value> {
     let mut filter = Vec::new();
     if let Some(status) = f.status {
@@ -112,8 +89,6 @@ pub struct AlertList {
     pub truncated: bool,
 }
 
-/// One bounded peek: `limit + 1` rows so truncation is observable without a
-/// second request.
 pub async fn list(t: &Transport, f: &AlertFilter, limit: usize) -> Result<AlertList> {
     let query = build_query(t, f).await?;
     let body = json!({
@@ -132,14 +107,11 @@ pub async fn list(t: &Transport, f: &AlertFilter, limit: usize) -> Result<AlertL
     })
 }
 
-/// The `--out` path: page the filtered set fully, or stop at `limit` rows
-/// when the caller passes one (matching `search dsl --out --limit`).
 pub async fn export(t: &Transport, f: &AlertFilter, limit: Option<usize>) -> Result<Vec<AlertHit>> {
     let query = build_query(t, f).await?;
     alerts::search_all(t, &query, &default_sort(), limit).await
 }
 
-/// `alerts get`: an `_id`-filtered search returning one document.
 pub async fn get_one(t: &Transport, alert_id: &str) -> Result<AlertHit> {
     let body = json!({"query": {"ids": {"values": [alert_id]}}, "size": 1});
     let page = alerts::search(t, &body).await?;
@@ -151,7 +123,6 @@ pub async fn get_one(t: &Transport, alert_id: &str) -> Result<AlertHit> {
     })
 }
 
-/// One explicitly named alert, resolved before a preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAlert {
     pub id: String,
@@ -159,16 +130,9 @@ pub struct ResolvedAlert {
     pub status: String,
 }
 
-/// `_source` fields `resolve_ids` requests: only what a mutation preview
-/// renders (rule name and current workflow status), not the whole document.
-/// `pub` so the fixture recorder can send the identical production body
-/// instead of a hand-rolled approximation (triage spec section 10).
 pub const RESOLVE_SOURCE_FIELDS: &[&str] =
     &["kibana.alert.rule.name", "kibana.alert.workflow_status"];
 
-/// Alert documents store dotted field names as flat `_source` keys; older
-/// pipelines may nest them. Read both shapes. `pub(crate)` so `cases_ops`
-/// shares this instead of carrying its own copy (finding 11).
 pub(crate) fn source_str<'a>(source: &'a Value, key: &str) -> Option<&'a str> {
     if let Some(v) = source.get(key).and_then(Value::as_str) {
         return Some(v);
@@ -181,7 +145,6 @@ fn workflow_status(source: &Value) -> &str {
     source_str(source, "kibana.alert.workflow_status").unwrap_or("unknown")
 }
 
-/// Build the search body for explicit alert IDs.
 fn resolve_body(unique: &[String]) -> Value {
     json!({
         "query": {"ids": {"values": unique}},
@@ -190,9 +153,6 @@ fn resolve_body(unique: &[String]) -> Value {
     })
 }
 
-/// Resolve explicit ids to alerts. Fail-closed: every id must resolve or the
-/// command refuses to proceed on the partial set (main spec section 6.3).
-/// Duplicate ids are collapsed, preserving first-seen order.
 async fn resolve_ids(t: &Transport, ids: &[String]) -> Result<Vec<ResolvedAlert>> {
     let mut unique: Vec<String> = Vec::with_capacity(ids.len());
     for id in ids {
@@ -230,7 +190,6 @@ fn alert_noun(n: usize) -> &'static str {
     if n == 1 { "alert" } else { "alerts" }
 }
 
-/// `1214` → `1,214`, matching the preview format in triage spec section 6.
 fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -261,9 +220,6 @@ pub async fn plan_status_by_ids(
     Ok(plan_status_by_ids_observed(t, ids, status, reason).await?.0)
 }
 
-/// The mutation report the CLI renders. `failed` is elasticctl's judgment —
-/// route failures plus, under `--conflicts abort`, version conflicts — and
-/// drives the non-zero exit; the verbatim counters render beside it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct StatusReport {
     pub applied: bool,
@@ -327,11 +283,6 @@ pub struct QueryStatusPlan {
     pub preview_details: Vec<String>,
 }
 
-/// Refuse an empty `{}` query: it would mutate every alert. Called from both
-/// `plan_status_by_query` and `apply_status_by_query` — `QueryStatusPlan`'s
-/// fields and `apply_status_by_query` are both public, so an `-api` consumer
-/// that builds a plan directly (skipping `plan_status_by_query`, as the
-/// planned MCP server might) must not be able to bypass the check.
 fn require_scoped_query(query: &Value) -> Result<()> {
     let obj = query
         .as_object()
@@ -346,8 +297,6 @@ fn require_scoped_query(query: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the operator's query to a count and a sample so the implicit set
-/// is visible before it is mutated (triage spec section 6).
 pub async fn plan_status_by_query(
     t: &Transport,
     query: Value,
@@ -410,7 +359,6 @@ pub async fn apply_status_by_query(t: &Transport, plan: &QueryStatusPlan) -> Res
     status_report(plan.status, outcome, plan.conflicts)
 }
 
-/// The tags/assignees report: the same counters without a target status.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct EditReport {
     pub applied: bool,
@@ -434,11 +382,6 @@ fn edit_report(outcome: SignalsOutcome) -> Result<EditReport> {
     })
 }
 
-/// Refuse an empty target list before any resolution or request. The CLI's
-/// `required = true` covers the `alerts tag`/`assign` invocations, but
-/// `plan_tags` and `plan_assign` are public, so an `-api` consumer (the
-/// planned MCP server) calling them with `&[]` must not be able to reach a
-/// `{"ids": []}` POST that reports `applied: true, total: 0`.
 fn require_targets(ids: &[String]) -> Result<()> {
     if ids.is_empty() {
         return Err(Error::new(ErrorKind::Error, "pass at least one alert id"));
@@ -503,7 +446,6 @@ pub async fn apply_tags(t: &Transport, plan: &TagsPlan) -> Result<EditReport> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssignPlan {
     pub targets: Vec<String>,
-    /// Resolved profile uids.
     pub add: Vec<String>,
     pub remove: Vec<String>,
     pub preview_action: String,

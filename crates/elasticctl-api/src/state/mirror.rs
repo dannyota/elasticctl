@@ -1,5 +1,3 @@
-//! Reading and writing the local mirror: rules and exception lists.
-
 use super::reports::Mirror;
 use crate::codec::Format;
 use crate::model::{ExceptionItem, ExceptionList, Rule};
@@ -8,19 +6,13 @@ use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// Read the local mirror under `dir`: the rules plus the exception lists they
-/// reference.
-///
-/// A rule file holds a rule followed by any `rule_default` containers that
-/// belong to it. Those containers are inlined in the rule file but are still
-/// part of the mirror: `rule_default` is an ordinary container, so it must
-/// round-trip through `diff` and `push` like any other referenced list.
 pub fn read_mirror(dir: &Path) -> Result<Mirror> {
-    refuse_value_lists(dir)?;
     let mut mirror = Mirror {
         rules: Vec::new(),
         lists: Vec::new(),
         items: Vec::new(),
+        value_lists: Vec::new(),
+        has_value_lists: false,
     };
 
     let rules_path = super::rules_dir(dir);
@@ -52,27 +44,81 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
         }
     }
 
+    read_value_lists(dir, &mut mirror)?;
     normalize::sort_rules(&mut mirror.rules);
     normalize::sort_lists(&mut mirror.lists);
     normalize::sort_items(&mut mirror.items);
     Ok(mirror)
 }
 
-/// A 0.10 mirror holds `value-lists/`, which 0.9 cannot read. Only a missing
-/// entry passes; any other result, including an unreadable one, stops the
-/// command rather than letting it act on a mirror it does not understand.
-pub(crate) fn refuse_value_lists(dir: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(dir.join("value-lists")) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Ok(_) => Err(Error::new(
-            ErrorKind::Unsupported,
-            "this mirror holds value-lists/, which needs elasticctl 0.10 or later",
-        )),
-        Err(e) => Err(Error::new(
-            ErrorKind::Error,
-            format!("checking the mirror for value-lists/: {e}"),
-        )),
+fn read_value_lists(dir: &Path, mirror: &mut Mirror) -> Result<()> {
+    let root = dir.join("value-lists");
+    let Some(paths) = mirror_root_files(&root)? else {
+        return Ok(());
+    };
+    mirror.has_value_lists = true;
+    let mut stems = std::collections::BTreeSet::new();
+    for path in &paths {
+        if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("yaml" | "txt")
+        ) {
+            let sibling = path.with_extension(if path.extension().unwrap() == "yaml" {
+                "txt"
+            } else {
+                "yaml"
+            });
+            if !paths.contains(&sibling) {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    format!(
+                        "value-list pair {} is missing {}",
+                        path.display(),
+                        sibling.display()
+                    ),
+                ));
+            }
+            stems.insert(path.file_stem().unwrap().to_owned());
+        }
     }
+    for stem in stems {
+        let yaml = root.join(format!("{}.yaml", stem.to_string_lossy()));
+        let text = root.join(format!("{}.txt", stem.to_string_lossy()));
+        let stem = stem
+            .to_str()
+            .ok_or_else(|| Error::new(ErrorKind::Error, "value-list file stem must be UTF-8"))?;
+        let yaml_body = read_regular_file(&yaml)?;
+        let text_body = read_regular_file(&text)?;
+        let validation = crate::value_lists::validate_local_pair(
+            stem,
+            yaml_body.as_bytes(),
+            Some(text_body.as_bytes()),
+        );
+        match validation.pair {
+            Some(pair) => mirror.value_lists.push(pair),
+            None => {
+                return Err(validation
+                    .findings
+                    .refusals
+                    .into_iter()
+                    .next()
+                    .expect("invalid pair has a refusal"));
+            }
+        }
+    }
+    let collisions = crate::value_lists::stem_collisions(
+        mirror
+            .value_lists
+            .iter()
+            .map(|p| (p.container.id.as_str(), p.stem.as_str())),
+    );
+    if !collisions.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!("value-list filename collisions: {collisions:?}"),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_top_level_item(item: &ExceptionItem) -> Result<()> {
@@ -100,21 +146,11 @@ fn validate_top_level_item(item: &ExceptionItem) -> Result<()> {
     }
 }
 
-/// `read_mirror`'s rules, for the rules-only callers.
 pub fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     Ok(read_mirror(dir)?.rules)
 }
 
-/// The files in a mirror root directory, or `None` when the root is absent.
-///
-/// A root that exists but is a symlink or a non-directory fails closed, so an
-/// escaped mirror cannot start a destructive plan. The root check is a static
-/// `symlink_metadata`; `read_dir` cannot carry `O_NOFOLLOW`, so a concurrent
-/// swap of the root itself for a symlink is not guarded atomically. That swap
-/// already requires write access to the mirror directory, whose owner could
-/// edit the rule files directly, so the tighter boundary is the file read in
-/// `read_regular_file`.
-fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
+pub(super) fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(Error::new(
@@ -133,7 +169,6 @@ fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
     }
 }
 
-/// The files in a mirror directory that look like rule or list files.
 fn mirror_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)
@@ -147,9 +182,6 @@ fn mirror_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Classify one directory entry into a path to read, `None` to ignore, or an
-/// error. A read error, symlink, or directory on a recognized extension fails
-/// closed; unrecognized entries are ignored without opening them.
 fn mirror_entry_path(
     dir: &Path,
     entry: std::io::Result<std::fs::DirEntry>,
@@ -157,11 +189,12 @@ fn mirror_entry_path(
     let entry = entry
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", dir.display())))?;
     let path = entry.path();
-    if !super::is_rule_file(&path) {
+    if !super::is_rule_file(&path)
+        && !(dir.file_name().is_some_and(|name| name == "value-lists")
+            && path.extension().is_some_and(|ext| ext == "txt"))
+    {
         return Ok(None);
     }
-    // A recognized extension must be a regular file, never a symlink (which
-    // could escape the mirror) or a directory.
     let file_type = entry
         .file_type()
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
@@ -174,16 +207,8 @@ fn mirror_entry_path(
     Ok(Some(path))
 }
 
-/// Read a mirror file, refusing to follow a symlink.
-///
-/// On unix, `O_NOFOLLOW` makes the refusal atomic: a file swapped for a symlink
-/// between enumeration and read is rejected at the open, not after the read has
-/// already followed it. Elsewhere the refusal is a non-atomic
-/// `symlink_metadata` check, the same strength as the static check. This is the
-/// content boundary, so it must be as tight as the static
-/// `DirEntry::file_type()` check in `mirror_entry_path`.
 #[cfg(unix)]
-fn read_regular_file(path: &Path) -> Result<String> {
+pub(super) fn read_regular_file(path: &Path) -> Result<String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -198,7 +223,7 @@ fn read_regular_file(path: &Path) -> Result<String> {
 }
 
 #[cfg(not(unix))]
-fn read_regular_file(path: &Path) -> Result<String> {
+pub(super) fn read_regular_file(path: &Path) -> Result<String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
     if metadata.file_type().is_symlink() {
@@ -211,13 +236,6 @@ fn read_regular_file(path: &Path) -> Result<String> {
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))
 }
 
-/// Decode a rule file: one or more rules, optionally followed by the
-/// `rule_default` containers that belong to them, and any items a dropped
-/// export bundle carried.
-///
-/// NDJSON routes through `codec::decode_bundle`, so a `rules export` file
-/// (with its trailer and item lines) dropped into `rules/` decodes instead of
-/// failing, and items are never misfiled as containers.
 fn decode_rule_file(
     body: &str,
     format: Format,
@@ -234,9 +252,6 @@ fn decode_rule_file(
             let mut lists = Vec::new();
             let mut items = Vec::new();
             for value in values {
-                // Order matters, matching `codec::classify`: an item carries
-                // both `item_id` and `list_id`, so `item_id` must be tested
-                // before `list_id` or the item is misfiled as a container.
                 if value.get("rule_id").is_some() {
                     rules.push(Rule::from_value(value)?);
                 } else if value.get("item_id").is_some() {
@@ -255,8 +270,6 @@ fn decode_rule_file(
     }
 }
 
-/// Encode a rule file: the canonical rule, then its inline `rule_default`
-/// containers. The caller passes canonical objects.
 pub(crate) fn encode_rule_file(
     rule: &Rule,
     inline_lists: &[ExceptionList],
@@ -285,8 +298,6 @@ pub(crate) fn encode_rule_file(
     }
 }
 
-/// Encode one exception-list container (with its `items` array) as its own
-/// file. The caller passes a canonical container.
 pub(crate) fn encode_list_file(list: &ExceptionList, format: Format) -> Result<String> {
     match format {
         Format::Yaml => serde_yaml_ng::to_string(list.as_map())
@@ -321,8 +332,6 @@ fn decode_list_file(body: &str, format: Format) -> Result<ExceptionList> {
     ExceptionList::from_value(value)
 }
 
-/// Split a container's `items` array into items, removing it from the container
-/// so container drift compares containers, not their items.
 fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
     let items = match list.as_map_mut().remove("items") {
         None => return Ok(Vec::new()),
@@ -340,10 +349,6 @@ fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
         .into_iter()
         .map(|value| {
             let mut item = ExceptionItem::from_value(value)?;
-            // Key an item by its container, not its own body. An item that
-            // omits `namespace_type` (which defaults to "single") inside an
-            // `agnostic` container would otherwise group under the wrong key
-            // and reconcile as a deletion (spec 5.4).
             item.as_map_mut()
                 .insert("list_id".into(), Value::String(list_id.clone()));
             item.as_map_mut()
@@ -357,10 +362,6 @@ fn split_items(list: &mut ExceptionList) -> Result<Vec<ExceptionItem>> {
 mod tests {
     use super::*;
 
-    // The `Ok(None)` (unrecognized extension) and symlink/directory-rejection
-    // arms are covered by the `read_local_skips_non_rule_files...` test in
-    // `state/mod.rs` and the `#[cfg(unix)]` symlink tests in `tests/state.rs`;
-    // only the injected-error arm is reachable from a bare `io::Result`.
     #[test]
     fn mirror_entry_path_reports_an_entry_read_error_naming_the_directory() {
         let dir = Path::new("/mirror");

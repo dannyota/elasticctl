@@ -1,7 +1,3 @@
-//! Argument handling for the rules commands. Orchestration lives in
-//! `elasticctl_api::rules_ops`; this module resolves context, applies the
-//! guard, and hands the result to render.
-
 use crate::context::Context;
 use crate::guard::{self, Preview};
 use crate::resolve;
@@ -19,14 +15,8 @@ fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
         .map_err(|e| Error::new(ErrorKind::Error, format!("encoding report: {e}")))
 }
 
-/// Maximum matched documents returned with a preview.
 const MAX_SAMPLE: u32 = 100;
 
-/// Summary shown by `rules list`. Use `rules get` or `rules export` for full
-/// rule bodies.
-///
-/// An unreadable `rule_id` is a server anomaly. Flag it as
-/// `resolve::UNREADABLE_RULE_ID` instead of hiding it or failing the listing.
 fn summarize(r: &Rule) -> Value {
     json!({
         "rule_id": r.rule_id().unwrap_or(resolve::UNREADABLE_RULE_ID),
@@ -40,8 +30,6 @@ fn summarize(r: &Rule) -> Value {
 }
 
 pub async fn list(ctx: &Context, filter: &RuleFilter) -> Result<Value> {
-    // Check the credential first so a missing one names the profile instead
-    // of returning Transport's generic error.
     ctx.require_credential()?;
     let transport = ctx.transport().await?;
     let report = rules_ops::list(transport, filter).await?;
@@ -55,7 +43,6 @@ pub async fn get(ctx: &Context, selector: &str) -> Result<Value> {
     to_value(&rule)
 }
 
-/// Check a rule file without contacting a server.
 pub fn validate(path: &Path) -> Result<Value> {
     to_value(&rules_ops::validate(path)?)
 }
@@ -68,8 +55,6 @@ pub async fn set_enabled(ctx: &Context, selectors: &[String], enable: bool) -> R
         action: plan.preview_action.clone(),
         details: plan.preview_details.clone(),
     };
-    // Derive the guard path from the flag that selects the verb so it cannot
-    // name the wrong mutating command.
     let path = if enable {
         "rules enable"
     } else {
@@ -120,9 +105,6 @@ pub async fn export(
                 "failed": outcome.missing,
             }))
         }
-        // Spec 6.2: without `--out`, stdout is the rule file, verbatim under
-        // every `--format`. The body is not a report, so return it for `main`
-        // to write directly rather than routing it through `render::emit`.
         None => Ok(json!({"text": outcome.body, "failed": outcome.missing})),
     }
 }
@@ -133,9 +115,6 @@ pub async fn import(
     overwrite: bool,
     skip_existing: bool,
 ) -> Result<Value> {
-    // A dry run that only reads the file must not require a credential. Build
-    // the transport only for the --skip-existing read; the file itself is read
-    // in `plan_import` before any server call.
     let t = if skip_existing {
         ctx.require_credential()?;
         Some(ctx.transport().await?)
@@ -158,8 +137,6 @@ pub async fn import(
         }));
     }
 
-    // The upload always reaches the server. The --skip-existing read already
-    // built the transport; otherwise build it now.
     let t = match t {
         Some(t) => t,
         None => {
@@ -178,9 +155,6 @@ pub async fn import(
 }
 
 pub async fn preview(ctx: &Context, source: &str, invocations: u32, sample: u32) -> Result<Value> {
-    // Preview posts to the server for both local and stack rules. Check the
-    // credential first so a missing one names the profile, then the sample cap
-    // before building a transport.
     ctx.require_credential()?;
     if sample > MAX_SAMPLE {
         return Err(Error::new(
@@ -210,9 +184,6 @@ pub async fn prebuilt_install(ctx: &Context) -> Result<Value> {
     if guard::check(ctx, "rules prebuilt install", &preview) {
         to_value(&prebuilt::apply_install(t).await?)
     } else {
-        // The planned counts are named in the guard banner; the dry-run report
-        // records the total rules that would change, as the other guarded
-        // rules commands record their affected count.
         Ok(json!({
             "applied": false,
             "total": status.not_installed + status.not_updated,

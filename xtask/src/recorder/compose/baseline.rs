@@ -1,10 +1,3 @@
-//! What the target holds before the first write, and the audit that
-//! requires the same after cleanup.
-//!
-//! The same marker identity reads and inventories serve the preflight and
-//! the audit, so a check cannot be added to one and forgotten in the other.
-//! Only counts are kept; no rule, list, or index content is stored.
-
 use crate::diagnostics::{recording_error, safe_recording_transport_error};
 use crate::recorder::cases::require_no_marker_cases;
 use crate::recorder::compose::alert_search::{SearchError, open_session_alerts};
@@ -17,19 +10,16 @@ use crate::recorder::markers::{ALERT_PROBE_INDEX, ALERT_RULE_ID, ITEM_ID};
 use elasticctl_core::{ErrorKind, Transport};
 use serde_json::Value;
 
-/// The state the audit compares against.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Baseline {
     prebuilt_rules: u64,
     inventory: Inventory,
 }
 
-/// How many sample marker objects of each kind the target holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Inventory {
     rules: u64,
     lists: u64,
-    /// `None` when the target has no Elasticsearch URL to resolve against.
     indices: Option<u64>,
 }
 
@@ -60,8 +50,6 @@ impl Stage {
     }
 }
 
-/// Every fixed identity the step writes, with the read that proves it
-/// absent. Elasticsearch reads are marked.
 fn marker_identities() -> [(&'static str, String, bool); 7] {
     [
         (
@@ -105,8 +93,6 @@ async fn require_markers_absent(t: &Transport, stage: Stage) -> elasticctl_core:
     }
     match require_no_marker_cases(t).await {
         Ok(()) => Ok(()),
-        // The shared refusal carries no server text, but it names its own
-        // remediation; keep only the static fact here.
         Err(error) if error.http_status.is_none() && error.kind == ErrorKind::Error => {
             Err(stage.present("a marker case"))
         }
@@ -114,8 +100,6 @@ async fn require_markers_absent(t: &Transport, stage: Stage) -> elasticctl_core:
     }
 }
 
-/// Installed prebuilt rules, from the prebuilt status route. The body holds
-/// counters only, never rule content.
 async fn prebuilt_rules(t: &Transport, stage: Stage) -> elasticctl_core::Result<u64> {
     let status = t
         .get(PREBUILT_STATUS_PATH)
@@ -127,7 +111,6 @@ async fn prebuilt_rules(t: &Transport, stage: Stage) -> elasticctl_core::Result<
         .ok_or_else(|| recording_error("prebuilt status did not report rules_installed"))
 }
 
-/// The `total` of a `_find` page. The rows are never kept.
 async fn find_total(t: &Transport, path: &str, stage: Stage) -> elasticctl_core::Result<u64> {
     let page = t
         .get(path)
@@ -138,7 +121,6 @@ async fn find_total(t: &Transport, path: &str, stage: Stage) -> elasticctl_core:
         .ok_or_else(|| recording_error("a marker inventory page did not report total"))
 }
 
-/// The number of names a resolve answer holds.
 fn resolved_names(body: &Value) -> Option<u64> {
     ["indices", "aliases", "data_streams"]
         .iter()
@@ -147,7 +129,6 @@ fn resolved_names(body: &Value) -> Option<u64> {
         .map(|count| count as u64)
 }
 
-/// Count the sample marker rules, exception lists, and indices.
 async fn inventory(t: &Transport, stage: Stage) -> elasticctl_core::Result<Inventory> {
     let rules = find_total(t, &marker_rule_inventory(), stage).await?;
     let lists = find_total(t, &marker_list_inventory(), stage).await?;
@@ -170,8 +151,6 @@ async fn inventory(t: &Transport, stage: Stage) -> elasticctl_core::Result<Inven
     })
 }
 
-/// Prove every marker identity is absent, then capture the prebuilt count
-/// and the marker inventory.
 pub(super) async fn capture(t: &Transport) -> elasticctl_core::Result<Baseline> {
     require_markers_absent(t, Stage::Preflight).await?;
     Ok(Baseline {
@@ -180,9 +159,6 @@ pub(super) async fn capture(t: &Transport) -> elasticctl_core::Result<Baseline> 
     })
 }
 
-/// Require the captured state again: no marker identity, the same prebuilt
-/// count and marker inventory, and, when this run's rule existed, a
-/// complete search that finds none of its alerts open.
 pub(super) async fn audit(
     t: &Transport,
     baseline: &Baseline,
@@ -229,7 +205,6 @@ mod tests {
         ResponseTemplate::new(200).set_body_json(body)
     }
 
-    /// Mount one answer per call, in order; the last one repeats.
     async fn mount_in_order(server: &MockServer, route: &str, answers: Vec<Value>) {
         let last = answers.len() - 1;
         for (n, body) in answers.into_iter().enumerate() {

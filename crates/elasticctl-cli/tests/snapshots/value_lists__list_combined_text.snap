@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 0,
+  "stdout": "id                                  type      name                                description             supported  \nelasticctl-fixture-value-list-id-3  ip_range  elasticctl-fixture-value-list-id-3  elasticctl-live-marker  true       \n",
+  "stderr": ""
+}

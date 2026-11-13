@@ -1,0 +1,39 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "contain_items_find",
+  "response": {
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-13-item-0",
+        "type": "ip_range",
+        "list_id": "elasticctl-fixture-value-list-id-13",
+        "value": "10.0.0.5/32",
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzEyLDFd"
+      },
+      {
+        "id": "elasticctl-fixture-value-list-id-13-item-1",
+        "type": "ip_range",
+        "list_id": "elasticctl-fixture-value-list-id-13",
+        "value": "10.0.0.0/8",
+        "@timestamp": "2026-01-01T00:00:00.000Z",
+        "updated_by": "REDACTED",
+        "tie_breaker_id": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "_version": "WzEzLDFd"
+      }
+    ],
+    "page": 1,
+    "per_page": 2,
+    "total": 2,
+    "cursor": "elasticctl-fixture-cursor"
+  }
+}

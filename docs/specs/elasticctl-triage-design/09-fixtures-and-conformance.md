@@ -9,7 +9,9 @@ generate alerts, records the triage exchanges, then closes and cleans up.
 
 Scrubbing gains a new class: profile and cases payloads embed user identity
 (`username`, `full_name`, `email`, profile `uid`s, realm names, `created_by`,
-`updated_by`). All are scrubbed like the existing identity fields. Alert ids
+`updated_by`). All are scrubbed like the existing identity fields. Case
+`closed_by` and `pushed_by` hold the same identity object as `created_by`,
+including a `profile_uid`, and are scrubbed too. Alert ids
 and profile uids are rewritten wherever they appear **inside** a string
 value, not only where the whole value equals one: Kibana embeds the real
 alert uuid inside `kibana.alert.url` (`.../redirect/<uuid>?index=…&

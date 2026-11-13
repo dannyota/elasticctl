@@ -1,0 +1,15 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "cleanup_items_empty",
+  "request": {
+    "path": "/api/lists/items/_find?list_id=elasticctl-fixture-value-list-id-14&page=1&per_page=1000"
+  },
+  "response": {
+    "data": [],
+    "page": 1,
+    "per_page": 1000,
+    "total": 0,
+    "cursor": "elasticctl-fixture-cursor"
+  }
+}

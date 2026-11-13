@@ -37,6 +37,7 @@ Planned shape. 0.2 is fixed; the order after it is not:
 | `0.7` | MCP server — read-only tools over the existing verticals |
 | `0.8` | Task-shaped and cross-vertical tools; resources and prompts |
 | `0.9` | Mutation through plan-and-confirm |
+| `0.10` | Value-list content as code |
 | `1.0` | Everything stable |
 
 The 0.3 search capability area is specified in
@@ -71,9 +72,14 @@ The 0.9 MCP mutation capability area is described in
 [0.9.0](../../plans/v0.9.0.md), [0.9.1](../../plans/v0.9.1.md), and
 [0.9.2](../../plans/v0.9.2.md).
 
-Neither grants release or publication approval. Every 0.8 and 0.9 release
-passes the three-flavor conformance matrix; when a trial deployment ends first,
-the release waits for replacement deployments.
+The 0.10 value-list capability area is described in
+[`elasticctl-value-lists-design.md`](../elasticctl-value-lists-design.md), with
+[research](../../plans/v0.10-research.md) and the
+[0.10.0 plan](../../plans/v0.10.0.md).
+
+Neither grants release or publication approval. Every 0.8, 0.9, and 0.10
+release passes the three-flavor conformance matrix; when a trial deployment
+ends first, the release waits for replacement deployments.
 
 Trial deployments are temporary. Their lifetime changes execution order, not
 capability boundaries. The evidence ladder is:
@@ -99,6 +105,10 @@ capability boundaries. The evidence ladder is:
 9. 0.7.0 and 0.7.1 deliver the read-only MCP server; 0.7.2 publishes its
    cross-flavor proof. A later 0.7 patch re-proves it when new trial stacks
    report newer Elastic versions.
+10. 0.9.4 makes `state pull`, `state diff`, and `state push` refuse a mirror
+    that holds `value-lists/`; 0.10.0 delivers value-list content management
+    and the fourteenth conformance contract, `value_list_round_trip`, across
+    the three flavors.
 
 Later minor capability areas begin only after the current area is complete.
 While trial stacks exist, live measurements for the current area run first.

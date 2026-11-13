@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Fetch a SigmaHQ/sigma slice and convert it to Kibana NDJSON.
-#
-# Sigma rules use Detection Rule License 1.1. Redistribution must retain the
-# author, a link to the rule set, and the license. Fetch and convert on demand;
-# see samples/README.md.
-#
-# Requires git and sigma-cli with the Elasticsearch backend.
-#   pip install sigma-cli && sigma plugin install elasticsearch
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"

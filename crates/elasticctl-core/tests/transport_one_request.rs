@@ -143,10 +143,6 @@ async fn write(t: &Transport, patch: bool) -> elasticctl_core::Result<serde_json
 
 #[tokio::test]
 async fn closed_after_get_then_write() {
-    // Without a pool the write always gets a fresh socket and succeeds. With
-    // the pool, the write may land on the socket the peer closed: it then
-    // fails as a connection error after one request and is never replayed,
-    // or the client notices the close first and opens a new connection.
     for disable_pool in [true, false] {
         for patch in [false, true] {
             let s = Server::start(vec![Reply::Close, Reply::Ok]).await;

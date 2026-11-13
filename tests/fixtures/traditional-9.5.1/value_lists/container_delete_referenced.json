@@ -1,0 +1,80 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "container_delete_referenced",
+  "response": {
+    "message": {
+      "error": {
+        "message": "Value list 'elasticctl-fixture-value-list-id-3' is referenced in existing exception list(s)",
+        "references": [
+          {
+            "exception_item": {
+              "updated_by": "REDACTED",
+              "comments": [],
+              "created_at": "2026-01-01T00:00:00.000Z",
+              "created_by": "REDACTED",
+              "description": "elasticctl-live-marker",
+              "entries": [
+                {
+                  "type": "list",
+                  "field": "source.ip",
+                  "list": {
+                    "id": "elasticctl-fixture-value-list-id-3",
+                    "type": "ip_range"
+                  },
+                  "operator": "included"
+                },
+                {
+                  "type": "list",
+                  "field": "destination.ip",
+                  "list": {
+                    "id": "elasticctl-fixture-value-list-id-3",
+                    "type": "ip_range"
+                  },
+                  "operator": "excluded"
+                }
+              ],
+              "id": "elasticctl-fixture-value-list-id-12",
+              "item_id": "elasticctl-fixture-value-list-id-9-item",
+              "list_id": "elasticctl-fixture-value-list-id-9",
+              "name": "elasticctl-fixture-value-list-id-9-item",
+              "namespace_type": "single",
+              "os_types": [],
+              "tags": [
+                "elasticctl-live-marker",
+                "REDACTED"
+              ],
+              "tie_breaker_id": "REDACTED",
+              "type": "simple",
+              "updated_at": "2026-01-01T00:00:00.000Z",
+              "_version": "WzE1LDFd"
+            },
+            "exception_list": {
+              "version": 1,
+              "created_at": "2026-01-01T00:00:00.000Z",
+              "created_by": "REDACTED",
+              "description": "elasticctl-live-marker",
+              "id": "elasticctl-fixture-value-list-id-10",
+              "immutable": false,
+              "list_id": "elasticctl-fixture-value-list-id-9",
+              "name": "elasticctl-fixture-value-list-id-9",
+              "namespace_type": "single",
+              "os_types": [],
+              "tags": [
+                "elasticctl-live-marker",
+                "REDACTED"
+              ],
+              "tie_breaker_id": "REDACTED",
+              "type": "detection",
+              "updated_at": "2026-01-01T00:00:00.000Z",
+              "updated_by": "REDACTED",
+              "_version": "WzE0LDFd"
+            }
+          }
+        ],
+        "value_list_id": "elasticctl-fixture-value-list-id-3"
+      }
+    },
+    "status_code": 409
+  }
+}

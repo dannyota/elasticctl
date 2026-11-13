@@ -1,25 +1,10 @@
-//! Dry-run contract. Remote mutations require a preview and `--yes`.
+mod value_lists;
+pub use value_lists::{ValueListPreview, check_value_lists};
 
 use crate::context::Context;
 use elasticctl_core::Resolved;
 
-/// Mutating commands: remote `rules`, `exceptions`, `data-views`,
-/// `dashboards`, `fleet`, `state`, `alerts`, and `cases` commands, plus local
-/// `config init`. Use full command paths so a non-mutating command with the
-/// same leaf name cannot be mislabeled.
-///
-/// Keep this list with its enforcement. `cmd::meta` reads it for the command
-/// tree, avoiding an unchecked duplicate.
-///
-/// Two contracts verify the list:
-///
-/// - `check` rejects guarded remote mutations that are not declared here.
-/// - `cmd::meta` pins the declared command-tree paths.
-///
-/// This does not detect mutations that neither call the guard nor appear here.
-/// `config init` is declared but unguarded because it writes a local file.
-/// The enforced relation is `guard ⊆ MUTATING`.
-pub(crate) const MUTATING: [&str; 31] = [
+pub(crate) const MUTATING: [&str; 34] = [
     "rules enable",
     "rules disable",
     "rules delete",
@@ -27,6 +12,9 @@ pub(crate) const MUTATING: [&str; 31] = [
     "rules prebuilt install",
     "exceptions delete",
     "exceptions import",
+    "value-lists import",
+    "value-lists delete",
+    "value-lists init",
     "data-views import",
     "data-views delete",
     "data-views default set",
@@ -55,12 +43,9 @@ pub(crate) const MUTATING: [&str; 31] = [
 
 pub struct Preview {
     pub action: String,
-    /// One line per affected object. Empty when no per-object detail applies.
     pub details: Vec<String>,
 }
 
-/// Parenthesized `Resolved::banner()` text. Use one target description in
-/// previews and other output.
 pub fn banner(resolved: &Resolved) -> String {
     format!("({})", resolved.banner())
 }
@@ -83,13 +68,6 @@ pub fn preview_text(preview: &Preview, resolved: &Resolved, applying: bool) -> S
     out
 }
 
-/// Return `true` when the caller should perform the mutation.
-///
-/// Write to stderr so a dry-run preview does not contaminate piped JSON.
-///
-/// Every guarded remote mutation reaches the stack here. Reject a path absent
-/// from `MUTATING` so the command tree cannot report it as non-mutating.
-/// `path` must exactly match a full path in `MUTATING`.
 pub fn check(ctx: &Context, path: &'static str, preview: &Preview) -> bool {
     assert!(
         MUTATING.contains(&path),
@@ -188,8 +166,6 @@ mod tests {
         }
     }
 
-    /// Reject undeclared guarded mutations so the command tree cannot mark
-    /// them as non-mutating. Build a real context to exercise `check`.
     #[test]
     #[should_panic(expected = "rules touch")]
     fn check_rejects_an_undeclared_mutating_path() {

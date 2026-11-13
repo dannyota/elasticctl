@@ -1,4 +1,3 @@
-//! Rule toggle planner definition and adapter.
 use crate::{
     ServerState,
     catalog::ToolId,

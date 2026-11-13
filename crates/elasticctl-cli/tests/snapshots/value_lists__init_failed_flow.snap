@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists.rs
+expression: "vl::capture(root.path(), &server.uri(), &out)"
+---
+{
+  "code": 1,
+  "stdout": "",
+  "stderr": "{\"dry_run\":false,\"profile\":\"default\",\"host\":\"HOST\",\"space\":\"default\",\"command\":\"value-lists init\",\"lists\":[],\"flow\":\"create-list-indices\",\"already_bootstrapped\":false}\n{\"error\":{\"kind\":\"http\",\"message\":\"create-list-indices flow status is failed; expected ready\",\"http_status\":200}}\n"
+}

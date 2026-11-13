@@ -109,9 +109,6 @@ async fn pull_writes_one_file_per_rule_without_volatile_fields() {
     assert!(!body.contains("created_at"), "{body}");
 }
 
-// `safe_filename` replaces characters outside [A-Za-z0-9_-] with '_'. Distinct
-// rule ids can therefore map to one file, which must be reported as a conflict
-// instead of dropping a rule from the local mirror.
 #[tokio::test]
 async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename() {
     let server = server_with(vec![remote_rule("a/b", 21), remote_rule("a_b", 73)]).await;
@@ -141,8 +138,6 @@ async fn pull_reports_a_conflict_when_two_rule_ids_sanitise_to_the_same_filename
     assert!(msg.contains("a_b"), "{msg}");
 }
 
-/// A collision is found while planning, before a journal or target mutation
-/// is allowed. Existing selected and unselected local files must remain exact.
 #[tokio::test]
 async fn a_collision_refusal_leaves_the_complete_existing_mirror_unchanged() {
     let server = server_with(vec![remote_rule("a/b", 21), remote_rule("a_b", 73)]).await;
@@ -164,8 +159,6 @@ async fn a_collision_refusal_leaves_the_complete_existing_mirror_unchanged() {
     assert_eq!(mirror_tree(&state), before);
 }
 
-/// A remote rule without a string stable ID cannot be named or encoded. Its
-/// validation failure happens before the pull transaction starts.
 #[tokio::test]
 async fn an_invalid_rule_refusal_leaves_the_complete_existing_mirror_unchanged() {
     let server = server_with(vec![json!({
@@ -192,7 +185,6 @@ async fn an_invalid_rule_refusal_leaves_the_complete_existing_mirror_unchanged()
     assert_eq!(mirror_tree(&state), before);
 }
 
-// Report all filename collisions in one run.
 #[tokio::test]
 async fn pull_reports_every_filename_collision_at_once() {
     let server = server_with(vec![
@@ -225,8 +217,6 @@ async fn pull_reports_every_filename_collision_at_once() {
     }
 }
 
-// A refused pull must leave no partial mirror behind. Otherwise `diff` would
-// report the missing rules as drift.
 #[tokio::test]
 async fn a_refused_pull_writes_no_files_at_all() {
     let server = server_with(vec![
@@ -255,7 +245,6 @@ async fn a_refused_pull_writes_no_files_at_all() {
     );
 }
 
-// Order the report so repeated runs are stable.
 #[tokio::test]
 async fn the_collision_report_is_ordered_by_rule_id() {
     let server = server_with(vec![
@@ -329,7 +318,6 @@ async fn pull_twice_produces_identical_files() {
 
 #[tokio::test]
 async fn diff_is_clean_immediately_after_a_pull() {
-    // A fresh pull must produce a clean diff.
     let server = server_with(vec![remote_rule("a", 21)]).await;
     let dir = tempfile::tempdir().unwrap();
     let cfg = config_for(dir.path(), &server.uri());
@@ -399,7 +387,6 @@ async fn diff_reports_an_edited_field_with_before_and_after() {
 
 #[tokio::test]
 async fn a_rule_only_on_the_server_is_reported_but_never_deleted() {
-    // A server-only rule must be reported without being deleted.
     let server = server_with(vec![remote_rule("a", 21)]).await;
     Mock::given(method("DELETE"))
         .and(path("/api/detection_engine/rules"))
@@ -474,8 +461,6 @@ async fn push_dry_run_previews_and_sends_no_mutation() {
     );
 }
 
-// A report path is part of the mutation preflight: a bad local destination
-// must refuse before `--yes` can send the already-planned remote write.
 #[tokio::test]
 async fn an_invalid_report_destination_stops_before_remote_writes() {
     let server = server_with(vec![]).await;
@@ -529,9 +514,6 @@ async fn an_invalid_report_destination_stops_before_remote_writes() {
     assert!(writes.is_empty(), "unexpected remote writes: {writes:?}");
 }
 
-// A dry-run report must record proposed creates and updates, not only changes
-// that were applied. This gives scripts the pending count without parsing the
-// preview text.
 #[tokio::test]
 async fn push_dry_run_report_includes_pending_creates_and_updates() {
     let server = server_with(vec![remote_rule("existing", 10)]).await;
@@ -539,13 +521,11 @@ async fn push_dry_run_report_includes_pending_creates_and_updates() {
     let cfg = config_for(dir.path(), &server.uri());
     let state = dir.path().join("state");
     fs::create_dir_all(state.join("rules")).unwrap();
-    // Differs from the remote only in risk_score, so this is a pending update.
     fs::write(
         state.join("rules").join("existing.ndjson"),
         "{\"rule_id\":\"existing\",\"name\":\"Rule existing\",\"type\":\"query\",\"query\":\"*:*\",\"severity\":\"low\",\"risk_score\":55}\n",
     )
     .unwrap();
-    // Absent remotely, so this is a pending create.
     fs::write(
         state.join("rules").join("newone.ndjson"),
         "{\"rule_id\":\"newone\",\"name\":\"New\",\"type\":\"query\",\"query\":\"*:*\"}\n",
@@ -648,12 +628,9 @@ async fn push_writes_a_change_report_with_before_and_after() {
     assert!(!entry["after"].is_null());
 }
 
-// A mutating command with a positive `failed` count must exit 1. It must also
-// continue attempting the remaining rules and record every result.
 #[tokio::test]
 async fn one_failing_rule_does_not_abort_the_rest() {
     let server = server_with(vec![]).await;
-    // Every create fails, but both rules must still be attempted and reported.
     Mock::given(method("POST"))
         .and(path("/api/detection_engine/rules"))
         .respond_with(
@@ -702,33 +679,4 @@ async fn one_failing_rule_does_not_abort_the_rest() {
             .iter()
             .all(|e| e["error"].as_str().unwrap().contains("already exists"))
     );
-}
-
-#[tokio::test]
-async fn push_refuses_a_newer_mirror_with_json_error() {
-    let server = server_with(vec![]).await;
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = config_for(dir.path(), &server.uri());
-    let state = dir.path().join("state");
-    fs::create_dir_all(state.join("value-lists")).unwrap();
-
-    for yes in [false, true] {
-        let mut command = Command::cargo_bin("elasticctl").unwrap();
-        command
-            .args(["state", "push", "--json", "--config"])
-            .arg(&cfg)
-            .arg("--dir")
-            .arg(&state);
-        if yes {
-            command.arg("--yes");
-        }
-        let out = command.output().unwrap();
-        assert_eq!(out.status.code(), Some(1));
-        let error: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
-        assert_eq!(error["error"]["kind"], "unsupported");
-        assert_eq!(
-            error["error"]["message"],
-            "this mirror holds value-lists/, which needs elasticctl 0.10 or later"
-        );
-    }
 }

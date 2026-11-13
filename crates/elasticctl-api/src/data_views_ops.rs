@@ -1,5 +1,3 @@
-//! Data-view selection, portable normalization, and read orchestration.
-
 use crate::content_codec::{self, ContentFormat};
 use crate::data_views::{
     self, DataView, DataViewReference, DataViewSpec, DataViewSummary, DataViewUpdate,
@@ -20,21 +18,17 @@ pub use import::{
     DataViewImportPlan, DataViewImportReport, DataViewPatch, apply_import, build_patch, plan_import,
 };
 
-/// A local, case-insensitive substring filter for data-view summaries.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DataViewFilter {
     pub search: Option<String>,
 }
 
-/// Data-view list output after local filtering and stable-id sorting.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DataViewList {
     pub total: usize,
     pub data_views: Vec<DataViewSummary>,
 }
 
-/// Select one entry by stable id or exact name without decoding unrelated
-/// entries. Shared by data-view operations and the legacy search resolver.
 pub(crate) fn select_by_id_or_name<'a, T>(
     entries: &'a [T],
     selector: &str,
@@ -62,10 +56,6 @@ pub(crate) fn select_by_id_or_name<'a, T>(
     }
 }
 
-/// Resolve one selector from already-read data-view summaries.
-///
-/// Stable ids win over names. Names are a convenience selector and must be
-/// unique when used.
 pub fn resolve_from_summaries(
     views: &[DataViewSummary],
     selector: &str,
@@ -79,13 +69,11 @@ pub fn resolve_from_summaries(
     .clone())
 }
 
-/// Resolve one selector over the wire with one data-view list read.
 pub async fn resolve(transport: &Transport, selector: &str) -> Result<DataViewSummary> {
     let views = data_views::list(transport).await?;
     resolve_from_summaries(&views, selector)
 }
 
-/// List data views using the portable command filter and stable-id ordering.
 pub async fn list_op(transport: &Transport, filter: &DataViewFilter) -> Result<DataViewList> {
     let needle = filter.search.as_ref().map(|search| search.to_lowercase());
     let mut data_views: Vec<_> = data_views::list(transport)
@@ -109,13 +97,11 @@ pub async fn list_op(transport: &Transport, filter: &DataViewFilter) -> Result<D
     })
 }
 
-/// Resolve a selector, then read its full live data-view object.
 pub async fn get_op(transport: &Transport, selector: &str) -> Result<DataView> {
     let view = resolve(transport, selector).await?;
     data_views::get(transport, &view.id).await
 }
 
-/// Convert a full live data-view object into its portable form.
 pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
     let source = data_view
         .as_object()
@@ -190,7 +176,6 @@ pub fn normalize(data_view: &Value) -> Result<DataViewSpec> {
     })
 }
 
-/// Rebuild a JSON value with sorted object keys while preserving array order.
 fn canonicalize(value: &Value) -> Value {
     match value {
         Value::Object(values) => {
@@ -207,7 +192,6 @@ fn canonicalize(value: &Value) -> Value {
     }
 }
 
-/// Fully read and validate a portable data-view artifact.
 pub fn validate(path: &Path) -> Result<Vec<DataViewSpec>> {
     let body = std::fs::read_to_string(path).map_err(|error| {
         Error::new(
@@ -247,7 +231,6 @@ fn invalid_plan(message: impl Into<String>) -> Result<()> {
     Err(Error::new(ErrorKind::Error, message))
 }
 
-/// Export selected data views as a portable JSON or YAML artifact.
 pub async fn export(
     transport: &Transport,
     selectors: &[String],

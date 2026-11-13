@@ -56,6 +56,25 @@ Fixtures are public, so scope every recording request to the probe rule. An unsc
 `email`, `created_by`, `updated_by`) and credentials. The export fixture holds NDJSON as an opaque
 string, so it needs its own scrub pass.
 
+`scripts/check-fixtures.sh` backs up the recorder's scrub. It exists beside gitleaks because a generic secret scanner misses identity held in a value, such as a project hostname in `kibana.alert.url`, which was the original leak. Its patterns match the shapes this project produces: an API key or authorization header, a Cloud deployment hostname (the recorder rewrites the recording host to `REDACTED.example.invalid`), URL userinfo, an email address outside `example.com` and `.invalid`, and a dated backing index name.
+
+The fixture-scanner regression tests build credential-shaped values at run time, so secret scanners never read one from their source. `MockStack` logs requests from the `wiremock` server's `received_requests`, not from a wrapper around `Transport`: a wrapper would sit where `--debug` must never log.
+
+The recorder relies on these external behaviors:
+
+- `POST /<index>/_refresh` rejects a request body, so the recorder sends the GET form.
+- The marker rule runs every minute. The alerts probe disables it before `record_cases` runs, so new alerts do not pile up under the case exchanges, push the final close-by-query `total` past its 15-second retry budget, or race that close with a version conflict.
+- An index named `logs-*-*` matches Elastic's built-in template and refuses a plain document write, so scratch indices avoid the `logs-` prefix.
+- The recorder never deletes preview alerts, so each preview probe name carries a per-run suffix that a leftover alert cannot match.
+- `record-compose` binds the marker index to its UUID. Serverless returns no `index.uuid` from the index settings or get-index APIs; `_cat/indices` reports it on every flavor. An index create on a taken name answers 400 `resource_already_exists_exception`, `index [<name>/<uuid>] already exists`. A document write to a missing index creates it, so a lost marker document write can re-create the index after cleanup.
+- Serverless can answer an alert close with 409 while the rule's last execution or a case attachment still updates that alert; cleanup searches again and retries.
+
+Live tests rely on these:
+
+- `GET /api/status` carries no Elasticsearch cluster UUID. The lab identity check compares `cluster_uuid` from `GET /api/stats?extended=true` with Elasticsearch `GET /`. The Console proxy is an internal route on 9.5 and refuses a body on `GET /`, so it is not used.
+- Kibana's case search tokenizes the text and matches any token (`simple_query_string`, OR), so a search meant to miss avoids the shared hyphenated fixture terms.
+- A case read does not carry its comments on every stack, so the live mutation contract reads a comment through the comment search.
+
 ## Sample data
 
 Fetch, never vendor: third-party rule and event content stays out of this public repo; scripts
@@ -69,3 +88,22 @@ download it on demand. Verified licenses (2026-08-13):
 `sigma-cli` with `-t lucene -p ecs_windows -f siem_rule_ndjson` converts Sigma rules to importable
 NDJSON. Mordor events use pre-ECS Winlogbeat field names (`EventID`, `CommandLine`, `Image`).
 Remap them to ECS and rewrite `@timestamp` to now before ingest, or no rule can match.
+
+## MCP stdio shim
+
+`scripts/mcp-stdio-shim.sh <log-dir> -- <command> [args...]` sits between a real MCP client and the server during client runs and appends the stdin and stdout bytes to `in.jsonl` and `out.jsonl`, mode 0600. It needs Bash 4.4 or newer.
+
+- Bytes reach `in.jsonl` before the command can read them. After the command exits, the shim waits for the output relay, then stops the input relay, so client bytes written after the exit may be missing from `in.jsonl`.
+- TERM, INT, and HUP reach the command once it can receive them; before that, they stop the relays and the shim. After any of them, the shim stops both relays without waiting, so output still in the pipe may be missing from stdout and `out.jsonl`.
+- The shim exits with the command's status, or with 128 plus the signal number when a signal arrives as the command exits. Bash cannot clean up after SIGKILL: the command and relays then outlive the shim.
+
+The script works around these Bash and tool behaviors; `scripts/test/mcp-stdio-shim-test.sh` exercises the paths. Keep the workarounds when editing it.
+
+- An asynchronous subshell ignores SIGINT and SIGQUIT and can lose a signal that arrives before `exec`, so a fresh Bash starts the command behind a gate.
+- Bash 5.2 can run a pending trap inside a process or command substitution and then fail to parse it, so nothing is substituted after the traps are set.
+- Bash 5.2 can lose a child that exits while a signal interrupts `wait`, and a later `wait` for it never returns, so the shim waits for a process only while it exists.
+- Bash ignores an untrapped SIGINT while it waits for a foreground command that exits normally.
+- Bash reports a job killed by an untrapped signal on its own stderr when it reaps it, so the shim's stderr is `/dev/null` and the command gets the original fd 2.
+- Bash closes a coprocess's pipes once it exits, so the input relay waits for EOF on its own stdin until the shim holds its output.
+- GNU `tee` writes standard output first and BSD `tee` last; each branch writes `in.jsonl` before the command's pipe.
+- BSD `chmod` rejects `--`, so the log path is made absolute first.

@@ -138,8 +138,6 @@ async fn cases_path_and_query_rejection() {
             "{name} {args}: {reply}"
         );
     }
-    // The default session does not list the query tools, so a call to one is
-    // an unknown tool at the protocol level.
     for name in ["search_dsl", "search_esql"] {
         h.send_json(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":current_metadata(),"name":name,"arguments":{}}})).await;
         let reply = h.receive_json().await;

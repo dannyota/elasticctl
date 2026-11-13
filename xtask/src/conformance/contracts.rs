@@ -34,7 +34,7 @@ pub(super) const FLEET_POLICIES: RequiredFeature = RequiredFeature {
     label: "fleet-policies",
 };
 
-pub(super) const CONTRACTS: [Contract; 13] = [
+pub(super) const CONTRACTS: [Contract; 14] = [
     Contract {
         name: "diagnostics",
         test: "doctor_reports_no_failed_checks",
@@ -99,6 +99,11 @@ pub(super) const CONTRACTS: [Contract; 13] = [
         name: "mcp_mutations_plan_and_confirm",
         test: "mcp_mutations_plan_and_confirm",
         features: &[],
+    },
+    Contract {
+        name: "value_list_round_trip",
+        test: "value_list_round_trip",
+        features: &[EXCEPTION_LISTS],
     },
 ];
 

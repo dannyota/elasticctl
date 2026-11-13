@@ -1,9 +1,3 @@
-//! `state diff`, and the exception-list drift it shares with push.
-//!
-//! `diff` reports the plan `exception_plan` computes; `push` applies it. The
-//! plan is one concern with two consumers, which is why it lives here rather
-//! than in either command.
-
 use super::reports::{DanglingPointer, DiffReport, ExceptionDrift, ListChange, Mirror};
 use crate::diff::{Change, Drift, FieldChange};
 use crate::exceptions;
@@ -14,7 +8,6 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// A container write `push` will perform, in apply order.
 #[derive(Debug, Clone)]
 pub(crate) enum ListOp {
     Create(ExceptionList),
@@ -24,13 +17,6 @@ pub(crate) enum ListOp {
     },
 }
 
-/// An item write `push` will perform, in apply order.
-///
-/// `Remove` is the only deletion the state engine performs anywhere. It is
-/// sound only because `pull` always writes a container's full item set: the
-/// invariant is documented on `item_reconciliation` and at `pull.rs`'s
-/// fetch-site cross-reference (spec 5.4). An item absent locally is a delete
-/// instruction solely because no item-level selector exists.
 #[derive(Debug, Clone)]
 pub(crate) enum ItemOp {
     Create(ExceptionItem),
@@ -44,20 +30,14 @@ pub(crate) enum ItemOp {
     },
 }
 
-/// What `exception_plan` computed: the drift to report and the ordered writes
-/// `push` applies.
 #[derive(Debug)]
 pub(crate) struct ExceptionPlan {
     pub drift: ExceptionDrift,
     pub list_ops: Vec<ListOp>,
     pub item_ops: Vec<ItemOp>,
-    /// Keys resolvable at apply time: already on the stack or about to be
-    /// created. `plan_push` refuses any other referenced key before a write.
     pub resolvable: BTreeSet<ListKey>,
 }
 
-/// Compare the mirror to the stack, scoped by `source`. The `custom`/`all`
-/// default lives on the clap flag, where `--help` shows it (spec 5.5).
 pub async fn diff(
     t: &Transport,
     dir: &Path,
@@ -70,11 +50,10 @@ pub async fn diff(
         rules: local_all,
         lists,
         items,
+        value_lists,
+        has_value_lists,
     } = super::mirror::read_mirror(dir)?;
     let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "compare").await?;
-    // A selector narrows both sides; with none, the `--source` scope decides.
-    // A local file outside that scope is reported as `out_of_scope`, never as a
-    // pending create (spec 5.5, the 0.1 upgrade guard).
     let (local, out_of_scope) = if scope.is_scoped() {
         (scope.narrow(local_all), 0)
     } else {
@@ -83,9 +62,8 @@ pub async fn diff(
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let plan = exception_plan(t, lists, items, &local, &remote).await?;
+    let plan = exception_plan(t, lists.clone(), items.clone(), &local, &remote).await?;
 
-    // Omit unchanged rules so the diff shows only differences.
     let changes: Vec<Change> = drift
         .changes
         .iter()
@@ -93,20 +71,36 @@ pub async fn diff(
         .cloned()
         .collect();
 
+    let values = super::values::plan(
+        t,
+        super::values::Inputs {
+            pairs: &value_lists,
+            has_root: has_value_lists,
+            lists: &lists,
+            items: &items,
+            local: &local,
+            remote: &remote,
+            exception_plan: &plan,
+        },
+        false,
+    )
+    .await?;
     let exceptions = plan.drift;
     Ok(DiffReport {
-        clean: drift.is_clean() && exceptions.is_clean(),
+        clean: drift.is_clean()
+            && exceptions.is_clean()
+            && values.drift.as_ref().is_none_or(|v| v.is_clean()),
         local: local.len(),
         remote: remote.len(),
         changes,
         exceptions,
+        value_lists: values.drift,
         out_of_scope,
         selected: scope.is_scoped().then(|| scope.selected()),
         local_total: scope.is_scoped().then_some(scope.local_total),
     })
 }
 
-/// Field-level differences between two object maps, in key order.
 fn map_field_changes(before: &Map<String, Value>, after: &Map<String, Value>) -> Vec<FieldChange> {
     let mut keys: Vec<&String> = before.keys().chain(after.keys()).collect();
     keys.sort();
@@ -124,13 +118,10 @@ fn map_field_changes(before: &Map<String, Value>, after: &Map<String, Value>) ->
         .collect()
 }
 
-/// Field-level drift between two canonical containers.
 fn list_field_changes(before: &ExceptionList, after: &ExceptionList) -> Vec<FieldChange> {
     map_field_changes(before.as_map(), after.as_map())
 }
 
-/// Index containers by identity, canonicalizing each and refusing a duplicate
-/// `list_id` within one side.
 fn index_lists(lists: &[ExceptionList], side: &str) -> Result<BTreeMap<ListKey, ExceptionList>> {
     let mut map = BTreeMap::new();
     for (idx, list) in lists.iter().enumerate() {
@@ -156,9 +147,6 @@ fn index_lists(lists: &[ExceptionList], side: &str) -> Result<BTreeMap<ListKey, 
     Ok(map)
 }
 
-/// Container drift and the ordered container writes. Item drift is computed
-/// separately, because items reconcile only for containers present on both
-/// sides.
 fn list_drift(
     local: &BTreeMap<ListKey, ExceptionList>,
     remote: &BTreeMap<ListKey, ExceptionList>,
@@ -217,8 +205,6 @@ fn list_drift(
     ))
 }
 
-/// Fetch the remote containers for the given keys, skipping a key with no live
-/// container (a dangling pointer `diff` reports in spec 4.5).
 async fn fetch_remote_lists(t: &Transport, keys: &BTreeSet<ListKey>) -> Result<Vec<ExceptionList>> {
     let mut out = Vec::new();
     for key in keys {
@@ -231,9 +217,6 @@ async fn fetch_remote_lists(t: &Transport, keys: &BTreeSet<ListKey>) -> Result<V
     Ok(out)
 }
 
-/// Spec 4.5. Compare each remote rule's stored pointer against the live
-/// container for its `list_id`. `comparable` has stripped this field by the
-/// time `Drift::compute` runs, so the check works on the raw response.
 fn dangling_pointers(
     raw_remote: &[Rule],
     live: &BTreeMap<ListKey, String>,
@@ -263,25 +246,11 @@ fn dangling_pointers(
     out
 }
 
-/// Compare local and remote items for each container in `both`, emitting
-/// `ItemAdded`, `ItemModified`, `ItemRemoved`, or nothing per `item_id`.
-/// `ItemRemoved` is the engine's only actionable deletion (spec 5.4).
-///
-/// `ItemRemoved` assumes the local item set for a mirrored container is
-/// complete. That holds because `pull` always writes a container's items in
-/// full: state commands resolve selectors to `rule_id`s through `scope_of`,
-/// which narrows rules and nothing else, and there is no parameter by which a
-/// caller can mirror part of a container's items. If an item-level selector is
-/// ever added, an item absent locally stops being a delete instruction and the
-/// `ItemRemoved` handling below must be revisited before that selector ships.
 fn item_reconciliation(
     both: &BTreeSet<ListKey>,
     local_items: &BTreeMap<ListKey, Vec<ExceptionItem>>,
     remote_items: &BTreeMap<ListKey, Vec<ExceptionItem>>,
 ) -> Result<(Vec<ListChange>, Vec<ItemOp>)> {
-    // A duplicate `item_id` within one side is mirror corruption; refusing
-    // matches `index_lists`, which refuses a duplicate `list_id`. First-wins
-    // would silently hide which item the operator intended to keep.
     let index = |items: &[ExceptionItem], side: &str| -> Result<BTreeMap<String, ExceptionItem>> {
         let mut m = BTreeMap::new();
         for i in items {
@@ -352,8 +321,6 @@ fn item_reconciliation(
     Ok((changes, ops))
 }
 
-/// Compute exception drift and the ordered container/item writes, closing over
-/// the lists referenced by the local and remote rules in scope.
 pub(crate) async fn exception_plan(
     t: &Transport,
     mirror_lists: Vec<ExceptionList>,
@@ -372,9 +339,6 @@ pub(crate) async fn exception_plan(
         .filter(|l| l.key().map(|k| wanted.contains(&k)).unwrap_or(false))
         .collect();
 
-    // Live container ids, read from the raw fetched containers before
-    // `canonical_list` strips `id`. `dangling_pointers` compares the stored
-    // pointer against this.
     let mut live: BTreeMap<ListKey, String> = BTreeMap::new();
     for list in &remote_lists {
         if let Ok(key) = list.key()
@@ -388,9 +352,6 @@ pub(crate) async fn exception_plan(
     let remote_indexed = index_lists(&remote_lists, "remote")?;
     let (mut drift, ops) = list_drift(&local_indexed, &remote_indexed)?;
 
-    // Only a container present on both sides reconciles its items. A created
-    // container writes its items wholesale; a remote-only container is never
-    // deleted, so its items are not touched.
     let both: BTreeSet<ListKey> = local_indexed
         .keys()
         .filter(|k| remote_indexed.contains_key(*k))
@@ -412,7 +373,6 @@ pub(crate) async fn exception_plan(
     }
 
     let mut item_ops = Vec::new();
-    // Items for a newly created container are written wholesale.
     for op in &ops {
         if let ListOp::Create(list) = op {
             let key = list.key()?;

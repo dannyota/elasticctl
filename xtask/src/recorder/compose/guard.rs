@@ -1,29 +1,17 @@
-//! Run work so that a panic, an interrupt, or a time bound still returns
-//! control to the caller.
-//!
-//! The conformance matrix spawns its lab leg and races the join handle
-//! against Ctrl-C. The compose step borrows its session, so it cannot move
-//! into a spawned task. It is polled in place instead: each poll catches a
-//! panic, and `tokio::select!` races the work against the interrupt and the
-//! bound. The work future is dropped before this returns, so the caller
-//! reads the ownership flags exactly as they stood.
-
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// How a piece of guarded work ended.
 #[derive(Debug)]
-pub(super) enum Ended<T> {
+pub(in crate::recorder) enum Ended<T> {
     Finished(T),
     Panicked,
     Interrupted,
     TimedOut,
 }
 
-/// Polls the inner future and turns a panic into `None`.
 struct CatchUnwind<F> {
     inner: Pin<Box<F>>,
 }
@@ -41,9 +29,7 @@ impl<F: Future> Future for CatchUnwind<F> {
     }
 }
 
-/// Run `work` until it finishes, panics, the interrupt fires, or `limit`
-/// passes. An interrupt wins over work that becomes ready at the same poll.
-pub(super) async fn guarded<T>(
+pub(in crate::recorder) async fn guarded<T>(
     work: impl Future<Output = T>,
     limit: Option<Duration>,
     interrupt: impl Future<Output = ()>,
@@ -65,9 +51,7 @@ pub(super) async fn guarded<T>(
     }
 }
 
-/// The process interrupt. When the listener cannot be installed it never
-/// fires, and the default disposition still ends the process on Ctrl-C.
-pub(super) async fn ctrl_c() {
+pub(in crate::recorder) async fn ctrl_c() {
     if tokio::signal::ctrl_c().await.is_err() {
         std::future::pending::<()>().await;
     }

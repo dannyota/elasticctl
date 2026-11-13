@@ -1,5 +1,3 @@
-//! Read-only projections for Elastic Security exception lists and items.
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use elasticctl_api::{ExceptionItem, ExceptionList, ListFilter, exceptions};
@@ -24,17 +22,14 @@ const GET_DESCRIPTION: &str = "Inspect one exception-list container and its boun
 const DEFAULT_LIMIT: usize = 50;
 const MAX_TEXT_BYTES: usize = 1_024;
 
-/// The explicit adapter for exception inspection tools.
 pub(crate) struct ExceptionsAdapter;
 
 static ADAPTER: ExceptionsAdapter = ExceptionsAdapter;
 
-/// Return the exception adapter.
 pub(crate) fn adapter() -> &'static dyn ToolAdapter {
     &ADAPTER
 }
 
-/// Return static exception definitions in lexical catalog order.
 pub(crate) fn definitions() -> Vec<Tool> {
     vec![
         definition::<ExceptionsGetInput, ExceptionsGetOutput>("exceptions_get", GET_DESCRIPTION),
@@ -217,7 +212,7 @@ enum ExceptionsListOutput {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::large_enum_variant)] // Schema-only alternatives are never instantiated.
+#[allow(clippy::large_enum_variant)]
 #[derive(JsonSchema)]
 #[serde(untagged)]
 enum ExceptionsGetOutput {

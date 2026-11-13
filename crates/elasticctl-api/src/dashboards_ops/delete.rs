@@ -1,17 +1,13 @@
-//! Dashboard deletion planning and apply.
-
 use super::{
     BTreeSet, DashboardSummary, DeleteOutcome, Error, ErrorKind, MutationPlan, Result, Transport,
     dashboards, invalid_plan, resolve,
 };
 
-/// The immutable, guard-ready targets for dashboard deletion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DashboardDeletePlan {
     pub preview: MutationPlan,
     pub targets: Vec<DashboardSummary>,
 }
-/// Resolve every dashboard selector and build the exact delete guard preview.
 pub async fn plan_delete(
     transport: &Transport,
     selectors: &[String],
@@ -36,7 +32,6 @@ pub async fn plan_delete(
     })
 }
 
-/// Apply a guard-approved dashboard deletion without resolving selectors again.
 pub async fn apply_delete(
     transport: &Transport,
     plan: &DashboardDeletePlan,

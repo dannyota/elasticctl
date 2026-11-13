@@ -1,4 +1,3 @@
-//! Shared projections for bounded composition reports.
 #![allow(dead_code)]
 use crate::{
     ServerState, ToolError,

@@ -1,8 +1,3 @@
-//! Offline checks for recorded fixtures.
-//!
-//! A fixture is recorded traffic. These tests fail when an Elastic upgrade
-//! changes a response shape or bypasses the live client's decode path.
-
 use elasticctl_api::Rule;
 use elasticctl_api::codec;
 use elasticctl_api::dashboards::{self, DashboardSpec};
@@ -36,8 +31,6 @@ const V0_2_FIXTURES: [&str; 15] = [
     "rules_find_source_customized.json",
 ];
 
-/// Search fixtures added in 0.3. They are recorded together by the search
-/// probe; the decode test below reads their responses.
 const V0_3_SEARCH_FIXTURES: [&str; 6] = [
     "esql_query.json",
     "search_pit_open.json",
@@ -47,7 +40,6 @@ const V0_3_SEARCH_FIXTURES: [&str; 6] = [
     "detection_engine_index.json",
 ];
 
-/// Triage fixtures added in 0.4, recorded by the alerts probe.
 const V0_4_ALERT_FIXTURES: [&str; 7] = [
     "signals_search.json",
     "signals_status_ids.json",
@@ -58,7 +50,6 @@ const V0_4_ALERT_FIXTURES: [&str; 7] = [
     "profile_suggest.json",
 ];
 
-/// Case fixtures added in 0.4.1, recorded by the cases probe.
 const V0_4_1_CASE_FIXTURES: [&str; 8] = [
     "cases_find.json",
     "case_get.json",
@@ -70,9 +61,6 @@ const V0_4_1_CASE_FIXTURES: [&str; 8] = [
     "case_delete.json",
 ];
 
-/// Data-view fixtures added in 0.5.0. They are all marker-scoped and retain
-/// the live route envelopes after the recorder removes server-owned cache and
-/// identity values.
 const V0_5_DATA_VIEW_FIXTURES: [&str; 21] = [
     "data_view_not_found.json",
     "data_view_create.json",
@@ -97,9 +85,6 @@ const V0_5_DATA_VIEW_FIXTURES: [&str; 21] = [
     "data_view_delete_not_found.json",
 ];
 
-/// Dashboard fixtures added in 0.5.1. They are recorded from the complete
-/// marker lifecycle, including the opaque deep-export import round trip and
-/// a low-level accepted-loss probe that the public import path rejects.
 const V0_5_DASHBOARD_FIXTURES: [&str; 11] = [
     "dashboard_create.json",
     "dashboard_get.json",
@@ -114,7 +99,6 @@ const V0_5_DASHBOARD_FIXTURES: [&str; 11] = [
     "dashboard_loss.json",
 ];
 
-/// Agent-policy fixtures added in 0.6.0, recorded from the marker lifecycle.
 const V0_6_AGENT_POLICY_FIXTURES: [&str; 12] = [
     "fleet_setup.json",
     "agent_policy_not_found.json",
@@ -130,8 +114,6 @@ const V0_6_AGENT_POLICY_FIXTURES: [&str; 12] = [
     "agent_policy_delete_not_found.json",
 ];
 
-/// Integration-policy fixtures added in 0.6.1, recorded from the marker
-/// integration and its marker parent lifecycle.
 const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 16] = [
     "integration_policy_not_found.json",
     "integration_policy_parent_not_found.json",
@@ -151,9 +133,6 @@ const V0_6_INTEGRATION_POLICY_FIXTURES: [&str; 16] = [
     "integration_policy_parent_delete_not_found.json",
 ];
 
-/// Async columnar ES|QL fixtures added in 0.7.5, recorded by the search probe
-/// with the body `search esql --out` sends. Sets recorded before the probe
-/// gained them carry none; a set never carries only some.
 const V0_7_5_ESQL_ASYNC_FIXTURES: [&str; 3] = [
     "esql_async_start.json",
     "esql_async_get.json",
@@ -164,8 +143,6 @@ fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-/// The twelve exchanges `cargo xtask record-compose` writes (tasks design
-/// section 12.2).
 const COMPOSE_FIXTURES: [&str; 12] = [
     "cases_by_alert.json",
     "cases_by_alert_none.json",
@@ -193,9 +170,6 @@ fn all_fixture_sets() -> Vec<PathBuf> {
     sets
 }
 
-/// Full recorded sets. A set without `status.json` holds only the compose
-/// exchanges, which `compose_only_sets_hold_exactly_the_compose_exchanges`
-/// checks.
 fn fixture_sets() -> Vec<PathBuf> {
     all_fixture_sets()
         .into_iter()
@@ -214,13 +188,9 @@ fn compose_only_sets_hold_exactly_the_compose_exchanges() {
         let (flavor, version) = name.split_once('-').expect("<flavor>-<version>");
         let mut files: Vec<String> = fs::read_dir(set)
             .expect("fixture set")
-            .map(|entry| {
-                entry
-                    .expect("entry")
-                    .file_name()
-                    .into_string()
-                    .expect("utf-8")
-            })
+            .map(|entry| entry.expect("entry"))
+            .filter(|entry| entry.file_type().expect("file type").is_file())
+            .map(|entry| entry.file_name().into_string().expect("utf-8"))
             .collect();
         files.sort();
         assert_eq!(files, COMPOSE_FIXTURES, "{name}");
@@ -233,7 +203,6 @@ fn compose_only_sets_hold_exactly_the_compose_exchanges() {
             assert!(value["operation"].is_string(), "{name}/{file}");
         }
     }
-    // A full set recorded with the compose step carries the same exchanges.
     for set in fixture_sets() {
         if set.join("rule_get_executed.json").is_file() {
             for file in COMPOSE_FIXTURES {
@@ -257,7 +226,6 @@ fn nontraditional_default_restore_request_is_correlated(
     }
 }
 
-/// The rule that every recorded set creates and deletes.
 fn probe_rule(rules: &[Rule]) -> &Rule {
     rules
         .iter()
@@ -294,8 +262,6 @@ fn every_fixture_parses_and_carries_its_metadata() {
             }
         }
 
-        // The search fixtures are recorded as a set; a set missing any of them
-        // predates the search probe.
         let missing: Vec<&str> = V0_3_SEARCH_FIXTURES
             .iter()
             .copied()
@@ -308,8 +274,6 @@ fn every_fixture_parses_and_carries_its_metadata() {
             missing.join(", ")
         );
 
-        // The alert fixtures are recorded as a set; a set missing any of them
-        // predates the alerts probe.
         let missing: Vec<&str> = V0_4_ALERT_FIXTURES
             .iter()
             .copied()
@@ -322,8 +286,6 @@ fn every_fixture_parses_and_carries_its_metadata() {
             missing.join(", ")
         );
 
-        // The case fixtures are recorded as a set; a set missing any of them
-        // predates the cases probe.
         let missing: Vec<&str> = V0_4_1_CASE_FIXTURES
             .iter()
             .copied()
@@ -426,9 +388,6 @@ fn rules_find_decodes_to_the_probe_rule() {
     }
 }
 
-/// Fixture sets recorded before an exchange lack its file. The self-managed
-/// set is re-recorded from the local lab on demand. Assert each new exchange
-/// where recorded and assert that it exists in at least one set.
 fn sets_with(file: &str) -> Vec<PathBuf> {
     fixture_sets()
         .into_iter()
@@ -1385,13 +1344,6 @@ fn is_identity_key(key: &str) -> bool {
     )
 }
 
-/// A string leaf under an identity key must be a redaction placeholder, not
-/// real identity: either the blanket `"REDACTED"` `scrub` writes when the
-/// key itself is sensitive, or a per-profile `u_REDACTED_<n>` uid placeholder
-/// `scrub_placeholder_values` writes in its place (uid is deliberately never
-/// blanket-redacted — see `SCRUB_FIELDS`'s comment in `xtask/src/main.rs`).
-/// Substring match, not exact equality, so both shapes pass: a real,
-/// unredacted value never contains the literal word "REDACTED".
 fn is_redacted_placeholder(value: &str) -> bool {
     value.contains("REDACTED")
 }
@@ -1520,8 +1472,6 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // The production query hardcodes this field. A fallback to `name` must
-        // not pass the fixture check.
         let matched_by = v["request"]["matched_by"]
             .as_str()
             .expect("request.matched_by");
@@ -1533,7 +1483,6 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // Decode the recorded response through the checked live-client path.
         let hits = rules::decode_preview_hits_checked(&v["response"])
             .unwrap_or_else(|error| panic!("{}: {error}", set.display()));
         assert!(
@@ -1543,8 +1492,6 @@ fn preview_hits_decode_through_the_production_path_and_carry_the_matched_field()
             set.display()
         );
 
-        // The returned document must contain the queried field and value.
-        // Otherwise the match is coincidental.
         let carried = hits
             .sample
             .first()
@@ -1837,8 +1784,6 @@ fn alert_fixtures_decode_through_the_typed_decoders() {
         if let Some(response) = suggest.get("response") {
             profiles::decode_public(response).expect("profile_suggest decodes");
         } else {
-            // Serverless: the public route answers 410; the fixture records
-            // the error envelope instead of a response.
             assert_eq!(suggest["error"]["http_status"], serde_json::json!(410));
         }
     }
@@ -1892,11 +1837,6 @@ fn case_fixtures_decode_through_the_typed_decoders() {
             set.display()
         );
 
-        // case_delete: a 204 has no body, so the response side is empty; the
-        // request path carries the id array, JSON-encoded then URL-encoded
-        // (`elasticctl_api::cases::delete_path`) — assert on a stable
-        // substring rather than the whole path, since the placeholder id is
-        // itself a scrubbing artifact, not a documented contract.
         let deleted = read("case_delete.json");
         assert!(
             deleted["response"].is_null(),
@@ -1996,8 +1936,6 @@ async fn agent_policy_fixtures_decode_through_the_production_paths() {
             create["response"]["item"]["id"],
             "elasticctl-sample-agent-policy"
         );
-        // The default table is complete only if the stored policy, normalized,
-        // equals the spec that was sent. This is the offline round-trip proof.
         let requested = AgentPolicySpec::try_from(create["request"].clone())
             .expect("recorded create request is a valid spec");
         let stored = agent_policy_ops::normalize(
@@ -2246,8 +2184,6 @@ async fn integration_policy_fixtures_decode_through_the_production_paths() {
                 ResponseTemplate::new(200)
                     .set_body_json(package_metadata_fixture["response"].clone()),
             )
-            // `package_metadata` consumes this once, and `export` must fetch
-            // it again through its secret-schema path.
             .expect(2)
             .mount(&server)
             .await;

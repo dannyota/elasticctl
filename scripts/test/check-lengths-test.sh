@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Exercise the checker against tracked files in disposable repositories.
 set -euo pipefail
 
 ROOT=$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd)

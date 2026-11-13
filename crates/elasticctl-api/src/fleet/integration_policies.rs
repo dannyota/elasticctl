@@ -1,5 +1,3 @@
-//! Typed integration-policy models and public Fleet route wrappers.
-
 use crate::compose::require_path_segment;
 use elasticctl_core::{Error, ErrorKind, Feature, Result, Transport, urlencode};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -8,7 +6,6 @@ use serde_json::{Map, Value};
 const BASE: &str = "/api/fleet/package_policies";
 const PACKAGES: &str = "/api/fleet/epm/packages";
 
-/// The exact package coordinate required by a portable integration policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntegrationPackageSpec {
@@ -16,7 +13,6 @@ pub struct IntegrationPackageSpec {
     pub version: String,
 }
 
-/// The portable, author-controlled integration-policy representation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IntegrationPolicySpec {
     pub id: String,
@@ -79,7 +75,6 @@ impl IntegrationPolicySpec {
         Ok(spec)
     }
 
-    /// Validate a portable 0.6.1 integration-policy artifact.
     pub fn validate(&self) -> Result<()> {
         for (field, value) in [
             ("id", &self.id),
@@ -153,7 +148,6 @@ impl<'de> Deserialize<'de> for IntegrationPolicySpec {
     }
 }
 
-/// A safe integration-policy list row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IntegrationPolicySummary {
     pub id: String,
@@ -164,7 +158,6 @@ pub struct IntegrationPolicySummary {
     pub package: IntegrationPackageSpec,
 }
 
-/// Safe single-integration output. Raw Fleet items are never rendered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IntegrationPolicyDetail {
     pub id: String,
@@ -177,7 +170,6 @@ pub struct IntegrationPolicyDetail {
     pub blocked_by: Vec<String>,
 }
 
-/// One page of the paginated simplified list route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntegrationPolicyPage {
     pub items: Vec<Map<String, Value>>,
@@ -186,19 +178,16 @@ pub struct IntegrationPolicyPage {
     pub per_page: u64,
 }
 
-/// A single integration as returned by its read, create, or update route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntegrationPolicy {
     pub item: Map<String, Value>,
 }
 
-/// Exact package metadata retained for internal secret classification only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageMetadata {
     pub(crate) item: Map<String, Value>,
 }
 
-/// Read one page of the simplified list route with deterministic ordering.
 pub async fn list_page(transport: &Transport, page: u64) -> Result<IntegrationPolicyPage> {
     transport.require_feature(Feature::FleetPolicies).await?;
     let body = transport
@@ -215,14 +204,10 @@ pub async fn list_page(transport: &Transport, page: u64) -> Result<IntegrationPo
     })
 }
 
-/// Read one integration in simplified form by a stable id read from a
-/// response or a local file.
 pub async fn get(transport: &Transport, id: &str) -> Result<IntegrationPolicy> {
     get_selector(transport, require_path_segment(id)?).await
 }
 
-/// Read one integration in simplified form by the caller's own selector, which
-/// keeps the caller's validation.
 pub(crate) async fn get_selector(
     transport: &Transport,
     selector: &str,
@@ -236,7 +221,6 @@ pub(crate) async fn get_selector(
     )
 }
 
-/// Create an integration from its complete portable specification.
 pub async fn create(
     transport: &Transport,
     spec: &IntegrationPolicySpec,
@@ -250,7 +234,6 @@ pub async fn create(
     )
 }
 
-/// Replace an integration with its complete portable specification.
 pub async fn update(
     transport: &Transport,
     id: &str,
@@ -270,7 +253,6 @@ pub async fn update(
     )
 }
 
-/// Delete one integration by id. Never sends `force`.
 pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     let id = require_path_segment(id)?;
     transport.require_feature(Feature::FleetPolicies).await?;
@@ -289,7 +271,6 @@ pub async fn delete(transport: &Transport, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read exact package metadata for internal package-secret classification.
 pub async fn package_metadata(
     transport: &Transport,
     name: &str,

@@ -10,11 +10,12 @@ refuses a response it cannot trust. None of these can be turned off.
   `--yes` applies it. The preview and the apply both print a banner naming the
   profile, host, and space, so neither a person nor a script can mistake which
   stack is about to change. See [Dry run and apply](CLI.md#dry-run-and-apply).
-- `state push` never deletes a remote rule or an exception list. A rule
-  missing from the directory is not a delete instruction; delete with
-  `rules delete` or `exceptions delete`. Items inside a mirrored exception list
-  reconcile exactly, including deletes, because a list's item set is written
-  in full. See [Rules as Code](Rules-as-Code.md#push).
+- `state push` never deletes a remote rule, exception list, or value list. A
+  rule missing from the directory is not a delete instruction; delete with
+  `rules delete`, `exceptions delete`, or `value-lists delete`. Items inside a
+  mirrored exception list, and values inside a mirrored value list, reconcile
+  exactly, including deletes, because they are written in full. See
+  [Rules as Code](Rules-as-Code.md#push).
 - The MCP server changes the stack only through a mutation class the operator
   enables at startup, and only after a person confirms each plan in the
   client; see [MCP server](#mcp-server).
@@ -51,9 +52,10 @@ instead of treating it as zero, unknown, or empty:
   happened".
 - Export trailers, rule preview hits, and the `doctor` identity check decode
   against their required fields.
-- A state directory whose `rules` or `exceptions` root, or a file in either,
-  is a symlink is refused, and a lost directory entry fails the read. An
-  incomplete mirror cannot start a `state push`.
+- A state directory whose `rules`, `exceptions`, or `value-lists` root, or a
+  file in one, is a symlink is refused, and a lost directory entry fails the
+  read. A value-list container file without its values file, or the reverse,
+  is refused. An incomplete mirror cannot start a `state push`.
 - An interrupted `state pull` recovers its journal one phase at a time; a
   corrupt record fails without touching the target directory.
 

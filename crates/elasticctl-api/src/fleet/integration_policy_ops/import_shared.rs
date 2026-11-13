@@ -4,9 +4,6 @@ use super::read::collect;
 const IMPORT_RACE_WARNING: &str =
     "warning  Fleet can change after the final recheck and before the write";
 
-/// A locally decoded import artifact. Its canonical specifications are kept
-/// private so callers can retain a validated source across context setup
-/// without being able to alter what remote planning will use.
 pub struct IntegrationPolicyImportArtifact {
     pub(super) source: PathBuf,
     pub(super) canonical: Vec<IntegrationPolicySpec>,
@@ -21,9 +18,6 @@ impl fmt::Debug for IntegrationPolicyImportArtifact {
     }
 }
 
-/// What `plan_import` preflights and `apply_import` rechecks. Only guard
-/// presentation is public: the canonical artifact, effective specifications,
-/// and Fleet snapshots never cross the API boundary.
 #[derive(Clone, PartialEq)]
 pub struct IntegrationPolicyImportPlan {
     pub preview: MutationPlan,
@@ -38,9 +32,6 @@ pub struct IntegrationPolicyImportPlan {
     pub(super) name_owners_snapshot: BTreeMap<String, BTreeSet<String>>,
     pub(super) parent_snapshots: BTreeMap<String, agent_policy_ops::AgentPolicyParentSnapshot>,
     pub(super) skipped_snapshot: Vec<Value>,
-    // Exact get-by-id results from before import classification. This covers
-    // every canonical id, so a mutable target or skipped row cannot turn an
-    // absent policy into an existing one (or the reverse).
     pub(super) existing_snapshot: BTreeMap<String, Option<Map<String, Value>>>,
     pub(super) targets: Vec<IntegrationPolicyImportTarget>,
     pub(super) package_groups: BTreeMap<String, IntegrationPackageGroup>,
@@ -76,10 +67,6 @@ pub(super) struct IntegrationPolicyCurrentSnapshot {
     pub(super) parent_ids: Vec<String>,
 }
 
-/// One package coordinate is shared by every pending policy that uses it.
-/// `*_snapshot` copies are deliberate: plan validation compares the retained
-/// exact Fleet response with the mutable execution expectation before it ever
-/// starts remote work.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct IntegrationPackageGroup {
     pub(super) package: IntegrationPackageSpec,

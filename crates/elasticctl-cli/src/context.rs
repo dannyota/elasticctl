@@ -1,13 +1,9 @@
-//! Resolves configuration once and holds a command's transport.
-
 use crate::cli::GlobalArgs;
 use elasticctl_core::{
     Capabilities, Config, Credential, Error, ErrorKind, Overrides, Resolved, Result, Transport,
 };
 use tokio::sync::OnceCell;
 
-/// Effective config path: `--config` or the platform default. Share this so
-/// every caller resolves the path the same way.
 pub fn config_path(global: &GlobalArgs) -> std::path::PathBuf {
     global.config.clone().unwrap_or_else(Config::default_path)
 }
@@ -19,13 +15,10 @@ pub struct Context {
 }
 
 impl Context {
-    /// Load and resolve configuration without network access or a credential.
-    /// `transport()` and `capabilities()` require a credential.
     pub fn build(global: &GlobalArgs) -> Result<Context> {
         let path = config_path(global);
         let config = Config::load(&path)?;
 
-        // Flags override the environment, which overrides the profile.
         let flags = Overrides {
             space: global.space.clone(),
             timeout_secs: global.timeout,
@@ -43,9 +36,6 @@ impl Context {
         })
     }
 
-    /// Build the transport once, on first use. A missing credential fails here
-    /// with a generic message, so live commands should call
-    /// `require_credential()` first.
     pub async fn transport(&self) -> Result<&Transport> {
         self.transport
             .get_or_try_init(|| async {
@@ -54,17 +44,11 @@ impl Context {
             .await
     }
 
-    /// Probe capabilities once, on first use. Commands that do not need them
-    /// avoid the request.
     pub async fn capabilities(&self) -> Result<&Capabilities> {
         let transport = self.transport().await?;
         transport.capabilities().await
     }
 
-    /// Fail early when the selected profile has no credential.
-    ///
-    /// Use the same credential check as `Transport::new` so the definitions
-    /// cannot drift.
     pub fn require_credential(&self) -> Result<()> {
         if !Credential::is_configured(&self.resolved.profile) {
             return Err(Error::new(

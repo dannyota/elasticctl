@@ -1,5 +1,3 @@
-//! `state push`: plan and apply, in container-then-item-then-rule order.
-
 use super::diff::{ItemOp, ListOp};
 use super::reports::{DanglingPointer, Mirror, PushReport, StackIdentity};
 use crate::diff::{Change, Drift};
@@ -14,40 +12,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 mod references;
-use references::{inject_list_ids, value_list_refs};
+mod summary;
+use references::inject_list_ids;
+use summary::{ExceptionCounts, push_summary, update_value_summary};
 
-/// What `plan_push` computed and `apply_push` performs.
-///
-/// The preview fields feed the caller's guard banner; `report` is the change
-/// ticket; `summary` is the JSON report.
 #[derive(Debug, Clone)]
 pub struct PushPlan {
     pub preview_action: String,
     pub preview_details: Vec<String>,
     pub report: ChangeReport,
     pub summary: PushReport,
-    /// The exact rules the preview described, resolved once at plan time so
-    /// `apply_push` never re-reads the mirror after the guard.
     desired: BTreeMap<String, Rule>,
-    /// Container writes, ordered before any item or rule write.
     list_ops: Vec<ListOp>,
-    /// Item creates, updates, and removals, ordered before rule writes.
     item_ops: Vec<ItemOp>,
+    pub value_lists: Vec<crate::value_lists::ListPlan>,
+    pub value_list_outcomes: Vec<crate::value_lists::ListOutcome>,
+    pub value_list_drift: Option<super::values::ValueListDrift>,
+    values: super::values::ValuePlan,
 }
 
-/// The exception writes `apply_push` performed, folded into `PushReport`.
-#[derive(Default, Clone, Copy)]
-struct ExceptionCounts {
-    lists_created: usize,
-    lists_updated: usize,
-    items_created: usize,
-    items_updated: usize,
-    items_removed: usize,
-}
-
-/// Compute the push preview and dry-run report without mutating the stack,
-/// scoped by `source`. The `custom`/`all` default lives on the clap flag, where
-/// `--help` shows it (spec 5.5).
 pub async fn plan_push(
     t: &Transport,
     dir: &Path,
@@ -61,26 +44,35 @@ pub async fn plan_push(
         rules: local_all,
         lists,
         items,
+        value_lists,
+        has_value_lists,
     } = super::mirror::read_mirror(dir)?;
-    // Resolve locally first because disk-only rules have no remote ID and may
-    // be created by a scoped push.
     let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "apply").await?;
-    // A local file outside the `--source` scope is never a pending create
-    // (spec 5.5). Selectors narrow both sides and leave the count at zero.
     let (local, out_of_scope) = if scope.is_scoped() {
         (scope.narrow(local_all), 0)
     } else {
         scope.split_by_source(local_all)
     };
-    // A value-list reference is active only if its exception container is
-    // reachable from a rule in this push's active closure. Reading every
-    // mirror item here would let an out-of-scope rule block this preview.
-    let active_list_keys = super::referenced_keys(&local);
-    let value_lists = value_list_refs(&items, &active_list_keys);
+
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let plan = super::diff::exception_plan(t, lists, items, &local, &remote).await?;
+    let plan =
+        super::diff::exception_plan(t, lists.clone(), items.clone(), &local, &remote).await?;
+    let values = super::values::plan(
+        t,
+        super::values::Inputs {
+            pairs: &value_lists,
+            has_root: has_value_lists,
+            lists: &lists,
+            items: &items,
+            local: &local,
+            remote: &remote,
+            exception_plan: &plan,
+        },
+        true,
+    )
+    .await?;
     let exceptions = plan.drift;
     let list_ops = plan.list_ops;
     let item_ops = plan.item_ops;
@@ -98,11 +90,6 @@ pub async fn plan_push(
     let actionable_ids: BTreeSet<String> =
         actionable.iter().map(|c| c.rule_id().to_string()).collect();
 
-    // A dangling pointer is drift the normalized diff cannot see, so a rule
-    // whose normalized form is unchanged still needs a write to repair it.
-    // Remote-only rules are skipped: push never touches what it has no local
-    // form for. Dedupe by `rule_id`: a rule referencing two wrong pointers
-    // emits two `DanglingPointer`s but is one rule write.
     let mut repairs: Vec<DanglingPointer> = Vec::new();
     let mut repaired_ids: BTreeSet<String> = BTreeSet::new();
     for dangling in &exceptions.dangling {
@@ -117,7 +104,6 @@ pub async fn plan_push(
 
     let mut preview_details = Vec::new();
 
-    // Name containers and items first, matching apply order.
     for op in &list_ops {
         match op {
             ListOp::Create(list) => {
@@ -169,40 +155,25 @@ pub async fn plan_push(
         preview_details.push(format!("{}  {}  update (pointer)", dangling.rule_id, name));
     }
 
-    // A value list is data, not configuration, and its content is not managed
-    // here (spec 7.7), but a referenced value list that cannot exist must be
-    // reported, never silently pushed. Absence is judged on the data streams:
-    // when they are not bootstrapped, no value list can exist. The `?` refuses
-    // on any failure that is not a clean "absent" 404, so an unverifiable
-    // reference is a failure rather than a silent omission.
-    if !value_lists.is_empty() {
-        if !exceptions::value_lists_bootstrapped(t).await? {
-            for value_list in &value_lists {
-                preview_details.push(format!(
-                    "value list \"{}\" is absent; run POST /api/lists/index to bootstrap the data streams",
-                    value_list.id
-                ));
-            }
-        } else {
-            for value_list in &value_lists {
-                if !exceptions::value_list_exists(t, &value_list.id).await? {
-                    preview_details.push(format!("value list \"{}\" is absent", value_list.id));
-                }
-            }
+    if let Some(drift) = &values.drift {
+        for id in &drift.unreferenced {
+            preview_details.push(format!("value list {id} is unreferenced; left unchanged"));
+        }
+        for warning in &drift.warnings {
+            preview_details.push(format!("value list {}: {}", warning.id, warning.message));
         }
     }
 
     let mut entries: Vec<ReportEntry> = Vec::new();
     let mut desired: BTreeMap<String, Rule> = BTreeMap::new();
 
-    // Record remote-only rules before applying changes, including in dry runs.
-    // `actionable()` excludes them because push never deletes remote rules.
     for change in &drift.changes {
         if let Change::RemoteOnly { rule_id, name } = change {
             entries.push(ReportEntry {
                 rule_id: rule_id.clone(),
                 name: name.clone(),
                 action: "skipped_remote_only".into(),
+                value_list: None,
                 before: remote_by_id(rule_id).map(|r| normalize::canonical(&r).into_value()),
                 after: None,
                 applied: false,
@@ -211,8 +182,6 @@ pub async fn plan_push(
         }
     }
 
-    // Record every actionable change as a pending entry. The report and JSON
-    // `pending` count describe proposed creates and updates.
     for change in &actionable {
         let (rule_id, name, action) = match change {
             Change::Added { rule_id, name } => (rule_id.clone(), name.clone(), "create"),
@@ -231,6 +200,7 @@ pub async fn plan_push(
             rule_id,
             name,
             action: action.into(),
+            value_list: None,
             before,
             after: Some(normalize::canonical(&desired_rule).into_value()),
             applied: false,
@@ -238,8 +208,6 @@ pub async fn plan_push(
         });
     }
 
-    // A repaired pointer is an update whose `before`/`after` normalization
-    // cannot show the difference; the write still happens.
     for dangling in &repairs {
         let desired_rule = by_id(&dangling.rule_id).expect("repair rule was found above");
         let before = remote_by_id(&dangling.rule_id).map(|r| normalize::canonical(&r).into_value());
@@ -248,6 +216,7 @@ pub async fn plan_push(
             rule_id: dangling.rule_id.clone(),
             name: desired_rule.name().to_string(),
             action: "update".into(),
+            value_list: None,
             before,
             after: Some(normalize::canonical(&desired_rule).into_value()),
             applied: false,
@@ -255,9 +224,6 @@ pub async fn plan_push(
         });
     }
 
-    // Refuse, before any write, a rule that references a list neither on the
-    // stack nor in the mirror. The ids are injected at write time against the
-    // target, but resolvability is known here.
     let desired_rules: Vec<Rule> = desired.values().cloned().collect();
     let unresolved: Vec<String> = super::referenced_keys(&desired_rules)
         .into_iter()
@@ -275,10 +241,6 @@ pub async fn plan_push(
         ));
     }
 
-    // Name the selection so a scoped preview differs from a full preview. The
-    // banner names rule, list, and item counts (spec 6.1). Removals get their
-    // own count: the number an operator reads before `--yes` must not read the
-    // same for a run that deletes three items and one that creates three.
     let item_removals = item_ops
         .iter()
         .filter(|op| matches!(op, ItemOp::Remove { .. }))
@@ -318,27 +280,51 @@ pub async fn plan_push(
         desired,
         list_ops,
         item_ops,
+        value_lists: values.plans.clone(),
+        value_list_outcomes: Vec::new(),
+        value_list_drift: values.drift.clone(),
+        values,
     })
 }
 
-/// Perform the mutations `plan_push` proposed.
-///
-/// The caller runs this only after its guard approves; a caller that never
-/// calls it has performed a dry run by construction. It reads only from the
-/// plan, never the mirror, so the preview and the apply cannot diverge.
-pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
-    // Resolve the live ids for every list a rule to write references, then
-    // create or update containers, then items, then rules. The pointer is
-    // injected only here, against the target stack, never at plan time.
+pub async fn apply_push(t: &Transport, plan: PushPlan) -> Result<PushPlan> {
+    apply_push_with_clock(t, plan, &crate::value_lists::SystemClock::default()).await
+}
+
+async fn apply_push_with_clock<C: crate::value_lists::Clock>(
+    t: &Transport,
+    mut plan: PushPlan,
+    clock: &C,
+) -> Result<PushPlan> {
     let desired_rules: Vec<Rule> = plan.desired.values().cloned().collect();
     let wanted: Vec<ListKey> = super::referenced_keys(&desired_rules).into_iter().collect();
     let mut resolved = exceptions::resolve_ids(t, &wanted).await?;
 
+    plan.value_list_outcomes = crate::value_lists::apply_plans(t, &plan.values.plans, clock).await;
+    let value_entries: Vec<_> = plan
+        .value_list_outcomes
+        .iter()
+        .flat_map(|outcome| {
+            outcome.evidence.iter().cloned().map(move |mut evidence| {
+                evidence.error = outcome.error.clone();
+                evidence
+            })
+        })
+        .map(ReportEntry::from)
+        .collect();
+    if plan
+        .value_list_outcomes
+        .iter()
+        .any(|o| o.outcome != crate::value_lists::Outcome::Applied)
+    {
+        plan.report.entries.splice(0..0, value_entries);
+        plan.report.applied = true;
+        update_value_summary(&mut plan);
+        return Ok(plan);
+    }
     let mut counts = ExceptionCounts::default();
-    let mut exception_entries = Vec::with_capacity(plan.list_ops.len() + plan.item_ops.len());
+    let mut exception_entries = value_entries;
 
-    // 1. Containers. A failure records the evidence and stops: the ordering
-    // invariant means later writes depend on this one.
     for op in &plan.list_ops {
         let failure = match op {
             ListOp::Create(list) => match exceptions::create_list(t, list).await {
@@ -351,6 +337,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
                         name: list.name().to_string(),
                         action: "create_list".into(),
+                        value_list: None,
                         before: None,
                         after: Some(normalize::canonical_list(&created).into_value()),
                         applied: true,
@@ -362,6 +349,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
                     name: list.name().to_string(),
                     action: "create_list".into(),
+                    value_list: None,
                     before: None,
                     after: None,
                     applied: false,
@@ -375,6 +363,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
                         name: after.name().to_string(),
                         action: "update_list".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: Some(normalize::canonical_list(&applied).into_value()),
                         applied: true,
@@ -386,6 +375,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
                     name: after.name().to_string(),
                     action: "update_list".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -403,9 +393,25 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         }
     }
 
-    // 2. Items: create, update, or delete. A failure records the evidence and
-    // stops, like a container failure; a retry re-plans against the partial
-    // state and re-converges.
+    if let Err(error) = super::values::reread(t, &plan.values).await {
+        let failed_entry = ReportEntry {
+            rule_id: String::new(),
+            name: String::new(),
+            action: "check_value_lists".into(),
+            before: None,
+            after: None,
+            applied: false,
+            error: Some(error.message),
+            value_list: None,
+        };
+        return Ok(finish_after_exception_failure(
+            plan,
+            exception_entries,
+            failed_entry,
+            counts,
+        ));
+    }
+
     for op in &plan.item_ops {
         let failure = match op {
             ItemOp::Create(item) => match exceptions::create_item(t, item).await {
@@ -415,6 +421,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
                         name: item.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "create_item".into(),
+                        value_list: None,
                         before: None,
                         after: Some(normalize::canonical_item(&applied).into_value()),
                         applied: true,
@@ -426,6 +433,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
                     name: item.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "create_item".into(),
+                    value_list: None,
                     before: None,
                     after: None,
                     applied: false,
@@ -439,6 +447,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
                         name: after.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "update_item".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: Some(normalize::canonical_item(&applied).into_value()),
                         applied: true,
@@ -450,6 +459,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
                     name: after.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "update_item".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -472,6 +482,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
                         name: before.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "delete_item".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: None,
                         applied: true,
@@ -483,6 +494,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
                     name: before.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "delete_item".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -500,25 +512,21 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         }
     }
 
-    // 3. Rules, injecting the resolved pointer into each.
     let mut entries = exception_entries;
     entries.reserve(plan.report.entries.len());
     for entry in plan.report.entries {
         if entry.action != "create" && entry.action != "update" {
-            // `skipped_remote_only` entries pass through untouched.
             entries.push(entry);
             continue;
         }
 
         let Some(desired) = plan.desired.get(&entry.rule_id) else {
-            // `plan_push` records a desired rule for every actionable change,
-            // so this is defensive. Record the inconsistency as a failure
-            // rather than dropping the planned mutation from the report.
             let missing = entry.rule_id.clone();
             entries.push(ReportEntry {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before: entry.before,
                 after: None,
                 applied: false,
@@ -528,14 +536,12 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         };
 
         let mut to_write = desired.clone();
-        // `plan_push` verified resolvability, so a miss here is a container
-        // whose live id could not be read (or a list deleted since planning).
-        // Record it per-rule, like any other write failure, and continue.
         if let Err(e) = inject_list_ids(&mut to_write, &resolved) {
             entries.push(ReportEntry {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before: entry.before,
                 after: None,
                 applied: false,
@@ -546,8 +552,6 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         let before = entry.before;
         let is_create = entry.action == "create";
 
-        // Continue after a per-rule failure so the report records every
-        // outcome.
         let outcome = if is_create {
             api::create(t, &to_write).await
         } else {
@@ -559,6 +563,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before,
                 after: Some(normalize::canonical(&applied).into_value()),
                 applied: true,
@@ -568,6 +573,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before,
                 after: None,
                 applied: false,
@@ -584,12 +590,10 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     plan.report.entries = entries;
     plan.report.applied = true;
     plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
+    update_value_summary(&mut plan);
     Ok(plan)
 }
 
-/// Record a failed exception write in the change ticket and finalize the plan,
-/// returning it so the caller keeps the evidence of what landed before the
-/// failure.
 fn finish_after_exception_failure(
     mut plan: PushPlan,
     mut exception_entries: Vec<ReportEntry>,
@@ -606,31 +610,9 @@ fn finish_after_exception_failure(
         plan.summary.out_of_scope,
     );
     plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
+    update_value_summary(&mut plan);
     plan
 }
 
-fn push_summary(
-    report: &ChangeReport,
-    selected: Option<usize>,
-    local_total: Option<usize>,
-    out_of_scope: usize,
-    counts: ExceptionCounts,
-) -> PushReport {
-    let (created, updated, skipped, failed) = report.counts();
-    PushReport {
-        applied: report.applied,
-        created,
-        updated,
-        skipped_remote_only: skipped,
-        failed,
-        pending: report.pending(),
-        lists_created: counts.lists_created,
-        lists_updated: counts.lists_updated,
-        items_created: counts.items_created,
-        items_updated: counts.items_updated,
-        items_removed: counts.items_removed,
-        out_of_scope,
-        selected,
-        local_total,
-    }
-}
+#[cfg(test)]
+mod tests;
