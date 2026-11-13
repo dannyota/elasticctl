@@ -68,6 +68,14 @@ entry holds `id` and `type`. For `init`, `lists` is empty and the object adds
 list's current state; the apply reads it again and stops with `conflict` if
 it changed (section 6.1).
 
+For `state push`, when any value list changes, `lists` uses the `import`
+entry shape for every selected list. The same six ordered keys identify the
+preview with `command: "state push"`. Additional `action` and `details` keys
+carry the state action and any rule, exception, or non-list notices. Text
+shows each changed list's container action beside its value counts and
+phase order. With no value-list change, the existing state preview is
+unchanged.
+
 ### 4.2 Output
 
 Table output is the default and `--json` is explicit, as for every command.

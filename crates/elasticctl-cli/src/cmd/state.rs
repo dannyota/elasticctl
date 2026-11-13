@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::guard::{self, Preview};
+use crate::render;
 use crate::report_file;
 use elasticctl_api::codec::Format as FileFormat;
 use elasticctl_api::rules::RuleSource;
@@ -7,6 +7,8 @@ use elasticctl_api::state;
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::Value;
 use std::path::Path;
+
+mod value_lists;
 
 fn to_value<T: serde::Serialize>(v: &T) -> Result<Value> {
     serde_json::to_value(v)
@@ -62,11 +64,7 @@ pub async fn push(
         .map(|path| report_file::prepare_report(path, &plan.report))
         .transpose()?;
 
-    let preview = Preview {
-        action: plan.preview_action.clone(),
-        details: plan.preview_details.clone(),
-    };
-    let plan = if guard::check(ctx, "state push", &preview) {
+    let plan = if value_lists::check(ctx, &plan)? {
         state::apply_push(t, plan).await?
     } else {
         plan
@@ -79,5 +77,32 @@ pub async fn push(
         })?;
     }
 
-    to_value(&plan.summary)
+    let mut summary = to_value(&plan.summary)?;
+    let failure = plan
+        .value_list_outcomes
+        .iter()
+        .find_map(|list| list.error.as_ref());
+    if value_lists::changed(&plan) || failure.is_some() {
+        summary["value_lists"] = to_value(&plan.value_list_outcomes)?;
+    }
+    if let Some(failure) = failure {
+        render::emit(&summary, &ctx.global)?;
+        let kind = match failure.kind.as_str() {
+            "auth" => ErrorKind::Auth,
+            "permission" => ErrorKind::Permission,
+            "not_found" => ErrorKind::NotFound,
+            "conflict" => ErrorKind::Conflict,
+            "unsupported" => ErrorKind::Unsupported,
+            "http" => ErrorKind::Http,
+            "connection" => ErrorKind::Connection,
+            "timeout" => ErrorKind::Timeout,
+            _ => ErrorKind::Error,
+        };
+        return Err(Error {
+            kind,
+            http_status: failure.status,
+            message: failure.message.clone(),
+        });
+    }
+    Ok(summary)
 }

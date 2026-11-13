@@ -1,0 +1,58 @@
+---
+source: crates/elasticctl-cli/tests/value_lists/state_push.rs
+expression: captured
+---
+{
+  "code": 1,
+  "stdout": "applied created updated skipped_remote_only failed pending lists_created lists_updated items_created items_updated items_removed value_lists_unknown value_lists_not_reached value_lists\ntrue 0 0 0 1 0 0 0 0 0 0 1 1 [{\"id\":\"elasticctl-fixture-value-list-id-3\",\"outcome\":\"unknown\",\"evidence\":[{\"action\":\"add_values\",\"rule_id\":\"elasticctl-fixture-value-list-id-3\",\"name\":\"elasticctl-fixture-value-list-id-3\",\"values\":[\"192.0.2.0/24\"],\"sent\":\"accepted\",\"status\":200,\"phase_verified\":false,\"outcome\":\"unknown\"},{\"action\":\"read_back\",\"rule_id\":\"elasticctl-fixture-value-list-id-3\",\"name\":\"elasticctl-fixture-value-list-id-3\",\"phase_verified\":false,\"outcome\":\"unknown\",\"of\":\"values\",\"observed\":true,\"missing\":1,\"extra\":0}],\"error\":{\"kind\":\"http\",\"message\":\"value list elasticctl-fixture-value-list-id-3 outcome is unknown; wait, run diff, and push again only when its preview is what you expect\"}},{\"id\":\"elasticctl-fixture-value-list-id-3-later\",\"outcome\":\"not_reached\",\"evidence\":[{\"action\":\"not_reached\",\"rule_id\":\"elasticctl-fixture-value-list-id-3-later\",\"name\":\"elasticctl-fixture-value-list-id-3\",\"sent\":\"not_sent\",\"phase_verified\":false,\"outcome\":\"not_reached\",\"planned_adds\":0,\"planned_removes\":0}]}]\n",
+  "stderr": "Applying: Push 0 rule change(s), 0 exception list(s) and 0 item(s) from ROOT/mirror (profile: default @ HOST, space: default)\n  value list elasticctl-fixture-value-list-id-3: 4 stored values have 3 distinct spellings; duplicates are retained\n  value list elasticctl-fixture-value-list-id-3-later: 4 stored values have 3 distinct spellings; duplicates are retained\n  value list elasticctl-fixture-value-list-id-3: container: none, removes_first, 1 adds, 0 removes; every installed reference is included and removing values keeps the list non-empty\n    + 192.0.2.0/24\n{\"error\":{\"kind\":\"http\",\"message\":\"value list elasticctl-fixture-value-list-id-3 outcome is unknown; wait, run diff, and push again only when its preview is what you expect\"}}\n",
+  "report": {
+    "profile": "default",
+    "host": "HOST",
+    "space": "default",
+    "applied": true,
+    "entries": [
+      {
+        "action": "add_values",
+        "rule_id": "elasticctl-fixture-value-list-id-3",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "values": [
+          "192.0.2.0/24"
+        ],
+        "sent": "accepted",
+        "status": 200,
+        "phase_verified": false,
+        "outcome": "unknown",
+        "error": {
+          "kind": "http",
+          "message": "value list elasticctl-fixture-value-list-id-3 outcome is unknown; wait, run diff, and push again only when its preview is what you expect"
+        }
+      },
+      {
+        "action": "read_back",
+        "rule_id": "elasticctl-fixture-value-list-id-3",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "phase_verified": false,
+        "outcome": "unknown",
+        "of": "values",
+        "observed": true,
+        "missing": 1,
+        "extra": 0,
+        "error": {
+          "kind": "http",
+          "message": "value list elasticctl-fixture-value-list-id-3 outcome is unknown; wait, run diff, and push again only when its preview is what you expect"
+        }
+      },
+      {
+        "action": "not_reached",
+        "rule_id": "elasticctl-fixture-value-list-id-3-later",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "sent": "not_sent",
+        "phase_verified": false,
+        "outcome": "not_reached",
+        "planned_adds": 0,
+        "planned_removes": 0
+      }
+    ]
+  }
+}

@@ -194,6 +194,18 @@ entry would be:
 outcome, and the report is written before the command exits, so a partial
 apply is never unreported (shared design 5).
 
+If any value list changes or stops with `failed` or `unknown`, the rendered
+push summary adds `value_lists`, an array of every list's `id`, `outcome`,
+`evidence`, and `error` when present. Text and JSON expose the same evidence,
+with or without `--report`. An `unknown` error gives the recovery of 6.4.
+Each report evidence entry for the stopping list also carries its structured
+`error`: `kind`, optional `status`, and `message`. A refusal during apply
+preflight on an unchanged list emits `check_value_list` evidence with
+`sent: "not_sent"`, `outcome: "failed"`, and zero planned adds and removes.
+After publishing the report and rendering the summary, the CLI exits 1 with
+the stopping list's error kind, status, and message. A run with no value-list
+change or stop keeps the existing output.
+
 ### 7.6 Older binaries
 
 A 0.9 binary reads only `rules/` and `exceptions/`. It would push a 0.10

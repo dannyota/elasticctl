@@ -1,0 +1,41 @@
+---
+source: crates/elasticctl-cli/tests/value_lists/state_push.rs
+expression: captured
+---
+{
+  "code": 1,
+  "stdout": "{\n  \"applied\": true,\n  \"created\": 0,\n  \"updated\": 0,\n  \"skipped_remote_only\": 0,\n  \"failed\": 1,\n  \"pending\": 0,\n  \"lists_created\": 0,\n  \"lists_updated\": 0,\n  \"items_created\": 0,\n  \"items_updated\": 0,\n  \"items_removed\": 0,\n  \"value_lists_not_reached\": 1,\n  \"value_lists\": [\n    {\n      \"id\": \"elasticctl-fixture-value-list-id-3\",\n      \"outcome\": \"failed\",\n      \"evidence\": [\n        {\n          \"action\": \"check_value_list\",\n          \"rule_id\": \"elasticctl-fixture-value-list-id-3\",\n          \"name\": \"elasticctl-fixture-value-list-id-3\",\n          \"sent\": \"not_sent\",\n          \"phase_verified\": false,\n          \"outcome\": \"failed\",\n          \"planned_adds\": 0,\n          \"planned_removes\": 0\n        }\n      ],\n      \"error\": {\n        \"kind\": \"unsupported\",\n        \"message\": \"value-list streams are not bootstrapped; run elasticctl value-lists init\"\n      }\n    },\n    {\n      \"id\": \"elasticctl-fixture-value-list-id-3-later\",\n      \"outcome\": \"not_reached\",\n      \"evidence\": [\n        {\n          \"action\": \"not_reached\",\n          \"rule_id\": \"elasticctl-fixture-value-list-id-3-later\",\n          \"name\": \"elasticctl-fixture-value-list-id-3\",\n          \"sent\": \"not_sent\",\n          \"phase_verified\": false,\n          \"outcome\": \"not_reached\",\n          \"planned_adds\": 0,\n          \"planned_removes\": 0\n        }\n      ]\n    }\n  ]\n}\n",
+  "stderr": "Applying: Push 0 rule change(s), 0 exception list(s) and 0 item(s) from ROOT/mirror (profile: default @ HOST, space: default)\n  value list elasticctl-fixture-value-list-id-3: 4 stored values have 3 distinct spellings; duplicates are retained\n  value list elasticctl-fixture-value-list-id-3-later: 4 stored values have 3 distinct spellings; duplicates are retained\n{\"error\":{\"kind\":\"unsupported\",\"message\":\"value-list streams are not bootstrapped; run elasticctl value-lists init\"}}\n",
+  "report": {
+    "profile": "default",
+    "host": "HOST",
+    "space": "default",
+    "applied": true,
+    "entries": [
+      {
+        "action": "check_value_list",
+        "rule_id": "elasticctl-fixture-value-list-id-3",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "sent": "not_sent",
+        "phase_verified": false,
+        "outcome": "failed",
+        "planned_adds": 0,
+        "planned_removes": 0,
+        "error": {
+          "kind": "unsupported",
+          "message": "value-list streams are not bootstrapped; run elasticctl value-lists init"
+        }
+      },
+      {
+        "action": "not_reached",
+        "rule_id": "elasticctl-fixture-value-list-id-3-later",
+        "name": "elasticctl-fixture-value-list-id-3",
+        "sent": "not_sent",
+        "phase_verified": false,
+        "outcome": "not_reached",
+        "planned_adds": 0,
+        "planned_removes": 0
+      }
+    ]
+  }
+}

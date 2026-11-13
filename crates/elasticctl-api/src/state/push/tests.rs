@@ -54,6 +54,7 @@ fn evidence(
         read_error: None,
         planned_adds: None,
         planned_removes: None,
+        error: None,
     }
 }
 
@@ -501,6 +502,16 @@ async fn injected_patch_refusal_stops_later_lists_and_all_exception_writes_with_
     assert_eq!(evidence["sent"], "refused");
     assert_eq!(evidence["status"], 409);
     assert_eq!(evidence["outcome"], "failed");
+    assert_eq!(evidence["error"]["kind"], "conflict");
+    assert_eq!(evidence["error"]["status"], 409);
+    assert_eq!(
+        evidence["error"]["message"],
+        applied.value_list_outcomes[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+    );
     assert!(
         server
             .received_requests()

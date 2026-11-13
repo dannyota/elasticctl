@@ -1,0 +1,9 @@
+---
+source: crates/elasticctl-cli/tests/value_lists/state_push.rs
+expression: "capture(root.path(), &server, &output, json_output)"
+---
+{
+  "code": 0,
+  "stdout": "applied created updated skipped_remote_only failed pending lists_created lists_updated items_created items_updated items_removed\ntrue 0 0 0 0 0 0 0 0 0 0\n",
+  "stderr": "Applying: Push 0 rule change(s), 0 exception list(s) and 0 item(s) from ROOT/mirror (profile: default @ HOST, space: default)\n  value list elasticctl-fixture-value-list-id-3: 4 stored values have 3 distinct spellings; duplicates are retained\n  value list elasticctl-fixture-value-list-id-3-later: 4 stored values have 3 distinct spellings; duplicates are retained\n"
+}

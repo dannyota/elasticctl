@@ -21,6 +21,8 @@ fn validate_reads_both_files_without_a_profile() {
 }
 
 mod common;
+#[path = "value_lists/state_push.rs"]
+mod state_push;
 #[path = "value_lists/common.rs"]
 mod vl;
 
