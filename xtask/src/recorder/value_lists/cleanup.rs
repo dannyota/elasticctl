@@ -18,6 +18,9 @@ pub(super) fn owns(
     exception: bool,
     item: bool,
 ) -> bool {
+    if let Some(object) = session.objects.get(id) {
+        return object.owns(session, body, id);
+    }
     if exception {
         body["list_id"].as_str() == Some(EXCEPTION)
             && (!item || body["item_id"].as_str() == Some(ITEM))
@@ -112,20 +115,66 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
         return Ok(());
     }
     let mut failures = Vec::new();
-    if session.exception_item {
+    if session.pending_init
+        && let Err(error) = settle_initialize(session).await
+    {
+        failures.push(failure("initialize", error));
+    }
+    for rules in [true, false] {
+        let ids: Vec<_> = session
+            .objects
+            .iter()
+            .filter(|(_, object)| {
+                if rules {
+                    matches!(object, super::objects::Object::Rule)
+                } else {
+                    matches!(object, super::objects::Object::Item { .. })
+                }
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if !rules
+                && session
+                    .objects
+                    .values()
+                    .any(|o| matches!(o, super::objects::Object::Rule))
+            {
+                break;
+            }
+            if let Err(error) = super::objects::delete(session, &id).await {
+                failures.push(failure(&id, error));
+            }
+        }
+    }
+    let dependent = session.objects.values().any(|o| {
+        matches!(
+            o,
+            super::objects::Object::Rule | super::objects::Object::Item { .. }
+        )
+    });
+    if session.exception_item && !dependent {
         match delete_owned(session, &exception_path(true), ITEM, true, true).await {
             Ok(_) => session.exception_item = false,
             Err(error) => failures.push(failure(ITEM, error)),
         }
     }
-    if session.exception && !session.exception_item {
+    if !dependent && !session.exception_item {
+        let ids: Vec<_> = session.objects.keys().cloned().collect();
+        for id in ids {
+            if let Err(error) = super::objects::delete(session, &id).await {
+                failures.push(failure(&id, error));
+            }
+        }
+    }
+    if session.exception && !session.exception_item && !dependent {
         match delete_owned(session, &exception_path(false), EXCEPTION, true, false).await {
             Ok(_) => session.exception = false,
             Err(error) => failures.push(failure(EXCEPTION, error)),
         }
     }
     for id in session.lists.clone().into_iter().rev() {
-        if id == super::LIST && session.exception_item {
+        if session.exception_item || session.exception || !session.objects.is_empty() {
             continue;
         }
         if session.pending_imports.contains_key(id) {
@@ -152,7 +201,9 @@ pub(super) async fn finish(session: &mut Session<'_>) -> Result<()> {
         failures.push(failure("marker audit", error));
     }
     if failures.is_empty()
+        && !session.pending_init
         && session.pending_imports.is_empty()
+        && session.objects.is_empty()
         && session.lists.is_empty()
         && !session.exception
         && !session.exception_item
@@ -224,39 +275,74 @@ async fn settle_import(session: &mut Session<'_>, id: &str) -> Result<()> {
         .map_err(|_| unresolved())
 }
 
+async fn settle_initialize(session: &mut Session<'_>) -> Result<()> {
+    let reads = async {
+        loop {
+            if let Ok((200, body)) = session.t.get_response("/api/lists/index").await
+                && body["list_index"] == true
+                && body["list_item_index"] == true
+            {
+                session.pending_init = false;
+                return;
+            }
+            tokio::time::sleep(session.timing.interval).await;
+        }
+    };
+    tokio::time::timeout(session.timing.budget, reads)
+        .await
+        .map_err(|_| recording_error("pending initialize is unresolved"))
+}
+
 pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
-    if !session.before_absent || session.evidence.flavor == "traditional" || !session.init_attempted
-    {
+    if session.pending_init {
+        return Err(recording_error("pending initialize blocks index restore"));
+    }
+    if !session.before_absent || !session.init_attempted {
         return Ok(());
     }
-    let body = session.t.get("/api/lists/_find?per_page=1").await?;
+    let body = match session.t.get("/api/lists/_find?per_page=1").await {
+        Ok(body) => body,
+        Err(error) if error.http_status == Some(404) => {
+            if session.t.get_response("/api/lists/index").await?.0 == 404 {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
     if inventory::total(&body)? != 0 {
         return Ok(());
     }
     if !session.attempted_deletes.insert("/api/lists/index".into()) {
         return wait_deleted(session, "/api/lists/index", "value-list indices").await;
     }
-    let (status, body) = session.t.delete_once_response("/api/lists/index").await?;
+    let result = session.t.delete_once_response("/api/lists/index").await;
+    let (status, body) = match result {
+        Ok(answer) => answer,
+        Err(error) => {
+            wait_deleted(session, "/api/lists/index", "value-list indices").await?;
+            return Err(super::steps::step_error("index_delete", 200, error));
+        }
+    };
     if status != 200 {
+        wait_deleted(session, "/api/lists/index", "value-list indices").await?;
         return Err(recording_error(format!(
-            "index restore returned HTTP {status}"
+            "index_delete: expected HTTP 200, received {status}"
         )));
     }
     session.evidence.response("index_delete", body);
-    let (status, body) = session.t.get_response("/api/lists/index").await?;
-    match status {
-        404 => {
-            session
-                .evidence
-                .http_response("index_restored", status, body);
-            Ok(())
+    let reads = async {
+        loop {
+            if let Ok((404, body)) = session.t.get_response("/api/lists/index").await {
+                session.evidence.http_response("index_restored", 404, body);
+                return;
+            }
+            tokio::time::sleep(session.timing.interval).await;
         }
-        200..=299 => Err(recording_error("index restore did not return 404")),
-        _ => Err(elasticctl_core::Error::from_response_body(
-            status,
-            &body.to_string(),
-        )),
-    }
+    };
+    tokio::time::timeout(session.timing.budget, reads)
+        .await
+        .map_err(|_| recording_error("index_restored: could not verify 404"))
 }
 
 fn failure(id: &str, error: elasticctl_core::Error) -> String {

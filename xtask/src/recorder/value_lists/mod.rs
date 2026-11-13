@@ -1,7 +1,10 @@
 mod cleanup;
 mod evidence;
 mod inventory;
+mod objects;
 mod scenarios;
+mod state;
+mod state_values;
 mod steps;
 #[cfg(test)]
 mod tests;
@@ -22,6 +25,12 @@ const RANGES: &str = "elasticctl-live-vl-spellings";
 const EXCEPTION: &str = "elasticctl-live-vl-exception";
 const ITEM: &str = "elasticctl-live-vl-exception-item";
 const ABSENT: &str = "elasticctl-live-vl-absent";
+const IP: &str = "elasticctl-live-vl-ip";
+const TEXT: &str = "elasticctl-live-vl-text";
+const DASH: &str = "elasticctl-live-vl-dash";
+const OUTSIDE: &str = "elasticctl-live-vl-outside";
+const RULE: &str = "elasticctl-live-vl-rule";
+const OTHER_RULE: &str = "elasticctl-live-vl-rule-other";
 const MARKER: &str = "elasticctl-live-marker";
 const ES_URL_USAGE: &str =
     "usage: record-value-lists requires ELASTICCTL_ES_URL for the orphan-item audit";
@@ -46,6 +55,7 @@ impl Timing {
 struct Session<'a> {
     t: &'a Transport,
     evidence: Evidence,
+    objects: std::collections::BTreeMap<String, objects::Object>,
     lists: Vec<&'static str>,
     items: Vec<String>,
     exception: bool,
@@ -53,6 +63,7 @@ struct Session<'a> {
     before_absent: bool,
     baseline_checked: bool,
     init_attempted: bool,
+    pending_init: bool,
     timing: Timing,
     nonce: String,
     pending_creates: std::collections::BTreeSet<String>,
@@ -69,6 +80,7 @@ impl<'a> Session<'a> {
         Self {
             t,
             evidence,
+            objects: std::collections::BTreeMap::new(),
             lists: Vec::new(),
             items: Vec::new(),
             exception: false,
@@ -76,6 +88,7 @@ impl<'a> Session<'a> {
             before_absent: false,
             baseline_checked: false,
             init_attempted: false,
+            pending_init: false,
             timing,
             nonce,
             pending_creates: std::collections::BTreeSet::new(),
@@ -85,7 +98,11 @@ impl<'a> Session<'a> {
     }
 
     async fn get(&mut self, path: &str) -> Result<serde_json::Value> {
-        let body = self.t.get(path).await?;
+        let body = self
+            .t
+            .get(path)
+            .await
+            .map_err(|e| steps::step_error(path, 200, e))?;
         self.evidence.observe(&body);
         Ok(body)
     }
@@ -190,6 +207,7 @@ where
             .map(|id| id.to_string())
             .collect::<Vec<_>>();
         ids.extend(session.items.iter().cloned());
+        ids.extend(session.objects.keys().cloned());
         if session.exception {
             ids.push(EXCEPTION.into());
         }

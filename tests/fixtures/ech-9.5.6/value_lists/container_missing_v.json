@@ -1,0 +1,13 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "container_missing_v",
+  "request": {
+    "path": "/api/lists?id=elasticctl-live-vl-record"
+  },
+  "response": {
+    "message": "list id: \"elasticctl-live-vl-record\" does not exist",
+    "status_code": 404
+  },
+  "http_status": 404
+}

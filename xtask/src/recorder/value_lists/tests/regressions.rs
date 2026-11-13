@@ -417,6 +417,15 @@ async fn interrupt_case(during_cleanup: bool, twice: bool) {
             ..fast()
         },
     );
+    if during_cleanup {
+        Mock::given(method("POST"))
+            .and(path("/api/lists/items/_export"))
+            .and(wiremock::matchers::query_param("list_id", RANGES))
+            .respond_with(response(400, json!({})))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
     let route = if during_cleanup {
         "/api/lists"
     } else {

@@ -6,6 +6,9 @@ pub(super) struct Stack {
     pub(super) values: std::collections::BTreeMap<String, Vec<serde_json::Value>>,
     pub(super) exception: Option<serde_json::Value>,
     pub(super) item: Option<serde_json::Value>,
+    pub(super) containers: std::collections::BTreeMap<String, serde_json::Value>,
+    pub(super) exception_items: std::collections::BTreeMap<String, serde_json::Value>,
+    pub(super) rules: std::collections::BTreeMap<String, serde_json::Value>,
     pub(super) bootstrapped: bool,
     pub(super) fail: Option<&'static str>,
     pub(super) cleanup_refuses: bool,
@@ -24,7 +27,7 @@ pub(super) fn response(status: u16, body: serde_json::Value) -> ResponseTemplate
 }
 
 impl Stack {
-    fn answer(&mut self, request: &Request) -> ResponseTemplate {
+    pub(super) fn answer(&mut self, request: &Request) -> ResponseTemplate {
         let path = request.url.path();
         let method = request.method.as_str();
         let query: std::collections::BTreeMap<_, _> =
@@ -122,27 +125,30 @@ impl Stack {
                 if self.fail == Some("exception_lists_find") && query.contains_key("filter") {
                     return response(503, json!({"message":"private-body"}));
                 }
-                let rows: Vec<_> =
-                    if query.get("namespace_type").map(String::as_str) == Some("single") {
-                        self.exception
-                            .iter()
-                            .filter(|row| {
-                                query.get("filter").is_none_or(|filter| {
-                                    filter
-                                        .strip_prefix("exception-list.attributes.list_id:")
-                                        .and_then(|v| v.strip_suffix('*'))
-                                        .is_some_and(|prefix| {
-                                            row["list_id"]
-                                                .as_str()
-                                                .is_some_and(|id| id.starts_with(prefix))
-                                        })
-                                })
+                let rows: Vec<_> = {
+                    self.exception
+                        .iter()
+                        .chain(self.containers.values())
+                        .filter(|row| {
+                            row["namespace_type"].as_str()
+                                == query.get("namespace_type").map(String::as_str)
+                        })
+                        .filter(|row| {
+                            query.get("filter").is_none_or(|filter| {
+                                filter
+                                    .split_once(".attributes.list_id:")
+                                    .map(|(_, value)| value)
+                                    .and_then(|v| v.strip_suffix('*'))
+                                    .is_some_and(|prefix| {
+                                        row["list_id"]
+                                            .as_str()
+                                            .is_some_and(|id| id.starts_with(prefix))
+                                    })
                             })
-                            .cloned()
-                            .collect()
-                    } else {
-                        vec![]
-                    };
+                        })
+                        .cloned()
+                        .collect()
+                };
                 if query.get("namespace_type").map(String::as_str) == Some("agnostic")
                     && query.get("filter").is_some_and(|filter| {
                         !filter.starts_with("exception-list-agnostic.attributes.")
@@ -162,7 +168,10 @@ impl Stack {
                         json!({"total": 1, "data": [{"list_id": "unexpected"}]}),
                     );
                 }
-                response(200, json!({"total": rows.len(), "data": rows}))
+                response(
+                    200,
+                    json!({"total": rows.len(), "data": rows, "page": query.get("page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1), "per_page": query.get("per_page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(100)}),
+                )
             }
             ("GET", "/api/exception_lists/items/_find") => {
                 if self.fail == Some("exception_items_find")
@@ -170,7 +179,17 @@ impl Stack {
                 {
                     return response(503, json!({"message":"private-body"}));
                 }
-                let mut rows: Vec<_> = self.item.iter().cloned().collect();
+                let mut rows: Vec<_> = self
+                    .item
+                    .iter()
+                    .chain(self.exception_items.values())
+                    .filter(|row| {
+                        row["list_id"] == list
+                            && row["namespace_type"].as_str()
+                                == query.get("namespace_type").map(String::as_str)
+                    })
+                    .cloned()
+                    .collect();
                 if query.get("per_page").map(String::as_str) == Some("10") && !rows.is_empty() {
                     if self.fail == Some("missing_operator") {
                         rows[0]["entries"][1]
@@ -182,7 +201,10 @@ impl Stack {
                         rows[0]["entries"][1]["operator"] = json!("included");
                     }
                 }
-                response(200, json!({"total": rows.len(), "data": rows}))
+                response(
+                    200,
+                    json!({"total": rows.len(), "data": rows, "page": query.get("page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1), "per_page": query.get("per_page").and_then(|s| s.parse::<usize>().ok()).unwrap_or(100)}),
+                )
             }
             ("POST", "/api/lists") => {
                 let key = body["id"].as_str().unwrap().to_string();
@@ -238,7 +260,10 @@ impl Stack {
                 let key = body["list_id"].as_str().unwrap().to_string();
                 let mut value = body;
                 let text = value["value"].as_str().unwrap();
-                if !text.contains('/') && !text.contains('-') {
+                if self.lists[&key]["type"] == "ip_range"
+                    && !text.contains('/')
+                    && !text.contains('-')
+                {
                     value["value"] = json!(format!("{text}-{text}"));
                 }
                 self.values
@@ -289,7 +314,7 @@ impl Stack {
                 }
                 response(
                     200,
-                    json!({"total": values.len(), "data": data, "cursor": "real-cursor"}),
+                    json!({"total": values.len(), "data": data, "page": page, "per_page": per, "cursor": "real-cursor"}),
                 )
             }
             ("POST", "/api/lists/items/_export") => {
@@ -359,6 +384,18 @@ impl Stack {
                         "message": "list does not exist", "created_by": self.created_by.unwrap_or("private-user")}),
                     );
                 }
+                if list == "elasticctl-live-vl-dash" {
+                    let content = String::from_utf8_lossy(&request.body);
+                    let values = self.values.entry(list.clone()).or_default();
+                    for (i, line) in content
+                        .lines()
+                        .filter(|line| line.starts_with("10.0.0."))
+                        .enumerate()
+                    {
+                        values.push(json!({"id": format!("{list}-import-{i}"), "list_id": list, "value": line.trim_end_matches('\r')}));
+                    }
+                    return response(200, self.lists[&list].clone());
+                }
                 self.imported_pending = true;
                 self.import_reads = 0;
                 self.pending_list = Some(list.clone());
@@ -384,7 +421,13 @@ impl Stack {
             ("POST", "/api/exception_lists") => {
                 let mut value = body;
                 value["id"] = json!("server-exception-id");
-                self.exception = Some(value.clone());
+                if value["list_id"] == EXCEPTION {
+                    self.exception = Some(value.clone());
+                } else {
+                    value["id"] = json!(format!("server-{}", value["list_id"].as_str().unwrap()));
+                    self.containers
+                        .insert(value["list_id"].as_str().unwrap().into(), value.clone());
+                }
                 response(200, value)
             }
             ("POST", "/api/exception_lists/items") => {
@@ -393,7 +436,13 @@ impl Stack {
                 }
                 let mut value = body;
                 value["id"] = json!("server-exception-item-id");
-                self.item = Some(value.clone());
+                if value["item_id"] == ITEM {
+                    self.item = Some(value.clone());
+                } else {
+                    value["id"] = json!(format!("server-{}", value["item_id"].as_str().unwrap()));
+                    self.exception_items
+                        .insert(value["item_id"].as_str().unwrap().into(), value.clone());
+                }
                 if self.fail == Some("reference") {
                     return response(400, json!({}));
                 }
@@ -401,18 +450,80 @@ impl Stack {
             }
             ("GET", "/api/exception_lists") => self
                 .exception
-                .clone()
+                .iter()
+                .chain(self.containers.values())
+                .find(|v| {
+                    v["list_id"] == list
+                        && v["namespace_type"].as_str()
+                            == query.get("namespace_type").map(String::as_str)
+                })
+                .cloned()
                 .map_or(response(404, json!({})), |v| response(200, v)),
             ("GET", "/api/exception_lists/items") => self
                 .item
-                .clone()
+                .iter()
+                .chain(self.exception_items.values())
+                .find(|v| {
+                    v["item_id"].as_str() == query.get("item_id").map(String::as_str)
+                        && v["namespace_type"].as_str()
+                            == query.get("namespace_type").map(String::as_str)
+                })
+                .cloned()
                 .map_or(response(404, json!({})), |v| response(200, v)),
             ("DELETE", "/api/exception_lists/items") if !self.cleanup_refuses => {
-                response(200, self.item.take().unwrap())
+                let key = query.get("item_id").unwrap();
+                let value = if key == ITEM {
+                    self.item.take()
+                } else {
+                    self.exception_items.remove(key)
+                };
+                value.map_or(response(404, json!({})), |v| response(200, v))
             }
             ("DELETE", "/api/exception_lists") if !self.cleanup_refuses => {
-                response(200, self.exception.take().unwrap())
+                let value = if list == EXCEPTION {
+                    self.exception.take()
+                } else {
+                    self.containers.remove(&list)
+                };
+                value.map_or(response(404, json!({})), |v| response(200, v))
             }
+            ("POST", "/api/detection_engine/rules") => {
+                let key = body["rule_id"].as_str().unwrap().to_string();
+                let mut value = body;
+                value["id"] = json!(format!("server-{key}"));
+                self.rules.insert(key, value.clone());
+                response(200, value)
+            }
+            ("GET", "/api/detection_engine/rules/_find") => {
+                let filter = query.get("filter").map(String::as_str).unwrap_or("");
+                let rows: Vec<_> = self
+                    .rules
+                    .values()
+                    .filter(|r| {
+                        if let Some((_, tail)) = filter.split_once("ruleId: \"") {
+                            r["rule_id"] == tail.trim_end_matches('"')
+                        } else {
+                            r["rule_id"]
+                                .as_str()
+                                .is_some_and(|id| id.starts_with(PREFIX))
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                response(
+                    200,
+                    json!({"total": rows.len(), "data": rows, "page": 1, "perPage": 10000}),
+                )
+            }
+            ("GET", "/api/detection_engine/rules") => self
+                .rules
+                .get(query.get("rule_id").unwrap())
+                .cloned()
+                .map_or(response(404, json!({})), |v| response(200, v)),
+            ("DELETE", "/api/detection_engine/rules") if !self.cleanup_refuses => self
+                .rules
+                .remove(query.get("rule_id").unwrap())
+                .map_or(response(404, json!({})), |v| response(200, v)),
             ("DELETE", "/api/lists") if self.item.is_some() && id == LIST => {
                 let references = json!([{
                     "exception_item": self.item.clone().unwrap(),

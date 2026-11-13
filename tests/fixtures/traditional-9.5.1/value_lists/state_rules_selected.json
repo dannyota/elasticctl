@@ -1,0 +1,67 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "state_rules_selected",
+  "request": {
+    "path": "/api/detection_engine/rules/_find?page=1&per_page=10000&filter=alert.attributes.params.ruleId%3A%20%22elasticctl-fixture-value-list-id-36%22"
+  },
+  "response": {
+    "page": 1,
+    "perPage": 10000,
+    "total": 1,
+    "data": [
+      {
+        "id": "elasticctl-fixture-value-list-id-37",
+        "rule_id": "elasticctl-fixture-value-list-id-36",
+        "name": "elasticctl-fixture-value-list-id-36",
+        "immutable": false,
+        "rule_source": {
+          "type": "internal"
+        },
+        "version": 1,
+        "revision": 0,
+        "updated_at": "2026-01-01T00:00:00.000Z",
+        "updated_by": "REDACTED",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "created_by": "REDACTED",
+        "enabled": false,
+        "interval": "1m",
+        "from": "now-5m",
+        "to": "now",
+        "description": "elasticctl-live-marker",
+        "tags": [
+          "elasticctl-live-marker",
+          "REDACTED"
+        ],
+        "author": [],
+        "threat": [],
+        "related_integrations": [],
+        "required_fields": [],
+        "setup": "",
+        "false_positives": [],
+        "references": [],
+        "risk_score": 21,
+        "risk_score_mapping": [],
+        "severity": "low",
+        "severity_mapping": [],
+        "output_index": "",
+        "max_signals": 100,
+        "exceptions_list": [
+          {
+            "id": "elasticctl-fixture-value-list-id-10",
+            "list_id": "elasticctl-fixture-value-list-id-9",
+            "type": "detection",
+            "namespace_type": "single"
+          }
+        ],
+        "actions": [],
+        "type": "query",
+        "language": "kuery",
+        "index": [
+          "elasticctl-live-vl-events"
+        ],
+        "query": "*:*"
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "container_s_unsupported",
+  "request": {
+    "path": "/api/lists?id=elasticctl-fixture-value-list-id-9"
+  },
+  "response": {
+    "id": "elasticctl-fixture-value-list-id-9",
+    "type": "long",
+    "name": "elasticctl-fixture-value-list-id-9",
+    "description": "elasticctl-live-marker",
+    "immutable": false,
+    "meta": {
+      "marker": "elasticctl-live-marker",
+      "recorder_nonce": "REDACTED"
+    },
+    "@timestamp": "2026-01-01T00:00:00.000Z",
+    "version": 1,
+    "updated_by": "REDACTED",
+    "tie_breaker_id": "REDACTED",
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "created_by": "REDACTED",
+    "updated_at": "2026-01-01T00:00:00.000Z",
+    "_version": "WzEzLDFd"
+  }
+}

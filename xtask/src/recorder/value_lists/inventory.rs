@@ -79,7 +79,7 @@ pub(super) async fn scan_clear(
                 marker_id(row, "id", markers)?;
                 marker_id(row, "list_id", markers)?;
                 let list = row["list_id"].as_str().unwrap();
-                exception_references(session, list, namespace).await?;
+                exception_references(session, list, namespace, markers).await?;
             }
             seen += rows.len() as u64;
             if seen == count {
@@ -88,6 +88,35 @@ pub(super) async fn scan_clear(
             if rows.is_empty() || seen > total(&body)? || page == 100 {
                 return Err(recording_error("exception marker scan is incomplete"));
             }
+        }
+    }
+    let mut seen_rules = 0;
+    let mut expected_rules = None;
+    for page in 1..=1000 {
+        let filter = urlencode("alert.attributes.params.ruleId: elasticctl-live-vl-*");
+        let body = session
+            .t
+            .get(&format!(
+                "/api/detection_engine/rules/_find?page={page}&per_page=100&filter={filter}"
+            ))
+            .await?;
+        let count = total(&body)?;
+        if expected_rules
+            .replace(count)
+            .is_some_and(|previous| previous != count)
+        {
+            return Err(recording_error("rule marker scan totals disagree"));
+        }
+        let rows = data(&body)?;
+        for row in rows {
+            marker_id(row, "rule_id", markers)?;
+        }
+        seen_rules += rows.len() as u64;
+        if seen_rules == count {
+            break;
+        }
+        if rows.is_empty() || seen_rules > count || page == 1000 {
+            return Err(recording_error("rule marker scan is incomplete"));
         }
     }
     marker_items(session, absent, markers).await?;
@@ -104,6 +133,7 @@ async fn exception_references(
     session: &mut Session<'_>,
     list: &str,
     namespace: &str,
+    markers: &mut BTreeSet<String>,
 ) -> Result<()> {
     let mut seen = 0;
     let mut expected = None;
@@ -123,6 +153,7 @@ async fn exception_references(
         }
         let rows = data(&body)?;
         for row in rows {
+            marker_id(row, "item_id", markers)?;
             let item = row["item_id"].as_str().ok_or_else(|| {
                 recording_error(format!(
                     "exception item scan has an invalid item_id for {list}"
@@ -170,7 +201,7 @@ fn scan_entries(entries: &Value, container: &str, item: &str) -> Result<()> {
     Ok(())
 }
 
-async fn marker_items(
+pub(super) async fn marker_items(
     session: &mut Session<'_>,
     absent: bool,
     markers: &mut BTreeSet<String>,
