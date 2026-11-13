@@ -107,6 +107,44 @@ async fn common_identity_recording_preserves_markers_text_and_versions() {
     assert_eq!(common, ordinary);
 }
 
+#[tokio::test]
+async fn numeric_identity_preserves_recorded_values_and_export() {
+    let numeric = recording_for_user("10").await;
+    let ordinary = recording_for_user("elastic").await;
+    assert_eq!(numeric, ordinary);
+}
+
+#[test]
+fn numeric_identity_preserves_item_payloads_and_scrubs_prose() {
+    let mut evidence = Evidence::default();
+    evidence.exchange(
+        "items_find_first",
+        json!({"value": "10.0.0.6/32", "message": "user 10 cannot import"}),
+        json!({"created_by": "10", "data": [{"value": "10.0.0.6/32"}],
+            "message": "user 10 cannot import"}),
+    );
+    evidence.exchange(
+        "items_import",
+        json!({"values": ["10.0.0.8/32"]}),
+        json!({}),
+    );
+    let document = &evidence.fixtures[0].document;
+    assert_eq!(document["request"]["value"], "10.0.0.6/32");
+    assert_eq!(document["response"]["data"][0]["value"], "10.0.0.6/32");
+    assert_eq!(
+        document["request"]["message"],
+        "user REDACTED cannot import"
+    );
+    assert_eq!(
+        document["response"]["message"],
+        "user REDACTED cannot import"
+    );
+    assert_eq!(
+        evidence.fixtures[1].document["request"]["values"][0],
+        "10.0.0.8/32"
+    );
+}
+
 #[test]
 fn user_field_values_are_private_in_same_and_later_prose() {
     for field in [

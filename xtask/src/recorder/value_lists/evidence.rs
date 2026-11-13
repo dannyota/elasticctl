@@ -86,7 +86,12 @@ fn token_character(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
 }
 
-fn scrub_identities(value: &mut Value, identities: &BTreeSet<String>) {
+fn scrub_identities(
+    value: &mut Value,
+    identities: &BTreeSet<String>,
+    item_values: bool,
+    import_values: bool,
+) {
     match value {
         Value::String(text) => {
             let mut redacted = String::new();
@@ -119,12 +124,24 @@ fn scrub_identities(value: &mut Value, identities: &BTreeSet<String>) {
             redacted.push_str(&text[copied..]);
             *text = redacted;
         }
-        Value::Object(map) => map
-            .values_mut()
-            .for_each(|value| scrub_identities(value, identities)),
+        Value::Object(map) => {
+            for (key, value) in map {
+                if (item_values && key == "value" && value.is_string())
+                    || (import_values
+                        && key == "values"
+                        && (value.is_string()
+                            || value
+                                .as_array()
+                                .is_some_and(|items| items.iter().all(Value::is_string))))
+                {
+                    continue;
+                }
+                scrub_identities(value, identities, item_values && key == "data", false);
+            }
+        }
         Value::Array(array) => array
             .iter_mut()
-            .for_each(|value| scrub_identities(value, identities)),
+            .for_each(|value| scrub_identities(value, identities, item_values, import_values)),
         _ => {}
     }
 }
@@ -180,7 +197,23 @@ impl Evidence {
         // Export strings remain byte-for-byte as received, including order and duplicates.
         for (root, value) in [("/request", &mut request), ("/response", &mut body)] {
             take_versions(value, root.to_string(), &mut versions);
-            scrub_identities(value, &self.identities);
+            let item_values = matches!(
+                name,
+                "items_find_first"
+                    | "items_find_next"
+                    | "items_import_settled"
+                    | "items_delete_value"
+                    | "item_create"
+            );
+            let export = root == "/response" && matches!(name, "items_export" | "export_spellings");
+            if !export {
+                scrub_identities(
+                    value,
+                    &self.identities,
+                    item_values,
+                    root == "/request" && name == "items_import",
+                );
+            }
             scrub_placeholder_values(value, &self.ids);
             scrub_alert_timestamps(value);
             scrub_cursors(value);
