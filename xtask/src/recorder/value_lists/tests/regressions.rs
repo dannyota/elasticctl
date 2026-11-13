@@ -244,6 +244,7 @@ async fn cleanup_rejects_stable_total_below_import_target() {
 
 fn restore_read(request: &Request) -> bool {
     request.url.path() == "/api/lists/_find"
+        && !request.url.query_pairs().any(|(key, _)| key == "filter")
         && request
             .url
             .query_pairs()
@@ -524,4 +525,78 @@ async fn second_interrupt_during_cleanup_names_survivors() {
 #[tokio::test]
 async fn second_interrupt_after_recording_interrupt_names_survivors() {
     interrupt_case(false, true).await;
+}
+
+#[tokio::test]
+async fn list_find_rejects_wrong_total_and_missing_cursor() {
+    for body in [
+        json!({"total": 3, "data": [{"id": LIST}], "cursor": "cursor"}),
+        json!({"total": 2, "data": [{"id": LIST}]}),
+    ] {
+        let (server, _) = stack(Stack::default()).await;
+        Mock::given(method("GET"))
+            .and(path("/api/lists/_find"))
+            .and(|request: &Request| request.url.query_pairs().any(|(k, _)| k == "filter"))
+            .respond_with(response(200, body))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let t = transport(&server);
+        let mut session = Session::new(&t, fast());
+        let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error.message.contains("lists_find_first"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn list_find_transport_and_decode_failures_name_the_step() {
+    for (page, template) in [
+        (
+            "1",
+            ResponseTemplate::new(503).set_body_string("private-body"),
+        ),
+        (
+            "1",
+            ResponseTemplate::new(200).set_body_string("private-body{"),
+        ),
+        (
+            "2",
+            ResponseTemplate::new(503).set_body_string("private-body"),
+        ),
+    ] {
+        let (server, _) = stack(Stack::default()).await;
+        Mock::given(method("GET"))
+            .and(path("/api/lists/_find"))
+            .and(move |request: &Request| {
+                request.url.query_pairs().any(|(k, _)| k == "filter")
+                    && request
+                        .url
+                        .query_pairs()
+                        .any(|(k, v)| k == "page" && v == page)
+            })
+            .respond_with(template)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let t = transport(&server);
+        let mut session = Session::new(&t, fast());
+        let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        let step = if page == "1" {
+            "lists_find_first"
+        } else {
+            "lists_find_next"
+        };
+        assert!(error.message.contains(step), "{}", error.message);
+        assert!(!error.message.contains("private-body"), "{}", error.message);
+    }
 }

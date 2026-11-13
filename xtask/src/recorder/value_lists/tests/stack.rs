@@ -82,12 +82,41 @@ impl Stack {
                 response(200, json!({}))
             }
             ("GET", "/api/lists/_find") => {
-                let rows: Vec<_> = self.lists.values().cloned().collect();
-                if self.bootstrapped {
-                    response(200, json!({"total": rows.len(), "data": rows}))
-                } else {
-                    response(404, json!({}))
+                if !self.bootstrapped {
+                    return response(404, json!({}));
                 }
+                let rows: Vec<_> = self
+                    .lists
+                    .values()
+                    .filter(|row| {
+                        query.get("filter").is_none_or(|filter| {
+                            filter
+                                .strip_prefix("name:")
+                                .and_then(|v| v.strip_suffix('*'))
+                                .is_some_and(|prefix| {
+                                    row["name"]
+                                        .as_str()
+                                        .is_some_and(|name| name.starts_with(prefix))
+                                })
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                let page: usize = query.get("page").map_or(1, |v| v.parse().unwrap());
+                let per: usize = query.get("per_page").map_or(100, |v| v.parse().unwrap());
+                if page > 1 && query.get("cursor").map(String::as_str) != Some("real-cursor") {
+                    return response(400, json!({}));
+                }
+                let data: Vec<_> = rows
+                    .iter()
+                    .skip((page - 1) * per)
+                    .take(per)
+                    .cloned()
+                    .collect();
+                response(
+                    200,
+                    json!({"total": rows.len(), "data": data, "page": page, "per_page": per, "cursor": "real-cursor"}),
+                )
             }
             ("GET", "/api/exception_lists/_find") => {
                 let rows: Vec<_> =

@@ -3,8 +3,8 @@
   "version": "9.5.1",
   "operation": "spellings_create",
   "request": {
-    "id": "elasticctl-fixture-value-list-id-12",
-    "name": "elasticctl-fixture-value-list-id-12",
+    "id": "elasticctl-fixture-value-list-id-9",
+    "name": "elasticctl-fixture-value-list-id-9",
     "description": "elasticctl-live-marker",
     "type": "ip_range",
     "meta": {
@@ -13,9 +13,9 @@
     }
   },
   "response": {
-    "id": "elasticctl-fixture-value-list-id-12",
+    "id": "elasticctl-fixture-value-list-id-9",
     "type": "ip_range",
-    "name": "elasticctl-fixture-value-list-id-12",
+    "name": "elasticctl-fixture-value-list-id-9",
     "description": "elasticctl-live-marker",
     "immutable": false,
     "meta": {
@@ -29,6 +29,6 @@
     "created_at": "2026-01-01T00:00:00.000Z",
     "created_by": "REDACTED",
     "updated_at": "2026-01-01T00:00:00.000Z",
-    "_version": "WzQsMV0="
+    "_version": "WzMsMV0="
   }
 }
