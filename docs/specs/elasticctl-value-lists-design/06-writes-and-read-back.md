@@ -47,8 +47,8 @@ values verify (section 7.4).
 
 ### 6.3 Update and exact reconciliation
 
-The container's `name`, `description`, and `meta` are updated with
-`PATCH /api/lists`, carrying the `_version` from the apply-time read (D16).
+The container's `name` and `description`, and its `meta` when the local file
+has one (section 3.2), are updated with `PATCH /api/lists`, carrying the `_version` from the apply-time read (D16).
 A 409 is `conflict`. A changed `type` never reaches the stack: it is refused
 before the preview (D15), with `conflict` naming both types. Recreating the
 list under the new type is a `delete` and an `import`, each asked for by
@@ -120,9 +120,9 @@ read, within the same 120-second budget:
   and the run continues. If not, because the write did not apply or because
   later chunks were never sent, the list ends `unknown`;
 - a container create or update reads `GET /api/lists?id=`. If the container
-  exists with the planned `type`, `name`, `description`, and `meta`, the
-  write is verified and the run continues; anything else ends the list
-  `unknown`.
+  exists with the planned `type`, `name`, and `description`, and the local
+  `meta` when there is one, the write is verified and the run continues;
+  anything else ends the list `unknown`.
 
 A 4xx other than the item-delete 404 is not uncertain: Kibana refused the
 request, and the list ends `failed` without a read-back.

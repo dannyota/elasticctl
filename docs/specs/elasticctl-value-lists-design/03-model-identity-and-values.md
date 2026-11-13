@@ -33,6 +33,11 @@ meta:
 
 `id`, `type`, `name`, and `description` are required. Kibana requires `name`
 and `description` on create. `meta` is optional and round-trips as an object.
+When the local file has `meta`, it is compared with the stack's as JSON and
+sent when it differs. When the local file has none, the stack's `meta` is
+left as it is: it is not compared, not sent, and not checked after a write. A
+PATCH without `meta` keeps the stored object (recorded fixture
+`container_patch`), and elasticctl offers no way to clear it.
 No other key is read or written, and an unknown key is refused by `validate`
 rather than dropped, so a typo cannot pass as a change.
 
