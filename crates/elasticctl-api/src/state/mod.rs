@@ -4,6 +4,7 @@ mod pull;
 mod push;
 mod reports;
 mod transaction;
+mod values;
 
 pub use diff::diff;
 pub use mirror::{read_local, read_mirror};
@@ -13,6 +14,7 @@ pub use reports::{
     DanglingPointer, DiffReport, ExceptionDrift, ListChange, Mirror, PullReport, PushReport,
     StackIdentity,
 };
+pub use values::{ValueListChange, ValueListDrift, ValueListIssue};
 
 use crate::model::{ListKey, Rule};
 use crate::rules::{RuleFilter, RuleSource};

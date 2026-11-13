@@ -50,6 +50,8 @@ pub async fn diff(
         rules: local_all,
         lists,
         items,
+        value_lists,
+        has_value_lists,
     } = super::mirror::read_mirror(dir)?;
     let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "compare").await?;
     let (local, out_of_scope) = if scope.is_scoped() {
@@ -60,7 +62,7 @@ pub async fn diff(
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let plan = exception_plan(t, lists, items, &local, &remote).await?;
+    let plan = exception_plan(t, lists.clone(), items.clone(), &local, &remote).await?;
 
     let changes: Vec<Change> = drift
         .changes
@@ -69,13 +71,30 @@ pub async fn diff(
         .cloned()
         .collect();
 
+    let values = super::values::plan(
+        t,
+        super::values::Inputs {
+            pairs: &value_lists,
+            has_root: has_value_lists,
+            lists: &lists,
+            items: &items,
+            local: &local,
+            remote: &remote,
+            exception_plan: &plan,
+        },
+        false,
+    )
+    .await?;
     let exceptions = plan.drift;
     Ok(DiffReport {
-        clean: drift.is_clean() && exceptions.is_clean(),
+        clean: drift.is_clean()
+            && exceptions.is_clean()
+            && values.drift.as_ref().is_none_or(|v| v.is_clean()),
         local: local.len(),
         remote: remote.len(),
         changes,
         exceptions,
+        value_lists: values.drift,
         out_of_scope,
         selected: scope.is_scoped().then(|| scope.selected()),
         local_total: scope.is_scoped().then_some(scope.local_total),

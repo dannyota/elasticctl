@@ -1,8 +1,7 @@
-use crate::exceptions;
-use crate::model::{ExceptionItem, ListKey, Rule};
+use crate::model::{ListKey, Rule};
 use elasticctl_core::{Error, ErrorKind, Result};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub(super) fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>) -> Result<()> {
     let Some(Value::Array(refs)) = rule.as_map_mut().get_mut("exceptions_list") else {
@@ -39,42 +38,4 @@ pub(super) fn inject_list_ids(rule: &mut Rule, live: &BTreeMap<ListKey, String>)
         }
     }
     Ok(())
-}
-pub(super) fn value_list_refs(
-    items: &[ExceptionItem],
-    active_list_keys: &BTreeSet<ListKey>,
-) -> BTreeSet<exceptions::ValueListRef> {
-    let mut ids = BTreeSet::new();
-    for item in items {
-        let Ok(list_id) = item.list_id() else {
-            continue;
-        };
-        let key = ListKey {
-            list_id: list_id.to_string(),
-            namespace_type: item.namespace_type().to_string(),
-        };
-        if !active_list_keys.contains(&key) {
-            continue;
-        }
-        let Some(entries) = item.as_map().get("entries").and_then(Value::as_array) else {
-            continue;
-        };
-        for entry in entries {
-            let Some(obj) = entry.as_object() else {
-                continue;
-            };
-            if obj.get("type").and_then(Value::as_str) != Some("list") {
-                continue;
-            }
-            if let Some(id) = obj
-                .get("list")
-                .and_then(Value::as_object)
-                .and_then(|l| l.get("id"))
-                .and_then(Value::as_str)
-            {
-                ids.insert(exceptions::ValueListRef { id: id.to_string() });
-            }
-        }
-    }
-    ids
 }

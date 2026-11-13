@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 mod references;
-use references::{inject_list_ids, value_list_refs};
+mod summary;
+use references::inject_list_ids;
+use summary::{ExceptionCounts, push_summary, update_value_summary};
 
 #[derive(Debug, Clone)]
 pub struct PushPlan {
@@ -23,15 +25,10 @@ pub struct PushPlan {
     desired: BTreeMap<String, Rule>,
     list_ops: Vec<ListOp>,
     item_ops: Vec<ItemOp>,
-}
-
-#[derive(Default, Clone, Copy)]
-struct ExceptionCounts {
-    lists_created: usize,
-    lists_updated: usize,
-    items_created: usize,
-    items_updated: usize,
-    items_removed: usize,
+    pub value_lists: Vec<crate::value_lists::ListPlan>,
+    pub value_list_outcomes: Vec<crate::value_lists::ListOutcome>,
+    pub value_list_drift: Option<super::values::ValueListDrift>,
+    values: super::values::ValuePlan,
 }
 
 pub async fn plan_push(
@@ -47,6 +44,8 @@ pub async fn plan_push(
         rules: local_all,
         lists,
         items,
+        value_lists,
+        has_value_lists,
     } = super::mirror::read_mirror(dir)?;
     let scope = super::scope_of(t, selectors, tag, search, source, &local_all, "apply").await?;
     let (local, out_of_scope) = if scope.is_scoped() {
@@ -54,12 +53,26 @@ pub async fn plan_push(
     } else {
         scope.split_by_source(local_all)
     };
-    let active_list_keys = super::referenced_keys(&local);
-    let value_lists = value_list_refs(&items, &active_list_keys);
+
     let remote = scope.remote(t).await?;
     let drift = Drift::compute(&local, &remote)?;
 
-    let plan = super::diff::exception_plan(t, lists, items, &local, &remote).await?;
+    let plan =
+        super::diff::exception_plan(t, lists.clone(), items.clone(), &local, &remote).await?;
+    let values = super::values::plan(
+        t,
+        super::values::Inputs {
+            pairs: &value_lists,
+            has_root: has_value_lists,
+            lists: &lists,
+            items: &items,
+            local: &local,
+            remote: &remote,
+            exception_plan: &plan,
+        },
+        true,
+    )
+    .await?;
     let exceptions = plan.drift;
     let list_ops = plan.list_ops;
     let item_ops = plan.item_ops;
@@ -142,19 +155,32 @@ pub async fn plan_push(
         preview_details.push(format!("{}  {}  update (pointer)", dangling.rule_id, name));
     }
 
-    if !value_lists.is_empty() {
-        if !exceptions::value_lists_bootstrapped(t).await? {
-            for value_list in &value_lists {
-                preview_details.push(format!(
-                    "value list \"{}\" is absent; run POST /api/lists/index to bootstrap the data streams",
-                    value_list.id
-                ));
+    if let Some(drift) = &values.drift {
+        for id in &drift.unreferenced {
+            preview_details.push(format!("value list {id} is unreferenced; left unchanged"));
+        }
+        for warning in &drift.warnings {
+            preview_details.push(format!("value list {}: {}", warning.id, warning.message));
+        }
+    }
+    for list in &values.plans {
+        if list.container_action != crate::value_lists::ContainerAction::None
+            || !list.adds.is_empty()
+            || !list.removes.is_empty()
+        {
+            preview_details.push(format!(
+                "value list {}: {:?}, {} adds, {} removes; {}",
+                list.local.container.id,
+                list.order,
+                list.adds.len(),
+                list.removes.len(),
+                list.order_reason
+            ));
+            for value in &list.adds {
+                preview_details.push(format!("  + {value}"));
             }
-        } else {
-            for value_list in &value_lists {
-                if !exceptions::value_list_exists(t, &value_list.id).await? {
-                    preview_details.push(format!("value list \"{}\" is absent", value_list.id));
-                }
+            for value in &list.removes {
+                preview_details.push(format!("  - {value}"));
             }
         }
     }
@@ -168,6 +194,7 @@ pub async fn plan_push(
                 rule_id: rule_id.clone(),
                 name: name.clone(),
                 action: "skipped_remote_only".into(),
+                value_list: None,
                 before: remote_by_id(rule_id).map(|r| normalize::canonical(&r).into_value()),
                 after: None,
                 applied: false,
@@ -194,6 +221,7 @@ pub async fn plan_push(
             rule_id,
             name,
             action: action.into(),
+            value_list: None,
             before,
             after: Some(normalize::canonical(&desired_rule).into_value()),
             applied: false,
@@ -209,6 +237,7 @@ pub async fn plan_push(
             rule_id: dangling.rule_id.clone(),
             name: desired_rule.name().to_string(),
             action: "update".into(),
+            value_list: None,
             before,
             after: Some(normalize::canonical(&desired_rule).into_value()),
             applied: false,
@@ -272,16 +301,45 @@ pub async fn plan_push(
         desired,
         list_ops,
         item_ops,
+        value_lists: values.plans.clone(),
+        value_list_outcomes: Vec::new(),
+        value_list_drift: values.drift.clone(),
+        values,
     })
 }
 
-pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
+pub async fn apply_push(t: &Transport, plan: PushPlan) -> Result<PushPlan> {
+    apply_push_with_clock(t, plan, &crate::value_lists::SystemClock::default()).await
+}
+
+async fn apply_push_with_clock<C: crate::value_lists::Clock>(
+    t: &Transport,
+    mut plan: PushPlan,
+    clock: &C,
+) -> Result<PushPlan> {
     let desired_rules: Vec<Rule> = plan.desired.values().cloned().collect();
     let wanted: Vec<ListKey> = super::referenced_keys(&desired_rules).into_iter().collect();
     let mut resolved = exceptions::resolve_ids(t, &wanted).await?;
 
+    plan.value_list_outcomes = crate::value_lists::apply_plans(t, &plan.values.plans, clock).await;
+    let value_entries: Vec<_> = plan
+        .value_list_outcomes
+        .iter()
+        .flat_map(|outcome| outcome.evidence.iter().cloned())
+        .map(ReportEntry::from)
+        .collect();
+    if plan
+        .value_list_outcomes
+        .iter()
+        .any(|o| o.outcome != crate::value_lists::Outcome::Applied)
+    {
+        plan.report.entries.splice(0..0, value_entries);
+        plan.report.applied = true;
+        update_value_summary(&mut plan);
+        return Ok(plan);
+    }
     let mut counts = ExceptionCounts::default();
-    let mut exception_entries = Vec::with_capacity(plan.list_ops.len() + plan.item_ops.len());
+    let mut exception_entries = value_entries;
 
     for op in &plan.list_ops {
         let failure = match op {
@@ -295,6 +353,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
                         name: list.name().to_string(),
                         action: "create_list".into(),
+                        value_list: None,
                         before: None,
                         after: Some(normalize::canonical_list(&created).into_value()),
                         applied: true,
@@ -306,6 +365,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: list.list_id().unwrap_or("<unreadable>").to_string(),
                     name: list.name().to_string(),
                     action: "create_list".into(),
+                    value_list: None,
                     before: None,
                     after: None,
                     applied: false,
@@ -319,6 +379,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
                         name: after.name().to_string(),
                         action: "update_list".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: Some(normalize::canonical_list(&applied).into_value()),
                         applied: true,
@@ -330,6 +391,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: after.list_id().unwrap_or("<unreadable>").to_string(),
                     name: after.name().to_string(),
                     action: "update_list".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -347,6 +409,25 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
         }
     }
 
+    if let Err(error) = super::values::reread(t, &plan.values).await {
+        let failed_entry = ReportEntry {
+            rule_id: String::new(),
+            name: String::new(),
+            action: "check_value_lists".into(),
+            before: None,
+            after: None,
+            applied: false,
+            error: Some(error.message),
+            value_list: None,
+        };
+        return Ok(finish_after_exception_failure(
+            plan,
+            exception_entries,
+            failed_entry,
+            counts,
+        ));
+    }
+
     for op in &plan.item_ops {
         let failure = match op {
             ItemOp::Create(item) => match exceptions::create_item(t, item).await {
@@ -356,6 +437,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
                         name: item.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "create_item".into(),
+                        value_list: None,
                         before: None,
                         after: Some(normalize::canonical_item(&applied).into_value()),
                         applied: true,
@@ -367,6 +449,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: item.item_id().unwrap_or("<unreadable>").to_string(),
                     name: item.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "create_item".into(),
+                    value_list: None,
                     before: None,
                     after: None,
                     applied: false,
@@ -380,6 +463,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
                         name: after.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "update_item".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: Some(normalize::canonical_item(&applied).into_value()),
                         applied: true,
@@ -391,6 +475,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: after.item_id().unwrap_or("<unreadable>").to_string(),
                     name: after.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "update_item".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -413,6 +498,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                         rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
                         name: before.list_id().unwrap_or("<unreadable>").to_string(),
                         action: "delete_item".into(),
+                        value_list: None,
                         before: Some(before.clone().into_value()),
                         after: None,
                         applied: true,
@@ -424,6 +510,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                     rule_id: before.item_id().unwrap_or("<unreadable>").to_string(),
                     name: before.list_id().unwrap_or("<unreadable>").to_string(),
                     action: "delete_item".into(),
+                    value_list: None,
                     before: Some(before.clone().into_value()),
                     after: None,
                     applied: false,
@@ -455,6 +542,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before: entry.before,
                 after: None,
                 applied: false,
@@ -469,6 +557,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before: entry.before,
                 after: None,
                 applied: false,
@@ -490,6 +579,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before,
                 after: Some(normalize::canonical(&applied).into_value()),
                 applied: true,
@@ -499,6 +589,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
                 rule_id: entry.rule_id,
                 name: entry.name,
                 action: entry.action,
+                value_list: None,
                 before,
                 after: None,
                 applied: false,
@@ -515,6 +606,7 @@ pub async fn apply_push(t: &Transport, mut plan: PushPlan) -> Result<PushPlan> {
     plan.report.entries = entries;
     plan.report.applied = true;
     plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
+    update_value_summary(&mut plan);
     Ok(plan)
 }
 
@@ -534,31 +626,9 @@ fn finish_after_exception_failure(
         plan.summary.out_of_scope,
     );
     plan.summary = push_summary(&plan.report, selected, local_total, out_of_scope, counts);
+    update_value_summary(&mut plan);
     plan
 }
 
-fn push_summary(
-    report: &ChangeReport,
-    selected: Option<usize>,
-    local_total: Option<usize>,
-    out_of_scope: usize,
-    counts: ExceptionCounts,
-) -> PushReport {
-    let (created, updated, skipped, failed) = report.counts();
-    PushReport {
-        applied: report.applied,
-        created,
-        updated,
-        skipped_remote_only: skipped,
-        failed,
-        pending: report.pending(),
-        lists_created: counts.lists_created,
-        lists_updated: counts.lists_updated,
-        items_created: counts.items_created,
-        items_updated: counts.items_updated,
-        items_removed: counts.items_removed,
-        out_of_scope,
-        selected,
-        local_total,
-    }
-}
+#[cfg(test)]
+mod tests;

@@ -11,10 +11,9 @@ async fn doctor_reports_the_value_list_index_as_absent() {
         .find(|c| c.name == "value_list_index")
         .unwrap();
     assert_eq!(check.status, Status::Warn);
-    assert!(
-        check.detail.contains("POST /api/lists/index"),
-        "the check must say how to fix it: {}",
-        check.detail
+    assert_eq!(
+        check.detail,
+        "value-list data streams are not bootstrapped; an exception entry of type 'list' cannot work until elasticctl value-lists init runs POST /api/security_solution/initialize with the create-list-indices flow"
     );
 }
 

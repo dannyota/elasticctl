@@ -77,6 +77,12 @@ dangling reference, a type mismatch, a dash count above 200, and an empty
 list that a reference uses. Each makes `clean` false. Duplicates, size
 warnings, and `unreferenced` pairs are warnings and leave `clean` alone.
 
+A mirror without `value-lists/` prints no `value_lists` block and reports no
+value-list drift, whatever its exceptions reference, so its `diff` output is
+what 0.9.3 printed. The refusals
+of D12 and D28 on a retained or stack-only list still apply to such a mirror:
+a safety refusal overrides that compatibility.
+
 ### 7.4 `push`
 
 `push` validates every pair in the selected set by section 5 before any
@@ -122,11 +128,13 @@ missing list and applied anyway (shared design 7.7). Before it writes the
 exception items, `push` reads each referenced list's container once more and
 stops with `conflict` if its `id` or `type` changed since the preview.
 
-The fixed apply order grows by one step: value-list containers, then values,
-then exception containers, exception items, and rules. An exception item is
-never written before the list it names exists with its verified values.
-`push` never deletes a value-list container; values inside a selected list
-are reconciled exactly (D8), with the phases of section 6.
+The fixed apply order grows by one step: value lists, then exception
+containers, exception items, and rules. Each list completes in turn, its
+container and then its value phases, and every list finishes before the first
+exception write. An exception item is never written before the list it names
+exists with its verified values. `push` never deletes a value-list container;
+values inside a selected list are reconciled exactly (D8), with the phases of
+section 6.
 
 ### 7.5 The report
 
@@ -161,7 +169,9 @@ The push summary gains `value_lists_created`, `value_lists_updated`,
 `values_added`, `values_removed`, `value_lists_unknown`, and
 `value_lists_not_reached`, each omitted when zero, so a mirror without value
 lists reports exactly what 0.9 reported. `value_lists_created` and
-`value_lists_updated` count lists that ended `applied`; `values_added` and
+`value_lists_updated` count lists that ended `applied`, and
+`value_lists_updated` only an existing list whose container or values
+changed; `values_added` and
 `values_removed` count only values in a verified phase. For a run where list
 `a` applies with 1,200 adds and 3 removes, list `b` sends two import chunks
 and the second times out without a match, and list `c` is not reached, the

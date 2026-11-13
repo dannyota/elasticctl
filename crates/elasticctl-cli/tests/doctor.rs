@@ -261,7 +261,7 @@ async fn doctor_reports_organization_key_in_full() {
         {"check":"auth", "status":"ok", "message":"operator via _cloud_api_key"},
         {"check":"key_scope", "status":"warn", "message":"Organization-level API key: not supported. MCP planning refuses it, and rule changes may fail on some deployments. Create a project- or deployment-scoped Elasticsearch API key in Kibana under Management > API keys."},
         {"check":"rules_access", "status":"fail", "message":"decoding rule _find response field page: must be an unsigned integer"},
-        {"check":"value_list_index", "status":"warn", "message":"value-list data streams are not bootstrapped; an exception entry of type 'list' cannot work until POST /api/lists/index runs"}
+        {"check":"value_list_index", "status":"warn", "message":"value-list data streams are not bootstrapped; an exception entry of type 'list' cannot work until elasticctl value-lists init runs POST /api/security_solution/initialize with the create-list-indices flow"}
     ], "ok":false})
     );
 }

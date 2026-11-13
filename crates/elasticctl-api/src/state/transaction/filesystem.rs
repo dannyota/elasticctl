@@ -81,7 +81,7 @@ pub(super) fn validate_relative(relative: &Path) -> Result<()> {
     let Some(Component::Normal(first)) = components.next() else {
         return invalid_relative(relative);
     };
-    if first != "rules" && first != "exceptions" {
+    if first != "rules" && first != "exceptions" && first != "value-lists" {
         return invalid_relative(relative);
     }
     let mut has_file_component = false;
@@ -106,7 +106,7 @@ fn invalid_relative(relative: &Path) -> Result<()> {
     Err(Error::new(
         ErrorKind::Error,
         format!(
-            "pull replacement path {} must be a relative rules/ or exceptions/ file",
+            "pull replacement path {} must be a relative rules/, exceptions/, or value-lists/ file",
             relative.display()
         ),
     ))

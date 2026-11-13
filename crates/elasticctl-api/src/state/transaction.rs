@@ -1239,4 +1239,38 @@ mod tests {
         assert_eq!(error.kind, elasticctl_core::ErrorKind::Error);
         assert!(!root.exists());
     }
+    #[test]
+    fn value_list_pairs_are_installed_and_rolled_back_with_rules_and_exceptions() {
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("mirror");
+            let paths = [
+                "rules/a.yaml",
+                "exceptions/a.yaml",
+                "value-lists/a.yaml",
+                "value-lists/a.txt",
+            ];
+            for path in paths {
+                fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                fs::write(root.join(path), b"old\n").unwrap();
+            }
+            let lock = acquire_pull(&root).unwrap();
+            let files: Vec<_> = paths.iter().map(|path| staged(path, b"new\n")).collect();
+            if fail {
+                assert!(
+                    replace_staged_files_with(&lock, &files, &FailingFileOps::once("rename", 8))
+                        .is_err()
+                );
+            } else {
+                replace_staged_files(&lock, &files).unwrap();
+            }
+            for path in paths {
+                assert_eq!(
+                    fs::read(root.join(path)).unwrap(),
+                    if fail { b"old\n" } else { b"new\n" }
+                );
+            }
+            assert!(!root.join(TRANSACTION_DIR).exists());
+        }
+    }
 }

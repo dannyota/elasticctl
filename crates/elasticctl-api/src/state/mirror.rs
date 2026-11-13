@@ -11,6 +11,8 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
         rules: Vec::new(),
         lists: Vec::new(),
         items: Vec::new(),
+        value_lists: Vec::new(),
+        has_value_lists: false,
     };
 
     let rules_path = super::rules_dir(dir);
@@ -42,10 +44,81 @@ pub fn read_mirror(dir: &Path) -> Result<Mirror> {
         }
     }
 
+    read_value_lists(dir, &mut mirror)?;
     normalize::sort_rules(&mut mirror.rules);
     normalize::sort_lists(&mut mirror.lists);
     normalize::sort_items(&mut mirror.items);
     Ok(mirror)
+}
+
+fn read_value_lists(dir: &Path, mirror: &mut Mirror) -> Result<()> {
+    let root = dir.join("value-lists");
+    let Some(paths) = mirror_root_files(&root)? else {
+        return Ok(());
+    };
+    mirror.has_value_lists = true;
+    let mut stems = std::collections::BTreeSet::new();
+    for path in &paths {
+        if matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("yaml" | "txt")
+        ) {
+            let sibling = path.with_extension(if path.extension().unwrap() == "yaml" {
+                "txt"
+            } else {
+                "yaml"
+            });
+            if !paths.contains(&sibling) {
+                return Err(Error::new(
+                    ErrorKind::Error,
+                    format!(
+                        "value-list pair {} is missing {}",
+                        path.display(),
+                        sibling.display()
+                    ),
+                ));
+            }
+            stems.insert(path.file_stem().unwrap().to_owned());
+        }
+    }
+    for stem in stems {
+        let yaml = root.join(format!("{}.yaml", stem.to_string_lossy()));
+        let text = root.join(format!("{}.txt", stem.to_string_lossy()));
+        let stem = stem
+            .to_str()
+            .ok_or_else(|| Error::new(ErrorKind::Error, "value-list file stem must be UTF-8"))?;
+        let yaml_body = read_regular_file(&yaml)?;
+        let text_body = read_regular_file(&text)?;
+        let validation = crate::value_lists::validate_local_pair(
+            stem,
+            yaml_body.as_bytes(),
+            Some(text_body.as_bytes()),
+        );
+        match validation.pair {
+            Some(pair) => mirror.value_lists.push(pair),
+            None => {
+                return Err(validation
+                    .findings
+                    .refusals
+                    .into_iter()
+                    .next()
+                    .expect("invalid pair has a refusal"));
+            }
+        }
+    }
+    let collisions = crate::value_lists::stem_collisions(
+        mirror
+            .value_lists
+            .iter()
+            .map(|p| (p.container.id.as_str(), p.stem.as_str())),
+    );
+    if !collisions.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!("value-list filename collisions: {collisions:?}"),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_top_level_item(item: &ExceptionItem) -> Result<()> {
@@ -77,7 +150,7 @@ pub fn read_local(dir: &Path) -> Result<Vec<Rule>> {
     Ok(read_mirror(dir)?.rules)
 }
 
-fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
+pub(super) fn mirror_root_files(dir: &Path) -> Result<Option<Vec<PathBuf>>> {
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(Error::new(
@@ -116,7 +189,10 @@ fn mirror_entry_path(
     let entry = entry
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", dir.display())))?;
     let path = entry.path();
-    if !super::is_rule_file(&path) {
+    if !super::is_rule_file(&path)
+        && !(dir.file_name().is_some_and(|name| name == "value-lists")
+            && path.extension().is_some_and(|ext| ext == "txt"))
+    {
         return Ok(None);
     }
     let file_type = entry
@@ -132,7 +208,7 @@ fn mirror_entry_path(
 }
 
 #[cfg(unix)]
-fn read_regular_file(path: &Path) -> Result<String> {
+pub(super) fn read_regular_file(path: &Path) -> Result<String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -147,7 +223,7 @@ fn read_regular_file(path: &Path) -> Result<String> {
 }
 
 #[cfg(not(unix))]
-fn read_regular_file(path: &Path) -> Result<String> {
+pub(super) fn read_regular_file(path: &Path) -> Result<String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|e| Error::new(ErrorKind::Error, format!("reading {}: {e}", path.display())))?;
     if metadata.file_type().is_symlink() {
