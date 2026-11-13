@@ -387,6 +387,19 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             .document["response"],
         "2001:db8::/32\n10.0.0.1-2001:db8::1\n10.0.0.7/24\n2001:DB8:0:0::1-2001:DB8:0:0::1\n"
     );
+    let referenced = &recording
+        .fixtures
+        .iter()
+        .find(|f| f.name == "container_delete_referenced")
+        .unwrap()
+        .document["response"];
+    assert_eq!(referenced["status_code"], 409);
+    assert!(
+        referenced["message"]["error"]["references"][0]["exception_item"]["item_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("elasticctl-fixture-")
+    );
     {
         let state = state.lock().unwrap();
         assert!(!state.bootstrapped);

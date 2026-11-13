@@ -1,0 +1,10 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "index_before",
+  "response": {
+    "message": "data stream .lists-default and data stream .items-default does not exist",
+    "status_code": 404
+  },
+  "http_status": 404
+}

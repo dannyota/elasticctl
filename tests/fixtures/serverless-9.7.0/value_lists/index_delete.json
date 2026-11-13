@@ -1,0 +1,8 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "index_delete",
+  "response": {
+    "acknowledged": true
+  }
+}

@@ -188,13 +188,9 @@ fn compose_only_sets_hold_exactly_the_compose_exchanges() {
         let (flavor, version) = name.split_once('-').expect("<flavor>-<version>");
         let mut files: Vec<String> = fs::read_dir(set)
             .expect("fixture set")
-            .map(|entry| {
-                entry
-                    .expect("entry")
-                    .file_name()
-                    .into_string()
-                    .expect("utf-8")
-            })
+            .map(|entry| entry.expect("entry"))
+            .filter(|entry| entry.file_type().expect("file type").is_file())
+            .map(|entry| entry.file_name().into_string().expect("utf-8"))
             .collect();
         files.sort();
         assert_eq!(files, COMPOSE_FIXTURES, "{name}");

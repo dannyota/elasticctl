@@ -1,0 +1,10 @@
+{
+  "flavor": "ech",
+  "version": "9.5.6",
+  "operation": "import_wrong_extension",
+  "response": {
+    "message": "Unsupported media type. File must be one of the following types: [.csv, .txt]",
+    "status_code": 415
+  },
+  "http_status": 415
+}

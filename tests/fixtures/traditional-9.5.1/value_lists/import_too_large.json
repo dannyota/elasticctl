@@ -1,0 +1,11 @@
+{
+  "flavor": "traditional",
+  "version": "9.5.1",
+  "operation": "import_too_large",
+  "response": {
+    "statusCode": 413,
+    "error": "Request Entity Too Large",
+    "message": "Payload content length greater than maximum allowed: 9000000"
+  },
+  "http_status": 413
+}

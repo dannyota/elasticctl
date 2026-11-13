@@ -1,0 +1,18 @@
+{
+  "flavor": "serverless",
+  "version": "9.7.0",
+  "operation": "initialize",
+  "request": {
+    "flows": [
+      "create-list-indices"
+    ]
+  },
+  "response": {
+    "flows": {
+      "create-list-indices": {
+        "status": "ready",
+        "payload": null
+      }
+    }
+  }
+}
