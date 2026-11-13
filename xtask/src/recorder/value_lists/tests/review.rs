@@ -23,7 +23,10 @@ async fn refused_write(verb: &str, route: &str) {
         error.message
     );
     if verb == "DELETE" {
-        assert_eq!(error.message, "expected HTTP 200, received Some(400)");
+        assert_eq!(
+            error.message,
+            "items_delete_id: expected HTTP 200, received 400"
+        );
     } else {
         assert_eq!(error.http_status, Some(400));
     }
@@ -62,7 +65,7 @@ async fn refused_import_deletes_owned_list_and_restores() {
 }
 
 #[tokio::test]
-async fn refused_value_delete_deletes_owned_list_and_restores() {
+async fn refused_item_delete_deletes_owned_list_and_restores() {
     refused_write("DELETE", "/api/lists/items").await;
 }
 
@@ -246,7 +249,7 @@ async fn uncertain_writes_keep_pending_totals_and_block_restore() {
             assert_eq!(
                 session.pending_imports[LIST],
                 Some(if verb == "DELETE" {
-                    4
+                    5
                 } else if route.ends_with("_import") {
                     6
                 } else {
@@ -267,10 +270,10 @@ async fn server_error_delete_can_settle_on_known_total_and_restore() {
     Mock::given(method("DELETE"))
         .and(path("/api/lists/items"))
         .respond_with(move |r: &Request| {
-            let value = r
+            let id = r
                 .url
                 .query_pairs()
-                .find(|(k, _)| k == "value")
+                .find(|(k, _)| k == "id")
                 .unwrap()
                 .1
                 .into_owned();
@@ -280,7 +283,7 @@ async fn server_error_delete_can_settle_on_known_total_and_restore() {
                 .values
                 .get_mut(LIST)
                 .unwrap()
-                .retain(|v| v["value"] != value);
+                .retain(|v| v["id"] != id);
             response(503, json!({"message": "answer lost after delete"}))
         })
         .with_priority(1)

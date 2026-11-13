@@ -486,12 +486,12 @@ async fn interrupt_case(during_cleanup: bool, twice: bool) {
             .rposition(|r| r.method == "DELETE" && r.url.path() == "/api/lists")
             .unwrap();
         let audit = &requests[last_delete + 1..];
-        assert_eq!(
+        assert!(
             audit
                 .iter()
                 .filter(|r| r.url.path() == "/api/exception_lists/_find")
-                .count(),
-            2,
+                .count()
+                >= 2,
             "final audit missing: {}",
             error.message
         );

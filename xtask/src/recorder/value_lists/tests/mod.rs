@@ -363,7 +363,8 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
             "items_export",
             "items_import",
             "items_import_settled",
-            "items_delete_value",
+            "items_delete_id",
+            "items_delete_id_absent",
             "exception_create",
             "exception_item_create",
             "container_delete_referenced",
@@ -411,6 +412,30 @@ async fn full_pass_uses_cursor_multipart_single_writes_and_preserves_export_orde
                 .contains("name=\"file\"; filename=\"elasticctl-live-vl.")
         );
     }
+    let item_deletes: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method == "DELETE" && r.url.path() == "/api/lists/items")
+        .collect();
+    let ids: Vec<_> = item_deletes
+        .iter()
+        .map(|r| {
+            assert!(!r.url.query_pairs().any(|(k, _)| k == "value"));
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "id")
+                .unwrap()
+                .1
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            format!("{LIST}-item-0"),
+            format!("{LIST}-item-1"),
+            format!("{LIST}-item-0")
+        ]
+    );
     for request in requests.iter().filter(|r| r.method == "DELETE") {
         assert!(!request.url.as_str().contains("References"));
         assert!(
@@ -495,7 +520,7 @@ async fn cleanup_after_failure_uses_exact_ids_in_dependency_order_and_verifies_a
     let requests = server.received_requests().await.unwrap();
     let deletes: Vec<_> = requests
         .iter()
-        .filter(|r| r.method == "DELETE")
+        .filter(|r| r.method == "DELETE" && r.url.path() != "/api/lists/items")
         .map(|r| {
             (
                 r.url.path().to_string(),
@@ -503,11 +528,11 @@ async fn cleanup_after_failure_uses_exact_ids_in_dependency_order_and_verifies_a
             )
         })
         .collect();
-    assert!(deletes[1].0.ends_with("exception_lists/items"));
-    assert!(deletes[1].1.contains(ITEM));
-    assert_eq!(deletes[2].0, "/api/exception_lists");
-    assert!(deletes[2].1.contains(EXCEPTION));
-    assert_eq!(deletes[3], ("/api/lists".into(), format!("id={LIST}")));
+    assert!(deletes[0].0.ends_with("exception_lists/items"));
+    assert!(deletes[0].1.contains(ITEM));
+    assert_eq!(deletes[1].0, "/api/exception_lists");
+    assert!(deletes[1].1.contains(EXCEPTION));
+    assert_eq!(deletes[2], ("/api/lists".into(), format!("id={LIST}")));
     for (index, request) in requests
         .iter()
         .enumerate()
@@ -752,3 +777,231 @@ mod privacy;
 mod review;
 
 mod timeouts;
+
+#[tokio::test]
+async fn cleanup_retries_delayed_items_and_reports_permanent_items() {
+    for (reads, succeeds) in [(2, true), (usize::MAX, false)] {
+        let (server, state) = stack(Stack {
+            bootstrapped: true,
+            deleted_item_reads: reads,
+            ..Default::default()
+        })
+        .await;
+        let t = transport(&server);
+        let mut session = Session::new(
+            &t,
+            Timing {
+                budget: Duration::from_millis(200),
+                ..fast()
+            },
+        );
+        session.baseline_checked = true;
+        session.before_absent = true;
+        session.init_attempted = true;
+        session.evidence.flavor = "ech".into();
+        session.lists.push(LIST);
+        {
+            let mut state = state.lock().unwrap();
+            state.lists.insert(
+                LIST.into(),
+                json!({"id": LIST, "meta": {"marker": MARKER, "recorder_nonce": session.nonce}}),
+            );
+            state.values.insert(
+                LIST.into(),
+                vec![json!({"id": "orphan-one"}), json!({"id": "orphan-two"})],
+            );
+        }
+        let result = cleanup::finish(&mut session).await;
+        if succeeds {
+            result.unwrap();
+            assert!(!state.lock().unwrap().bootstrapped);
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("orphan-one (list_id=elasticctl-live-vl-record)")
+            );
+            assert!(
+                error
+                    .message
+                    .contains("orphan-two (list_id=elasticctl-live-vl-record)")
+            );
+            assert!(state.lock().unwrap().bootstrapped);
+            assert!(
+                !server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.method == "DELETE" && r.url.path() == "/api/lists/index")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn unexpected_status_names_step_without_body() {
+    let (server, _) = stack(Stack {
+        fail: Some("bad_status"),
+        ..Default::default()
+    })
+    .await;
+    let t = transport(&server);
+    let mut session = Session::new(
+        &t,
+        Timing {
+            budget: Duration::from_secs(2),
+            ..fast()
+        },
+    );
+    let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .message
+            .contains("container_patch_stale: expected HTTP 409, received 400"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains("private-body"));
+}
+
+#[tokio::test]
+async fn pages_must_match_export_and_duplicate_ids() {
+    for (fail, expected) in [
+        ("wrong_page", "items_export"),
+        ("wrong_item_id", "items_delete_id"),
+    ] {
+        let (server, _) = stack(Stack {
+            fail: Some(fail),
+            ..Default::default()
+        })
+        .await;
+        let t = transport(&server);
+        let mut session = Session::new(
+            &t,
+            Timing {
+                budget: Duration::from_secs(2),
+                ..fast()
+            },
+        );
+        let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.message.contains(expected), "{}", error.message);
+        assert!(
+            !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.method == "DELETE" && r.url.path() == "/api/lists/items")
+        );
+    }
+}
+
+#[tokio::test]
+async fn absent_item_delete_requires_404_and_names_step() {
+    for status in [400, 500, 503] {
+        let (server, state) = stack(Stack::default()).await;
+        let calls = Arc::new(Mutex::new(0));
+        let count = calls.clone();
+        Mock::given(method("DELETE"))
+            .and(path("/api/lists/items"))
+            .respond_with(move |r: &Request| {
+                let mut n = count.lock().unwrap();
+                *n += 1;
+                if *n < 3 {
+                    let id = r.url.query_pairs().find(|(k, _)| k == "id").unwrap().1;
+                    state
+                        .lock()
+                        .unwrap()
+                        .values
+                        .get_mut(LIST)
+                        .unwrap()
+                        .retain(|v| v["id"] != id.as_ref());
+                }
+                response(
+                    if *n == 3 { status } else { 200 },
+                    json!({"message": "private-body"}),
+                )
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let t = transport(&server);
+        let mut session = Session::new(
+            &t,
+            Timing {
+                budget: Duration::from_secs(2),
+                ..fast()
+            },
+        );
+        let error = run(&mut session, Some("ech".into()), std::future::pending::<()>)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error.message.contains(&format!(
+                "items_delete_id_absent: expected HTTP 404, received {status}"
+            )),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("private-body"));
+    }
+}
+
+#[tokio::test]
+async fn cleanup_preserves_orphans_after_audit_errors() {
+    let (server, state) = stack(Stack {
+        bootstrapped: true,
+        ..Default::default()
+    })
+    .await;
+    let calls = Arc::new(Mutex::new(0));
+    Mock::given(method("GET"))
+        .and(path("/.items-default/_search"))
+        .respond_with(move |_: &Request| {
+            let mut n = calls.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                response(200, json!({"timed_out": false, "_shards": {"failed": 0}, "hits": {"total": {"value": 2, "relation": "eq"}, "hits": [
+                    {"_id": "orphan-one", "_source": {"list_id": LIST}},
+                    {"_id": "orphan-two", "_source": {"list_id": LIST}}
+                ]}}))
+            } else {
+                response(400, json!({"message": "private-body"}))
+            }
+        })
+        .with_priority(1).mount(&server).await;
+    let t = transport(&server);
+    let mut session = Session::new(
+        &t,
+        Timing {
+            budget: Duration::from_millis(200),
+            ..fast()
+        },
+    );
+    session.baseline_checked = true;
+    session.before_absent = true;
+    session.init_attempted = true;
+    session.evidence.flavor = "ech".into();
+    let error = cleanup::finish(&mut session).await.unwrap_err();
+    assert!(error.message.contains("orphan-one"), "{}", error.message);
+    assert!(error.message.contains("orphan-two"), "{}", error.message);
+    assert!(error.message.contains("status=400"), "{}", error.message);
+    assert!(state.lock().unwrap().bootstrapped);
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path() == "/api/lists/index")
+    );
+}
