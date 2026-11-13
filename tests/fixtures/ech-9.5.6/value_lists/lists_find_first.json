@@ -10,9 +10,9 @@
   "response": {
     "data": [
       {
-        "id": "elasticctl-fixture-value-list-id-8",
+        "id": "elasticctl-fixture-value-list-id-9",
         "type": "ip_range",
-        "name": "elasticctl-fixture-value-list-id-8",
+        "name": "elasticctl-fixture-value-list-id-9",
         "description": "elasticctl-live-marker",
         "immutable": false,
         "meta": {

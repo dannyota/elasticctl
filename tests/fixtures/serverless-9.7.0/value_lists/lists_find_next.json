@@ -11,23 +11,23 @@
   "response": {
     "data": [
       {
-        "id": "elasticctl-fixture-value-list-id-8",
+        "id": "elasticctl-fixture-value-list-id-3",
         "type": "ip_range",
-        "name": "elasticctl-fixture-value-list-id-8",
+        "name": "elasticctl-live-vl-updated",
         "description": "elasticctl-live-marker",
         "immutable": false,
         "meta": {
-          "marker": "elasticctl-live-marker",
-          "recorder_nonce": "REDACTED"
+          "recorder_nonce": "REDACTED",
+          "marker": "elasticctl-live-marker"
         },
         "@timestamp": "2026-01-01T00:00:00.000Z",
-        "version": 1,
+        "version": 3,
         "updated_by": "REDACTED",
         "tie_breaker_id": "REDACTED",
         "created_at": "2026-01-01T00:00:00.000Z",
         "created_by": "REDACTED",
         "updated_at": "2026-01-01T00:00:00.000Z",
-        "_version": "WzMsMV0="
+        "_version": "WzIsMV0="
       }
     ],
     "page": 2,
