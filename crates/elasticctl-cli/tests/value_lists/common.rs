@@ -112,15 +112,43 @@ pub fn run(root: &Path, uri: &str, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+pub fn normalize(root: &Path, uri: &str, bytes: &[u8]) -> String {
+    let mut text = String::from_utf8(bytes.to_vec()).unwrap();
+    let raw = root.to_str().unwrap().to_string();
+    let canonical = std::fs::canonicalize(root)
+        .map(|p| p.to_str().unwrap().to_string())
+        .unwrap_or_else(|_| raw.clone());
+    let mut roots = vec![canonical.clone(), raw.clone()];
+    for root in [&canonical, &raw] {
+        roots.push(root.replace('\\', "\\\\"));
+        if let Some(stripped) = root.strip_prefix(r"\\?\") {
+            roots.push(stripped.to_string());
+            roots.push(stripped.replace('\\', "\\\\"));
+        }
+    }
+    roots.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    for root in roots.iter().filter(|r| !r.is_empty()) {
+        text = text.replace(root.as_str(), "ROOT");
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("ROOT") {
+        out.push_str(&rest[..at + 4]);
+        rest = &rest[at + 4..];
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || "._-/\\".contains(c)))
+            .unwrap_or(rest.len());
+        out.push_str(&rest[..end].replace("\\\\", "/").replace('\\', "/"));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out.replace("elasticctl.exe", "elasticctl")
+        .replace(uri, "HOST")
+        .replace(uri.trim_start_matches("http://"), "HOST")
+}
+
 pub fn capture(root: &Path, uri: &str, out: &std::process::Output) -> Value {
-    let normalize = |bytes: &[u8]| {
-        String::from_utf8(bytes.to_vec())
-            .unwrap()
-            .replace(root.to_str().unwrap(), "ROOT")
-            .replace(uri, "HOST")
-            .replace(uri.trim_start_matches("http://"), "HOST")
-    };
-    let mut stdout = normalize(&out.stdout);
+    let mut stdout = normalize(root, uri, &out.stdout);
     if stdout.contains("ROOT") && !stdout.trim_start().starts_with(['{', '[']) {
         stdout = stdout
             .lines()
@@ -129,7 +157,7 @@ pub fn capture(root: &Path, uri: &str, out: &std::process::Output) -> Value {
             .join("\n")
             + "\n";
     }
-    json!({"code": out.status.code(), "stdout": stdout, "stderr": normalize(&out.stderr)})
+    json!({"code": out.status.code(), "stdout": stdout, "stderr": normalize(root, uri, &out.stderr)})
 }
 
 pub async fn assert_read_only(server: &MockServer) {

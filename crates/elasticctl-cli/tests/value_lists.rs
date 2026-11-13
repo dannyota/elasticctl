@@ -26,6 +26,7 @@ mod vl;
 
 #[test]
 fn help_tree_and_completions_expose_the_complete_group() {
+    let root = tempfile::tempdir().unwrap();
     let verbs = [
         "list", "get", "validate", "export", "import", "delete", "init",
     ];
@@ -35,7 +36,7 @@ fn help_tree_and_completions_expose_the_complete_group() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    let help = String::from_utf8(output.stdout).unwrap();
+    let help = vl::normalize(root.path(), "http://127.0.0.1:1", &output.stdout);
     for verb in verbs {
         assert!(help.contains(verb), "missing {verb}: {help}");
     }
@@ -49,7 +50,7 @@ fn help_tree_and_completions_expose_the_complete_group() {
         assert!(output.status.success());
         insta::assert_snapshot!(
             format!("help_{verb}"),
-            String::from_utf8(output.stdout).unwrap()
+            vl::normalize(root.path(), "http://127.0.0.1:1", &output.stdout)
         );
     }
     let output = Command::cargo_bin("elasticctl")
