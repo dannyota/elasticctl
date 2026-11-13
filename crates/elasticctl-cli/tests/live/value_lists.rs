@@ -196,41 +196,118 @@ fn at_step<T>(step: u8, result: StepResult<T>) -> StepResult<T> {
     })
 }
 
-async fn referenced_delete(t: &Transport, lease: &Lease) -> StepResult {
+fn value_list_preview(
+    preview: &Value,
+    command: &str,
+    dry_run: bool,
+    id: Option<&str>,
+) -> StepResult {
+    require(
+        preview["command"] == command
+            && preview["dry_run"] == dry_run
+            && ["profile", "host", "space"]
+                .iter()
+                .all(|key| preview[*key].as_str().is_some_and(|s| !s.is_empty())),
+    )?;
+    let lists = preview["lists"].as_array().ok_or(StepError::Failed)?;
+    match id {
+        Some(id) => require(lists.len() == 1 && lists[0]["id"] == id),
+        None => require(lists.is_empty() && preview["flow"] == "create-list-indices"),
+    }
+}
+
+async fn delete_preview(
+    t: &Transport,
+    lease: &Lease,
+    run: &round_trip::RoundTrip<'_>,
+    list: &Object,
+) -> StepResult<Value> {
+    lease.check_interrupt()?;
+    let before = run.snapshot(t, lease).await?;
+    lease.check_interrupt()?;
+    let output = run
+        .command()
+        .args(["value-lists", "delete", &list.id, "--json"])
+        .output()
+        .map_err(|_| StepError::Failed)?;
+    require(output.status.success())?;
+    let preview: Value = serde_json::from_slice(&output.stderr).map_err(|_| StepError::Failed)?;
+    value_list_preview(&preview, "value-lists delete", true, Some(&list.id))?;
+    let report: Value = serde_json::from_slice(&output.stdout).map_err(|_| StepError::Failed)?;
+    require(report["applied"] == false && report["total"] == 1)?;
+    require(run.snapshot(t, lease).await? == before)?;
+    Ok(before)
+}
+
+async fn referenced_delete(
+    t: &Transport,
+    lease: &Lease,
+    run: &round_trip::RoundTrip<'_>,
+) -> StepResult {
     lease.check_interrupt()?;
     let list = lease
         .objects
         .iter()
         .find(|o| o.kind == Kind::List)
         .ok_or(StepError::Failed)?;
-    let plan = checked_step(api::plan_delete(t, std::slice::from_ref(&list.id)).await)?;
-    let outcomes = api::apply_delete(t, &plan).await;
-    let outcome = outcomes.first().ok_or(StepError::Failed)?;
+    let before = delete_preview(t, lease, run, list).await?;
+    lease.check_interrupt()?;
+    let output = run
+        .command()
+        .args(["value-lists", "delete", &list.id, "--yes", "--json"])
+        .output()
+        .map_err(|_| StepError::Failed)?;
+    require(output.status.code() == Some(1))?;
+    let frames = serde_json::Deserializer::from_slice(&output.stderr)
+        .into_iter::<Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| StepError::Failed)?;
+    require(frames.len() == 2)?;
+    value_list_preview(&frames[0], "value-lists delete", false, Some(&list.id))?;
+    let error = &frames[1]["error"];
+    require(error["kind"] == "conflict" && error["http_status"] == 409)?;
+    let report: Value = serde_json::from_slice(&output.stdout).map_err(|_| StepError::Failed)?;
+    let lists = report["lists"].as_array().ok_or(StepError::Failed)?;
+    require(report["applied"] == false && lists.len() == 1)?;
+    let result = &lists[0]["result"];
     require(
-        outcome.result.outcome == api::Outcome::Failed
-            && outcome
-                .result
-                .error
-                .as_ref()
-                .is_some_and(|e| e.status == Some(409))
-            && !outcome.references.is_empty()
-            && outcome.result.error.as_ref().is_some_and(|error| {
-                outcome.references.iter().all(|reference| {
-                    error.message.contains(&reference.container.list_id)
-                        && error.message.contains(&reference.item_id)
-                })
-            })
-            && outcome.references.iter().all(|r| {
-                lease
+        result["id"] == list.id
+            && result["outcome"] == "failed"
+            && result["error"]["status"] == 409,
+    )?;
+    let references = lists[0]["references"]
+        .as_array()
+        .filter(|refs| !refs.is_empty())
+        .ok_or(StepError::Failed)?;
+    for reference in references {
+        let container = reference["container"]["list_id"]
+            .as_str()
+            .ok_or(StepError::Failed)?;
+        let item = reference["item_id"].as_str().ok_or(StepError::Failed)?;
+        require(
+            reference["container"]["namespace_type"] == "single"
+                && lease
                     .objects
                     .iter()
-                    .any(|o| o.kind == Kind::Item && o.id == r.item_id)
-                    && lease
-                        .objects
-                        .iter()
-                        .any(|o| o.kind == Kind::Exception && o.id == r.container.list_id)
-            }),
-    )
+                    .any(|o| o.kind == Kind::Exception && o.id == container)
+                && lease
+                    .objects
+                    .iter()
+                    .any(|o| o.kind == Kind::Item && o.id == item)
+                && [&result["error"]["message"], &error["message"]]
+                    .iter()
+                    .all(|message| {
+                        message.as_str().is_some_and(|s| {
+                            s.contains(container) && s.contains(item) && s.contains("single")
+                        })
+                    }),
+        )?;
+    }
+    require(
+        checked_step(api::read_container(t, &list.id).await)?
+            .is_some_and(|current| current.container.id == list.id),
+    )?;
+    require(run.snapshot(t, lease).await? == before)
 }
 
 async fn body(
@@ -240,7 +317,7 @@ async fn body(
     scratch: &Path,
     profile: &Profile,
 ) -> StepResult {
-    setup::initialize(t, lease).await?;
+    setup::initialize(t, lease, config, profile.api_key.as_deref()).await?;
     setup::objects(t, lease).await?;
     let run = round_trip::RoundTrip::new(config, scratch, profile.api_key.as_deref(), lease)?;
     at_step(3, run.pull(lease).await)?;
@@ -248,7 +325,7 @@ async fn body(
     at_step(4, run.push(t, lease).await)?;
     at_step(5, run.preview(t, lease, true).await)?;
     at_step(6, refusals::run(t, lease, &run).await)?;
-    referenced_delete(t, lease).await
+    at_step(7, referenced_delete(t, lease, &run).await)
 }
 
 fn signals(

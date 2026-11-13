@@ -46,7 +46,11 @@ fn alert_check_uses_recorded_event_codes_and_rejects_the_wrong_events_at_the_sam
     assert_eq!(verify_alerts(&report, &["2"]), Err(StepError::Failed));
 }
 
-fn case<'a>(dir: &'a tempfile::TempDir, config: &'a Path, flavor: &str) -> RoundTrip<'a> {
+pub(super) fn case<'a>(
+    dir: &'a tempfile::TempDir,
+    config: &'a Path,
+    flavor: &str,
+) -> RoundTrip<'a> {
     RoundTrip {
         config,
         dir: dir.path().join("mirror"),

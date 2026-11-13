@@ -42,6 +42,17 @@ pub(super) fn verify_alerts(report: &Value, expected: &[&str]) -> StepResult {
     require(multiset(observed) == multiset(expected.iter().map(|s| (*s).into()).collect()))
 }
 
+pub(super) fn command(config: &Path, key: Option<&str>) -> Command {
+    let mut command = cli(config);
+    for name in mcp_smoke::TARGET_OVERRIDES {
+        command.env_remove(name);
+    }
+    if let Some(key) = key {
+        command.env("ELASTICCTL_API_KEY", key);
+    }
+    command
+}
+
 impl<'a> RoundTrip<'a> {
     pub(super) fn new(
         config: &'a Path,
@@ -69,14 +80,7 @@ impl<'a> RoundTrip<'a> {
     }
 
     pub(super) fn command(&self) -> Command {
-        let mut command = cli(self.config);
-        for name in mcp_smoke::TARGET_OVERRIDES {
-            command.env_remove(name);
-        }
-        if let Some(key) = self.key {
-            command.env("ELASTICCTL_API_KEY", key);
-        }
-        command
+        command(self.config, self.key)
     }
 
     pub(super) fn state_command(&self, action: &str) -> Command {

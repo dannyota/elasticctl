@@ -24,25 +24,49 @@ pub(super) async fn audit_lists(t: &Transport, lease: &Lease) -> StepResult {
     }
 }
 
-pub(super) async fn initialize(t: &Transport, lease: &mut Lease) -> StepResult {
+pub(super) async fn initialize(
+    t: &Transport,
+    lease: &mut Lease,
+    config: &Path,
+    key: Option<&str>,
+) -> StepResult {
     lease.check_interrupt()?;
     let before = lease.before.ok_or(StepError::Failed)?;
     if before.ready() {
         return Ok(());
     }
-    lease.init_pending = true;
-    let result = api::apply_init(t).await;
-    lease.restore_streams = result
-        .as_ref()
-        .is_ok_and(|o| *o == api::InitOutcome::Bootstrapped);
-    if result.is_ok()
-        || result
-            .as_ref()
-            .is_err_and(|e| definite_refusal(e.http_status))
-    {
-        lease.init_pending = false;
+    let output = round_trip::command(config, key)
+        .args(["value-lists", "init", "--json"])
+        .output()
+        .map_err(|_| StepError::Failed)?;
+    require(output.status.success())?;
+    let preview: Value = serde_json::from_slice(&output.stderr).map_err(|_| StepError::Failed)?;
+    value_list_preview(&preview, "value-lists init", true, None)?;
+    let report: Value = serde_json::from_slice(&output.stdout).map_err(|_| StepError::Failed)?;
+    require(report["applied"] == false)?;
+    let after = checked_step(api::bootstrap_state(t).await)?;
+    if report["outcome"] == "already_bootstrapped" {
+        return require(preview["already_bootstrapped"] == true && after.ready());
     }
-    checked_step(result).map(|_| ())
+    require(preview["already_bootstrapped"] == false && after == before)?;
+    lease.check_interrupt()?;
+    lease.init_pending = true;
+    let output = round_trip::command(config, key)
+        .args(["value-lists", "init", "--yes", "--json"])
+        .output()
+        .map_err(|_| StepError::Failed)?;
+    require(output.status.success())?;
+    let preview: Value = serde_json::from_slice(&output.stderr).map_err(|_| StepError::Failed)?;
+    value_list_preview(&preview, "value-lists init", false, None)?;
+    let report: Value = serde_json::from_slice(&output.stdout).map_err(|_| StepError::Failed)?;
+    require(report["applied"].is_boolean())?;
+    match report["outcome"].as_str() {
+        Some("bootstrapped") if report["applied"] == true => lease.restore_streams = true,
+        Some("already_bootstrapped") => lease.restore_streams = false,
+        _ => return Err(StepError::Failed),
+    }
+    lease.init_pending = false;
+    require(checked_step(api::bootstrap_state(t).await)?.ready())
 }
 
 pub(super) async fn create(

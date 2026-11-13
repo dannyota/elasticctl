@@ -329,3 +329,6 @@ mod classification_tests;
 
 #[path = "round_trip_tests.rs"]
 mod round_trip_tests;
+
+#[path = "cli_lifecycle_tests.rs"]
+mod cli_lifecycle_tests;

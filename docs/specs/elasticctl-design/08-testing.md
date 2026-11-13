@@ -137,8 +137,9 @@ The contract uses CLI state pull/push and preview, comparing exact alert
 identities before and after value edits. Refusals verify unchanged remote
 objects; the unreferenced 201-dash candidate stays local. Initial-baseline
 failures use the harness class; final-baseline failures use cleanup. Unknown
-init ownership or unresolved child writes block stream deletion. Init,
-delete, and the local dash guard use the API until their CLI is available.
+init ownership or unresolved child writes block stream deletion. CLI init
+and delete exercise their dry-run guards. Only a `bootstrapped` init outcome
+authorizes stream restoration; the 201-dash guard stays local through the API.
 Before the first mutation, it
 captures custom, prebuilt, and customized rule counts, the exact default data
 view, and all marker partitions. It refuses a target with existing live-marker
