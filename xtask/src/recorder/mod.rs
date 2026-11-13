@@ -14,6 +14,7 @@ pub(crate) mod preview;
 mod rules;
 mod search;
 pub(crate) mod session;
+pub(crate) mod value_lists;
 
 use crate::diagnostics::{record_trace, recording_error};
 use crate::environment::{activate_traditional_recorder_profile, transport_from_env};

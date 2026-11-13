@@ -108,7 +108,10 @@ routes.
   `ErrorKind::Error` before a request is built or a credential attached,
   because a path such as `@other.example/x` appended to the base URL would
   send the request and its credential to another host. Retries with backoff on 429 and
-  5xx only, never on 4xx. JSON POST, PUT, and DELETE also expose one-shot
+  5xx only, never on other 4xx. `get_response` uses the same retries and
+  returns the final 429 status and body after attempts are exhausted.
+  One-shot response methods return the first 429 status and body.
+  JSON POST, PUT, and DELETE also expose one-shot
   variants for ownership-guarded mutations that cannot be replayed safely.
   One-shot sends the request once with redirects, connection pooling, and the
   HTTP client's protocol-level retries disabled; its caller resolves an

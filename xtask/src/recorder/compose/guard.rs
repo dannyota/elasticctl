@@ -16,7 +16,7 @@ use std::time::Duration;
 
 /// How a piece of guarded work ended.
 #[derive(Debug)]
-pub(super) enum Ended<T> {
+pub(in crate::recorder) enum Ended<T> {
     Finished(T),
     Panicked,
     Interrupted,
@@ -43,7 +43,7 @@ impl<F: Future> Future for CatchUnwind<F> {
 
 /// Run `work` until it finishes, panics, the interrupt fires, or `limit`
 /// passes. An interrupt wins over work that becomes ready at the same poll.
-pub(super) async fn guarded<T>(
+pub(in crate::recorder) async fn guarded<T>(
     work: impl Future<Output = T>,
     limit: Option<Duration>,
     interrupt: impl Future<Output = ()>,
@@ -67,7 +67,7 @@ pub(super) async fn guarded<T>(
 
 /// The process interrupt. When the listener cannot be installed it never
 /// fires, and the default disposition still ends the process on Ctrl-C.
-pub(super) async fn ctrl_c() {
+pub(in crate::recorder) async fn ctrl_c() {
     if tokio::signal::ctrl_c().await.is_err() {
         std::future::pending::<()>().await;
     }
