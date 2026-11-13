@@ -28,7 +28,7 @@ pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
         if let Some(cursor) = &cursor {
             path.push_str(&format!("&cursor={}", urlencode(cursor)));
         }
-        let body = match session.get(&path).await {
+        let body = match session.t.get(&path).await {
             Ok(body) => body,
             Err(error) if absent && error.http_status == Some(404) && page == 1 => break,
             Err(error) => return Err(error),
@@ -58,6 +58,7 @@ pub(super) async fn require_clear(session: &mut Session<'_>) -> Result<()> {
         let mut expected = None;
         for page in 1..=100 {
             let body = session
+                .t
                 .get(&format!(
                     "/api/exception_lists/_find?namespace_type={namespace}&per_page=100&page={page}"
                 ))
@@ -103,7 +104,7 @@ async fn exception_references(
     let mut seen = 0;
     let mut expected = None;
     for page in 1..=100 {
-        let body = session.get(&format!(
+        let body = session.t.get(&format!(
             "/api/exception_lists/items/_find?list_id={}&namespace_type={namespace}&per_page=100&page={page}",
             urlencode(list)
         )).await?;
@@ -186,7 +187,6 @@ async fn marker_items(
         Err(error) if absent && error.http_status == Some(404) => return Ok(()),
         Err(error) => return Err(error),
     };
-    session.evidence.observe(&body);
     let hits = body["hits"]["hits"]
         .as_array()
         .ok_or_else(|| recording_error("marker item audit has no hits"))?;

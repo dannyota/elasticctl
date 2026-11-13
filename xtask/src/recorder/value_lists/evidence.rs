@@ -1,6 +1,6 @@
 //! Value-list envelopes preserve opaque concurrency tokens.
 
-use crate::fixtures::{RecordedFixture, error_fixture, exchange_fixture};
+use crate::fixtures::{RecordedFixture, exchange_fixture};
 use crate::scrub::hosts::scrub_hosts;
 use crate::scrub::{scrub_alert_timestamps, scrub_placeholder_values};
 use serde_json::{Value, json};
@@ -196,12 +196,5 @@ impl Evidence {
             fixture.document.as_object_mut().unwrap().remove("request");
         }
         self.fixtures.push(fixture);
-    }
-
-    pub(super) fn refusal(&mut self, name: &'static str, mut error: elasticctl_core::Error) {
-        // A remote error's prose can quote identities outside the named scrub fields.
-        error.message = "value-list recording endpoint refused request".to_string();
-        self.fixtures
-            .push(error_fixture(name, &self.flavor, &self.version, error));
     }
 }

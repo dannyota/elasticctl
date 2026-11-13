@@ -21,13 +21,19 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
     });
     scrub_status(&mut status);
     session.evidence.response("status", status);
-    match session.get("/api/lists/index").await {
-        Ok(body) => session.evidence.response("index_before", body),
-        Err(error) if error.http_status == Some(404) => {
+    let (status, body) = session.t.get_response("/api/lists/index").await?;
+    match status {
+        200..=299 => session.evidence.http_response("index_before", status, body),
+        404 => {
             session.before_absent = true;
-            session.evidence.refusal("index_before", error);
+            session.evidence.http_response("index_before", status, body);
         }
-        Err(error) => return Err(error),
+        _ => {
+            return Err(elasticctl_core::Error::from_response_body(
+                status,
+                &body.to_string(),
+            ));
+        }
     }
     inventory::require_clear(session).await?;
     session.baseline_checked = true;
@@ -59,21 +65,25 @@ pub(super) async fn record(session: &mut Session<'_>, flavor: Option<String>) ->
 async fn initialize(session: &mut Session<'_>) -> Result<()> {
     session.init_attempted = true;
     let request = json!({"flows": ["create-list-indices"]});
-    match session
+    let (status, body) = session
         .t
-        .post_once("/api/security_solution/initialize", Some(&request))
-        .await
-    {
-        Ok(body) => session.evidence.exchange("initialize", request, body),
-        Err(error)
-            if session.evidence.flavor == "traditional"
-                && matches!(error.http_status, Some(404 | 405 | 501)) =>
-        {
-            session.evidence.refusal("initialize_unavailable", error);
+        .post_once_response("/api/security_solution/initialize", Some(&request))
+        .await?;
+    match status {
+        200..=299 => session.evidence.exchange("initialize", request, body),
+        404 | 405 if session.evidence.flavor == "traditional" => {
+            session
+                .evidence
+                .http_response("initialize_unavailable", status, body);
             let body = session.t.post_once("/api/lists/index", None).await?;
             session.evidence.response("initialize_fallback", body);
         }
-        Err(error) => return Err(error),
+        _ => {
+            return Err(elasticctl_core::Error::from_response_body(
+                status,
+                &body.to_string(),
+            ));
+        }
     }
     let after = session.get("/api/lists/index").await?;
     if after["list_index"] != true || after["list_item_index"] != true {
@@ -162,10 +172,12 @@ async fn add_item(session: &mut Session<'_>, list: &str, index: usize, value: &s
     session
         .pending_imports
         .insert(list.to_string(), Some(index as u64 + 1));
-    let body = session
+    let result = session
         .t
         .post_once("/api/lists/items", Some(&request))
-        .await?;
+        .await;
+    session.clear_refused_import(list, result.as_ref().err().and_then(|e| e.http_status));
+    let body = result?;
     session.evidence.observe(&body);
     settle(session, list, index as u64 + 1).await?;
     session.pending_imports.remove(list);
@@ -226,7 +238,7 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     }
     session.evidence.response("items_export", json!(export));
     session.pending_imports.insert(LIST.to_string(), Some(6));
-    let imported = session
+    let result = session
         .t
         .post_multipart_once_named(
             &format!("/api/lists/items/_import?list_id={LIST}&refresh=wait_for"),
@@ -234,8 +246,9 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
             "text/plain",
             "10.0.0.8/32\n10.0.0.9/32\n",
         )
-        .await?;
-    session.evidence.response("items_import", imported);
+        .await;
+    session.clear_refused_import(LIST, result.as_ref().err().and_then(|e| e.http_status));
+    session.evidence.response("items_import", result?);
     let settled = settle(session, LIST, 6).await?;
     session.evidence.response("items_import_settled", settled);
     session.pending_imports.remove(LIST);
@@ -245,7 +258,14 @@ async fn values(session: &mut Session<'_>) -> Result<()> {
     );
     session.attempted_deletes.insert(delete_path.clone());
     session.pending_imports.insert(LIST.to_string(), Some(4));
-    let (status, body) = session.t.delete_once_response(&delete_path).await?;
+    let result = session.t.delete_once_response(&delete_path).await;
+    let status = result
+        .as_ref()
+        .map(|(status, _)| *status)
+        .ok()
+        .or_else(|| result.as_ref().err().and_then(|e| e.http_status));
+    session.clear_refused_import(LIST, status);
+    let (status, body) = result?;
     require_status(Some(status), 200)?;
     if body.as_array().is_none_or(|items| items.len() != 2) {
         return Err(recording_error(

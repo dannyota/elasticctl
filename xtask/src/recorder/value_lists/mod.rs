@@ -86,6 +86,12 @@ impl<'a> Session<'a> {
         Ok(body)
     }
 
+    fn clear_refused_import(&mut self, list: &str, status: Option<u16>) {
+        if matches!(status, Some(400..=499)) && status != Some(408) {
+            self.pending_imports.remove(list);
+        }
+    }
+
     fn recording(&mut self) -> Result<Recording> {
         let flavor = &self.evidence.flavor;
         let version = &self.evidence.version;

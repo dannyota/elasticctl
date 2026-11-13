@@ -316,13 +316,10 @@ fn fixture_scrubs_hosts_ids_users_timestamps_and_cursors_without_changing_export
     let text = "z\na-a\nz\na\n";
     evidence.response("export", json!(text));
     assert_eq!(evidence.fixtures[1].document["response"], text);
-    evidence.refusal(
+    evidence.http_response(
         "error",
-        elasticctl_core::Error::with_status(
-            elasticctl_core::ErrorKind::Http,
-            415,
-            "private-user private.invalid:9243",
-        ),
+        415,
+        json!({"message": "private-user private.invalid:9243"}),
     );
     assert!(
         !evidence.fixtures[2]
@@ -753,3 +750,5 @@ mod regressions;
 mod references;
 
 mod privacy;
+
+mod review;

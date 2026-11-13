@@ -269,6 +269,23 @@ impl Transport {
         self.send_json(Method::GET, path, None).await
     }
 
+    /// GET and retain the status and JSON body for 2xx and 4xx.
+    pub async fn get_response(&self, path: &str) -> Result<(u16, Value)> {
+        let method = Method::GET;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(
+                &self.client,
+                method.clone(),
+                path,
+                None,
+                self.attempt_limit,
+                true,
+            )
+            .await?;
+        self.status_and_body(&method, &url, response).await
+    }
+
     /// GET a Kibana *internal* route. Internal routes sit outside the public
     /// API's versioning contract: Kibana requires `x-elastic-internal-origin`
     /// on them (without it the route family answers 400 "exists but is not
@@ -369,6 +386,20 @@ impl Transport {
     /// parsing, timeout handling, and error classification as [`Self::post`].
     pub async fn post_once(&self, path: &str, body: Option<&Value>) -> Result<Value> {
         self.send_json_once(Method::POST, path, body).await
+    }
+
+    /// POST exactly once and retain the status and JSON body for 2xx and 4xx.
+    pub async fn post_once_response(
+        &self,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value)> {
+        let method = Method::POST;
+        let url = self.url(path)?;
+        let response = self
+            .send_with_client_options(&self.one_shot_client, method.clone(), path, body, 1, true)
+            .await?;
+        self.status_and_body(&method, &url, response).await
     }
 
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
@@ -661,5 +692,92 @@ impl Transport {
 
         let text = self.response_text(&method, &url, response).await?;
         parse_response_json(&text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Profile;
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn transport(server: &MockServer) -> Transport {
+        Transport::new(&Profile {
+            kibana_url: server.uri(),
+            es_url: None,
+            api_key: Some("test".into()),
+            username: None,
+            password: None,
+            space: "security".into(),
+            verify: true,
+            timeout_secs: 1,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_response_returns_client_error_body() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({"statusCode": 404, "message": "list indices missing"});
+        Mock::given(method("GET"))
+            .and(path("/s/security/api/lists/index"))
+            .and(header("Authorization", "ApiKey test"))
+            .and(header("elastic-api-version", "2023-10-31"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .get_response("/api/lists/index")
+                .await
+                .unwrap(),
+            (404, body)
+        );
+    }
+
+    #[tokio::test]
+    async fn post_once_response_returns_client_error_body() {
+        let server = MockServer::start().await;
+        let request = serde_json::json!({"flows": ["create-list-indices"]});
+        let body = serde_json::json!({"statusCode": 404, "message": "flow unavailable"});
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/security_solution/initialize"))
+            .and(header("kbn-xsrf", "true"))
+            .and(header("Authorization", "ApiKey test"))
+            .and(header("elastic-api-version", "2023-10-31"))
+            .and(body_json(&request))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            transport(&server)
+                .post_once_response("/api/security_solution/initialize", Some(&request))
+                .await
+                .unwrap(),
+            (404, body)
+        );
+    }
+
+    #[tokio::test]
+    async fn post_once_response_never_replays_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/s/security/api/lists/index"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .set_body_json(serde_json::json!({"message": "unavailable"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = transport(&server)
+            .post_once_response("/api/lists/index", None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.http_status, Some(503));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

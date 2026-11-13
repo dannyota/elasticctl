@@ -196,7 +196,7 @@ pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
     {
         return Ok(());
     }
-    let body = session.get("/api/lists/_find?per_page=1").await?;
+    let body = session.t.get("/api/lists/_find?per_page=1").await?;
     if inventory::total(&body)? != 0 {
         return Ok(());
     }
@@ -210,13 +210,19 @@ pub(super) async fn restore(session: &mut Session<'_>) -> Result<()> {
         )));
     }
     session.evidence.response("index_delete", body);
-    match session.get("/api/lists/index").await {
-        Err(error) if error.http_status == Some(404) => {
-            session.evidence.refusal("index_restored", error);
+    let (status, body) = session.t.get_response("/api/lists/index").await?;
+    match status {
+        404 => {
+            session
+                .evidence
+                .http_response("index_restored", status, body);
             Ok(())
         }
-        Err(error) => Err(error),
-        Ok(_) => Err(recording_error("index restore did not return 404")),
+        200..=299 => Err(recording_error("index restore did not return 404")),
+        _ => Err(elasticctl_core::Error::from_response_body(
+            status,
+            &body.to_string(),
+        )),
     }
 }
 
