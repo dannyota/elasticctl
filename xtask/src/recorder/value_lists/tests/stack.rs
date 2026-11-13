@@ -279,7 +279,16 @@ impl Stack {
                 response(200, self.exception.take().unwrap())
             }
             ("DELETE", "/api/lists") if self.item.is_some() && id == LIST => {
-                response(409, json!({"references": [self.item.clone().unwrap()]}))
+                let references = json!([{
+                    "exception_item": self.item.clone().unwrap(),
+                    "exception_list": self.exception.clone().unwrap(),
+                }]);
+                response(
+                    409,
+                    json!({"message": {"error": {
+                        "message": "value list is referenced", "references": references,
+                    }}, "status_code": 409}),
+                )
             }
             ("DELETE", "/api/lists") if !self.cleanup_refuses => {
                 if let Some(values) = self.values.remove(&id)

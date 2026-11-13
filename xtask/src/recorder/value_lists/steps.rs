@@ -383,7 +383,11 @@ async fn references(session: &mut Session<'_>) -> Result<()> {
     let (status, body) = session.t.delete_once_response(&delete_path).await?;
     require_status("container_delete_referenced", status, 409)?;
     session.attempted_deletes.remove(&delete_path);
-    if !body["references"].is_array() || body["references"].as_array().is_some_and(Vec::is_empty) {
+    if body
+        .pointer("/message/error/references")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
         return Err(recording_error("referenced delete has no references body"));
     }
     session
